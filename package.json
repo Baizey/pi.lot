@@ -1,13 +1,37 @@
 {
   "name": "pi-sandbox",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "version": "0.1.0",
+  "description": "Installable Pi extension demonstrating kernel-mediated approval for bash I/O.",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ]
   },
-  "keywords": [],
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "build:native": "node ./scripts/build-native.mjs",
+    "build:typescript": "tsc",
+    "build": "npm run clean && npm run build:native && npm run build:typescript",
+    "install": "npm run build:native",
+    "test": "npm run build && node --test ./dist/test/extension.test.js ./dist/test/protocol.test.js"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "sandbox",
+    "seccomp",
+    "bubblewrap"
+  ],
   "author": "",
   "license": "ISC",
-  "type": "commonjs"
+  "private": true,
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@types/node": "^26.1.1",
+    "typescript": "^6.0.3"
+  }
 }

@@ -1,71 +1,127 @@
 import assert from "node:assert/strict";
-import {existsSync, mkdtempSync, readFileSync, rmSync} from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
-import piSandboxExtension from "../src/extension.js";
-import {SandboxPathAccessType} from "../src/bubblewrap/sandbox-runner.js";
+import type {
+    ExtensionAPI,
+    ExtensionContext,
+    SessionShutdownEvent,
+    SessionStartEvent,
+} from "@earendil-works/pi-coding-agent";
+import pilotExtension, {PilotExtension} from "../src/extension.js";
+import {PathPolicyRuntime} from "../src/policy/path/PathPolicyRuntime.js";
+import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 
-type RegisteredBashTool = {
-  name: string;
-  execute: (
-    id: string,
-    params: {command: string; timeout?: number},
-    signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: ExtensionContext,
-  ) => Promise<unknown>;
+const experimentToolNames = ["bash-fuse", "bash-network"];
+
+type SessionStartHandler = (event: SessionStartEvent, ctx: ExtensionContext) => void | Promise<void>;
+type SessionShutdownHandler = (event: SessionShutdownEvent, ctx: ExtensionContext) => void | Promise<void>;
+
+type RegisteredTool = {
+    name: string;
+    execute: (
+        id: string,
+        params: {command: string},
+        signal: AbortSignal | undefined,
+        onUpdate: undefined,
+        ctx: ExtensionContext,
+    ) => Promise<unknown>;
 };
 
-test("the Pi extension routes bash resource accesses through blocking yes/no approval", async () => {
-  let bashTool: RegisteredBashTool | undefined;
-  const pi = {
-    registerTool(tool: RegisteredBashTool) {
-      bashTool = tool;
-    },
-  } as unknown as ExtensionAPI;
-  piSandboxExtension(pi);
-  assert.equal(bashTool?.name, "bash-bubblewrap");
+type ExtensionHarness = {
+    pi: ExtensionAPI;
+    registeredTools: RegisteredTool[];
+    registeredToolNames: string[];
+    sessionStart: () => SessionStartHandler;
+    sessionShutdown: () => SessionShutdownHandler;
+};
 
-  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-bubblewrap-extension-"));
-  const allowedPath = path.join(workspace, "allowed.txt");
-  const deniedPath = path.join(workspace, "denied.txt");
-  const deletedPath = path.join(workspace, "deleted.txt");
-  const prompts: string[] = [];
-  const ctx = {
-    cwd: workspace,
-    hasUI: true,
-    ui: {
-      async confirm(_title: string, message: string) {
-        prompts.push(message);
-        return !message.split("\n").some((line) => line.startsWith(`${SandboxPathAccessType.WRITE}: ${deniedPath}`));
-      },
-    },
-  } as unknown as ExtensionContext;
+test("the production extension installs Bash immediately but defers session resources", async () => {
+    const harness = extensionHarness();
+    const ctx = {cwd: process.cwd()} as ExtensionContext;
 
-  try {
+    pilotExtension(harness.pi);
+
+    assert.deepEqual(harness.registeredToolNames, ["bash"]);
+    const bashTool = harness.registeredTools[0];
+    assert.ok(bashTool);
     await assert.rejects(
-      bashTool!.execute(
-        "test-call",
-        {command: "printf 'allowed\\n' > allowed.txt; cat allowed.txt; touch deleted.txt; rm deleted.txt; printf 'denied\\n' > denied.txt"},
-        undefined,
-        undefined,
-        ctx,
-      ),
-      /Command exited with code 1/,
+        bashTool.execute("before-start", {command: "true"}, undefined, undefined, ctx),
+        /session runtime is not available/,
     );
-
-    assert.equal(readFileSync(allowedPath, "utf8"), "allowed\n");
-    assert.equal(existsSync(deniedPath), false);
-    assert.equal(existsSync(deletedPath), false);
-    assert.equal(prompts.some((message) => message.split("\n").some((line) => line.startsWith(`${SandboxPathAccessType.WRITE}: ${allowedPath}`))), true);
-    assert.equal(prompts.some((message) => message.split("\n").some((line) => line.startsWith(`${SandboxPathAccessType.READ}: ${allowedPath}`))), true);
-    assert.equal(prompts.some((message) => message.split("\n").some((line) => line.startsWith(`${SandboxPathAccessType.WRITE}: ${deniedPath}`))), true);
-    assert.equal(prompts.some((message) => message.split("\n").some((line) => line.startsWith(`${SandboxPathAccessType.DELETE}: ${deletedPath}`))), true);
-    assert.equal(prompts.some((message) => message.includes(`${SandboxPathAccessType.EXECUTE}: /usr/bin/bash`)), true);
-    assert.equal(prompts.every((message) => message.includes("paused in the kernel")), true);
-  } finally {
-    rmSync(workspace, {recursive: true, force: true});
-  }
+    assert.equal(typeof harness.sessionStart(), "function");
+    assert.equal(typeof harness.sessionShutdown(), "function");
 });
+
+test("one session runtime owns the production Bash override until session shutdown", async () => {
+    const harness = extensionHarness();
+    const ctx = {
+        cwd: process.cwd(),
+        hasUI: false,
+        mode: "print",
+        ui: {},
+    } as unknown as ExtensionContext;
+    let runtimeCreations = 0;
+    let runtimeCloses = 0;
+
+    new PilotExtension(harness.pi, {
+        createSessionRuntime(runtimeContext) {
+            runtimeCreations++;
+            const pathPolicy = new PathPolicyRuntime({
+                loadPolicies: () => [],
+                replacePolicies: () => {},
+            });
+            return {
+                pathPolicy,
+                decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                close() {
+                    runtimeCloses++;
+                },
+            };
+        },
+    }).register();
+
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+
+    assert.equal(runtimeCreations, 1);
+    assert.throws(
+        () => harness.sessionStart()({type: "session_start", reason: "reload"}, ctx),
+        /session runtime is already started/,
+    );
+    assert.equal(runtimeCreations, 1);
+    assert.deepEqual(harness.registeredToolNames, ["bash"]);
+    assert.equal(harness.registeredToolNames.some((name) => experimentToolNames.includes(name)), false);
+
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    assert.equal(runtimeCloses, 1);
+});
+
+function extensionHarness(): ExtensionHarness {
+    const registeredTools: RegisteredTool[] = [];
+    const registeredToolNames: string[] = [];
+    let startHandler: SessionStartHandler | undefined;
+    let shutdownHandler: SessionShutdownHandler | undefined;
+    const pi = {
+        registerTool(tool: RegisteredTool) {
+            registeredTools.push(tool);
+            registeredToolNames.push(tool.name);
+        },
+        on(event: string, handler: unknown) {
+            if (event === "session_start") startHandler = handler as SessionStartHandler;
+            if (event === "session_shutdown") shutdownHandler = handler as SessionShutdownHandler;
+        },
+    } as unknown as ExtensionAPI;
+
+    return {
+        pi,
+        registeredTools,
+        registeredToolNames,
+        sessionStart() {
+            assert.ok(startHandler);
+            return startHandler;
+        },
+        sessionShutdown() {
+            assert.ok(shutdownHandler);
+            return shutdownHandler;
+        },
+    };
+}

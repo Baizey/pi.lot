@@ -1,7 +1,7 @@
 {
-  "name": "pi-sandbox",
+  "name": "pilot",
   "version": "0.1.0",
-  "description": "Installable Pi extension demonstrating kernel-mediated approval for bash I/O.",
+  "description": "pi.lot: kernel-mediated filesystem policy for Pi's Bash tool.",
   "type": "module",
   "pi": {
     "extensions": [
@@ -11,18 +11,13 @@
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
     "build:native": "node ./scripts/build-native.mjs",
-    "build:typescript": "tsc",
-    "build": "npm run clean && npm run build:native && npm run build:typescript",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run clean && npm run build:native && npm run typecheck",
     "install": "npm run build:native",
-    "test": "npm run build && node --test ./dist/test/extension.test.js ./dist/test/protocol.test.js"
+    "test:runtime": "node --import jiti/register --test ./test/experiment.test.ts ./test/extension.test.ts ./test/fuse.test.ts ./test/network.test.ts ./test/path-policy.test.ts",
+    "test": "npm run build && npm run test:runtime"
   },
-  "keywords": [
-    "pi-package",
-    "pi",
-    "sandbox",
-    "seccomp",
-    "bubblewrap"
-  ],
+  "keywords": [],
   "author": "",
   "license": "ISC",
   "private": true,
@@ -30,8 +25,15 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
+    "jiti": "^2.7.0",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.1",
+    "fs-xattr": "^0.4.0",
+    "fuse-native": "^2.2.6"
   }
 }

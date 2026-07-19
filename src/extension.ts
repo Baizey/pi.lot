@@ -1,92 +1,55 @@
-import {realpathSync} from "node:fs";
-import type {BashOperations, ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {createBashTool} from "@earendil-works/pi-coding-agent";
-import {runSandboxedCommand, SandboxDecision, SandboxEvent} from "./bubblewrap/sandbox-runner.js";
+import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {FuseBashTool} from "./fuse/FuseBashTool.js";
+import {PilotSessionRuntime} from "./runtime/PilotSessionRuntime.js";
 
-export default function piSandboxExtension(pi: ExtensionAPI): void {
-  const localBash = createBashTool(process.cwd());
-  localBash.name = "bash-bubblewrap";
-  pi.registerTool({
-    ...localBash,
-    label: "bash (sandboxed)",
-    async execute(id, params, signal, onUpdate, ctx) {
-      const sandboxedBash = createBashTool(ctx.cwd, {
-        operations: createSandboxedBashOperations(ctx),
-      });
-      return sandboxedBash.execute(id, params, signal, onUpdate);
-    },
-  });
+export type PilotSessionRuntimeHandle = Pick<
+    PilotSessionRuntime,
+    "pathPolicy" | "decisionFlows" | "close"
+>;
+
+export type PilotExtensionOptions = {
+    createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeHandle;
+};
+
+export default function pilotExtension(pi: ExtensionAPI): void {
+    new PilotExtension(pi).register();
 }
 
-function createSandboxedBashOperations(ctx: ExtensionContext): BashOperations {
-  return {
-    async exec(command, cwd, {onData, signal, timeout, env}) {
-      const writableCwd = realpathSync(cwd);
-      const result = await runSandboxedCommand({
-        command: ["/bin/bash", "-c", command],
-        cwd,
-        writableRoots: [writableCwd],
-        env,
-        signal,
-        timeoutSeconds: timeout,
-        onStdout: onData,
-        onStderr: onData,
-        onDecisionError(error) {
-          onData(Buffer.from(`[sandbox] decision=${SandboxDecision.DENY} error=${JSON.stringify(errorMessage(error))}\n`));
-        },
-        async decide(event) {
-          const decision = await askForSandboxDecision(ctx, command, event, signal);
-          onData(Buffer.from(`${formatDecision(event, decision)}\n`));
-          return decision;
-        },
-      });
+export class PilotExtension {
+    private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeHandle;
+    private sessionRuntime: PilotSessionRuntimeHandle | undefined;
+    private registered = false;
 
-      if (result.signal) throw new Error(`sandbox adapter terminated by ${result.signal}`);
-      return {exitCode: result.exitCode};
-    },
-  };
-}
+    constructor(
+        private readonly pi: ExtensionAPI,
+        options: PilotExtensionOptions = {},
+    ) {
+        this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
+    }
 
-async function askForSandboxDecision(
-  ctx: ExtensionContext,
-  command: string,
-  event: SandboxEvent,
-  signal: AbortSignal | undefined,
-): Promise<SandboxDecision> {
-  if (!ctx.hasUI) return SandboxDecision.DENY;
+    register(): void {
+        if (this.registered) throw new Error("pi.lot extension is already registered");
+        this.registered = true;
 
-  const allowed = await ctx.ui.confirm(
-    `Allow sandbox ${event.operation.toLowerCase()}?`,
-    [
-      `Command: ${truncate(command, 500)}`,
-      `System call: ${event.syscall}`,
-      `Process: ${event.pid}`,
-      ...event.pathAccesses.map((access) =>
-        `${access.access}: ${access.path}${access.sandboxPrivate ? " (bubblewrap-private)" : ""}`,
-      ),
-      ...(event.destination ? [`Destination: ${event.destination}`] : []),
-      ...(event.detail ? [`Detail: ${event.detail}`] : []),
-      "",
-      "The operation is paused in the kernel until you answer.",
-    ].join("\n"),
-    {signal},
-  );
-  return allowed ? SandboxDecision.ALLOW : SandboxDecision.DENY;
-}
+        new FuseBashTool(this.pi, {current: () => this.requireSessionRuntime()}).register();
+        this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
+        this.pi.on("session_shutdown", () => this.stopSession());
+    }
 
-function formatDecision(event: SandboxEvent, decision: SandboxDecision): string {
-  const resource = event.pathAccesses.length > 0
-    ? ` pathAccesses=${JSON.stringify(event.pathAccesses)}`
-    : event.destination
-      ? ` destination=${JSON.stringify(event.destination)}`
-      : "";
-  return `[sandbox] sequence=${event.sequence} pid=${event.pid} decision=${decision} operation=${event.operation} syscall=${event.syscall}${resource}`;
-}
+    private startSession(ctx: ExtensionContext): void {
+        if (this.sessionRuntime) throw new Error("pi.lot session runtime is already started");
 
-function truncate(value: string, limit: number): string {
-  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
-}
+        this.sessionRuntime = this.createSessionRuntime(ctx);
+    }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+    private stopSession(): void {
+        const runtime = this.sessionRuntime;
+        this.sessionRuntime = undefined;
+        runtime?.close();
+    }
+
+    private requireSessionRuntime(): PilotSessionRuntimeHandle {
+        if (!this.sessionRuntime) throw new Error("pi.lot session runtime is not available");
+        return this.sessionRuntime;
+    }
 }

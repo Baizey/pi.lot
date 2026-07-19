@@ -1,0 +1,143 @@
+import {spawn} from "node:child_process";
+import {mkdtemp, mkdir, realpath, rm} from "node:fs/promises";
+import path from "node:path";
+import {FuseDecision, FuseFilesystem} from "./FuseFilesystem.js";
+import type {FusePolicyEvent} from "./FuseFilesystem.js";
+
+export const HOST_FILESYSTEM_ROOT = "/";
+
+export type FuseRunOptions = {
+    command: string[];
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    timeoutSeconds?: number;
+    onStdout?: (data: Buffer) => void;
+    onStderr?: (data: Buffer) => void;
+    onDecisionError?: (error: unknown) => void;
+    decide: (event: FusePolicyEvent) => FuseDecision | Promise<FuseDecision>;
+};
+
+export type FuseRunResult = {
+    exitCode: number | null;
+    signal: NodeJS.Signals | null;
+};
+
+export async function runFuseSandboxedCommand(options: FuseRunOptions): Promise<FuseRunResult> {
+    if (options.command.length === 0) throw new Error("FUSE sandbox command is required");
+    if (options.signal?.aborted) throw new Error("aborted");
+    if (options.timeoutSeconds !== undefined
+        && (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds <= 0)) {
+        throw new Error("timeout must be a positive finite number of seconds");
+    }
+
+    const commandCwd = await realpath(options.cwd);
+    const temporaryDirectory = await mkdtemp(path.join("/var/tmp", "pilot-fuse-"));
+    const mountpoint = path.join(temporaryDirectory, "root");
+    let filesystem: FuseFilesystem | undefined;
+    let mounted = false;
+    let result: FuseRunResult | undefined;
+    let runError: unknown;
+    try {
+        await mkdir(mountpoint);
+        filesystem = new FuseFilesystem({
+            backingRoot: HOST_FILESYSTEM_ROOT,
+            mountpoint,
+            hiddenFusePaths: [temporaryDirectory],
+            decide: options.decide,
+            onDecisionError: options.onDecisionError,
+        });
+        await filesystem.mount();
+        mounted = true;
+        result = await runWorker(options, commandCwd, mountpoint);
+    } catch (error) {
+        runError = error;
+    }
+
+    let cleanupError: unknown;
+    try {
+        if (mounted) await filesystem!.unmount();
+        await rm(temporaryDirectory, {recursive: true, force: true});
+    } catch (error) {
+        cleanupError = error;
+    }
+
+    if (runError && cleanupError) {
+        throw new AggregateError([runError, cleanupError], "FUSE worker failed and its mount could not be cleaned up");
+    }
+    if (runError) throw runError;
+    if (cleanupError) throw cleanupError;
+    return result!;
+}
+
+async function runWorker(
+    options: FuseRunOptions,
+    commandCwd: string,
+    mountpoint: string,
+): Promise<FuseRunResult> {
+    if (options.signal?.aborted) throw new Error("aborted");
+
+    const bubblewrapArguments = [
+        "--bind", mountpoint, HOST_FILESYSTEM_ROOT,
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--unshare-user",
+        "--unshare-pid",
+        "--cap-drop", "ALL",
+        "--die-with-parent",
+        "--new-session",
+        "--chdir", commandCwd,
+        "--",
+        ...options.command,
+    ];
+    const child = spawn("/usr/bin/bwrap", bubblewrapArguments, {
+        cwd: HOST_FILESYSTEM_ROOT,
+        env: options.env,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.on("data", (data: Buffer) => options.onStdout?.(data));
+    child.stderr?.on("data", (data: Buffer) => options.onStderr?.(data));
+
+    let aborted = false;
+    let timedOut = false;
+    const terminate = () => killProcessGroup(child.pid);
+    const onAbort = () => {
+        aborted = true;
+        terminate();
+    };
+    options.signal?.addEventListener("abort", onAbort, {once: true});
+    const timeout = options.timeoutSeconds === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            terminate();
+        }, options.timeoutSeconds * 1000);
+
+    try {
+        const result = await new Promise<FuseRunResult>((resolve, reject) => {
+            child.once("error", reject);
+            child.once("close", (exitCode, signal) => resolve({exitCode, signal}));
+        });
+        if (aborted || options.signal?.aborted) throw new Error("aborted");
+        if (timedOut) throw new Error(`timeout:${options.timeoutSeconds}`);
+        return result;
+    } finally {
+        if (timeout) clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", onAbort);
+    }
+}
+
+function killProcessGroup(pid: number | undefined): void {
+    if (!pid) return;
+    try {
+        process.kill(-pid, "SIGKILL");
+    } catch {
+        try {
+            process.kill(pid, "SIGKILL");
+        } catch {
+            // The process already exited.
+        }
+    }
+}

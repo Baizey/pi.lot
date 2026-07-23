@@ -1,4 +1,5 @@
 import {
+    createBashTool,
     createEditToolDefinition,
     type EditToolInput,
     type ExtensionAPI,
@@ -10,6 +11,8 @@ import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
 import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
+import path from "node:path";
+import {FsAccessType} from "../../policy/path/types";
 
 const EDIT_PRESENTATION = {
     toolName: "edit",

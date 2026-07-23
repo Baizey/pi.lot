@@ -5,12 +5,12 @@ import {
     FuseDecision,
 } from "./FuseFilesystem.js";
 import type {FusePathAccess, FusePolicyEvent} from "./FuseFilesystem.js";
-import type {PathPolicyChoice, PathPolicyToolCall} from "../policy/path/PathPolicyRuntime.js";
-import type {PathPolicyResult} from "../policy/path/types.js";
-import {FsAccessType} from "../policy/path/types.js";
-import {PolicyLifetime, PolicyStatus} from "../policy/types";
-import {UiFlowShortcut} from "../tui/UiDecisionFlowManager.js";
-import type {UiDecision, UiDecisionFlowManager} from "../tui/UiDecisionFlowManager.js";
+import type {PathPolicyChoice, PathPolicyToolCall} from "../PathPolicyRuntime.js";
+import type {PathPolicyResult} from "../types.js";
+import {FsAccessType} from "../types.js";
+import {PolicyLifetime, PolicyStatus} from "../../types.js";
+import {UiFlowShortcut} from "../../../tui/UiDecisionFlowManager.js";
+import type {UiDecision, UiDecisionFlowManager} from "../../../tui/UiDecisionFlowManager.js";
 
 export type FusePathPolicyAuthorizerOptions = {
     backingRoot: string;

@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
@@ -17,14 +18,25 @@
 #define RECEIVE_BUFFER_SIZE (128 * 1024)
 #define ALLOW_PACKET_MARK 0x50490001U
 #define DENY_PACKET_MARK 0x50490002U
+#define DNS_ALLOW_PACKET_MARK 0x50490004U
+#define DNS_DENY_PACKET_MARK 0x50490005U
 #define IPV4_MORE_FRAGMENTS 0x2000U
 #define IPV4_FRAGMENT_OFFSET_MASK 0x1fffU
-#define PROTOCOL_PREFIX "PI_NETWORK_QUEUE\t1"
+#define PROTOCOL_PREFIX "PI_NETWORK_QUEUE\t3"
 
 typedef struct {
     uint64_t sequence;
     int failed;
 } queue_context;
+
+typedef struct {
+    const char *family;
+    const char *transport;
+    const unsigned char *transport_header;
+    size_t transport_length;
+    char source_address[INET6_ADDRSTRLEN];
+    char destination_address[INET6_ADDRSTRLEN];
+} packet_metadata;
 
 static void report_error(const char *message) {
     fprintf(stderr, "pi-network-queue: %s: %s\n", message, strerror(errno));
@@ -56,7 +68,12 @@ static int protocol_failure(
     return -1;
 }
 
-static int read_verdict(uint64_t sequence, uint32_t *mark) {
+static int read_verdict(
+    uint64_t sequence,
+    uint32_t allow_mark,
+    uint32_t deny_mark,
+    uint32_t *mark
+) {
     char line[256];
     if (!fgets(line, sizeof(line), stdin)) return -1;
 
@@ -85,14 +102,133 @@ static int read_verdict(uint64_t sequence, uint32_t *mark) {
     }
 
     if (strcmp(line, expected_allow) == 0) {
-        *mark = ALLOW_PACKET_MARK;
+        *mark = allow_mark;
         return 0;
     }
     if (strcmp(line, expected_deny) == 0) {
-        *mark = DENY_PACKET_MARK;
+        *mark = deny_mark;
         return 0;
     }
     return -1;
+}
+
+static int parse_ipv4_packet(
+    const unsigned char *packet,
+    size_t packet_length,
+    packet_metadata *metadata
+) {
+    if (packet_length < 20) return -1;
+
+    size_t header_length = (size_t) (packet[0] & 0x0fU) * 4U;
+    uint16_t total_length = read_be16(packet + 2);
+    uint16_t fragment = read_be16(packet + 6);
+    if (header_length < 20 || header_length > packet_length
+        || total_length < header_length || (size_t) total_length > packet_length
+        || (fragment & (IPV4_MORE_FRAGMENTS | IPV4_FRAGMENT_OFFSET_MASK)) != 0
+        || (packet[9] != IPPROTO_TCP && packet[9] != IPPROTO_UDP)) {
+        return -1;
+    }
+
+    metadata->family = "IPV4";
+    metadata->transport = packet[9] == IPPROTO_TCP ? "tcp" : "udp";
+    metadata->transport_header = packet + header_length;
+    metadata->transport_length = (size_t) total_length - header_length;
+    if (!inet_ntop(AF_INET, packet + 12, metadata->source_address, sizeof(metadata->source_address))
+        || !inet_ntop(AF_INET, packet + 16, metadata->destination_address, sizeof(metadata->destination_address))) {
+        return -1;
+    }
+    return 0;
+}
+
+static int parse_ipv6_packet(
+    const unsigned char *packet,
+    size_t packet_length,
+    packet_metadata *metadata
+) {
+    if (packet_length < 40) return -1;
+
+    uint16_t payload_length = read_be16(packet + 4);
+    size_t total_length = 40U + (size_t) payload_length;
+    uint8_t next_header = packet[6];
+    if (payload_length == 0 || total_length > packet_length
+        || (next_header != IPPROTO_TCP && next_header != IPPROTO_UDP)) {
+        return -1;
+    }
+
+    metadata->family = "IPV6";
+    metadata->transport = next_header == IPPROTO_TCP ? "tcp" : "udp";
+    metadata->transport_header = packet + 40;
+    metadata->transport_length = payload_length;
+    if (!inet_ntop(AF_INET6, packet + 8, metadata->source_address, sizeof(metadata->source_address))
+        || !inet_ntop(AF_INET6, packet + 24, metadata->destination_address, sizeof(metadata->destination_address))) {
+        return -1;
+    }
+    return 0;
+}
+
+static int parse_transport(const packet_metadata *metadata, uint16_t *source_port, uint16_t *destination_port) {
+    const unsigned char *header = metadata->transport_header;
+    if (strcmp(metadata->transport, "tcp") == 0) {
+        if (metadata->transport_length < 20) return -1;
+        size_t header_length = (size_t) (header[12] >> 4) * 4U;
+        unsigned char control_flags = header[13] & 0x17U;
+        if (header_length < 20 || header_length > metadata->transport_length || control_flags != 0x02U) return -1;
+    } else {
+        if (metadata->transport_length < 8) return -1;
+        uint16_t datagram_length = read_be16(header + 4);
+        if (datagram_length < 8 || (size_t) datagram_length > metadata->transport_length) return -1;
+    }
+
+    *source_port = read_be16(header);
+    *destination_port = read_be16(header + 2);
+    return *source_port > 0 && *destination_port > 0 ? 0 : -1;
+}
+
+static int parse_dns_query(
+    const packet_metadata *metadata,
+    char *name,
+    size_t name_capacity,
+    uint16_t *query_type
+) {
+    const unsigned char *udp = metadata->transport_header;
+    uint16_t datagram_length = read_be16(udp + 4);
+    const unsigned char *dns = udp + 8;
+    size_t dns_length = (size_t) datagram_length - 8U;
+    if (dns_length < 17 || (read_be16(dns + 2) & 0xf800U) != 0 || read_be16(dns + 4) != 1) return -1;
+
+    size_t input_offset = 12;
+    size_t output_offset = 0;
+    while (1) {
+        if (input_offset >= dns_length) return -1;
+        unsigned int label_length = dns[input_offset++];
+        if (label_length == 0) break;
+        if (label_length > 63 || input_offset + label_length > dns_length) return -1;
+        if (output_offset > 0) {
+            if (output_offset + 1 >= name_capacity) return -1;
+            name[output_offset++] = '.';
+        }
+        if (output_offset + label_length >= name_capacity) return -1;
+
+        for (unsigned int index = 0; index < label_length; index++) {
+            unsigned char character = dns[input_offset + index];
+            if (!((character >= 'a' && character <= 'z')
+                || (character >= 'A' && character <= 'Z')
+                || (character >= '0' && character <= '9')
+                || character == '-'
+                || character == '_')) {
+                return -1;
+            }
+            if ((index == 0 || index + 1 == label_length) && character == '-') return -1;
+            name[output_offset++] = (char) tolower(character);
+        }
+        input_offset += label_length;
+    }
+
+    if (output_offset == 0 || input_offset + 4 > dns_length || read_be16(dns + input_offset + 2) != 1) return -1;
+    *query_type = read_be16(dns + input_offset);
+    if (*query_type == 0) return -1;
+    name[output_offset] = '\0';
+    return 0;
 }
 
 static int queue_callback(
@@ -112,36 +248,27 @@ static int queue_callback(
     uint32_t packet_id = ntohl(header->packet_id);
 
     unsigned char *packet = NULL;
-    int packet_length = nfq_get_payload(packet_data, &packet);
-    if (packet_length < 40 || !packet) {
-        return drop_packet(queue, packet_id);
-    }
+    int raw_packet_length = nfq_get_payload(packet_data, &packet);
+    if (raw_packet_length < 1 || !packet) return drop_packet(queue, packet_id);
 
+    size_t packet_length = (size_t) raw_packet_length;
+    packet_metadata metadata = {0};
     unsigned int version = packet[0] >> 4;
-    size_t ip_header_length = (size_t) (packet[0] & 0x0fU) * 4U;
-    uint16_t total_length = read_be16(packet + 2);
-    uint16_t fragment = read_be16(packet + 6);
-    if (version != 4 || ip_header_length < 20 || ip_header_length > (size_t) packet_length
-        || total_length < ip_header_length + 20 || (size_t) total_length > (size_t) packet_length
-        || packet[9] != IPPROTO_TCP
-        || (fragment & (IPV4_MORE_FRAGMENTS | IPV4_FRAGMENT_OFFSET_MASK)) != 0) {
+    int parsed = version == 4
+        ? parse_ipv4_packet(packet, packet_length, &metadata)
+        : version == 6
+            ? parse_ipv6_packet(packet, packet_length, &metadata)
+            : -1;
+    uint16_t source_port = 0;
+    uint16_t destination_port = 0;
+    if (parsed < 0 || parse_transport(&metadata, &source_port, &destination_port) < 0) {
         return drop_packet(queue, packet_id);
     }
 
-    const unsigned char *tcp = packet + ip_header_length;
-    size_t tcp_header_length = (size_t) (tcp[12] >> 4) * 4U;
-    unsigned char control_flags = tcp[13] & 0x17U;
-    uint16_t source_port = read_be16(tcp);
-    uint16_t destination_port = read_be16(tcp + 2);
-    if (tcp_header_length < 20 || ip_header_length + tcp_header_length > total_length
-        || control_flags != 0x02U || source_port == 0 || destination_port == 0) {
-        return drop_packet(queue, packet_id);
-    }
-
-    char source_address[INET_ADDRSTRLEN];
-    char destination_address[INET_ADDRSTRLEN];
-    if (!inet_ntop(AF_INET, packet + 12, source_address, sizeof(source_address))
-        || !inet_ntop(AF_INET, packet + 16, destination_address, sizeof(destination_address))) {
+    char dns_name[256] = {0};
+    uint16_t dns_type = 0;
+    int is_dns_query = strcmp(metadata.transport, "udp") == 0 && destination_port == 53;
+    if (is_dns_query && parse_dns_query(&metadata, dns_name, sizeof(dns_name), &dns_type) < 0) {
         return drop_packet(queue, packet_id);
     }
 
@@ -149,21 +276,39 @@ static int queue_callback(
         return protocol_failure(context, queue, packet_id, "event sequence exhausted");
     }
     uint64_t sequence = ++context->sequence;
-    if (fprintf(
+    int event_result = is_dns_query
+        ? fprintf(
             stdout,
-            PROTOCOL_PREFIX "\tEVENT\t%" PRIu64 "\tIPV4\t%s\t%u\t%s\t%u\n",
+            PROTOCOL_PREFIX "\tEVENT\t%" PRIu64 "\t%s\t%s\t%s\t%u\t%s\t%u\tDNS\t%s\t%u\n",
             sequence,
-            source_address,
+            metadata.family,
+            metadata.transport,
+            metadata.source_address,
             (unsigned int) source_port,
-            destination_address,
+            metadata.destination_address,
+            (unsigned int) destination_port,
+            dns_name,
+            (unsigned int) dns_type
+        )
+        : fprintf(
+            stdout,
+            PROTOCOL_PREFIX "\tEVENT\t%" PRIu64 "\t%s\t%s\t%s\t%u\t%s\t%u\n",
+            sequence,
+            metadata.family,
+            metadata.transport,
+            metadata.source_address,
+            (unsigned int) source_port,
+            metadata.destination_address,
             (unsigned int) destination_port
-        ) < 0
-        || fflush(stdout) != 0) {
+        );
+    if (event_result < 0 || fflush(stdout) != 0) {
         return protocol_failure(context, queue, packet_id, "failed to send policy event");
     }
 
     uint32_t mark = 0;
-    if (read_verdict(sequence, &mark) < 0) {
+    uint32_t allow_mark = is_dns_query ? DNS_ALLOW_PACKET_MARK : ALLOW_PACKET_MARK;
+    uint32_t deny_mark = is_dns_query ? DNS_DENY_PACKET_MARK : DENY_PACKET_MARK;
+    if (read_verdict(sequence, allow_mark, deny_mark, &mark) < 0) {
         return protocol_failure(context, queue, packet_id, "invalid or closed verdict stream");
     }
 
@@ -187,8 +332,8 @@ int main(void) {
         report_nfq_error("nfq_open failed");
         return EXIT_FAILURE;
     }
-    if (nfq_bind_pf(handle, AF_INET) < 0) {
-        report_nfq_error("nfq_bind_pf(AF_INET) failed");
+    if (nfq_bind_pf(handle, AF_INET) < 0 || nfq_bind_pf(handle, AF_INET6) < 0) {
+        report_nfq_error("failed to bind IPv4 and IPv6 network queue families");
         nfq_close(handle);
         return EXIT_FAILURE;
     }

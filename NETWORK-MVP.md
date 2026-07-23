@@ -2,9 +2,13 @@
 
 ## Status
 
-Design draft and target contract. An initial standalone TCP vertical slice is implemented as `bash-network`, but the complete specification is not implemented yet.
+Design draft and target contract. An initial standalone TCP/UDP transport vertical slice is implemented as `bash-network`, but the complete specification is not implemented yet.
 
-The current slice demonstrates a private outer user/network namespace, a same-UID capability-free Bubblewrap worker, deny-before-host-effect IPv4 TCP interception through nftables and NFQUEUE, packet/conntrack-bound approval, descendant mediation, and userspace transport through `slirp4netns`. A pending conntrack mark suppresses retransmissions while the original SYN is held; source-port reuse creates a separate decision. The slice does not yet provide DNS, UDP, externally routed IPv6, active-flow revocation, or integration with the root-wide FUSE worker.
+The current slice demonstrates a private outer user/network namespace, a same-UID capability-free Bubblewrap worker, and deny-before-host-effect IPv4/IPv6 TCP and UDP interception through nftables and NFQUEUE. It provides packet/conntrack-bound approval, descendant mediation, and userspace transport through `slirp4netns`. A pending conntrack mark suppresses TCP retransmissions and additional ordinary UDP datagrams while the first packet is held; separate flows receive separate kernel verdicts.
+
+Worker-only resolver and NSS files route ordinary hostname clients through a trusted host-side DNS proxy. Approved UDP queries are forwarded to the host resolver. Validated answer-section A and AAAA records receive bounded, worker-scoped synthetic leases, and nftables DNAT maps those synthetic destinations to the selected real addresses only after lease installation. Subsequent flows are authoritatively attributed to the requested hostname rather than inferred from a potentially shared real IP. Distinct hostnames sharing one real address receive distinct leases; unknown and expired synthetic destinations fail closed. Direct DNS to another resolver and TCP DNS fallback fail closed in this slice.
+
+A policy projector is deliberately separate from those detailed events and verdicts. Session-owned in-memory runtime configuration can collapse or distinguish DNS/TCP/UDP operations and actual IPv4/IPv6 flow families. With both dimensions collapsed, a hostname-resolution approval covers that exact hostname across operations, families, and ports for the current tool call; literal-IP policy begins at an exact address and port. Literal 127/8 and `::1` flows are mediated and normalize to one `localhost` target unless family distinction is enabled. That loopback belongs to the worker network namespace and does not transparently expose host-loopback services. The slice does not yet provide a persistent network policy store, revoke active flows, normalize IPv4-mapped IPv6, support IPv6 extension headers, proxy TCP DNS, or integrate with the root-wide FUSE worker.
 
 The completed design applies to the `bash-fuse` architecture: a root-wide FUSE filesystem inside a Bubblewrap worker.
 
@@ -163,6 +167,8 @@ This design does not use seccomp user notification as its network data plane.
 ## Policy model
 
 The network broker uses a mutable `NetworkPolicyStore` with a monotonically increasing revision.
+
+The raw enforcement event and the user-facing approval are separate concepts. Every raw DNS query and TCP or UDP flow receives its own kernel verdict and audit event. `NetworkPolicyProjector` maps an attributed event onto a reusable approval scope according to two immutable, session-owned runtime dimensions: whether to distinguish DNS/TCP/UDP operations and whether to distinguish actual IPv4/IPv6 flow families. DNS resolver transport family is never a policy family. A DNS event has host scope because it cannot reveal a later service port; in fully collapsed mode the UI must state explicitly that this grants all operations, address families, and destination ports for that hostname during the selected lifetime. A literal flow starts with exact address-and-port scope.
 
 A rule may match:
 
@@ -471,9 +477,9 @@ The tool must continue streaming ordinary stdout and stderr while policy events 
 
 ### Stage 3: brokered DNS identity
 
-- Add the broker resolver and synthetic address leases.
-- Add canonical hostname rules and DNS event logging.
-- Bind TCP target identity to synthetic leases.
+- Implemented for uncompressed single-question class-IN UDP queries and answer-section A/AAAA/CNAME handling through the standalone `bash-network` worker.
+- The broker returns bounded synthetic address leases and binds TCP or UDP target identity to those leases before policy projection.
+- Remaining work includes TCP fallback, broader DNS protocol coverage, persistent canonical hostname rules, revocation, and integration with the production FUSE worker.
 
 ### Stage 4: UDP
 

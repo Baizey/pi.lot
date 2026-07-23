@@ -10,10 +10,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import pilotExtension, {PilotExtension} from "../src/extension.js";
 import {PathPolicyRuntime} from "../src/policy/path/PathPolicyRuntime.js";
+import {PilotRuntimeConfig} from "../src/runtime/PilotRuntimeConfig.js";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 import {ToolDisplayController} from "../src/tui/tool/ToolDisplayController.js";
 
-const experimentToolNames = ["bash-fuse", "bash-network"];
+const expectedToolNames = ["bash", "read", "edit", "write", "bash-network"];
 
 type SessionStartHandler = (event: SessionStartEvent, ctx: ExtensionContext) => void | Promise<void>;
 type SessionShutdownHandler = (event: SessionShutdownEvent, ctx: ExtensionContext) => void | Promise<void>;
@@ -78,13 +79,35 @@ type ExtensionHarness = {
     sessionShutdown: () => SessionShutdownHandler;
 };
 
+test("session runtime config owns network policy granularity", () => {
+    assert.deepEqual(new PilotRuntimeConfig().networkPolicyGranularity, {
+        distinguishOperation: false,
+        distinguishAddressFamily: false,
+    });
+    assert.deepEqual(new PilotRuntimeConfig({
+        networkPolicyGranularity: {
+            distinguishOperation: true,
+            distinguishAddressFamily: true,
+        },
+    }).networkPolicyGranularity, {
+        distinguishOperation: true,
+        distinguishAddressFamily: true,
+    });
+    assert.throws(
+        () => new PilotRuntimeConfig({
+            networkPolicyGranularity: {distinguishOperation: "yes" as unknown as boolean},
+        }),
+        /must be a boolean/,
+    );
+});
+
 test("the production extension installs built-in overrides immediately but defers session resources", async () => {
     const harness = extensionHarness();
     const ctx = {cwd: process.cwd()} as ExtensionContext;
 
     pilotExtension(harness.pi);
 
-    assert.deepEqual(harness.registeredToolNames, ["bash", "read", "edit", "write"]);
+    assert.deepEqual(harness.registeredToolNames, expectedToolNames);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
     const commandParameter = bashTool.parameters.properties.command;
@@ -100,6 +123,16 @@ test("the production extension installs built-in overrides immediately but defer
         bashTool.execute(
             "before-start",
             {command: "true", purpose: "Verify that Bash fails closed before session startup"},
+            undefined,
+            undefined,
+            ctx,
+        ),
+        /session runtime is not available/,
+    );
+    await assert.rejects(
+        registeredTool(harness, "bash-network").execute(
+            "network-before-start",
+            {command: "true", purpose: "Verify network runtime ownership"},
             undefined,
             undefined,
             ctx,
@@ -133,6 +166,7 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
         createSessionRuntime(runtimeContext) {
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
+                config: new PilotRuntimeConfig(),
                 pathPolicy: new PathPolicyRuntime({
                     loadPolicies: () => [],
                     replacePolicies: () => {},
@@ -197,6 +231,7 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
     new PilotExtension(harness.pi, {
         createSessionRuntime(runtimeContext) {
             return {
+                config: new PilotRuntimeConfig(),
                 pathPolicy: new PathPolicyRuntime({
                     loadPolicies: () => [],
                     replacePolicies: () => {},
@@ -341,6 +376,7 @@ test("one session runtime owns the production tool overrides until session shutd
             });
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
+                config: new PilotRuntimeConfig(),
                 pathPolicy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay,
@@ -359,8 +395,8 @@ test("one session runtime owns the production tool overrides until session shutd
         /session runtime is already started/,
     );
     assert.equal(runtimeCreations, 1);
-    assert.deepEqual(harness.registeredToolNames, ["bash", "read", "edit", "write"]);
-    assert.equal(harness.registeredToolNames.some((name) => experimentToolNames.includes(name)), false);
+    assert.deepEqual(harness.registeredToolNames, expectedToolNames);
+    assert.equal(harness.registeredToolNames.includes("bash-fuse"), false);
 
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);

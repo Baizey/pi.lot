@@ -1,8 +1,8 @@
 import type {BashOperations, ExtensionAPI} from "@earendil-works/pi-coding-agent";
 import {createBashTool, createBashToolDefinition} from "@earendil-works/pi-coding-agent";
-import {HOST_FILESYSTEM_ROOT, runFuseSandboxedCommand} from "../../fuse/fuse-runner.js";
-import {FuseDecision} from "../../fuse/FuseFilesystem.js";
-import {FusePathPolicyAuthorizer} from "../../fuse/FusePathPolicyAuthorizer.js";
+import {HOST_FILESYSTEM_ROOT, runFuseSandboxedCommand} from "../../policy/path/fuse/fuse-runner.js";
+import {FuseDecision} from "../../policy/path/fuse/FuseFilesystem.js";
+import {FusePathPolicyAuthorizer} from "../../policy/path/fuse/FusePathPolicyAuthorizer.js";
 import type {PathPolicyToolCall} from "../../policy/path/PathPolicyRuntime.js";
 import type {PilotSessionRuntimeHandle} from "../../runtime/PilotSessionRuntime.js";
 import type {UiDecisionFlowManager} from "../../tui/UiDecisionFlowManager.js";

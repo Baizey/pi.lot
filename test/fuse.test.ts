@@ -18,14 +18,14 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {getAttribute, setAttribute} from "fs-xattr";
-import {runFuseSandboxedCommand} from "../src/fuse/fuse-runner.js";
+import {runFuseSandboxedCommand} from "../src/policy/path/fuse/fuse-runner.js";
 import {
     FuseAccessType,
     FuseDecision,
     FuseFilesystem,
     FuseOperation,
-} from "../src/fuse/FuseFilesystem.js";
-import type {FusePolicyEvent} from "../src/fuse/FuseFilesystem.js";
+} from "../src/policy/path/fuse/FuseFilesystem.js";
+import type {FusePolicyEvent} from "../src/policy/path/fuse/FuseFilesystem.js";
 
 test("the FUSE worker mediates the host root while preserving paths outside its cwd", async () => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-fuse-test-"));

@@ -4,12 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {FusePathPolicyAuthorizer} from "../src/fuse/FusePathPolicyAuthorizer.js";
+import {FusePathPolicyAuthorizer} from "../src/policy/path/fuse/FusePathPolicyAuthorizer.js";
 import {
     FuseAccessType,
     FuseDecision,
     FuseOperation,
-} from "../src/fuse/FuseFilesystem.js";
+} from "../src/policy/path/fuse/FuseFilesystem.js";
 import {PathPolicyLogic} from "../src/policy/path/PathPolicyLogic.js";
 import {PathPolicyRuntime} from "../src/policy/path/PathPolicyRuntime.js";
 import {FsAccessType} from "../src/policy/path/types.js";

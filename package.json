@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run clean && npm run build:native && npm run typecheck",
     "install": "npm run build:native",
-    "test:runtime": "node --import jiti/register --test ./test/experiment.test.ts ./test/extension.test.ts ./test/fuse.test.ts ./test/network.test.ts ./test/path-policy.test.ts ./test/terminal-text.test.ts ./test/tool-rendering.test.ts",
+    "test:network": "npm run build:native && node --import jiti/register --test ./test/experiment.test.ts ./test/network-policy.test.ts ./test/network.test.ts",
+    "test:runtime": "node --import jiti/register --test ./test/experiment.test.ts ./test/extension.test.ts ./test/fuse.test.ts ./test/network-policy.test.ts ./test/network.test.ts ./test/path-policy.test.ts ./test/terminal-text.test.ts ./test/tool-rendering.test.ts",
     "test": "npm run build && npm run test:runtime"
   },
   "keywords": [],

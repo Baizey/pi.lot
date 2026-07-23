@@ -1,26 +1,61 @@
 import {spawn} from "node:child_process";
 import type {ChildProcess} from "node:child_process";
 import {existsSync} from "node:fs";
-import {realpath} from "node:fs/promises";
+import {mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
+import {isIP} from "node:net";
+import path from "node:path";
 import {createInterface} from "node:readline";
 import type {Readable, Writable} from "node:stream";
 import {fileURLToPath} from "node:url";
 import {
   formatNetworkQueueVerdict,
+  NetworkAddressFamily,
   NetworkDecision,
+  NetworkOperation,
   parseNetworkQueueMessage,
-} from "./network-queue-protocol";
-import type {NetworkPolicyEvent} from "./network-queue-protocol";
+} from "./network-queue-protocol.js";
+import type {NetworkQueueEvent} from "./network-queue-protocol.js";
+import {
+  NetworkTargetKind,
+} from "./NetworkPolicy.js";
+import type {NetworkPolicyEvent} from "./NetworkPolicy.js";
+import {
+  SyntheticDnsLeaseTable,
+  SyntheticDnsProxy,
+} from "./SyntheticDnsProxy.js";
+import type {SyntheticDnsLease} from "./SyntheticDnsProxy.js";
 
 export {
   NetworkAddressFamily,
   NetworkDecision,
   NetworkOperation,
   parseNetworkQueueMessage,
-} from "./network-queue-protocol";
-export type {NetworkEndpoint, NetworkPolicyEvent, NetworkQueueMessage} from "./network-queue-protocol";
+} from "./network-queue-protocol.js";
+export {
+  DEFAULT_NETWORK_POLICY_GRANULARITY,
+  NetworkDecisionCoordinator,
+  NetworkPolicyProjector,
+  NetworkTargetKind,
+} from "./NetworkPolicy.js";
+export type {
+  NetworkEndpoint,
+  NetworkQueueEvent,
+  NetworkQueueMessage,
+  NetworkTransport,
+} from "./network-queue-protocol.js";
+export type {
+  NetworkHostnameFlowTarget,
+  NetworkHostnameResolutionTarget,
+  NetworkIpTarget,
+  NetworkLocalhostTarget,
+  NetworkPolicyEvent,
+  NetworkPolicyGranularity,
+  NetworkPolicyScope,
+  NetworkPolicyTarget,
+} from "./NetworkPolicy.js";
 
 const BWRAP_PATH = "/usr/bin/bwrap";
+const IP_PATH = "/usr/bin/ip";
 const NFT_PATH = "/usr/sbin/nft";
 const NSENTER_PATH = "/usr/bin/nsenter";
 const SLIRP4NETNS_PATH = "/usr/bin/slirp4netns";
@@ -29,11 +64,14 @@ const UNSHARE_PATH = "/usr/bin/unshare";
 const ALLOW_MARK = "0x50490001";
 const DENY_MARK = "0x50490002";
 const PENDING_MARK = "0x50490003";
+const DNS_ALLOW_MARK = "0x50490004";
+const DNS_DENY_MARK = "0x50490005";
 
 export type NetworkRunOptions = {
   command: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  dnsUpstream?: {address: string; port: number};
   signal?: AbortSignal;
   timeoutSeconds?: number;
   onStdout?: (data: Buffer) => void;
@@ -65,6 +103,7 @@ class NetworkSandboxRunner {
 
   private outerProcess: ChildProcess | undefined;
   private outerExit: Promise<NetworkRunResult> | undefined;
+  private outerStderr = "";
   private releaseWorker: Writable | undefined;
   private queueHelper: ChildProcess | undefined;
   private queueInput: Writable | undefined;
@@ -72,6 +111,8 @@ class NetworkSandboxRunner {
   private queueReady = false;
   private pendingEvent = false;
   private lastSequence = 0;
+  private readonly dnsLeases: SyntheticDnsLeaseTable;
+  private dnsProxy: SyntheticDnsProxy | undefined;
   private slirp: ChildProcess | undefined;
   private slirpExit: Writable | undefined;
   private fatalError: unknown;
@@ -80,9 +121,17 @@ class NetworkSandboxRunner {
   private timedOut = false;
   private timeout: NodeJS.Timeout | undefined;
   private onAbort: (() => void) | undefined;
+  private temporaryDirectory: string | undefined;
+  private resolverFile: string | undefined;
+  private resolverDestination: string | undefined;
+  private nsswitchFile: string | undefined;
+  private nsswitchDestination: string | undefined;
 
   constructor(options: NetworkRunOptions) {
     this.options = options;
+    this.dnsLeases = new SyntheticDnsLeaseTable({
+      install: (lease) => this.installSyntheticLease(lease),
+    });
   }
 
   async run(): Promise<NetworkRunResult> {
@@ -90,17 +139,20 @@ class NetworkSandboxRunner {
     if (this.options.signal?.aborted) throw new Error("aborted");
 
     const cwd = await realpath(this.options.cwd);
-    this.startOuterProcess(cwd);
-    this.installCancellation();
-
     try {
+      await this.prepareRuntimeFiles();
+      this.startOuterProcess(cwd);
+      this.installCancellation();
       await this.waitForBubblewrapStatus();
-      await this.runNft(baseRuleset());
+      await this.completeSetupStep(this.runNft(baseRuleset(this.dnsProxyPort())), "nftables setup");
       await this.startQueueHelper();
       await this.startSlirp();
+      await this.waitForIpv6Ready();
       this.unblockWorker();
 
-      const result = await this.outerExit!;
+      const outerExit = this.outerExit;
+      if (!outerExit) throw new Error("network sandbox exit monitor is unavailable");
+      const result = await outerExit;
       if (this.aborted || this.options.signal?.aborted) throw new Error("aborted");
       if (this.timedOut) throw new Error(`timeout:${this.options.timeoutSeconds}`);
       if (this.fatalError) throw this.fatalError;
@@ -120,9 +172,55 @@ class NetworkSandboxRunner {
     }
   }
 
+  private async prepareRuntimeFiles(): Promise<void> {
+    const temporaryDirectory = await mkdtemp(path.join("/var/tmp", "pilot-network-"));
+    this.temporaryDirectory = temporaryDirectory;
+    this.resolverFile = path.join(temporaryDirectory, "resolv.conf");
+    this.nsswitchFile = path.join(temporaryDirectory, "nsswitch.conf");
+    const [hostNsswitch, hostResolver, resolverDestination, nsswitchDestination] = await Promise.all([
+      readFile("/etc/nsswitch.conf", "utf8"),
+      readFile("/etc/resolv.conf", "utf8"),
+      realpath("/etc/resolv.conf"),
+      realpath("/etc/nsswitch.conf"),
+    ]);
+    this.resolverDestination = resolverDestination;
+    this.nsswitchDestination = nsswitchDestination;
+    const hostsEntry = /^\s*hosts\s*:.*$/m;
+    const workerNsswitch = hostsEntry.test(hostNsswitch)
+      ? hostNsswitch.replace(hostsEntry, "hosts:      files myhostname dns")
+      : `${hostNsswitch.trimEnd()}\nhosts:      files myhostname dns\n`;
+    await Promise.all([
+      writeFile(
+        this.resolverFile,
+        "nameserver 10.0.2.3\nnameserver fd00::3\noptions edns0\n",
+        {mode: 0o400},
+      ),
+      writeFile(this.nsswitchFile, workerNsswitch, {mode: 0o400}),
+    ]);
+
+    this.dnsProxy = new SyntheticDnsProxy({
+      upstreamAddress: this.options.dnsUpstream?.address ?? parseUpstreamDnsAddress(hostResolver),
+      upstreamPort: this.options.dnsUpstream?.port,
+      leases: this.dnsLeases,
+      onError: (error) => this.reportDecisionError(error),
+      onFatalError: (error) => this.fail(error),
+    });
+    await this.dnsProxy.start();
+  }
+
   private startOuterProcess(cwd: string): void {
+    if (
+      !this.resolverFile
+      || !this.resolverDestination
+      || !this.nsswitchFile
+      || !this.nsswitchDestination
+    ) {
+      throw new Error("network sandbox resolver configuration is not available");
+    }
     const bwrapArguments = [
       "--bind", "/", "/",
+      "--ro-bind", this.resolverFile, this.resolverDestination,
+      "--ro-bind", this.nsswitchFile, this.nsswitchDestination,
       "--dev-bind", "/dev", "/dev",
       "--cap-drop", "ALL",
       "--die-with-parent",
@@ -148,7 +246,10 @@ class NetworkSandboxRunner {
     this.outerProcess = child;
     this.releaseWorker = child.stdio[4] as Writable;
     child.stdout?.on("data", (data: Buffer) => this.options.onStdout?.(data));
-    child.stderr?.on("data", (data: Buffer) => this.options.onStderr?.(data));
+    child.stderr?.on("data", (data: Buffer) => {
+      this.outerStderr += data.toString();
+      this.options.onStderr?.(data);
+    });
     this.outerExit = waitForChild(child);
   }
 
@@ -164,6 +265,19 @@ class NetworkSandboxRunner {
     ]);
     if (!isBubblewrapStatus(status)) throw new Error("bubblewrap returned invalid namespace status");
     return status;
+  }
+
+  private async completeSetupStep<T>(step: Promise<T>, description: string): Promise<T> {
+    if (!this.outerExit) throw new Error("network sandbox exit monitor is unavailable");
+    return Promise.race([
+      step,
+      this.outerExit.then((result) => {
+        const detail = this.outerStderr.trim();
+        throw new Error(
+          `network sandbox exited during ${description}: ${formatExit(result)}${detail ? `: ${detail}` : ""}`,
+        );
+      }),
+    ]);
   }
 
   private async startQueueHelper(): Promise<void> {
@@ -223,6 +337,8 @@ class NetworkSandboxRunner {
   private async startSlirp(): Promise<void> {
     const child = spawn(SLIRP4NETNS_PATH, [
       "--configure",
+      "--enable-ipv6",
+      "--disable-dns",
       "--ready-fd=3",
       "--exit-fd=4",
       String(this.outerPid()),
@@ -259,7 +375,7 @@ class NetworkSandboxRunner {
     this.releaseWorker = undefined;
   }
 
-  private onQueueEvent(event: NetworkPolicyEvent): void {
+  private onQueueEvent(event: NetworkQueueEvent): void {
     if (this.pendingEvent) {
       this.fail(new Error("network queue helper sent concurrent policy events"));
       return;
@@ -282,32 +398,112 @@ class NetworkSandboxRunner {
     );
   }
 
-  private async resolveAttempt(event: NetworkPolicyEvent): Promise<void> {
+  private async resolveAttempt(queueEvent: NetworkQueueEvent): Promise<void> {
     let decision = NetworkDecision.DENY;
     try {
+      const event = this.attributePolicyEvent(queueEvent);
       const requested = await this.options.decide(event, this.decisionAbort.signal);
       if (requested !== NetworkDecision.ALLOW && requested !== NetworkDecision.DENY) {
         throw new Error(`invalid network decision: ${String(requested)}`);
       }
       decision = requested;
     } catch (error) {
-      try {
-        this.options.onDecisionError?.(error);
-      } catch {
-        // Error reporting must not turn a denied flow into an allowed one.
-      }
+      this.reportDecisionError(error);
     }
 
     if (this.stopping || this.decisionAbort.signal.aborted) return;
     if (!this.queueInput) throw new Error("network queue helper verdict stream is unavailable");
-    await writeToStream(this.queueInput, formatNetworkQueueVerdict(event.sequence, decision));
+    await writeToStream(this.queueInput, formatNetworkQueueVerdict(queueEvent.sequence, decision));
+  }
+
+  private attributePolicyEvent(event: NetworkQueueEvent): NetworkPolicyEvent {
+    if (event.operation === NetworkOperation.DNS_QUERY) {
+      const expectedResolver = event.family === NetworkAddressFamily.IPV4 ? "10.0.2.3" : "fd00::3";
+      if (event.destination.address !== expectedResolver) {
+        throw new Error(`direct DNS to an untrusted resolver is denied: ${event.destination.address}`);
+      }
+      return {
+        ...event,
+        target: {kind: NetworkTargetKind.HOSTNAME, hostname: event.dns.name},
+      };
+    }
+
+    const lease = this.dnsLeases.lookup(event.destination.address);
+    if (lease) {
+      if (lease.family !== event.family) throw new Error("synthetic DNS lease family mismatch");
+      return {
+        ...event,
+        target: {
+          kind: NetworkTargetKind.HOSTNAME,
+          hostname: lease.hostname,
+          port: event.destination.port,
+          address: lease.realAddress,
+          syntheticAddress: lease.syntheticAddress,
+        },
+      };
+    }
+    if (this.dnsLeases.isSyntheticAddress(event.destination.address)) {
+      throw new Error(`expired or unknown synthetic DNS lease: ${event.destination.address}`);
+    }
+    return {
+      ...event,
+      target: {
+        kind: isLoopbackAddress(event.destination.address)
+          ? NetworkTargetKind.LOCALHOST
+          : NetworkTargetKind.IP,
+        address: event.destination.address,
+        port: event.destination.port,
+      },
+    };
+  }
+
+  private reportDecisionError(error: unknown): void {
+    try {
+      this.options.onDecisionError?.(error);
+    } catch {
+      // Error reporting must not turn a denied flow into an allowed one.
+    }
+  }
+
+  private async waitForIpv6Ready(): Promise<void> {
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const addresses = await this.runNamespaceCommand(
+        IP_PATH,
+        ["-6", "-o", "address", "show", "dev", "tap0", "scope", "global"],
+        "IPv6 readiness check",
+      );
+      if (addresses.includes(" inet6 fd00:")) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("slirp4netns did not configure IPv6 before the worker startup deadline");
+  }
+
+  private async installSyntheticLease(lease: SyntheticDnsLease): Promise<void> {
+    const rule = lease.family === NetworkAddressFamily.IPV4
+      ? `add rule inet pi_network destination_nat ip daddr ${lease.syntheticAddress} dnat ip to ${lease.realAddress}\n`
+      : `add rule inet pi_network destination_nat ip6 daddr ${lease.syntheticAddress} dnat ip6 to ${lease.realAddress}\n`;
+    await this.runNft(rule);
+  }
+
+  private dnsProxyPort(): number {
+    if (!this.dnsProxy) throw new Error("synthetic DNS proxy is unavailable");
+    return this.dnsProxy.port;
   }
 
   private async runNft(input: string): Promise<void> {
+    await this.runNamespaceCommand(NFT_PATH, ["-f", "-"], "nftables configuration", input);
+  }
+
+  private async runNamespaceCommand(
+    executable: string,
+    arguments_: string[],
+    description: string,
+    input?: string,
+  ): Promise<string> {
     const child = spawn(NSENTER_PATH, [
       ...namespaceArguments(this.outerPid()),
-      NFT_PATH,
-      "-f", "-",
+      executable,
+      ...arguments_,
     ], {stdio: ["pipe", "pipe", "pipe"]});
 
     let stdout = "";
@@ -322,9 +518,16 @@ class NetworkSandboxRunner {
 
     const result = await waitForChild(child);
     if (result.exitCode !== 0 || result.signal) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
       const detail = stderr.trim() || stdout.trim();
-      throw new Error(`nftables command failed: ${formatExit(result)}${detail ? `: ${detail}` : ""}`);
+      const outerDetail = this.outerStderr.trim();
+      throw new Error(
+        `${description} failed: ${formatExit(result)}`
+        + `${detail ? `: ${detail}` : ""}`
+        + `${outerDetail ? `; worker: ${outerDetail}` : ""}`,
+      );
     }
+    return stdout;
   }
 
   private installCancellation(): void {
@@ -334,6 +537,7 @@ class NetworkSandboxRunner {
       this.terminate();
     };
     this.options.signal?.addEventListener("abort", this.onAbort, {once: true});
+    if (this.options.signal?.aborted) this.onAbort();
 
     if (this.options.timeoutSeconds !== undefined) {
       this.timeout = setTimeout(() => {
@@ -382,7 +586,16 @@ class NetworkSandboxRunner {
       settleChild(this.queueHelper),
       settleChild(this.slirp),
       this.outerExit,
+      this.dnsProxy?.close(),
     ]);
+    this.dnsProxy = undefined;
+    const temporaryDirectory = this.temporaryDirectory;
+    this.temporaryDirectory = undefined;
+    this.resolverFile = undefined;
+    this.resolverDestination = undefined;
+    this.nsswitchFile = undefined;
+    this.nsswitchDestination = undefined;
+    if (temporaryDirectory) await rm(temporaryDirectory, {recursive: true, force: true});
   }
 
   private outerPid(): number {
@@ -390,6 +603,20 @@ class NetworkSandboxRunner {
     if (!pid) throw new Error("network namespace process has no pid");
     return pid;
   }
+}
+
+function isLoopbackAddress(address: string): boolean {
+  if (address === "::1") return true;
+  if (isIP(address) !== 4) return false;
+  return address.split(".", 1)[0] === "127";
+}
+
+function parseUpstreamDnsAddress(resolverConfiguration: string): string {
+  for (const line of resolverConfiguration.split("\n")) {
+    const match = /^\s*nameserver\s+(\S+)/.exec(line);
+    if (match?.[1] && isIP(match[1]) !== 0) return match[1];
+  }
+  throw new Error("host resolver configuration contains no supported nameserver");
 }
 
 function resolveNetworkQueueAdapter(): string {
@@ -410,17 +637,48 @@ function namespaceArguments(pid: number): string[] {
   ];
 }
 
-function baseRuleset(): string {
+function baseRuleset(dnsProxyPort: number): string {
+  if (!Number.isSafeInteger(dnsProxyPort) || dnsProxyPort < 1 || dnsProxyPort > 65_535) {
+    throw new Error("synthetic DNS proxy returned an invalid port");
+  }
   return `table inet pi_network {
   chain output {
-    type filter hook output priority 0; policy drop;
-    oifname "lo" accept
+    type filter hook output priority -150; policy drop;
+    oifname "lo" meta mark ${ALLOW_MARK} ct mark set ${ALLOW_MARK} accept
+    oifname "lo" meta mark ${DENY_MARK} ct mark set ${DENY_MARK}
+    oifname "lo" ct mark ${ALLOW_MARK} accept
+    oifname "lo" ct mark ${DENY_MARK} meta l4proto tcp tcp flags & (fin | syn | rst | ack) == syn reject with tcp reset
+    oifname "lo" ct mark ${DENY_MARK} meta l4proto udp reject
+    oifname "lo" ct mark ${PENDING_MARK} drop
+    oifname "lo" meta l4proto udp udp dport 53 reject
+    oifname "lo" meta l4proto tcp tcp dport 53 reject with tcp reset
+    oifname "lo" ct mark 0x0 meta l4proto tcp tcp flags & (fin | syn | rst | ack) == syn ct mark set ${PENDING_MARK} queue num 0
+    oifname "lo" ct mark 0x0 meta l4proto udp ct mark set ${PENDING_MARK} queue num 0
+    oifname "lo" meta l4proto tcp tcp flags & rst == rst accept
+    oifname "lo" ct state related meta l4proto { icmp, ipv6-icmp } accept
+    ip6 hoplimit 255 icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+    meta mark ${DNS_ALLOW_MARK} accept
+    meta mark ${DNS_DENY_MARK} meta l4proto udp reject
     meta mark ${ALLOW_MARK} ct mark set ${ALLOW_MARK} accept
-    meta mark ${DENY_MARK} ct mark set ${DENY_MARK} reject with tcp reset
+    meta mark ${DENY_MARK} ct mark set ${DENY_MARK}
     ct mark ${ALLOW_MARK} accept
-    ct mark ${DENY_MARK} reject with tcp reset
+    ct mark ${DENY_MARK} meta l4proto tcp reject with tcp reset
+    ct mark ${DENY_MARK} meta l4proto udp reject
     ct mark ${PENDING_MARK} drop
-    ct mark 0x0 ip protocol tcp tcp flags & (fin | syn | rst | ack) == syn ct mark set ${PENDING_MARK} queue num 0
+    ct mark 0x0 ip daddr 10.0.2.3 udp dport 53 queue num 0
+    ct mark 0x0 ip6 daddr fd00::3 udp dport 53 queue num 0
+    meta l4proto udp udp dport 53 reject
+    meta l4proto tcp tcp dport 53 reject with tcp reset
+    ip daddr 10.0.2.2 udp dport ${dnsProxyPort} reject
+    ip6 daddr fd00::2 udp dport ${dnsProxyPort} reject
+    ct mark 0x0 meta l4proto tcp tcp flags & (fin | syn | rst | ack) == syn ct mark set ${PENDING_MARK} queue num 0
+    ct mark 0x0 meta l4proto udp ct mark set ${PENDING_MARK} queue num 0
+  }
+
+  chain destination_nat {
+    type nat hook output priority dstnat; policy accept;
+    ip daddr 10.0.2.3 udp dport 53 dnat ip to 10.0.2.2:${dnsProxyPort}
+    ip6 daddr fd00::3 udp dport 53 dnat ip6 to [fd00::2]:${dnsProxyPort}
   }
 }
 `;

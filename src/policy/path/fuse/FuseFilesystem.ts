@@ -13,7 +13,7 @@ import {
     FuseInvalidArgumentError,
     FusePathError,
     FusePolicyError,
-} from "./fuse-errors";
+} from "./fuse-errors.js";
 import {mknod} from "./mknod.js";
 
 const FUSE_UNCHANGED_OWNER_ID = 0xffffffff;

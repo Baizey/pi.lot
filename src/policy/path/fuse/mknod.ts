@@ -2,7 +2,7 @@ import {spawn} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import {FuseErrnoError} from "./fuse-errors.js";
 
-const MKNOD_HELPER = fileURLToPath(new URL("../../build/pi-mknod-native", import.meta.url));
+const MKNOD_HELPER = fileURLToPath(new URL("../../../../build/pi-mknod-native", import.meta.url));
 
 export async function mknod(hostPath: string, mode: number, device: number): Promise<void> {
     await new Promise<void>((resolve, reject) => {

@@ -1,0 +1,56 @@
+import type {ThemeColor as PiThemeColor} from "@earendil-works/pi-coding-agent";
+
+/** Runtime counterpart to Pi's ThemeColor string union. */
+export enum ThemeColor {
+    accent = "accent",
+    border = "border",
+    borderAccent = "borderAccent",
+    borderMuted = "borderMuted",
+    success = "success",
+    error = "error",
+    warning = "warning",
+    muted = "muted",
+    dim = "dim",
+    text = "text",
+    thinkingText = "thinkingText",
+    userMessageText = "userMessageText",
+    customMessageText = "customMessageText",
+    customMessageLabel = "customMessageLabel",
+    toolTitle = "toolTitle",
+    toolOutput = "toolOutput",
+    mdHeading = "mdHeading",
+    mdLink = "mdLink",
+    mdLinkUrl = "mdLinkUrl",
+    mdCode = "mdCode",
+    mdCodeBlock = "mdCodeBlock",
+    mdCodeBlockBorder = "mdCodeBlockBorder",
+    mdQuote = "mdQuote",
+    mdQuoteBorder = "mdQuoteBorder",
+    mdHr = "mdHr",
+    mdListBullet = "mdListBullet",
+    toolDiffAdded = "toolDiffAdded",
+    toolDiffRemoved = "toolDiffRemoved",
+    toolDiffContext = "toolDiffContext",
+    syntaxComment = "syntaxComment",
+    syntaxKeyword = "syntaxKeyword",
+    syntaxFunction = "syntaxFunction",
+    syntaxVariable = "syntaxVariable",
+    syntaxString = "syntaxString",
+    syntaxNumber = "syntaxNumber",
+    syntaxType = "syntaxType",
+    syntaxOperator = "syntaxOperator",
+    syntaxPunctuation = "syntaxPunctuation",
+    thinkingOff = "thinkingOff",
+    thinkingMinimal = "thinkingMinimal",
+    thinkingLow = "thinkingLow",
+    thinkingMedium = "thinkingMedium",
+    thinkingHigh = "thinkingHigh",
+    thinkingXhigh = "thinkingXhigh",
+    thinkingMax = "thinkingMax",
+    bashMode = "bashMode",
+}
+
+type AssertNever<T extends never> = T;
+type ThemeColorValue = `${ThemeColor}`;
+type MissingThemeColor = AssertNever<Exclude<PiThemeColor, ThemeColorValue>>;
+type UnsupportedThemeColor = AssertNever<Exclude<ThemeColorValue, PiThemeColor>>;

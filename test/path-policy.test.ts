@@ -290,6 +290,7 @@ test("FUSE path approval uses the decision flow manager and records session poli
     const authorizer = new FusePathPolicyAuthorizer({
         backingRoot: "/",
         command: "printf allowed > allowed.txt",
+        purpose: "Create the allowed test file",
         decisionFlows: new UiDecisionFlowManager(ctx),
         signal: controller.signal,
         policy: runtime.beginToolCall(),
@@ -306,6 +307,7 @@ test("FUSE path approval uses the decision flow manager and records session poli
         assert.equal(decision, FuseDecision.ALLOW);
         assert.equal(promptTitles.length, 3);
         assert.equal(promptTitles.every((title) => title.includes(target)), true);
+        assert.equal(promptTitles.every((title) => title.includes("Purpose: Create the allowed test file")), true);
         assert.deepEqual(promptSignals, [controller.signal, controller.signal, controller.signal]);
         assert.equal(reports.length, 0);
         assert.equal(
@@ -348,6 +350,7 @@ test("FUSE path denial records the optional reason collected by the decision flo
     const authorizer = new FusePathPolicyAuthorizer({
         backingRoot: "/",
         command: "printf denied > denied.txt",
+        purpose: "Attempt to overwrite a denied test file",
         decisionFlows: new UiDecisionFlowManager(ctx),
         policy: toolCall,
         report: (message) => reports.push(message),
@@ -448,6 +451,7 @@ test("an aborted FUSE decision flow fails closed without opening a prompt", asyn
     const authorizer = new FusePathPolicyAuthorizer({
         backingRoot: "/",
         command: "printf denied > denied.txt",
+        purpose: "Attempt to create a file after cancellation",
         decisionFlows: new UiDecisionFlowManager(ctx),
         signal: controller.signal,
         policy: toolCall,

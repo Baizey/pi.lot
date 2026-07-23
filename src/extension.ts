@@ -1,11 +1,11 @@
 import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {FuseBashTool} from "./fuse/FuseBashTool.js";
 import {PilotSessionRuntime} from "./runtime/PilotSessionRuntime.js";
-
-export type PilotSessionRuntimeHandle = Pick<
-    PilotSessionRuntime,
-    "pathPolicy" | "decisionFlows" | "close"
->;
+import type {PilotSessionRuntimeHandle} from "./runtime/PilotSessionRuntime.js";
+import {BashTool} from "./tools/bash/BashTool.js";
+import {EditTool} from "./tools/edit/EditTool.js";
+import {ReadTool} from "./tools/read/ReadTool.js";
+import {WriteTool} from "./tools/write/WriteTool.js";
+import {TOOL_MINIMAL_KEY_TEXT} from "./tui/tool/ToolDisplayController.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeHandle;
@@ -31,7 +31,17 @@ export class PilotExtension {
         if (this.registered) throw new Error("pi.lot extension is already registered");
         this.registered = true;
 
-        new FuseBashTool(this.pi, {current: () => this.requireSessionRuntime()}).register();
+        const runtimeProvider = () => this.requireSessionRuntime();
+        new BashTool(this.pi, runtimeProvider).register();
+        new ReadTool(this.pi, runtimeProvider).register();
+        new EditTool(this.pi, runtimeProvider).register();
+        new WriteTool(this.pi, runtimeProvider).register();
+        this.pi.registerShortcut(TOOL_MINIMAL_KEY_TEXT, {
+            description: "Toggle minimal tool display",
+            handler: () => {
+                this.requireSessionRuntime().toolDisplay.toggleMinimal();
+            },
+        });
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
         this.pi.on("session_shutdown", () => this.stopSession());
     }

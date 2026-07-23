@@ -3,6 +3,12 @@ import {PathPolicyRuntime} from "../policy/path/PathPolicyRuntime.js";
 import {PathPolicyDao} from "../storage/PathPolicyDao.js";
 import {SqliteDatabase} from "../storage/sqlite.js";
 import {UiDecisionFlowManager} from "../tui/UiDecisionFlowManager.js";
+import {ToolDisplayController} from "../tui/tool/ToolDisplayController.js";
+
+export type PilotSessionRuntimeHandle = Pick<
+    PilotSessionRuntime,
+    "pathPolicy" | "decisionFlows" | "toolDisplay" | "close"
+>;
 
 export type PilotSessionRuntimeOptions = {
     openDatabase?: () => SqliteDatabase;
@@ -11,6 +17,7 @@ export type PilotSessionRuntimeOptions = {
 export class PilotSessionRuntime {
     readonly pathPolicy: PathPolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
+    readonly toolDisplay: ToolDisplayController;
 
     private database: SqliteDatabase | null;
 
@@ -20,6 +27,7 @@ export class PilotSessionRuntime {
             const pathPolicyDao = new PathPolicyDao(database).initializeSchema();
             this.pathPolicy = new PathPolicyRuntime(pathPolicyDao);
             this.decisionFlows = new UiDecisionFlowManager(ctx);
+            this.toolDisplay = new ToolDisplayController(ctx);
             this.database = database;
         } catch (error) {
             database.close();

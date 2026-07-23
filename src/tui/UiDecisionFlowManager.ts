@@ -1,4 +1,5 @@
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {ThemeColor} from "./Color.js";
 import {truncateToWidth} from "./terminalText.js";
 
 type ValueOrLambda<T, K> = K | ((state: Partial<T>) => K);
@@ -11,7 +12,7 @@ type Component = {
 
 type ShortcutTui = {requestRender(): void};
 type ShortcutTheme = {
-    fg?: (name: string, text: string) => string;
+    fg?: (name: ThemeColor, text: string) => string;
     bg?: (name: string, text: string) => string;
     bold?: (text: string) => string;
 };
@@ -201,7 +202,7 @@ class ShortcutSelectComponent implements Component {
     }
 
     render(width: number): string[] {
-        const titleLines = this.title.split(/\r?\n/).map((line) => this.color("accent", this.bold(line)));
+        const titleLines = this.title.split(/\r?\n/).map((line) => this.color(ThemeColor.accent, this.bold(line)));
         const optionLines = this.options.map((option, index) => this.renderOption(option, index));
         return [...titleLines, "", ...optionLines].map((line) => truncateToWidth(line, width));
     }
@@ -234,7 +235,7 @@ class ShortcutSelectComponent implements Component {
     private renderOption(option: string, index: number): string {
         const prefix = index === this.selected ? "› " : "  ";
         const line = `${prefix}${option}`;
-        return index === this.selected ? this.bg("selectedBg", this.color("accent", line)) : line;
+        return index === this.selected ? this.bg("selectedBg", this.color(ThemeColor.accent, line)) : line;
     }
 
     private moveSelection(delta: -1 | 1): void {
@@ -270,7 +271,7 @@ class ShortcutSelectComponent implements Component {
         return this.keybindings.matches?.(data, key) === true;
     }
 
-    private color(name: string, text: string): string {
+    private color(name: ThemeColor, text: string): string {
         return this.theme.fg ? this.theme.fg(name, text) : text;
     }
 

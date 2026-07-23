@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 function databasePath(name: string) {
-    return path.join(os.homedir(), ".pi", "agent", `${name}.sqlite`);
+    return path.join(os.homedir(), ".pilot", `${name}.sqlite`);
 }
 
 export class SqliteDatabase {

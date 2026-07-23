@@ -15,6 +15,7 @@ import type {UiDecision, UiDecisionFlowManager} from "../tui/UiDecisionFlowManag
 export type FusePathPolicyAuthorizerOptions = {
     backingRoot: string;
     command: string;
+    purpose: string;
     decisionFlows: UiDecisionFlowManager;
     signal?: AbortSignal;
     policy: PathPolicyToolCall;
@@ -31,6 +32,7 @@ type PathPolicyApproval = {
 export class FusePathPolicyAuthorizer {
     private readonly backingRoot: string;
     private readonly command: string;
+    private readonly purpose: string;
     private readonly decisionFlows: UiDecisionFlowManager;
     private readonly signal: AbortSignal | undefined;
     private readonly policy: PathPolicyToolCall;
@@ -39,6 +41,7 @@ export class FusePathPolicyAuthorizer {
     constructor(options: FusePathPolicyAuthorizerOptions) {
         this.backingRoot = realpathSync.native(options.backingRoot);
         this.command = options.command;
+        this.purpose = options.purpose;
         this.decisionFlows = options.decisionFlows;
         this.signal = options.signal;
         this.policy = options.policy;
@@ -98,6 +101,7 @@ export class FusePathPolicyAuthorizer {
     ): Record<keyof PathPolicyApproval, UiDecision<PathPolicyApproval>> {
         const target = `${accessType} ${evaluatedPath}`;
         const requestContext = [
+            `Purpose: ${this.purpose}`,
             `FUSE operation: ${event.operation}`,
             `Command: ${JSON.stringify(this.truncateCommand())}`,
         ].join("\n");
@@ -121,7 +125,7 @@ export class FusePathPolicyAuthorizer {
             lifetime: {
                 type: "select",
                 key: "lifetime",
-                title: (state) => `Path policy lifetime for ${target}\nDecision: ${state.status}\nScope: ${state.scope}`,
+                title: (state) => `Path policy lifetime for ${target}\nDecision: ${state.status}\nScope: ${state.scope}\n${requestContext}`,
                 options: [
                     {title: "Once", value: PolicyLifetime.ONCE, next: this.reasonDecisionAfterDenial},
                     {title: "This session", value: PolicyLifetime.SESSION, next: this.reasonDecisionAfterDenial},
@@ -131,7 +135,7 @@ export class FusePathPolicyAuthorizer {
             reason: {
                 type: "input",
                 key: "reason",
-                title: `Reason for denying ${target} (optional)`,
+                title: (state) => `Reason for denying ${target} (optional)\nScope: ${state.scope}\n${requestContext}`,
                 placeholder: (state) => this.defaultReason(state.status ?? PolicyStatus.DENIED, accessType),
                 next: null,
             },

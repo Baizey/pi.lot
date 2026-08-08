@@ -657,6 +657,38 @@ test("FUSE write policy is re-evaluated for an already-open descriptor", async (
     }
 });
 
+test("a worker timeout denies a pending FUSE policy request", async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-fuse-timeout-test-"));
+    const blockedPath = path.join(workspace, "blocked.txt");
+    let decisionSignal: AbortSignal | undefined;
+    const started = performance.now();
+
+    try {
+        await assert.rejects(
+            runFuseSandboxedCommand({
+                command: ["/bin/bash", "-c", "printf blocked > blocked.txt"],
+                cwd: workspace,
+                timeoutSeconds: 0.05,
+                decide(event, signal) {
+                    const isBlockedWrite = event.pathAccesses.some(
+                        (access) => access.access === FuseAccessType.WRITE && access.path === blockedPath,
+                    );
+                    if (!isBlockedWrite) return FuseDecision.ALLOW;
+                    decisionSignal = signal;
+                    return new Promise<FuseDecision>(() => {});
+                },
+            }),
+            /timeout:0\.05/,
+        );
+
+        assert.equal(decisionSignal?.aborted, true);
+        assert.equal(existsSync(blockedPath), false);
+        assert.equal(performance.now() - started < 500, true);
+    } finally {
+        rmSync(workspace, {recursive: true, force: true});
+    }
+});
+
 function hasAccess(events: FusePolicyEvent[], accessType: FuseAccessType, target: string): boolean {
     return events.some((event) => event.pathAccesses.some(
         (access) => access.access === accessType && access.path === target,

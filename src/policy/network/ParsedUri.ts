@@ -1,0 +1,120 @@
+import {isIP} from "node:net";
+
+export class ParsedUri {
+    readonly raw: string
+    readonly host: string
+    readonly path?: string
+    readonly port?: number
+    readonly isValid: boolean
+
+    constructor(uri: string) {
+        let isValid = true
+        uri = uri.trim()
+
+        let stripStart = 0
+
+        const queryIndex = uri.indexOf("?");
+        const fragmentIndex = uri.indexOf("#");
+        const stripEnd = Math.min(
+            queryIndex === -1 ? uri.length : queryIndex,
+            fragmentIndex === -1 ? uri.length : fragmentIndex,
+        );
+
+        if (uri.toLowerCase().startsWith("https://"))
+            stripStart = "https://".length;
+        else if (uri.toLowerCase().startsWith("http://"))
+            stripStart = "http://".length;
+        uri = uri.substring(stripStart, stripEnd);
+        // Even in raw from we remove any super flourish info
+        this.raw = uri
+
+        const slashIndex = uri.indexOf("/");
+        if (slashIndex >= 0) {
+            let path = uri.substring(slashIndex);
+            if (!path.endsWith("/")) path += "/"
+            this.path = path
+            uri = uri.substring(0, slashIndex);
+        }
+
+        const colonIndex = uri.indexOf(":");
+        if (colonIndex >= 0) {
+            const portRaw = uri.substring(colonIndex + 1)
+            if (!/^\d+$/.test(portRaw)) {
+                isValid = false
+            } else {
+                this.port = Number(portRaw)
+                if (this.port < 1 || this.port > 65_535)
+                    isValid = false
+                uri = uri.substring(0, colonIndex);
+            }
+        }
+
+        isValid &&= !!uri
+        this.host = uri.toLowerCase()
+
+        this.isValid = isValid
+    }
+
+    scopeHierarchy(): string[] {
+        if (!this.isValid) return [this.raw]
+
+        const result: string[] = []
+        let acc = ""
+        if (this.port) {
+            acc = `${this.host}:${this.port}`
+            result.push(acc);
+        } else if (isIP(this.host)) {
+            acc = this.host
+            result.push(acc);
+        } else {
+            const host = this.host.split(".")
+            for (let i = host.length - 1; i >= 0; i--) {
+                acc = host[i] + (acc ? "." : "") + acc
+                result.push(acc)
+            }
+        }
+
+        if (this.path) {
+            const path = this.path.split("/").filter(it => it)
+            for (let i = 0; i < path.length; i++) {
+                acc += "/" + path[i]
+                result.push(acc)
+            }
+        }
+        return result
+    }
+
+    fullUri(): string {
+        if (!this.isValid) return this.raw
+
+        const port = this.port ? `:${this.port}` : ""
+        const path = this.path ? this.path : ""
+        return this.host + port + path
+    }
+
+    isSubdomainOf(other: ParsedUri | string): boolean {
+        other = typeof other === "string" ? new ParsedUri(other) : other
+
+        if (!this.isValid || !other.isValid) return false
+
+        // Exact match required for localhost & IP
+        if (this.port !== other.port) return false
+        if (this.host === "localhost" || other.host === "localhost")
+            if (this.host !== other.host) return false;
+        const ipInvolved = isIP(this.host) !== 0 || isIP(other.host) !== 0
+        if (ipInvolved && this.host !== other.host) return false;
+
+        // Path scopes apply only to the exact host. Host-only scopes may also
+        // cover subdomains, including requests that have a path.
+        if (other.path) {
+            if (!this.path || this.host !== other.host) return false;
+            if (!this.path.startsWith(other.path)) return false;
+        }
+
+        if (this.host !== other.host)
+            if (!this.host.endsWith("." + other.host)) return false;
+
+        return true
+    }
+
+}

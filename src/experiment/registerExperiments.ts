@@ -8,28 +8,31 @@ import {
     NetworkTargetKind,
     runNetworkSandboxedCommand,
 } from "./network/network-runner.js";
+import type {HttpRequestEvent, HttpRequestAuthorizer} from "./network/network-runner.js";
+import {DEFAULT_NETWORK_POLICY_GRANULARITY} from "./network/NetworkPolicy";
 import type {
     NetworkPolicyEvent,
     NetworkPolicyGranularity,
     NetworkPolicyScope,
 } from "./network/NetworkPolicy";
 
-export type NetworkPolicyGranularityProvider = () => NetworkPolicyGranularity;
-
 export function registerExperiments(
     pi: ExtensionAPI,
-    granularityProvider: NetworkPolicyGranularityProvider,
+    requireSession: () => void,
 ): void {
     registerBashTool(
         pi,
         "bash-network",
         "bash (Bubblewrap + network gate)",
-        (ctx) => createNetworkBashOperations(ctx, granularityProvider()),
+        (ctx) => {
+            requireSession();
+            return createNetworkBashOperations(ctx, DEFAULT_NETWORK_POLICY_GRANULARITY);
+        },
         {
-            description: "Execute a bash command with approval for brokered hostname targets and direct outbound TCP or UDP targets. Runtime granularity can distinguish DNS/TCP/UDP operations and IPv4/IPv6 endpoint families. Filesystem access, environment, and local IPC retain normal host-user behavior and are not mediated by this tool. Active-flow revocation is not implemented.",
-            promptSnippet: "Execute bash with direct TCP and UDP approval while leaving filesystem and local IPC access unchanged",
+            description: "Execute a bash command with approval for brokered hostname targets, direct outbound TCP or UDP targets, and each exact HTTP or HTTPS method and canonical URL. HTTPS is transparently terminated only after coarse TCP approval so the request can be held for a separate decision before any target-side connection. Approval reuse is shared across DNS/TCP/UDP operations and IPv4/IPv6 endpoint families. Unsupported opaque TCP protocols fail closed in request-aware mode. Filesystem access, environment, and local IPC retain normal host-user behavior and are not mediated by this tool. Active-flow revocation is not implemented.",
+            promptSnippet: "Execute bash with network-flow and exact HTTP or HTTPS request approval while leaving filesystem and local IPC access unchanged",
             promptGuidelines: [
-                "Use bash-network to catch direct IP networking from a command and its descendants; it does not mediate filesystem access or network effects delegated through local IPC.",
+                "Use bash-network to catch direct IP networking and HTTP or HTTPS requests from a command and its descendants; it does not mediate filesystem access or network effects delegated through local IPC.",
             ],
         },
     );
@@ -78,6 +81,7 @@ function createNetworkBashOperations(
                     return decision;
                 },
             });
+            const authorizeHttpRequest = createHttpRequestAuthorizer(ctx, command, onData);
             const result = await runNetworkSandboxedCommand({
                 command: ["/bin/bash", "-c", command],
                 cwd,
@@ -94,12 +98,85 @@ function createNetworkBashOperations(
                 decide(event, decisionSignal) {
                     return decisions.decide(event, decisionSignal);
                 },
+                authorizeHttpRequest,
             });
 
             if (result.signal) throw new Error(`network worker terminated by ${result.signal}`);
             return {exitCode: result.exitCode};
         },
     };
+}
+
+function createHttpRequestAuthorizer(
+    ctx: ExtensionContext,
+    command: string,
+    onData: (data: Buffer) => void,
+): HttpRequestAuthorizer {
+    const decisions = new Map<string, Promise<boolean>>();
+    let promptTail = Promise.resolve();
+    let requestSequence = 0;
+
+    return async (event, signal) => {
+        const sequence = ++requestSequence;
+        const key = `${event.method}\0${event.url}`;
+        const existing = decisions.get(key);
+        if (existing) {
+            const allowed = await existing;
+            onData(Buffer.from(`${formatHttpRequestDecision(event, sequence, allowed, command, true)}\n`));
+            return allowed;
+        }
+
+        const pending = promptTail.then(() => askForHttpRequestDecision(ctx, command, event, signal));
+        promptTail = pending.then(() => undefined, () => undefined);
+        decisions.set(key, pending);
+        try {
+            const allowed = await pending;
+            onData(Buffer.from(`${formatHttpRequestDecision(event, sequence, allowed, command, false)}\n`));
+            return allowed;
+        } catch (error) {
+            decisions.delete(key);
+            throw error;
+        }
+    };
+}
+
+async function askForHttpRequestDecision(
+    ctx: ExtensionContext,
+    command: string,
+    event: HttpRequestEvent,
+    signal: AbortSignal,
+): Promise<boolean> {
+    if (!ctx.hasUI || signal.aborted) return false;
+
+    return ctx.ui.confirm(
+        `Allow ${event.scheme.toUpperCase()} ${event.method}?`,
+        [
+            `Command: ${JSON.stringify(truncate(command, 500))}`,
+            `Canonical URL: ${JSON.stringify(event.url)}`,
+            `Original request target: ${JSON.stringify(event.rawTarget)}`,
+            `Hostname: ${JSON.stringify(event.hostname)}`,
+            `Connection family: ${familyName(event.family)}`,
+            `Source: ${formatEndpoint(event.source.address, event.source.port)}`,
+            `Gateway destination: ${formatEndpoint(event.destination.address, event.destination.port)}`,
+            `Selected address: ${formatEndpoint(event.upstreamAddress, event.port)}`,
+            `Policy scope: exact ${event.method} ${event.url}`,
+            "",
+            "The HTTP request is held. Allowing opens a new target-side connection and forwards this request; denying creates no target-side connection.",
+        ].join("\n"),
+        {signal},
+    );
+}
+
+function formatHttpRequestDecision(
+    event: HttpRequestEvent,
+    sequence: number,
+    allowed: boolean,
+    command: string,
+    reused: boolean,
+): string {
+    const decision = allowed ? NetworkDecision.ALLOW : NetworkDecision.DENY;
+    const reuse = reused ? " reused=true" : "";
+    return `[network] requestSequence=${sequence} decision=${decision} operation=HTTP_REQUEST scheme=${event.scheme.toUpperCase()} method=${JSON.stringify(event.method)} url=${JSON.stringify(event.url)} hostname=${JSON.stringify(event.hostname)} source=${JSON.stringify(formatEndpoint(event.source.address, event.source.port))} destination=${JSON.stringify(formatEndpoint(event.destination.address, event.destination.port))} upstream=${JSON.stringify(formatEndpoint(event.upstreamAddress, event.port))}${reuse} policyScope=${JSON.stringify(`${event.method} ${event.url}`)} command=${JSON.stringify(truncate(command, 500))}`;
 }
 
 async function askForNetworkDecision(

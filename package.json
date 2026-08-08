@@ -14,8 +14,8 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run clean && npm run build:native && npm run typecheck",
     "install": "npm run build:native",
-    "test:network": "npm run build:native && node --import jiti/register --test ./test/experiment.test.ts ./test/network-policy.test.ts ./test/network.test.ts",
-    "test:runtime": "node --import jiti/register --test ./test/experiment.test.ts ./test/extension.test.ts ./test/fuse.test.ts ./test/network-policy.test.ts ./test/network.test.ts ./test/path-policy.test.ts ./test/terminal-text.test.ts ./test/tool-rendering.test.ts",
+    "test:network": "npm run build:native && node --import jiti/register --test ./test/experiment.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network.test.ts",
+    "test:runtime": "node --import jiti/register --test ./test/experiment.test.ts ./test/extension.test.ts ./test/fuse.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network.test.ts ./test/path-policy.test.ts ./test/terminal-text.test.ts ./test/tool-rendering.test.ts",
     "test": "npm run build && npm run test:runtime"
   },
   "keywords": [],
@@ -23,20 +23,22 @@
   "license": "ISC",
   "private": true,
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "^0.81.1"
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.81.1",
-    "@earendil-works/pi-tui": "^0.81.1",
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^26.1.1",
-    "jiti": "^2.7.0",
-    "typescript": "^6.0.3"
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "26.2.0",
+    "@types/node-forge": "1.3.14",
+    "jiti": "2.7.0",
+    "typescript": "7.0.2"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.1",
-    "fs-xattr": "^0.4.0",
-    "fuse-native": "^2.2.6"
+    "better-sqlite3": "13.0.3",
+    "fs-xattr": "0.4.0",
+    "fuse-native": "2.2.6",
+    "node-forge": "1.4.0"
   }
 }

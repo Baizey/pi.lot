@@ -1,6 +1,8 @@
 import {
+    AgentToolResult,
     createReadToolDefinition,
     type ExtensionAPI,
+    ReadToolDetails,
     type ReadToolInput,
 } from "@earendil-works/pi-coding-agent";
 import type {PilotSessionRuntimeHandle} from "../../runtime/PilotSessionRuntime.js";
@@ -9,6 +11,7 @@ import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation.js";
 import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
+import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 
 const READ_PRESENTATION = {
     toolName: "read",
@@ -45,6 +48,7 @@ export class ReadTool {
     ) {}
 
     register(): void {
+        const runtimeProvider = this.runtimeProvider
         if (this.registered) throw new Error("Read tool is already registered");
         this.registered = true;
 
@@ -60,6 +64,13 @@ export class ReadTool {
 
         this.pi.registerTool({
             ...definition,
+            async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<ReadToolDetails | undefined>> {
+                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_READ, signal)
+                if (result.matchedStatus === PolicyResponse.DENIED) {
+                    throw new Error(result.toDenyMessage())
+                }
+                return await definition.execute(toolCallId, params, signal, onUpdate, ctx)
+            },
             renderCall: (args, theme, context) => {
                 const mode = this.synchronizeMode(context.expanded);
                 const component = nativeRenderCall(args, theme, context);

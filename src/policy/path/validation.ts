@@ -1,54 +1,37 @@
-import {PolicyLifetime, PolicyStatus,} from "../types";
-import {FsAccessType, PathPolicy, PathPolicyStatus,} from "./types";
+import path from "node:path";
+import fs from "node:fs";
 
-export function parseJsonObjectFile<T>(read: () => string): T | null {
+export function resolvePhysicalPath(input: string): string {
+    const normalized = stripTrailingPathSeparators(path.resolve(input).normalize());
+    const existingAncestor = nearestExistingAncestor(normalized);
+    if (!existingAncestor) return normalized;
+
     try {
-        const parsed = JSON.parse(read()) as unknown;
-        return isRecord(parsed) ? parsed as T : null;
+        const physicalAncestor = stripTrailingPathSeparators(fs.realpathSync.native(existingAncestor));
+        const suffix = path.relative(existingAncestor, normalized);
+        return suffix
+            ? stripTrailingPathSeparators(path.join(physicalAncestor, suffix).normalize())
+            : physicalAncestor;
     } catch {
-        return null;
+        return normalized;
     }
 }
 
-export function sanitizePathPolicySnapshot(value: unknown): { policies: PathPolicy[] } {
-    const record = isRecord(value) ? value : {};
-    const policies = Array.isArray(record.policies)
-        ? record.policies.map(sanitizePathPolicy).filter((it): it is PathPolicy => it !== null)
-        : [];
-    return {policies};
+function stripTrailingPathSeparators(
+    input: string,
+    pathParser: Pick<typeof path, "parse"> = path,
+): string {
+    const root = pathParser.parse(input).root;
+    const stripped = input.replace(/[\\/]+$/g, "");
+    return stripped.length < root.length ? root : stripped;
 }
 
-function sanitizePathPolicy(value: unknown): PathPolicy | null {
-    if (!isRecord(value) || !isNonEmptyString(value.path) || !isRecord(value.info)) return null;
-    const info: PathPolicy["info"] = {};
-
-    for (const accessType of Object.values(FsAccessType)) {
-        const status = sanitizePathPolicyStatus(value.info[accessType], accessType);
-        if (status) info[accessType] = status;
+function nearestExistingAncestor(input: string): string | null {
+    let current = input;
+    while (true) {
+        if (fs.existsSync(current)) return current;
+        const parent = path.dirname(current);
+        if (parent === current) return null;
+        current = parent;
     }
-
-    return Object.keys(info).length > 0 ? {path: value.path, info} : null;
-}
-
-function sanitizePathPolicyStatus(value: unknown, expectedAccessType: FsAccessType): PathPolicyStatus | null {
-    if (!isRecord(value)) return null;
-    if (value.accessType !== expectedAccessType) return null;
-    if (!isPolicyStatus(value.status) || !isPolicyLifetime(value.lifetime) || typeof value.reason !== "string") return null;
-    return {accessType: expectedAccessType, status: value.status, lifetime: value.lifetime, reason: value.reason};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null;
-}
-
-function isNonEmptyString(value: unknown): value is string {
-    return typeof value === "string" && value.trim().length > 0;
-}
-
-function isPolicyStatus(value: unknown): value is PolicyStatus {
-    return typeof value === "string" && Object.values(PolicyStatus).some((status) => status === value);
-}
-
-function isPolicyLifetime(value: unknown): value is PolicyLifetime {
-    return typeof value === "string" && Object.values(PolicyLifetime).some((lifetime) => lifetime === value);
 }

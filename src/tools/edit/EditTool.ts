@@ -1,18 +1,18 @@
 import {
-    createBashTool,
+    AgentToolResult,
     createEditToolDefinition,
+    EditToolDetails,
     type EditToolInput,
     type ExtensionAPI,
     type Theme,
 } from "@earendil-works/pi-coding-agent";
 import type {PilotSessionRuntimeHandle} from "../../runtime/PilotSessionRuntime.js";
-import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation.js";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
+import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation.js";
 import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
-import path from "node:path";
-import {FsAccessType} from "../../policy/path/types";
+import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 
 const EDIT_PRESENTATION = {
     toolName: "edit",
@@ -39,9 +39,11 @@ export class EditTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeHandle,
-    ) {}
+    ) {
+    }
 
     register(): void {
+        const runtimeProvider = this.runtimeProvider
         if (this.registered) throw new Error("Edit tool is already registered");
         this.registered = true;
 
@@ -57,6 +59,15 @@ export class EditTool {
 
         this.pi.registerTool({
             ...definition,
+
+            async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<EditToolDetails | undefined>> {
+                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_READ, signal)
+                if (result.matchedStatus === PolicyResponse.DENIED) {
+                    throw new Error(result.toDenyMessage())
+                }
+                return await definition.execute(toolCallId, params, signal, onUpdate, ctx)
+            },
+
             renderCall: (args, theme, context) => {
                 const mode = this.synchronizeMode(context.expanded);
                 const component = nativeRenderCall(args, theme, context);
@@ -65,6 +76,7 @@ export class EditTool {
                 }
                 return component;
             },
+
             renderResult: (result, options, theme, context) => {
                 const mode = this.synchronizeMode(context.expanded);
                 const component = nativeRenderResult(result, options, theme, context);
@@ -102,7 +114,7 @@ export class EditTool {
         if (!this.hasMethod(component, "clear")) {
             throw new Error("Pi's Edit result renderer did not return a mutable container");
         }
-        (component as {clear(): void}).clear();
+        (component as { clear(): void }).clear();
     }
 
     private hasMethod(value: unknown, key: string): boolean {

@@ -1,36 +1,38 @@
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {PathPolicyRuntime} from "../policy/path/PathPolicyRuntime.js";
-import {PathPolicyDao} from "../storage/PathPolicyDao.js";
+import PolicyRuntime from "../policy/PolicyRuntime";
+import {PolicyDao} from "../storage/PolicyDao";
 import {SqliteDatabase} from "../storage/sqlite.js";
 import {UiDecisionFlowManager} from "../tui/UiDecisionFlowManager.js";
 import {ToolDisplayController} from "../tui/tool/ToolDisplayController.js";
-import {PilotRuntimeConfig} from "./PilotRuntimeConfig.js";
+import {PolicyDecisionFlow} from "../policy/PolicyDecisionFlow";
 
 export type PilotSessionRuntimeHandle = Pick<
     PilotSessionRuntime,
-    "config" | "pathPolicy" | "decisionFlows" | "toolDisplay" | "close"
+    "policyRuntime" | "decisionFlows" | "toolDisplay" | "close"
 >;
 
 export type PilotSessionRuntimeOptions = {
-    config?: PilotRuntimeConfig;
     openDatabase?: () => SqliteDatabase;
 };
 
 export class PilotSessionRuntime {
-    readonly config: PilotRuntimeConfig;
-    readonly pathPolicy: PathPolicyRuntime;
+    readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
     readonly toolDisplay: ToolDisplayController;
 
     private database: SqliteDatabase | null;
 
     constructor(ctx: ExtensionContext, options: PilotSessionRuntimeOptions = {}) {
-        this.config = options.config ?? new PilotRuntimeConfig();
         const database = (options.openDatabase ?? (() => SqliteDatabase.readwrite("pilot")))();
         try {
-            const pathPolicyDao = new PathPolicyDao(database).initializeSchema();
-            this.pathPolicy = new PathPolicyRuntime(pathPolicyDao);
-            this.decisionFlows = new UiDecisionFlowManager(ctx);
+            const policyDao = new PolicyDao(database);
+            policyDao.initializeSchema();
+
+            const uiManager = new UiDecisionFlowManager(ctx)
+            const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager})
+
+            this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow);
+            this.decisionFlows = uiManager;
             this.toolDisplay = new ToolDisplayController(ctx);
             this.database = database;
         } catch (error) {

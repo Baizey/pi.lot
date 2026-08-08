@@ -3,14 +3,17 @@ import {
     NetworkDecision,
     NetworkOperation,
 } from "./network-queue-protocol.js";
-import {
-    DEFAULT_NETWORK_POLICY_GRANULARITY,
-} from "../../runtime/PilotRuntimeConfig.js";
-import type {NetworkPolicyGranularity} from "../../runtime/PilotRuntimeConfig.js";
 import type {NetworkQueueEvent} from "./network-queue-protocol.js";
 
-export {DEFAULT_NETWORK_POLICY_GRANULARITY} from "../../runtime/PilotRuntimeConfig.js";
-export type {NetworkPolicyGranularity} from "../../runtime/PilotRuntimeConfig.js";
+export type NetworkPolicyGranularity = Readonly<{
+    distinguishOperation: boolean;
+    distinguishAddressFamily: boolean;
+}>;
+
+export const DEFAULT_NETWORK_POLICY_GRANULARITY: NetworkPolicyGranularity = Object.freeze({
+    distinguishOperation: false,
+    distinguishAddressFamily: false,
+});
 
 export enum NetworkTargetKind {
     HOSTNAME = "HOSTNAME",
@@ -72,7 +75,7 @@ type NetworkDecisionRecord = {
 };
 
 export type NetworkDecisionCoordinatorOptions = {
-    granularity?: NetworkPolicyGranularity;
+    granularity: NetworkPolicyGranularity;
     decide: (
         event: NetworkPolicyEvent,
         scope: NetworkPolicyScope,
@@ -88,7 +91,7 @@ export type NetworkDecisionCoordinatorOptions = {
 export class NetworkPolicyProjector {
     readonly granularity: NetworkPolicyGranularity;
 
-    constructor(granularity: NetworkPolicyGranularity = DEFAULT_NETWORK_POLICY_GRANULARITY) {
+    constructor(granularity: NetworkPolicyGranularity) {
         this.granularity = Object.freeze({...granularity});
     }
 

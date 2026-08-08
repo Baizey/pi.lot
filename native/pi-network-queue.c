@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -349,6 +350,12 @@ int main(void) {
         || nfq_set_queue_maxlen(queue, QUEUE_LENGTH) < 0
         || nfq_set_queue_flags(queue, NFQA_CFG_F_FAIL_OPEN, 0) < 0) {
         report_nfq_error("failed to configure fail-closed packet queue");
+        nfq_destroy_queue(queue);
+        nfq_close(handle);
+        return EXIT_FAILURE;
+    }
+    if (prctl(PR_SET_DUMPABLE, 0) < 0 || prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+        report_error("harden queue helper process");
         nfq_destroy_queue(queue);
         nfq_close(handle);
         return EXIT_FAILURE;

@@ -13,9 +13,17 @@ import type {
     NetworkPolicyGranularity,
     NetworkPolicyScope,
 } from "../src/experiment/network/network-runner.js";
+import {DEFAULT_NETWORK_POLICY_GRANULARITY} from "../src/experiment/network/NetworkPolicy.js";
 import {SyntheticDnsLeaseTable} from "../src/experiment/network/SyntheticDnsProxy.js";
 
 const signal = new AbortController().signal;
+
+test("default network policy granularity does not distinguish operation or address family", () => {
+    assert.deepEqual(DEFAULT_NETWORK_POLICY_GRANULARITY, {
+        distinguishOperation: false,
+        distinguishAddressFamily: false,
+    });
+});
 
 test("network policy granularity projects one hostname into the configured approval matrix", async () => {
     const cases: Array<{
@@ -81,6 +89,10 @@ test("coarse hostname resolution grants host scope while direct flows grant one 
 
     const reusedScopes: NetworkPolicyScope[] = [];
     const coordinator = new NetworkDecisionCoordinator({
+        granularity:  {
+            distinguishOperation: false,
+            distinguishAddressFamily: false,
+        },
         decide() {
             return NetworkDecision.ALLOW;
         },

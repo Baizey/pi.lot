@@ -3,15 +3,10 @@ import {createBashTool, createBashToolDefinition} from "@earendil-works/pi-codin
 import {HOST_FILESYSTEM_ROOT, runFuseSandboxedCommand} from "../../policy/path/fuse/fuse-runner.js";
 import {FuseDecision} from "../../policy/path/fuse/FuseFilesystem.js";
 import {FusePathPolicyAuthorizer} from "../../policy/path/fuse/FusePathPolicyAuthorizer.js";
-import type {PathPolicyToolCall} from "../../policy/path/PathPolicyRuntime.js";
+import type {ToolCallPathPolicyEvaluator} from "../../policy/PolicyRuntime";
 import type {PilotSessionRuntimeHandle} from "../../runtime/PilotSessionRuntime.js";
-import type {UiDecisionFlowManager} from "../../tui/UiDecisionFlowManager.js";
-import {
-    ToolArgumentLayout,
-    ToolArgumentPlacement,
-    ToolTextDirection,
-} from "../../tui/tool/ToolPresentation.js";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
+import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection,} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 
@@ -55,7 +50,8 @@ export class BashTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeHandle,
-    ) {}
+    ) {
+    }
 
     register(): void {
         if (this.registered) throw new Error("FUSE bash tool is already registered");
@@ -106,29 +102,21 @@ export class BashTool {
             ),
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
-                const policy = runtime.pathPolicy.beginToolCall();
+                const policy = runtime.policyRuntime.beginToolCall();
                 const sandboxedBash = createBashTool(ctx.cwd, {
-                    operations: this.createOperations(params.purpose, policy, runtime.decisionFlows),
+                    operations: this.createOperations(policy),
                 });
                 return sandboxedBash.execute(id, params, signal, onUpdate);
             },
         });
     }
 
-    private createOperations(
-        purpose: string,
-        policy: PathPolicyToolCall,
-        decisionFlows: UiDecisionFlowManager,
-    ): BashOperations {
+    private createOperations(policy: ToolCallPathPolicyEvaluator): BashOperations {
         return {
             exec: async (command, cwd, {onData, signal, timeout, env}) => {
                 const authorizer = new FusePathPolicyAuthorizer({
                     backingRoot: HOST_FILESYSTEM_ROOT,
-                    command,
-                    purpose,
-                    decisionFlows,
-                    signal,
-                    policy,
+                    policyEvaluator: policy,
                     report: (message) => onData(Buffer.from(`${message}\n`)),
                 });
                 const result = await runFuseSandboxedCommand({
@@ -144,7 +132,7 @@ export class BashTool {
                             `[pi.lot:fuse] decision=${FuseDecision.DENY} error=${JSON.stringify(this.errorMessage(error))}\n`,
                         ));
                     },
-                    decide: (event) => authorizer.decide(event),
+                    decide: (event, decisionSignal) => authorizer.decide(event, decisionSignal),
                 });
 
                 if (result.signal) throw new Error(`FUSE worker terminated by ${result.signal}`);

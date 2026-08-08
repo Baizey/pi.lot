@@ -2,13 +2,15 @@
 
 ## Status
 
-Design draft and target contract. An initial standalone TCP/UDP transport vertical slice is implemented as `bash-network`, but the complete specification is not implemented yet.
+Design draft and target contract. A standalone transport and request-broker vertical slice is implemented as `bash-network`, including live per-command HTTP/HTTPS request decisions, but the complete specification and persistent policy integration are not implemented yet.
 
-The current slice demonstrates a private outer user/network namespace, a same-UID capability-free Bubblewrap worker, and deny-before-host-effect IPv4/IPv6 TCP and UDP interception through nftables and NFQUEUE. It provides packet/conntrack-bound approval, descendant mediation, and userspace transport through `slirp4netns`. A pending conntrack mark suppresses TCP retransmissions and additional ordinary UDP datagrams while the first packet is held; separate flows receive separate kernel verdicts.
+The current slice creates distinct workload and trusted gateway network namespaces inside one user namespace. The capability-free Bubblewrap worker has only a veth route to the gateway. Its nftables/NFQUEUE gate holds initial IPv4/IPv6 TCP and UDP effects for policy, while the gateway has the sole `slirp4netns` uplink. The gateway never forwards worker TCP: TPROXY delivers every approved non-loopback TCP flow to a native ingress that drops all capabilities after binding, and a trusted host-side TypeScript broker creates the separate upstream socket. UDP remains forwarded only after the worker gate. Killing either queue or TCP-ingress helper terminates the worker instead of restoring connectivity.
 
-Worker-only resolver and NSS files route ordinary hostname clients through a trusted host-side DNS proxy. Approved UDP queries are forwarded to the host resolver. Validated answer-section A and AAAA records receive bounded, worker-scoped synthetic leases, and nftables DNAT maps those synthetic destinations to the selected real addresses only after lease installation. Subsequent flows are authoritatively attributed to the requested hostname rather than inferred from a potentially shared real IP. Distinct hostnames sharing one real address receive distinct leases; unknown and expired synthetic destinations fail closed. Direct DNS to another resolver and TCP DNS fallback fail closed in this slice.
+Worker-only resolver and NSS files route ordinary hostname clients through a trusted host-side DNS proxy. Approved UDP queries are forwarded to the host resolver. Validated answer-section A and AAAA records receive bounded, worker-scoped synthetic leases. TCP keeps its synthetic destination through TPROXY so distinct hostnames sharing one real endpoint retain separate broker identities; the trusted relay connects only to the lease-selected real address. UDP leases use DNAT because UDP still follows the forwarding path. Unknown and expired synthetic destinations fail closed. Direct DNS to another resolver and TCP DNS fallback fail closed in this slice.
 
-A policy projector is deliberately separate from those detailed events and verdicts. Session-owned in-memory runtime configuration can collapse or distinguish DNS/TCP/UDP operations and actual IPv4/IPv6 flow families. With both dimensions collapsed, a hostname-resolution approval covers that exact hostname across operations, families, and ports for the current tool call; literal-IP policy begins at an exact address and port. Literal 127/8 and `::1` flows are mediated and normalize to one `localhost` target unless family distinction is enabled. That loopback belongs to the worker network namespace and does not transparently expose host-loopback services. The slice does not yet provide a persistent network policy store, revoke active flows, normalize IPv4-mapped IPv6, support IPv6 extension headers, proxy TCP DNS, or integrate with the root-wide FUSE worker.
+The trusted TCP broker recognizes plaintext HTTP/1.0 and HTTP/1.1 independently of the originating executable. A request authorizer receives the actual scheme, method, canonical URL/path, hostname, source, synthetic destination, and selected upstream address before any upstream connection is created. The registered `bash-network` tool prompts for each exact method-and-canonical-URL scope and reuses identical decisions during that command. In this mode TLS is terminated with a per-run in-memory CA, common client trust variables point at a read-only session bundle, and the broker independently validates the real upstream certificate. Tests cover live UI wiring, denied HTTP and HTTPS requests, keep-alive request re-evaluation, CNAME attribution, and the smart-HTTP GET produced by a real `git fetch`. Direct runner callers can omit the authorizer to retain end-to-end TLS under coarse TCP policy.
+
+A policy projector remains deliberately separate from detailed transport/request events and verdicts. The slice does not yet provide complete persistent network policy integration, active-flow revocation, IPv4-mapped IPv6 normalization, IPv6 extension headers, TCP DNS, HTTP/2, QUIC request mediation, or integration with the root-wide FUSE worker.
 
 The completed design applies to the `bash-fuse` architecture: a root-wide FUSE filesystem inside a Bubblewrap worker.
 
@@ -113,6 +115,28 @@ Bubblewrap private network namespace ------+
 The worker receives a normal IP network interface and uses ordinary socket APIs. The interface is connected only to the policy-aware data plane. There is no kernel route, host veth, slirp path, pasta path, proxy mapping, or inherited AF_INET/AF_INET6 socket that bypasses the broker. Filesystem access and local IPC remain host-visible and are not routed through this data plane.
 
 An existing userspace networking implementation may provide packet transport or protocol machinery only if the integration can synchronously stop before creating each host-side connection or datagram and wait for the TypeScript decision. Unmodified `slirp4netns` or `pasta` provides connectivity but no per-flow approval hook, so either one alone is not the gate described by this specification.
+
+The implemented standalone slice currently specializes that design as:
+
+```text
+capability-free workload namespace
+        |
+        | veth; worker nftables/NFQUEUE approval
+        v
+trusted gateway namespace
+        |-- UDP forwarding after worker approval
+        |-- TCP TPROXY -> capability-dropped native ingress
+                              |
+                              | versioned flow metadata + bytes
+                              v
+                    host TypeScript TCP/HTTP/TLS broker
+                              |
+                              | separate socket after flow/request approval
+                              v
+                           Internet
+```
+
+The gateway `FORWARD` chain drops TCP unconditionally. Thus an HTTP parser failure, ingress crash, broker crash, or malformed metadata cannot fall back to direct TCP forwarding.
 
 ## Namespace construction
 
@@ -470,10 +494,9 @@ The tool must continue streaming ordinary stdout and stderr while policy events 
 
 ### Stage 2: policy-aware TCP data path
 
-- Select or build the userspace data plane.
-- Add the versioned TypeScript control protocol and policy store.
-- Support outbound IPv4 and IPv6 TCP with deny-before-host-connect behavior.
-- Add shared FUSE/network decision serialization.
+- Implemented in the standalone worker with a split workload/gateway namespace, TPROXY ingress, a versioned native-to-TypeScript flow protocol, and separate broker-owned upstream sockets.
+- IPv4/IPv6 deny-before-host-connect, retransmission coalescing, tuple-reuse separation, helper-failure shutdown, and synthetic TCP destination identity have live integration coverage.
+- Remaining work includes active-flow revocation, persistent policy integration, production FUSE-worker integration, and shared FUSE/network decision serialization.
 
 ### Stage 3: brokered DNS identity
 
@@ -483,8 +506,13 @@ The tool must continue streaming ordinary stdout and stderr while policy events 
 
 ### Stage 4: UDP
 
-- Add bounded UDP flow tracking, replies, expiry, and revocation.
-- Keep unsupported datagram modes fail closed.
+- Initial IPv4/IPv6 unicast forwarding, first-datagram approval, replies, and deny-before-host-effect are implemented in the standalone worker.
+- Remaining work includes explicit idle expiry, active revocation, and broader resource/adversarial hardening.
+
+### Stage 4.5: request-aware HTTP
+
+- HTTP/1.0 and HTTP/1.1 request parsing, exact per-command method/URL decisions in the registered UI, canonical request targets, keep-alive re-evaluation, HTTPS termination, and verified upstream TLS are implemented.
+- Remaining work includes persistent request policies and lifetime choices, HTTP/2, WebSocket and CONNECT semantics, QUIC/HTTP/3, certificate-pinning behavior, broader trust-store compatibility, and explicit opaque-protocol policy.
 
 ### Stage 5: adversarial hardening
 
@@ -506,7 +534,7 @@ The network architecture is accepted when all acceptance tests pass repeatedly o
 
 ### Pending socket lifetime
 
-The current NFQUEUE slice holds the original immutable SYN. If its initiating guest socket closes while a decision is pending, `ALLOW` may still release that original queued packet; a replacement socket reusing the tuple receives a separate decision and cannot consume the approval. Detecting guest-socket cancellation before verdict would require an additional stable socket-liveness identity and is not claimed by the current slice.
+The NFQUEUE slice still holds the original immutable SYN. A replacement socket reusing the tuple receives a separate decision and cannot consume the approval. Because TCP now terminates at the trusted gateway, an original socket that disappears before the intercepted handshake completes does not create the broker's upstream connection; cancellation after an upstream connection exists still requires active-flow lifecycle handling.
 
 ### User-namespace identity
 
@@ -514,7 +542,7 @@ Unprivileged creation of the private network namespace requires a user namespace
 
 ### Layer-7 identity
 
-The gate authorizes network flows, not HTTP requests. It does not see HTTPS paths, methods, headers, or bodies. TLS interception is not part of the MVP. A structured web tool or explicit application proxy is required for URL-aware policy.
+Request-aware mode observes HTTP/1.0 and HTTP/1.1 methods and canonical URLs after transparent interception; it does not inspect shell command text. HTTPS visibility requires the per-run interception CA to be accepted by the client. Clients with certificate pinning, private trust implementations, mutual TLS, or unsupported protocol behavior fail rather than bypassing to direct TCP. HTTP/2, HTTP/3/QUIC, WebSocket upgrades, CONNECT tunnels, and non-HTTP TLS application protocols are not yet request-mediated. Request-aware mode denies an unrecognized cleartext TCP preface instead of falling back around URL policy; coarse mode may still approve opaque end-to-end TLS or TCP explicitly.
 
 ### Encrypted name resolution
 
@@ -541,7 +569,6 @@ This is container-style isolation and trusts the host kernel. Workloads requirin
 - Requiring applications to opt into an HTTP or SOCKS proxy.
 - Mediating network effects delegated to existing host services through local IPC.
 - Inbound port publishing or service hosting.
-- HTTP/TLS interception or URL-path policy.
 - Packet payload inspection, malware scanning, or data-loss-prevention classification.
 - Bandwidth shaping, traffic accounting for billing, or quality-of-service policy.
 - Cross-platform support.

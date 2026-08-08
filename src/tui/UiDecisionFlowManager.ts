@@ -80,6 +80,8 @@ export type UiInputDecision<T> = {
 };
 
 export class UiDecisionFlowManager {
+    private flowQueue: Promise<void> = Promise.resolve();
+
     constructor(private readonly ctx: ExtensionContext) {}
 
     async runFlow<T>(
@@ -89,14 +91,53 @@ export class UiDecisionFlowManager {
         options: UiDecisionFlowOptions = {},
     ): Promise<T | UiFlowShortcut> {
         const state = {} as Partial<T>;
-        if (!this.ctx.hasUI || options.signal?.aborted || !this.ctx.ui?.select) {
-            return onCancelReturn(state);
-        }
+        let cancellation: T | undefined;
+        let hasCancellation = false;
+        const cancel = (): T => {
+            if (!hasCancellation) {
+                cancellation = onCancelReturn(state);
+                hasCancellation = true;
+            }
+            return cancellation!;
+        };
+        const scheduled = this.enqueue(() => this.runQueuedFlow(
+            initialDecision,
+            allDecisions,
+            state,
+            cancel,
+            options,
+        ));
+
+        const signal = options.signal;
+        if (!signal) return scheduled;
+        if (signal.aborted) return cancel();
+
+        return new Promise<T | UiFlowShortcut>((resolve, reject) => {
+            const onAbort = () => {
+                try {
+                    resolve(cancel());
+                } catch (error) {
+                    reject(error);
+                }
+            };
+            signal.addEventListener("abort", onAbort, {once: true});
+            void scheduled.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+        });
+    }
+
+    private async runQueuedFlow<T>(
+        initialDecision: UiDecision<T>,
+        allDecisions: Record<keyof T, UiDecision<T>>,
+        state: Partial<T>,
+        cancel: () => T,
+        options: UiDecisionFlowOptions,
+    ): Promise<T | UiFlowShortcut> {
+        if (!this.ctx.hasUI || options.signal?.aborted || !this.ctx.ui?.select) return cancel();
 
         let currentDecision = initialDecision;
         while (currentDecision) {
             const choice = await this.resolveDecision(currentDecision, state, options);
-            if (!choice) return onCancelReturn(state);
+            if (!choice) return cancel();
             if (isUiFlowShortcut(choice)) return choice;
 
             state[currentDecision.key] = choice.value;
@@ -108,6 +149,12 @@ export class UiDecisionFlowManager {
             currentDecision = nextDecision;
         }
         return state as T;
+    }
+
+    private enqueue<T>(run: () => Promise<T>): Promise<T> {
+        const result = this.flowQueue.then(run, run);
+        this.flowQueue = result.then(() => undefined, () => undefined);
+        return result;
     }
 
     private async resolveDecision<T>(

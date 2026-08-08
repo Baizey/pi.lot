@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {createSocket} from "node:dgram";
 import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {createServer as createHttpServer} from "node:http";
+import {createServer as createHttpsServer} from "node:https";
 import {createServer} from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +16,8 @@ import {
   parseNetworkQueueMessage,
   runNetworkSandboxedCommand,
 } from "../src/experiment/network/network-runner.js";
+import {parseTcpGatewayFlow} from "../src/experiment/network/tcp-gateway-protocol.js";
+import {TlsCertificateAuthority} from "../src/experiment/network/TlsCertificateAuthority.js";
 
 test("the network queue protocol validates IPv4, IPv6, TCP, UDP, and DNS events", () => {
   assert.deepEqual(parseNetworkQueueMessage("PI_NETWORK_QUEUE\t3\tREADY"), {type: "READY"});
@@ -58,6 +62,33 @@ test("the network queue protocol validates IPv4, IPv6, TCP, UDP, and DNS events"
   assert.throws(
     () => parseNetworkQueueMessage("PI_NETWORK_QUEUE\t3\tEVENT\t10\tIPV4\tudp\t10.0.2.100\t33708\t10.0.2.3\t53"),
     /omitted DNS query metadata/,
+  );
+});
+
+test("the TCP gateway protocol validates transparent IPv4 and IPv6 flow metadata", () => {
+  assert.deepEqual(
+    parseTcpGatewayFlow("PI_TCP_GATEWAY\t1\tFLOW\tIPV4\t10.200.0.2\t41000\t1.1.1.1\t443"),
+    {
+      family: NetworkAddressFamily.IPV4,
+      source: {address: "10.200.0.2", port: 41000},
+      destination: {address: "1.1.1.1", port: 443},
+    },
+  );
+  assert.deepEqual(
+    parseTcpGatewayFlow("PI_TCP_GATEWAY\t1\tFLOW\tIPV6\tfd42:7069::2\t41001\t2606:4700:4700::1111\t443"),
+    {
+      family: NetworkAddressFamily.IPV6,
+      source: {address: "fd42:7069::2", port: 41001},
+      destination: {address: "2606:4700:4700::1111", port: 443},
+    },
+  );
+  assert.throws(
+    () => parseTcpGatewayFlow("PI_TCP_GATEWAY\t2\tFLOW\tIPV4\t10.200.0.2\t41000\t1.1.1.1\t443"),
+    /unsupported protocol/,
+  );
+  assert.throws(
+    () => parseTcpGatewayFlow("PI_TCP_GATEWAY\t1\tFLOW\tIPV4\tfd42:7069::2\t41000\t1.1.1.1\t443"),
+    /source address/,
   );
 });
 
@@ -440,6 +471,438 @@ test("the network worker denies then allows separate TCP connection attempts", a
   }
 });
 
+test("the HTTP gateway authorizes actual methods and paths before creating an upstream connection", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-http-gateway-test-"));
+  const server = createServer((socket) => {
+    socket.once("data", () => {
+      socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let acceptedConnections = 0;
+  let output = "";
+  const gatewayErrors: string[] = [];
+  const requests: Array<{method: string; url: string; path: string}> = [];
+  server.on("connection", () => {
+    acceptedConnections++;
+  });
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        [
+          `curl --noproxy '*' --silent --path-as-is --request DELETE 'http://10.0.2.2:${address.port}/baizey/allowed/../blocked?ref=main' >/dev/null`,
+          `curl --noproxy '*' --silent --path-as-is --request POST --data '' 'http://10.0.2.2:${address.port}/baizey/intermediate/../allowed'`,
+        ].join("; "),
+      ],
+      cwd: workspace,
+      timeoutSeconds: 10,
+      onStdout(data) {
+        output += data.toString();
+      },
+      onDecisionError(error) {
+        gatewayErrors.push(error instanceof Error ? error.message : String(error));
+      },
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest(event) {
+        requests.push({method: event.method, url: event.url, path: event.path});
+        assert.equal(acceptedConnections, 0);
+        return event.path === "/baizey/allowed";
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(output, "OK");
+    assert.equal(acceptedConnections, 1);
+    assert.deepEqual(gatewayErrors, []);
+    assert.deepEqual(requests, [
+      {
+        method: "DELETE",
+        url: `http://10.0.2.2:${address.port}/baizey/blocked?ref=main`,
+        path: "/baizey/blocked?ref=main",
+      },
+      {
+        method: "POST",
+        url: `http://10.0.2.2:${address.port}/baizey/allowed`,
+        path: "/baizey/allowed",
+      },
+    ]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTPS gateway terminates TLS and denies a method and path before upstream TLS", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-https-gateway-test-"));
+  const upstreamAuthority = new TlsCertificateAuthority();
+  const server = createHttpsServer(
+    upstreamAuthority.serverCredentials("10.0.2.2"),
+    (_request, response) => response.end("OK"),
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let acceptedConnections = 0;
+  let output = "";
+  const gatewayErrors: string[] = [];
+  const requests: Array<{scheme: string; method: string; url: string; path: string}> = [];
+  server.on("connection", () => {
+    acceptedConnections++;
+  });
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        [
+          `curl --noproxy '*' --silent --request DELETE 'https://10.0.2.2:${address.port}/baizey/blocked' >/dev/null`,
+          `curl --noproxy '*' --silent --request POST --data '' 'https://10.0.2.2:${address.port}/baizey/allowed?ref=main'`,
+        ].join("; "),
+      ],
+      cwd: workspace,
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 15,
+      onStdout(data) {
+        output += data.toString();
+      },
+      onDecisionError(error) {
+        gatewayErrors.push(error instanceof Error ? error.message : String(error));
+      },
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest(event) {
+        requests.push({
+          scheme: event.scheme,
+          method: event.method,
+          url: event.url,
+          path: event.path,
+        });
+        assert.equal(acceptedConnections, 0);
+        return event.path === "/baizey/allowed?ref=main";
+      },
+    });
+
+    assert.equal(result.exitCode, 0, gatewayErrors.join("\n"));
+    assert.equal(output, "OK");
+    assert.equal(acceptedConnections, 1);
+    assert.deepEqual(gatewayErrors, []);
+    assert.deepEqual(requests, [
+      {
+        scheme: "https",
+        method: "DELETE",
+        url: `https://10.0.2.2:${address.port}/baizey/blocked`,
+        path: "/baizey/blocked",
+      },
+      {
+        scheme: "https",
+        method: "POST",
+        url: `https://10.0.2.2:${address.port}/baizey/allowed?ref=main`,
+        path: "/baizey/allowed?ref=main",
+      },
+    ]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTPS gateway uses SNI when an application supplies its own address mapping", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-https-sni-test-"));
+  const hostname = "application-resolved.test";
+  const upstreamAuthority = new TlsCertificateAuthority();
+  const server = createHttpsServer(
+    upstreamAuthority.serverCredentials(hostname),
+    (_request, response) => response.end("SNI"),
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let output = "";
+  const operations: NetworkOperation[] = [];
+  const requests: Array<{hostname: string; destination: string; url: string}> = [];
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        `curl --noproxy '*' --silent --resolve '${hostname}:${address.port}:10.0.2.2' 'https://${hostname}:${address.port}/from-sni'`,
+      ],
+      cwd: workspace,
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 15,
+      onStdout(data) {
+        output += data.toString();
+      },
+      decide(event) {
+        operations.push(event.operation);
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest(event) {
+        requests.push({
+          hostname: event.hostname,
+          destination: event.destination.address,
+          url: event.url,
+        });
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(output, "SNI");
+    assert.deepEqual(operations, [NetworkOperation.TCP_CONNECT]);
+    assert.deepEqual(requests, [{
+      hostname,
+      destination: "10.0.2.2",
+      url: `https://${hostname}:${address.port}/from-sni`,
+    }]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("request-aware mode fails closed instead of forwarding an opaque TCP preface", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-opaque-deny-test-"));
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let acceptedConnections = 0;
+  const gatewayErrors: string[] = [];
+  server.on("connection", () => {
+    acceptedConnections++;
+  });
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        `printf 'SSH-2.0-test\\r\\n' > /dev/tcp/10.0.2.2/${address.port} || true; sleep 0.2`,
+      ],
+      cwd: workspace,
+      timeoutSeconds: 10,
+      onDecisionError(error) {
+        gatewayErrors.push(error instanceof Error ? error.message : String(error));
+      },
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest() {
+        throw new Error("opaque bytes must not become an HTTP request event");
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(acceptedConnections, 0);
+    assert.deepEqual(gatewayErrors, ["request-aware gateway denied an opaque TCP protocol"]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("TLS remains end-to-end when request-aware HTTPS mediation is not configured", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-opaque-tls-test-"));
+  const upstreamAuthority = new TlsCertificateAuthority();
+  const server = createHttpsServer(
+    upstreamAuthority.serverCredentials("10.0.2.2"),
+    (_request, response) => response.end("OPAQUE"),
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let output = "";
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        `curl --noproxy '*' --silent 'https://10.0.2.2:${address.port}/opaque'`,
+      ],
+      cwd: workspace,
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 15,
+      onStdout(data) {
+        output += data.toString();
+      },
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(output, "OPAQUE");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTPS gateway observes the exact smart-HTTP URL produced by git fetch", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-https-hostname-test-"));
+  const hostname = "secure.service.test";
+  const upstreamAuthority = new TlsCertificateAuthority();
+  const upstreamPaths: string[] = [];
+  const server = createHttpsServer(
+    upstreamAuthority.serverCredentials(hostname),
+    (request, response) => {
+      upstreamPaths.push(request.url ?? "");
+      response.writeHead(404);
+      response.end();
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const dnsServer = createSocket("udp4");
+  dnsServer.on("message", (query, remote) => {
+    dnsServer.send(createTestDnsResponse(query, {ipv4: "10.0.2.2"}), remote.port, remote.address);
+  });
+  await new Promise<void>((resolve, reject) => {
+    dnsServer.once("error", reject);
+    dnsServer.bind(0, "127.0.0.1", resolve);
+  });
+  const dnsAddress = dnsServer.address();
+
+  const requests: Array<{hostname: string; method: string; url: string; path: string}> = [];
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        [
+          "git init --quiet",
+          `git remote add origin 'https://${hostname}:${address.port}/baizey/repository.git'`,
+          "GIT_TERMINAL_PROMPT=0 git -c credential.helper= fetch origin >/dev/null 2>&1 || true",
+        ].join("; "),
+      ],
+      cwd: workspace,
+      dnsUpstream: {address: dnsAddress.address, port: dnsAddress.port},
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 15,
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest(event) {
+        requests.push({
+          hostname: event.hostname,
+          method: event.method,
+          url: event.url,
+          path: event.path,
+        });
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(requests, [{
+      hostname,
+      method: "GET",
+      url: `https://${hostname}:${address.port}/baizey/repository.git/info/refs?service=git-upload-pack`,
+      path: "/baizey/repository.git/info/refs?service=git-upload-pack",
+    }]);
+    assert.deepEqual(upstreamPaths, [
+      "/baizey/repository.git/info/refs?service=git-upload-pack",
+    ]);
+  } finally {
+    dnsServer.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTP gateway evaluates every request on one keep-alive client connection", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-http-keepalive-test-"));
+  const upstreamPaths: string[] = [];
+  const server = createHttpServer((request, response) => {
+    upstreamPaths.push(request.url ?? "");
+    response.end("UPSTREAM");
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let acceptedConnections = 0;
+  let tcpDecisions = 0;
+  const authorizedPaths: string[] = [];
+  server.on("connection", () => {
+    acceptedConnections++;
+  });
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        process.execPath,
+        "--input-type=module",
+        "--eval",
+        [
+          "import {Agent, request} from 'node:http'",
+          "const agent = new Agent({keepAlive: true, maxSockets: 1})",
+          `const send = (path) => new Promise((resolve, reject) => { const value = request({host: '10.0.2.2', port: ${address.port}, path, agent}, (response) => { response.resume(); response.once('end', () => resolve(response.statusCode)); }); value.once('error', reject); value.end(); })`,
+          "await send('/first')",
+          "await send('/second')",
+          "agent.destroy()",
+        ].join("; "),
+      ],
+      cwd: workspace,
+      timeoutSeconds: 10,
+      decide() {
+        tcpDecisions++;
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest(event) {
+        authorizedPaths.push(event.path);
+        return event.path === "/first";
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(tcpDecisions, 1);
+    assert.equal(acceptedConnections, 1);
+    assert.deepEqual(authorizedPaths, ["/first", "/second"]);
+    assert.deepEqual(upstreamPaths, ["/first"]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
 test("the network worker denies then allows separate UDP flows", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-udp-test-"));
   const server = createSocket("udp4");
@@ -507,6 +970,7 @@ test("the network worker denies then allows separate IPv6 TCP connections", asyn
   });
   let output = "";
   let errorOutput = "";
+  const gatewayErrors: string[] = [];
   const events: Array<{family: NetworkAddressFamily; transport: string; destinationPort: number}> = [];
 
   try {
@@ -527,6 +991,9 @@ test("the network worker denies then allows separate IPv6 TCP connections", asyn
       onStderr(data) {
         errorOutput += data.toString();
       },
+      onDecisionError(error) {
+        gatewayErrors.push(error instanceof Error ? error.message : String(error));
+      },
       decide(event) {
         events.push({
           family: event.family,
@@ -537,8 +1004,12 @@ test("the network worker denies then allows separate IPv6 TCP connections", asyn
       },
     });
 
-    assert.equal(result.exitCode, 0, `${errorOutput}events=${JSON.stringify(events)}`);
-    assert.equal(output, "OK");
+    assert.equal(
+      result.exitCode,
+      0,
+      `${errorOutput}events=${JSON.stringify(events)} gatewayErrors=${JSON.stringify(gatewayErrors)}`,
+    );
+    assert.equal(output, "OK", `gatewayErrors=${JSON.stringify(gatewayErrors)}`);
     assert.equal(acceptedConnections, 1);
     assert.deepEqual(events, [
       {
@@ -693,6 +1164,35 @@ test("queue helper failure terminates the worker instead of restoring connectivi
   }
 });
 
+test("TCP gateway ingress failure terminates the worker instead of restoring direct forwarding", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-gateway-failure-test-"));
+  const helperPath = path.resolve("build/pi-tcp-gateway-native");
+
+  try {
+    await assert.rejects(
+      runNetworkSandboxedCommand({
+        command: [
+          "/bin/bash",
+          "-c",
+          [
+            `helper=$(pgrep --full ${shellQuote(`^${helperPath} `)})`,
+            "kill -KILL \"$helper\"",
+            "sleep 5",
+          ].join("; "),
+        ],
+        cwd: workspace,
+        timeoutSeconds: 10,
+        decide() {
+          throw new Error("no packet should be approved after the TCP gateway fails");
+        },
+      }),
+      /TCP gateway ingress exited unexpectedly/,
+    );
+  } finally {
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
 test("TCP retransmissions produce one decision while the original SYN is pending", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-retransmit-test-"));
   const server = createServer((socket) => {
@@ -800,8 +1300,9 @@ test("an approval stays with its queued packet when a replacement socket reuses 
 
     assert.equal(result.exitCode, 0);
     assert.equal(result.signal, null);
-    // ALLOW releases the original held SYN; the replacement is separately queued and denied.
-    assert.equal(acceptedConnections, 1);
+    // The replacement is separately queued and denied. Because the original socket was
+    // already gone when the transparent gateway received its SYN, no upstream connection is created.
+    assert.equal(acceptedConnections, 0);
     assert.deepEqual(events, [
       {sourcePort, decision: NetworkDecision.ALLOW},
       {sourcePort, decision: NetworkDecision.DENY},
@@ -858,10 +1359,15 @@ async function verifySyntheticHostnameConnection(testCase: {
     address?: string;
     syntheticAddress?: string;
   }> = [];
+  const httpRequests: Array<{hostname: string; url: string; destination: string}> = [];
   httpServer.on("connection", () => {
     acceptedConnections++;
   });
   const coordinator = new NetworkDecisionCoordinator({
+    granularity:  {
+      distinguishAddressFamily: false,
+      distinguishOperation: false
+   },
     decide(event) {
       prompted.push({
         operation: event.operation,
@@ -886,6 +1392,14 @@ async function verifySyntheticHostnameConnection(testCase: {
       onStdout(data) {
         output += data.toString();
       },
+      authorizeHttpRequest(event) {
+        httpRequests.push({
+          hostname: event.hostname,
+          url: event.url,
+          destination: event.destination.address,
+        });
+        return true;
+      },
       decide(event, signal) {
         const flow = event.operation === NetworkOperation.DNS_QUERY ? null : event;
         observed.push({
@@ -905,6 +1419,11 @@ async function verifySyntheticHostnameConnection(testCase: {
     assert.equal(output, "OK");
     assert.equal(acceptedConnections, 1);
     assert.deepEqual(prompted, [{operation: NetworkOperation.DNS_QUERY, target: testCase.hostname}]);
+    assert.deepEqual(httpRequests, [{
+      hostname: testCase.hostname,
+      url: `http://${testCase.hostname}:${httpAddress.port}/`,
+      destination: testCase.syntheticAddress,
+    }]);
     const connection = observed.find((event) => event.operation === NetworkOperation.TCP_CONNECT);
     assert.deepEqual(connection, {
       operation: NetworkOperation.TCP_CONNECT,

@@ -9,12 +9,38 @@ import type {
     Theme,
 } from "@earendil-works/pi-coding-agent";
 import pilotExtension, {PilotExtension} from "../src/extension.js";
-import {PathPolicyRuntime} from "../src/policy/path/PathPolicyRuntime.js";
-import {PilotRuntimeConfig} from "../src/runtime/PilotRuntimeConfig.js";
+import PolicyRuntime from "../src/policy/PolicyRuntime";
+import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
+import {PolicyDao} from "../src/storage/PolicyDao";
+import {NetworkPolicyRuntime} from "../src/policy/network/NetworkPolicyRuntime.js";
+import {NetworkPolicyDecisionFlow} from "../src/policy/network/NetworkPolicyDecisionFlow.js";
+import {NetworkPolicyDao} from "../src/storage/NetworkPolicyDao.js";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 import {ToolDisplayController} from "../src/tui/tool/ToolDisplayController.js";
 
 const expectedToolNames = ["bash", "read", "edit", "write", "bash-network"];
+
+function createPathPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
+    return new PolicyRuntime(
+        {
+            loadPolicies: () => [],
+            upsertPolicies() {},
+            deletePolicy() {},
+        } as unknown as PolicyDao,
+        new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
+    );
+}
+
+function createNetworkPolicyRuntime(ctx: ExtensionContext): NetworkPolicyRuntime {
+    return new NetworkPolicyRuntime(
+        {
+            loadPolicies: () => [],
+            upsertPolicies() {},
+            deletePolicy() {},
+        } as unknown as NetworkPolicyDao,
+        new NetworkPolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
+    );
+}
 
 type SessionStartHandler = (event: SessionStartEvent, ctx: ExtensionContext) => void | Promise<void>;
 type SessionShutdownHandler = (event: SessionShutdownEvent, ctx: ExtensionContext) => void | Promise<void>;
@@ -78,28 +104,6 @@ type ExtensionHarness = {
     sessionStart: () => SessionStartHandler;
     sessionShutdown: () => SessionShutdownHandler;
 };
-
-test("session runtime config owns network policy granularity", () => {
-    assert.deepEqual(new PilotRuntimeConfig().networkPolicyGranularity, {
-        distinguishOperation: false,
-        distinguishAddressFamily: false,
-    });
-    assert.deepEqual(new PilotRuntimeConfig({
-        networkPolicyGranularity: {
-            distinguishOperation: true,
-            distinguishAddressFamily: true,
-        },
-    }).networkPolicyGranularity, {
-        distinguishOperation: true,
-        distinguishAddressFamily: true,
-    });
-    assert.throws(
-        () => new PilotRuntimeConfig({
-            networkPolicyGranularity: {distinguishOperation: "yes" as unknown as boolean},
-        }),
-        /must be a boolean/,
-    );
-});
 
 test("the production extension installs built-in overrides immediately but defers session resources", async () => {
     const harness = extensionHarness();
@@ -166,11 +170,8 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
         createSessionRuntime(runtimeContext) {
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
-                config: new PilotRuntimeConfig(),
-                pathPolicy: new PathPolicyRuntime({
-                    loadPolicies: () => [],
-                    replacePolicies: () => {},
-                }),
+                pathPolicy: createPathPolicyRuntime(runtimeContext),
+                networkPolicy: createNetworkPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay,
                 close() {},
@@ -231,11 +232,8 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
     new PilotExtension(harness.pi, {
         createSessionRuntime(runtimeContext) {
             return {
-                config: new PilotRuntimeConfig(),
-                pathPolicy: new PathPolicyRuntime({
-                    loadPolicies: () => [],
-                    replacePolicies: () => {},
-                }),
+                pathPolicy: createPathPolicyRuntime(runtimeContext),
+                networkPolicy: createNetworkPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay: new ToolDisplayController(runtimeContext),
                 close() {},
@@ -370,14 +368,12 @@ test("one session runtime owns the production tool overrides until session shutd
     new PilotExtension(harness.pi, {
         createSessionRuntime(runtimeContext) {
             runtimeCreations++;
-            const pathPolicy = new PathPolicyRuntime({
-                loadPolicies: () => [],
-                replacePolicies: () => {},
-            });
+            const pathPolicy = createPathPolicyRuntime(runtimeContext);
+            const networkPolicy = createNetworkPolicyRuntime(runtimeContext);
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
-                config: new PilotRuntimeConfig(),
                 pathPolicy,
+                networkPolicy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay,
                 close() {

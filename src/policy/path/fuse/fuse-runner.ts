@@ -15,7 +15,7 @@ export type FuseRunOptions = {
     onStdout?: (data: Buffer) => void;
     onStderr?: (data: Buffer) => void;
     onDecisionError?: (error: unknown) => void;
-    decide: (event: FusePolicyEvent) => FuseDecision | Promise<FuseDecision>;
+    decide: (event: FusePolicyEvent, signal: AbortSignal) => FuseDecision | Promise<FuseDecision>;
 };
 
 export type FuseRunResult = {
@@ -34,6 +34,9 @@ export async function runFuseSandboxedCommand(options: FuseRunOptions): Promise<
     const commandCwd = await realpath(options.cwd);
     const temporaryDirectory = await mkdtemp(path.join("/var/tmp", "pilot-fuse-"));
     const mountpoint = path.join(temporaryDirectory, "root");
+    const decisionController = new AbortController();
+    const abortDecisions = () => decisionController.abort();
+    options.signal?.addEventListener("abort", abortDecisions, {once: true});
     let filesystem: FuseFilesystem | undefined;
     let mounted = false;
     let result: FuseRunResult | undefined;
@@ -44,14 +47,17 @@ export async function runFuseSandboxedCommand(options: FuseRunOptions): Promise<
             backingRoot: HOST_FILESYSTEM_ROOT,
             mountpoint,
             hiddenFusePaths: [temporaryDirectory],
-            decide: options.decide,
+            decide: (event) => decideUntilAborted(options.decide, event, decisionController.signal),
             onDecisionError: options.onDecisionError,
         });
         await filesystem.mount();
         mounted = true;
-        result = await runWorker(options, commandCwd, mountpoint);
+        result = await runWorker(options, commandCwd, mountpoint, abortDecisions);
     } catch (error) {
         runError = error;
+    } finally {
+        abortDecisions();
+        options.signal?.removeEventListener("abort", abortDecisions);
     }
 
     let cleanupError: unknown;
@@ -74,6 +80,7 @@ async function runWorker(
     options: FuseRunOptions,
     commandCwd: string,
     mountpoint: string,
+    abortDecisions: () => void,
 ): Promise<FuseRunResult> {
     if (options.signal?.aborted) throw new Error("aborted");
 
@@ -102,7 +109,10 @@ async function runWorker(
 
     let aborted = false;
     let timedOut = false;
-    const terminate = () => killProcessGroup(child.pid);
+    const terminate = () => {
+        abortDecisions();
+        killProcessGroup(child.pid);
+    };
     const onAbort = () => {
         aborted = true;
         terminate();
@@ -127,6 +137,35 @@ async function runWorker(
         if (timeout) clearTimeout(timeout);
         options.signal?.removeEventListener("abort", onAbort);
     }
+}
+
+function decideUntilAborted(
+    decide: FuseRunOptions["decide"],
+    event: FusePolicyEvent,
+    signal: AbortSignal,
+): Promise<FuseDecision> {
+    if (signal.aborted) return Promise.resolve(FuseDecision.DENY);
+
+    return new Promise<FuseDecision>((resolve, reject) => {
+        let settled = false;
+        const finish = (decision: FuseDecision) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", onAbort);
+            resolve(decision);
+        };
+        const fail = (error: unknown) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", onAbort);
+            reject(error);
+        };
+        const onAbort = () => finish(FuseDecision.DENY);
+
+        signal.addEventListener("abort", onAbort, {once: true});
+        if (signal.aborted) return onAbort();
+        void Promise.resolve().then(() => decide(event, signal)).then(finish, fail);
+    });
 }
 
 function killProcessGroup(pid: number | undefined): void {

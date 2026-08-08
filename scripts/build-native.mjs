@@ -8,6 +8,7 @@ const outputDirectory = fileURLToPath(new URL("../build", import.meta.url));
 mkdirSync(outputDirectory, {recursive: true});
 compileNative("pi-mknod.c", "pi-mknod-native");
 compileNative("pi-network-queue.c", "pi-network-queue-native", netfilterQueueFlags());
+compileNative("pi-tcp-gateway.c", "pi-tcp-gateway-native");
 
 function compileNative(sourceName, outputName, extraFlags = []) {
   const source = fileURLToPath(new URL(`../native/${sourceName}`, import.meta.url));

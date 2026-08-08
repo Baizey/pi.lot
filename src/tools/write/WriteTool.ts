@@ -1,18 +1,16 @@
 import {
+    AgentToolResult,
     createWriteToolDefinition,
     type ExtensionAPI,
     type WriteToolInput,
 } from "@earendil-works/pi-coding-agent";
 import type {PilotSessionRuntimeHandle} from "../../runtime/PilotSessionRuntime.js";
-import {
-    ToolArgumentLayout,
-    ToolArgumentPlacement,
-    ToolTextDirection,
-} from "../../tui/tool/ToolPresentation.js";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
+import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection,} from "../../tui/tool/ToolPresentation.js";
 import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
+import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 
 const WRITE_PRESENTATION = {
     toolName: "write",
@@ -36,9 +34,11 @@ export class WriteTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeHandle,
-    ) {}
+    ) {
+    }
 
     register(): void {
+        const runtimeProvider = this.runtimeProvider
         if (this.registered) throw new Error("Write tool is already registered");
         this.registered = true;
 
@@ -54,6 +54,13 @@ export class WriteTool {
 
         this.pi.registerTool({
             ...definition,
+            async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<undefined>> {
+                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_READ, signal)
+                if (result.matchedStatus === PolicyResponse.DENIED) {
+                    throw new Error(result.toDenyMessage())
+                }
+                return await definition.execute(toolCallId, params, signal, onUpdate, ctx)
+            },
             renderCall: (args, theme, context) => {
                 const mode = this.synchronizeMode(context.expanded);
                 const component = nativeRenderCall(args, theme, context);
@@ -86,11 +93,11 @@ export class WriteTool {
 
     private clearResult(component: unknown): void {
         if (this.hasMethod(component, "setText")) {
-            (component as {setText(value: string): void}).setText("");
+            (component as { setText(value: string): void }).setText("");
             return;
         }
         if (this.hasMethod(component, "clear")) {
-            (component as {clear(): void}).clear();
+            (component as { clear(): void }).clear();
             return;
         }
         throw new Error("Pi's Write result renderer returned an unsupported component");
@@ -100,7 +107,7 @@ export class WriteTool {
         if (!this.hasMethod(component, "setText")) {
             throw new Error("Pi's Write call renderer did not return a mutable text component");
         }
-        (component as {setText(value: string): void}).setText(text);
+        (component as { setText(value: string): void }).setText(text);
     }
 
     private hasMethod(value: unknown, key: string): boolean {

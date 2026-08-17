@@ -2,11 +2,11 @@
 
 import {SqliteDatabase} from "./sqlite";
 import {fsAccessTypesSql, policyLifetimesSql, policyStatusesSql} from "./policy-common";
-import {PolicyLifetime, PolicyResponse} from "../policy/types";
-import {PolicyAccessType, SecurityPolicy} from "../policy/types";
+import {Policy, PolicyLifetime, PolicyResponse} from "../policy/types";
+import {PolicyAccessType} from "../policy/types";
 
 type PathPolicyRuleRow = {
-    path: string;
+    pattern: string;
     accessType: PolicyAccessType;
     lifetime: PolicyLifetime;
     status: PolicyResponse;
@@ -67,7 +67,7 @@ export class PolicyDao {
         this.schemaInitialized = true;
     }
 
-    loadPolicies(): SecurityPolicy[] {
+    loadPolicies(): Policy[] {
         this.initializeSchema();
         const rows = this.db.prepare(`
             select "pattern", "accessType", "lifetime", "status", "reason"
@@ -75,7 +75,7 @@ export class PolicyDao {
             order by "pattern" asc, "accessType" asc
         `).all() as PathPolicyRuleRow[];
 
-        const policies = new Map<string, SecurityPolicy>();
+        const policies = new Map<string, Policy>();
         for (const row of rows) {
             const policy = policies.get(row.pattern) ?? {pattern: row.pattern, info: {}};
             policy.info[row.accessType] = {
@@ -90,10 +90,10 @@ export class PolicyDao {
         return {policies: [...policies.values()]}.policies;
     }
 
-    upsertPolicies(policies: SecurityPolicy[]): void {
+    upsertPolicies(policies: Policy[]): void {
         this.initializeSchema();
         const now = Date.now();
-        const run = this.db.transaction((items: SecurityPolicy[]) => {
+        const run = this.db.transaction((items: Policy[]) => {
             const upsert = this.db.prepare(`
                 insert into "policy_rules" ("pattern", "accessType", "lifetime", "status", "reason", "updatedAt")
                 values (@pattern, @accessType, @lifetime, @status, @reason,

@@ -1,13 +1,15 @@
 import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
 import type {ResponseDefaults} from "../policy/types.js";
 import {ResponseType} from "../policy/types.js";
-import {defaultPolicyAreas} from "../policy/PolicyLogic";
-import {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime";
+import {initialPolicyDefaults} from "../policy/defaults.js";
+import type {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime";
 
 const COMMAND_NAME = "policy-defaults";
-const AREAS = ["all", ...Object.keys(defaultPolicyAreas)]
-const RESPONSES = Object.keys(ResponseType)
-const USAGE = `Usage: /${COMMAND_NAME} <${RESPONSES.join("|")}> <${AREAS.join("|")}>` as const;
+const ACTIONS = ["save", "reset"] as const;
+const AREAS = ["all", ...Object.keys(initialPolicyDefaults)];
+const RESPONSES = Object.values(ResponseType);
+const FIRST_ARGUMENTS = [...ACTIONS, ...RESPONSES];
+const USAGE = `Usage: /${COMMAND_NAME} [save|reset|<${RESPONSES.join("|")}> <${AREAS.join("|")}>]` as const;
 
 export class PolicyDefaultsCommand {
     private registered = false;
@@ -32,6 +34,20 @@ export class PolicyDefaultsCommand {
                     ctx.ui.notify(this.renderDefaults(provider.policyRuntime.defaultResponses), "info");
                     return;
                 }
+                if (args.length === 1 && isValid(ACTIONS, args[0])) {
+                    try {
+                        if (args[0] === "save") {
+                            provider.policyRuntime.saveDefaultResponses();
+                            ctx.ui.notify("Saved current policy defaults to ~/.pilot/policy-defaults.json.", "info");
+                        } else {
+                            const source = provider.policyRuntime.resetDefaultResponses();
+                            ctx.ui.notify(`Reset policy defaults from ${source} defaults.`, "info");
+                        }
+                    } catch (error) {
+                        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+                    }
+                    return;
+                }
                 if (args.length !== 2 || !isValid(RESPONSES, args[0]) || !isValid(AREAS, args[1])) {
                     ctx.ui.notify(USAGE, "error");
                     return;
@@ -39,7 +55,7 @@ export class PolicyDefaultsCommand {
 
                 const [response, key] = args;
                 if (key === "all") {
-                    Object.keys(defaultPolicyAreas).forEach(key => {
+                    Object.keys(initialPolicyDefaults).forEach(key => {
                         provider.policyRuntime.setDefaultResponse(key as keyof ResponseDefaults, response as ResponseType);
                     })
                 } else {
@@ -56,14 +72,18 @@ export class PolicyDefaultsCommand {
         const midFilling = !parsed.onNext
         const tokens = parsed.args
         if (tokens.length === 0 || (tokens.length === 1 && midFilling)) {
-            return matches(RESPONSES, tokens[0], [])
-        } else if (tokens.length === 1 || (tokens.length === 2 && midFilling)) {
+            return matches(FIRST_ARGUMENTS, tokens[0], [])
+        }
+        if (tokens.length === 1 && isValid(ACTIONS, tokens[0])) return [];
+        if (!isValid(RESPONSES, tokens[0])) return null;
+        if (tokens.length === 1 || (tokens.length === 2 && midFilling)) {
             return matches(AREAS, tokens[1], [tokens[0]])
-        } else return []
+        }
+        return []
     }
 
     private renderDefaults(defaults: ResponseDefaults): string {
-        return ["Policy defaults for this session:", ...(Object.keys(defaultPolicyAreas)).map((key) => `${key} = ${defaults[key as keyof ResponseDefaults]}`)].join("\n");
+        return ["Policy defaults for this session:", ...(Object.keys(initialPolicyDefaults)).map((key) => `${key} = ${defaults[key as keyof ResponseDefaults]}`)].join("\n");
     }
 }
 
@@ -73,7 +93,6 @@ function matches(
     previousArgs: string[],
 ) {
     prefix = prefix || "";
-    if (isValid(RESPONSES, prefix)) return null;
     const matches = options.filter((key) => key.startsWith(prefix));
     return matches.length === 0
         ? null
@@ -90,6 +109,6 @@ function parseArgs(str: string): { args: string[], onNext: boolean } {
     return {args: tokens, onNext: endsWithSpace};
 }
 
-function isValid(options: string[], value: string | undefined): boolean {
+function isValid(options: readonly string[], value: string | undefined): boolean {
     return options.some((key) => key === value);
 }

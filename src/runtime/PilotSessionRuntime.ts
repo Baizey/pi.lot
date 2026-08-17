@@ -6,9 +6,11 @@ import {UiDecisionFlowManager} from "../tui/UiDecisionFlowManager.js";
 import {UiDecisionFlowQueue} from "../tui/UiDecisionFlowQueue.js";
 import {ToolDisplayController} from "../tui/tool/ToolDisplayController.js";
 import {PolicyDecisionFlow} from "../policy/PolicyDecisionFlow";
+import {PolicyDefaultJsonStorage, PolicyDefaultJsonStorageInterface} from "../policy/defaults";
 
 export type PilotSessionRuntimeOptions = {
     openDatabase?: () => SqliteDatabase;
+    policyDefaultsStore?: PolicyDefaultJsonStorageInterface;
 };
 
 export type PilotSessionRuntimeInterface = {
@@ -36,7 +38,8 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             const uiManager = new UiDecisionFlowManager(ctx, this.decisionFlowQueue)
             const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager})
 
-            this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow);
+            const defaultsStore = options.policyDefaultsStore ?? new PolicyDefaultJsonStorage('policy-defaults');
+            this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow, defaultsStore);
             this.decisionFlows = uiManager;
             this.toolDisplay = new ToolDisplayController(ctx);
             this.database = database;

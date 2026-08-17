@@ -9,6 +9,7 @@ import {
 } from "./types";
 import {PolicyDaoInterface} from "../storage/PolicyDao";
 import {PolicyDecisionFlow} from "./PolicyDecisionFlow";
+import {initialPolicyDefaults, PolicyDefaultJsonStorageInterface} from "./defaults.js";
 
 export type ToolCallPathPolicyEvaluator = (
     path: string,
@@ -18,19 +19,18 @@ export type ToolCallPathPolicyEvaluator = (
 
 export class PolicyRuntime {
     private readonly sessionPolicy: PolicyLogic;
-    readonly defaultResponses: ResponseDefaults = {
-        fs_read: ResponseType.allow,
-        fs_write: ResponseType.ask_user,
-        web_read: ResponseType.allow,
-        web_write: ResponseType.ask_user,
-        web_extra: ResponseType.ask_user,
-    }
+    readonly defaultResponses: ResponseDefaults;
 
     constructor(
         private readonly database: PolicyDaoInterface,
         private readonly decisionFlow: PolicyDecisionFlow,
+        private readonly defaultsStore?: PolicyDefaultJsonStorageInterface,
     ) {
         this.sessionPolicy = new PolicyLogic({policies: database.loadPolicies()});
+        this.defaultResponses = {
+            ...initialPolicyDefaults,
+            ...defaultsStore?.load(),
+        };
     }
 
     async once(
@@ -49,6 +49,21 @@ export class PolicyRuntime {
 
     setDefaultResponse(key: keyof ResponseDefaults, response: ResponseType): void {
         this.defaultResponses[key] = response;
+    }
+
+    saveDefaultResponses(): void {
+        if (!this.defaultsStore) throw new Error("Policy defaults persistence is not configured.");
+        this.defaultsStore.save(this.defaultResponses);
+    }
+
+    resetDefaultResponses(): "saved" | "built-in" {
+        const savedDefaults = this.defaultsStore?.load();
+        Object.assign(
+            this.defaultResponses,
+            initialPolicyDefaults,
+            savedDefaults ?? {},
+        );
+        return savedDefaults ? "saved" : "built-in";
     }
 
     private async evaluate(

@@ -240,6 +240,7 @@ test("session runtime loads persisted network policies from its database", async
 
         runtime = new PilotSessionRuntime(ctx, {
             openDatabase: () => SqliteDatabase.test(false, databaseFile),
+            policyDefaultsStore: {load: () => null, save() {}},
         });
         const result = await runtime.policyRuntime.beginToolCall()(
             "https://persistent.example/api/resource",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {createSocket} from "node:dgram";
-import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {createServer as createHttpServer} from "node:http";
 import {createServer as createHttpsServer} from "node:https";
 import {createServer} from "node:net";
@@ -132,6 +132,8 @@ test("the network worker preserves host access, has no gate capabilities, and de
           `printf host-write > ${shellQuote(hostWritePath)}`,
           "id -u",
           "id -g",
+          "printf 'pid=%s\\n' \"$$\"",
+          `if [ -e /proc/${process.pid} ]; then exit 92; fi`,
           "grep '^CapEff:' /proc/self/status",
           "grep '^hosts:' /etc/nsswitch.conf",
           `curl --unix-socket ${shellQuote(socketPath)} --silent http://localhost`,
@@ -152,6 +154,7 @@ test("the network worker preserves host access, has no gate capabilities, and de
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(result.exitCode, 0);
     assert.match(output, new RegExp(`^${process.getuid?.()}\\n${process.getgid?.()}$`, "m"));
+    assert.match(output, /^pid=2$/m);
     assert.match(output, /^CapEff:\s+0+$/m);
     assert.match(output, /^hosts:\s+files myhostname dns$/m);
     assert.match(output, /LOCAL/);
@@ -1138,27 +1141,26 @@ test("cancellation drops a pending queued SYN without a host connection", async 
 test("queue helper failure terminates the worker instead of restoring connectivity", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-helper-failure-test-"));
   const helperPath = path.resolve("build/pi-network-queue-native");
+  let ready!: () => void;
+  const workerReady = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
 
   try {
-    await assert.rejects(
-      runNetworkSandboxedCommand({
-        command: [
-          "/bin/bash",
-          "-c",
-          [
-            `helper=$(pgrep --full --exact ${shellQuote(helperPath)})`,
-            "kill -KILL \"$helper\"",
-            "sleep 5",
-          ].join("; "),
-        ],
-        cwd: workspace,
-        timeoutSeconds: 10,
-        decide() {
-          throw new Error("no packet should reach the failed helper");
-        },
-      }),
-      /network queue helper exited unexpectedly/,
-    );
+    const running = runNetworkSandboxedCommand({
+      command: ["/bin/bash", "-c", "echo PI_HELPER_TEST_READY; sleep 5"],
+      cwd: workspace,
+      timeoutSeconds: 10,
+      onStdout(data) {
+        if (data.toString().includes("PI_HELPER_TEST_READY")) ready();
+      },
+      decide() {
+        throw new Error("no packet should reach the failed helper");
+      },
+    });
+    await waitForWorkerReady(workerReady, running);
+    process.kill(directChildPid(helperPath), "SIGKILL");
+    await assert.rejects(running, /network queue helper exited unexpectedly/);
   } finally {
     rmSync(workspace, {recursive: true, force: true});
   }
@@ -1167,27 +1169,26 @@ test("queue helper failure terminates the worker instead of restoring connectivi
 test("TCP gateway ingress failure terminates the worker instead of restoring direct forwarding", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-gateway-failure-test-"));
   const helperPath = path.resolve("build/pi-tcp-gateway-native");
+  let ready!: () => void;
+  const workerReady = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
 
   try {
-    await assert.rejects(
-      runNetworkSandboxedCommand({
-        command: [
-          "/bin/bash",
-          "-c",
-          [
-            `helper=$(pgrep --full ${shellQuote(`^${helperPath} `)})`,
-            "kill -KILL \"$helper\"",
-            "sleep 5",
-          ].join("; "),
-        ],
-        cwd: workspace,
-        timeoutSeconds: 10,
-        decide() {
-          throw new Error("no packet should be approved after the TCP gateway fails");
-        },
-      }),
-      /TCP gateway ingress exited unexpectedly/,
-    );
+    const running = runNetworkSandboxedCommand({
+      command: ["/bin/bash", "-c", "echo PI_HELPER_TEST_READY; sleep 5"],
+      cwd: workspace,
+      timeoutSeconds: 10,
+      onStdout(data) {
+        if (data.toString().includes("PI_HELPER_TEST_READY")) ready();
+      },
+      decide() {
+        throw new Error("no packet should be approved after the TCP gateway fails");
+      },
+    });
+    await waitForWorkerReady(workerReady, running);
+    process.kill(directChildPid(helperPath), "SIGKILL");
+    await assert.rejects(running, /TCP gateway ingress exited unexpectedly/);
   } finally {
     rmSync(workspace, {recursive: true, force: true});
   }
@@ -1540,6 +1541,35 @@ function parseTestIpv6Address(address: string): Buffer {
   const bytes = Buffer.alloc(16);
   groups.forEach((group, index) => bytes.writeUInt16BE(Number.parseInt(group, 16), index * 2));
   return bytes;
+}
+
+async function waitForWorkerReady(workerReady: Promise<void>, running: Promise<unknown>): Promise<void> {
+  await Promise.race([
+    workerReady,
+    running.then(
+      () => {
+        throw new Error("network worker exited before the helper-failure test was ready");
+      },
+      (error: unknown) => {
+        throw error;
+      },
+    ),
+  ]);
+}
+
+function directChildPid(executable: string): number {
+  for (const entry of readdirSync("/proc")) {
+    if (!/^[1-9][0-9]*$/.test(entry)) continue;
+    try {
+      const status = readFileSync(`/proc/${entry}/status`, "utf8");
+      const parent = /^PPid:\s+([0-9]+)$/m.exec(status)?.[1];
+      const command = readFileSync(`/proc/${entry}/cmdline`, "utf8").split("\0")[0];
+      if (Number(parent) === process.pid && command === executable) return Number(entry);
+    } catch {
+      // Processes may exit while /proc is being inspected.
+    }
+  }
+  throw new Error(`direct child not found: ${executable}`);
 }
 
 async function waitForPath(target: string): Promise<void> {

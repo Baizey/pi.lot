@@ -57,7 +57,12 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
             command: [
                 "/bin/bash",
                 "-c",
-                `printf blocked > ${shellQuote(deniedFile)}; curl --noproxy '*' --silent http://10.0.2.2:${address.port}`,
+                [
+                    "unshare --user --map-current-user --net -- /bin/true || exit 92",
+                    "for descriptor in /proc/$$/fd/*; do if [ \"$(readlink \"$descriptor\")\" = /dev/fuse ]; then echo LEAKED_FUSE_FD; exit 91; fi; done",
+                    `printf blocked > ${shellQuote(deniedFile)}`,
+                    `curl --noproxy '*' --silent http://10.0.2.2:${address.port}`,
+                ].join("; "),
             ],
             cwd,
             mediatedHostRoot,
@@ -72,6 +77,7 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
         assert.equal(existsSync(deniedFile), false);
         assert.match(Buffer.concat(output).toString(), /ACCESS DENIED/);
         assert.match(Buffer.concat(output).toString(), /OK/);
+        assert.doesNotMatch(Buffer.concat(output).toString(), /LEAKED_FUSE_FD/);
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.FS_WRITE), true);
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.TCP_ACCESS), true);
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.HTTP_GET), true);

@@ -6,6 +6,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const outputDirectory = fileURLToPath(new URL("../build", import.meta.url));
 
 mkdirSync(outputDirectory, {recursive: true});
+compileNative("pi-exec-clean.c", "pi-exec-clean-native");
 compileNative("pi-mknod.c", "pi-mknod-native");
 compileNative("pi-network-queue.c", "pi-network-queue-native", netfilterQueueFlags());
 compileNative("pi-tcp-gateway.c", "pi-tcp-gateway-native");

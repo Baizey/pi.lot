@@ -3,6 +3,7 @@ import {mkdtemp, mkdir, realpath, rm} from "node:fs/promises";
 import path from "node:path";
 import {FuseDecision, FuseFilesystem} from "./FuseFilesystem.js";
 import type {FusePolicyEvent} from "./FuseFilesystem.js";
+import {resolveNativeExecutable} from "../../../runtime/NativeExecutable.js";
 
 export const HOST_FILESYSTEM_ROOT = "/";
 
@@ -118,7 +119,11 @@ async function runWorker(
         "--",
         ...options.command,
     ];
-    const child = spawn("/usr/bin/bwrap", bubblewrapArguments, {
+    const child = spawn(resolveNativeExecutable("pi-exec-clean-native"), [
+        "2",
+        "/usr/bin/bwrap",
+        ...bubblewrapArguments,
+    ], {
         cwd: HOST_FILESYSTEM_ROOT,
         env: options.env,
         detached: true,

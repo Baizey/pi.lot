@@ -4,7 +4,6 @@ import path from "node:path";
 
 export interface JsonFileLoaderInterface<T> {
     load(): T;
-
     save(defaults: T): void;
 }
 

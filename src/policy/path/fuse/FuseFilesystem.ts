@@ -93,7 +93,7 @@ export class FuseFilesystem {
         this.onDecisionError = options.onDecisionError;
         this.fuse = new Fuse(this.mountpoint, this.createOperations(), {
             timeout: false,
-            autoUnmount: true,
+            autoUnmount: false,
             fsname: "pilot-fuse",
             subtype: "pilot-fuse",
             entryTimeout: 0.001,

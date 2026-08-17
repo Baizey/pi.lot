@@ -38,7 +38,7 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             const uiManager = new UiDecisionFlowManager(ctx, this.decisionFlowQueue)
             const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager})
 
-            const defaultsStore = options.policyDefaultsStore ?? new PolicyDefaultJsonStorage('policy-defaults');
+            const defaultsStore = options.policyDefaultsStore ?? new PolicyDefaultJsonStorage();
             this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow, defaultsStore);
             this.decisionFlows = uiManager;
             this.toolDisplay = new ToolDisplayController(ctx);

@@ -123,10 +123,10 @@ One-call and session permissions live only for their selected lifetime.
 Permissions remembered on this computer are stored in:
 
 ```text
-~/.pi/agent/pilot.sqlite
+~/.pilot/pilot.sqlite
 ```
 
-Synchronized or account-wide policy is not implemented.
+Synchronized or account-wide policy is not implemented. All remembered policy currently remains local to this computer.
 
 ## Policy defaults
 
@@ -148,8 +148,10 @@ Use `/policy-defaults save` to persist the active values to `~/.pilot/policy-def
 
 - Linux only.
 - The project has not been security audited.
-- Active network-flow revocation is not implemented.
-- Some unusual filesystem, device, pseudo-filesystem, socket, DNS, and IPv6 behavior is not yet supported.
+- Host-side FUSE path resolution still has pathname race windows.
+- Versioned live policy replacement and active network-flow revocation are not implemented.
+- The combined worker's `/proc`, `/dev`, pseudo-filesystem, and pathname-socket contract needs further hardening and compatibility work.
+- Some DNS, HTTP/TLS, UDP-lifecycle, and IPv6 behavior is not yet supported.
 - Preserved local IPC can ask another host process to perform network activity outside the network gate.
 - Unprivileged Linux namespaces may not preserve every supplementary group.
 - An allowed operation retains your ordinary host-user permissions.
@@ -158,13 +160,7 @@ Unsupported, malformed, cancelled, or incomplete mediated operations are intende
 
 ## Project status
 
-The filesystem and network policy systems, combined Bash sandbox, session runtime, and tool display controls are implemented as working MVPs.
-
-Near-term work includes:
-
-- active network-flow revocation;
-- broader filesystem and network compatibility; and
-- further policy and runtime hardening.
+The filesystem and network policy systems, combined Bash sandbox, session runtime, and tool display controls are implemented as an integrated experimental system. The completed MVP specifications have been retired; remaining correctness, compatibility, and hardening work is tracked in [`POLICY_FUTURE_WORK.md`](./POLICY_FUTURE_WORK.md).
 
 Features from `pi-agent-tools` that have not yet been ported include:
 
@@ -175,10 +171,8 @@ Features from `pi-agent-tools` that have not yet been ported include:
 
 ## Technical details
 
-The implementation and security contracts are documented separately:
-
-- [`FUSE-MVP.md`](./FUSE-MVP.md) — filesystem mediation
-- [`NETWORK-MVP.md`](./NETWORK-MVP.md) — network mediation
+- [`EXPERIMENT_README.md`](./EXPERIMENT_README.md) describes the current implementation.
+- [`POLICY_FUTURE_WORK.md`](./POLICY_FUTURE_WORK.md) records the remaining filesystem and network policy work.
 
 ## License
 

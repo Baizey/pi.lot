@@ -28,6 +28,7 @@ import type {HttpRequestAuthorizer} from "./HttpRequestBroker.js";
 import {TcpGatewayBroker} from "./TcpGatewayBroker.js";
 import type {TcpGatewayApproval} from "./TcpGatewayBroker.js";
 import {TlsCertificateAuthority} from "./TlsCertificateAuthority.js";
+import {resolveNativeExecutable} from "../../runtime/NativeExecutable.js";
 
 export {
   NetworkAddressFamily,
@@ -283,7 +284,9 @@ class NetworkSandboxRunner {
     }
     const bwrapArguments = [
       "--unshare-net",
+      "--unshare-pid",
       "--bind", mediatedHostRoot, "/",
+      "--proc", "/proc",
       "--ro-bind", this.resolverFile, this.resolverDestination,
       "--ro-bind", this.nsswitchFile, this.nsswitchDestination,
       ...(this.caBundleFile ? ["--ro-bind", this.caBundleFile, this.caBundleFile] : []),
@@ -298,7 +301,9 @@ class NetworkSandboxRunner {
       ...this.options.command,
     ];
 
-    const child = spawn(UNSHARE_PATH, [
+    const child = spawn(resolveNativeExecutable("pi-exec-clean-native"), [
+      "4",
+      UNSHARE_PATH,
       "--user", "--map-current-user", "--net", "--",
       BWRAP_PATH,
       ...bwrapArguments,
@@ -871,9 +876,7 @@ class NetworkSandboxRunner {
     killProcess(this.queueHelper);
     killProcess(this.tcpIngress);
     killProcess(this.slirp);
-    if (this.outerProcess?.exitCode === null && this.outerProcess.signalCode === null) {
-      killProcessGroup(this.outerProcess.pid);
-    }
+    killProcessGroup(this.outerProcess?.pid);
     await Promise.allSettled([
       settleChild(this.queueHelper),
       settleChild(this.tcpIngress),

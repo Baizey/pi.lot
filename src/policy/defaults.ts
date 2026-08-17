@@ -17,7 +17,7 @@ export type PolicyDefaultJsonStorageInterface = JsonFileLoaderInterface<Response
 export class PolicyDefaultJsonStorage extends JsonFileLoader<ResponseDefaults> implements PolicyDefaultJsonStorageInterface {
 
     constructor(
-        filename: string,
+        filename: string = "policy-defaults",
         directory = path.join(os.homedir(), ".pilot")
     ) {
         super(filename, initialPolicyDefaults, directory)

@@ -94,6 +94,7 @@ The tests verify production session-runtime ownership and decision-flow cancella
 - `src/pilot-extension.ts` — pi.lot's production Pi extension entry point and session lifecycle composition.
 - `src/runtime/PilotSessionRuntime.ts` — session-owned policy database, policy runtimes, and decision-flow manager.
 - `src/tools/` — one folder per overridden Pi tool (`bash`, `read`, `edit`, and `write`).
+- `src/mcp/` — MCP configuration, stdio/HTTP clients, dynamic tools, commands, and session lifecycle.
 - `src/tools/bash/BashTool.ts` — built-in Bash override and combined FUSE/network lifecycle adapter.
 - `src/policy/path/fuse/FusePathPolicyAuthorizer.ts` — FUSE event-to-path-policy mapping and user decisions.
 - `src/policy/PolicyRuntime.ts` — tool-call, session, and persisted path-policy ownership.

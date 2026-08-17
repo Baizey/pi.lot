@@ -59,6 +59,46 @@ pi.lot adds shared display modes to Pi's Bash, Read, Edit, and Write tools:
 
 Read highlighting and images, Write highlighting, and Edit diffs remain available.
 
+### MCP servers
+
+pi.lot supports MCP servers over stdio and Streamable HTTP. Configuration is stored in:
+
+```text
+~/.pilot/mcp.json
+```
+
+Tools default to unexposed. Expose only the tools you want Pi to call:
+
+```json
+{
+  "servers": {
+    "example": {
+      "transport": "stdio",
+      "command": "example-mcp-server",
+      "args": [],
+      "tools": {
+        "expose": ["read_resource"],
+        "hide": []
+      }
+    }
+  }
+}
+```
+
+Manage connections and exposure with:
+
+```text
+/mcp show [all|server]
+/mcp connect [all|server]
+/mcp disconnect [all|server]
+/mcp refresh [all|server]
+/mcp expose <server> <tool...|*>
+/mcp hide <server> <tool...|*>
+/mcp reset <server> [tool...|*]
+```
+
+MCP is an explicit capability boundary, not part of pi.lot's filesystem or network mediation. Stdio servers run as ordinary host processes, HTTP transports use the host network, and exposed MCP tools may perform effects outside Bash policy.
+
 ## Why not use a workspace sandbox?
 
 A workspace sandbox is useful when an agent should only see one directory. That is not always how Pi is used.
@@ -155,6 +195,7 @@ Use `/policy-defaults save` to persist the active values to `~/.pilot/policy-def
 - Preserved local IPC can ask another host process to perform network activity outside the network gate.
 - Unprivileged Linux namespaces may not preserve every supplementary group.
 - An allowed operation retains your ordinary host-user permissions.
+- MCP servers and MCP tool effects are intentionally outside filesystem and network policy mediation.
 
 Unsupported, malformed, cancelled, or incomplete mediated operations are intended to fail closed.
 

@@ -6,9 +6,11 @@ import {ReadTool} from "./tools/read/ReadTool.js";
 import {WriteTool} from "./tools/write/WriteTool.js";
 import {TOOL_MINIMAL_KEY_TEXT} from "./tui/tool/ToolDisplayController.js";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
+import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
+    createMcpExtension?: (pi: ExtensionAPI) => McpExtensionInterface;
 };
 
 export default function pilotExtension(pi: ExtensionAPI): void {
@@ -17,6 +19,7 @@ export default function pilotExtension(pi: ExtensionAPI): void {
 
 export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
+    private readonly mcpExtension: McpExtensionInterface;
     private sessionRuntime: PilotSessionRuntimeInterface | undefined;
     private registered = false;
 
@@ -25,6 +28,7 @@ export class PilotExtension {
         options: PilotExtensionOptions = {},
     ) {
         this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
+        this.mcpExtension = (options.createMcpExtension ?? ((extensionApi) => new McpExtension(extensionApi)))(pi);
     }
 
     register(): void {
@@ -37,6 +41,7 @@ export class PilotExtension {
         new EditTool(this.pi, runtimeProvider).register();
         new WriteTool(this.pi, runtimeProvider).register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
+        this.mcpExtension.register();
 
         this.pi.registerShortcut(TOOL_MINIMAL_KEY_TEXT, {
             description: "Toggle minimal tool display",
@@ -48,16 +53,22 @@ export class PilotExtension {
         this.pi.on("session_shutdown", () => this.stopSession());
     }
 
-    private startSession(ctx: ExtensionContext): void {
+    private startSession(ctx: ExtensionContext): Promise<void> {
         if (this.sessionRuntime) throw new Error("pi.lot session runtime is already started");
 
-        this.sessionRuntime = this.createSessionRuntime(ctx);
+        const runtime = this.createSessionRuntime(ctx);
+        this.sessionRuntime = runtime;
+        return this.mcpExtension.startSession(ctx).catch((error) => {
+            this.sessionRuntime = undefined;
+            runtime.close();
+            throw error;
+        });
     }
 
-    private stopSession(): void {
+    private stopSession(): Promise<void> {
         const runtime = this.sessionRuntime;
         this.sessionRuntime = undefined;
-        runtime?.close();
+        return this.mcpExtension.stopSession().finally(() => runtime?.close());
     }
 
     private requireSessionRuntime(): PilotSessionRuntimeInterface {

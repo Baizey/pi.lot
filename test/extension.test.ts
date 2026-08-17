@@ -8,7 +8,7 @@ import type {
     SessionStartEvent,
     Theme,
 } from "@earendil-works/pi-coding-agent";
-import pilotExtension, {PilotExtension} from "../src/pilot-extension.js";
+import {PilotExtension} from "../src/pilot-extension.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import {PolicyDaoInterface} from "../src/storage/PolicyDao";
@@ -98,7 +98,7 @@ test("the production extension installs built-in overrides immediately but defer
     const harness = extensionHarness();
     const ctx = {cwd: process.cwd()} as ExtensionContext;
 
-    pilotExtension(harness.pi);
+    new PilotExtension(harness.pi, {createMcpExtension: createNoopMcpExtension}).register();
 
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
     const bashTool = registeredTool(harness, "bash");
@@ -146,6 +146,7 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
     } as unknown as Theme;
 
     new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
         createSessionRuntime(runtimeContext) {
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
@@ -208,6 +209,7 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
     } as unknown as Theme;
 
     new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
         createSessionRuntime(runtimeContext) {
             const queue = new UiDecisionFlowQueue();
             const database = null
@@ -345,6 +347,7 @@ test("one session runtime owns the production tool overrides until session shutd
     let runtimeCloses = 0;
 
     new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
         createSessionRuntime(runtimeContext) {
             runtimeCreations++;
             const policy = createPolicyRuntime(runtimeContext);
@@ -404,6 +407,14 @@ function toolRenderContext(
         expanded: options.expanded ?? false,
         showImages: false,
         isError: options.isError ?? false,
+    };
+}
+
+function createNoopMcpExtension() {
+    return {
+        register() {},
+        async startSession() {},
+        async stopSession() {},
     };
 }
 

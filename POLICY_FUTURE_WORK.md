@@ -160,5 +160,6 @@ Unless the architecture is intentionally expanded, the following remain boundari
 - The host kernel and the trusted Pi process are trusted.
 - An allowed operation retains the invoking user's ordinary host permissions.
 - A worker can delegate effects to a preserved host service over pathname IPC; those effects originate outside the worker's direct filesystem/network reference monitor.
+- MCP transports and exposed MCP tools are explicit host capabilities outside the filesystem and network policy boundary.
 - Revocation cannot undo effects already delivered before its revision barrier.
 - Inbound service publishing, cross-platform support, and protection from host-kernel exploitation are not current policy goals.

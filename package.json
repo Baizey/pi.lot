@@ -1,11 +1,14 @@
 {
   "name": "pilot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "pi.lot: kernel-mediated filesystem and network policy for Pi's Bash tool.",
   "type": "module",
   "pi": {
     "extensions": [
-      "./src/extension.ts"
+      "./src/pilot-extension.ts"
+    ],
+    "themes": [
+      "./themes"
     ]
   },
   "scripts": {

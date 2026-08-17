@@ -8,7 +8,7 @@ import type {
     SessionStartEvent,
     Theme,
 } from "@earendil-works/pi-coding-agent";
-import pilotExtension, {PilotExtension} from "../src/extension.js";
+import pilotExtension, {PilotExtension} from "../src/pilot-extension.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import {PolicyDaoInterface} from "../src/storage/PolicyDao";

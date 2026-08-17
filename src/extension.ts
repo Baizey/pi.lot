@@ -37,7 +37,7 @@ export class PilotExtension {
         new ReadTool(this.pi, runtimeProvider).register();
         new EditTool(this.pi, runtimeProvider).register();
         new WriteTool(this.pi, runtimeProvider).register();
-        new PolicyDefaultsCommand(this.pi, () => runtimeProvider().policyRuntime).register();
+        new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
 
         registerExperiments(this.pi, () => {
             runtimeProvider();

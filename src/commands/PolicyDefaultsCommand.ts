@@ -2,7 +2,7 @@ import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
 import type {ResponseDefaults} from "../policy/types.js";
 import {ResponseType} from "../policy/types.js";
 import {defaultPolicyAreas} from "../policy/PolicyLogic";
-import PolicyRuntime from "../policy/PolicyRuntime";
+import {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime";
 
 const COMMAND_NAME = "policy-defaults";
 const AREAS = ["all", ...Object.keys(defaultPolicyAreas)]
@@ -14,7 +14,7 @@ export class PolicyDefaultsCommand {
 
     constructor(
         private readonly pi: ExtensionAPI,
-        private readonly runtime: () => PolicyRuntime,
+        private readonly runtime: () => PilotSessionRuntimeInterface,
     ) {
     }
 
@@ -29,7 +29,7 @@ export class PolicyDefaultsCommand {
                 const provider = this.runtime()
                 const args = parseArgs(input).args;
                 if (args.length === 0) {
-                    ctx.ui.notify(this.renderDefaults(provider.defaultResponses), "info");
+                    ctx.ui.notify(this.renderDefaults(provider.policyRuntime.defaultResponses), "info");
                     return;
                 }
                 if (args.length !== 2 || !isValid(RESPONSES, args[0]) || !isValid(AREAS, args[1])) {
@@ -40,10 +40,10 @@ export class PolicyDefaultsCommand {
                 const [response, key] = args;
                 if (key === "all") {
                     Object.keys(defaultPolicyAreas).forEach(key => {
-                        provider.setDefaultResponse(key as keyof ResponseDefaults, response as ResponseType);
+                        provider.policyRuntime.setDefaultResponse(key as keyof ResponseDefaults, response as ResponseType);
                     })
                 } else {
-                    provider.setDefaultResponse(key as keyof ResponseDefaults, response as ResponseType);
+                    provider.policyRuntime.setDefaultResponse(key as keyof ResponseDefaults, response as ResponseType);
                 }
 
                 ctx.ui.notify(`Policy default ${key} = ${response} for this session.`, "info");

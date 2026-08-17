@@ -4,13 +4,13 @@ import {
     type ExtensionAPI,
     type WriteToolInput,
 } from "@earendil-works/pi-coding-agent";
-import type {PilotSessionRuntimeHandle} from "../../runtime/PilotSessionRuntime.js";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection,} from "../../tui/tool/ToolPresentation.js";
 import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
+import {PilotSessionRuntime} from "../../runtime/PilotSessionRuntime";
 
 const WRITE_PRESENTATION = {
     toolName: "write",
@@ -33,7 +33,7 @@ export class WriteTool {
 
     constructor(
         private readonly pi: ExtensionAPI,
-        private readonly runtimeProvider: () => PilotSessionRuntimeHandle,
+        private readonly runtimeProvider: () => PilotSessionRuntime,
     ) {
     }
 

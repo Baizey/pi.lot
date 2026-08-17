@@ -1,6 +1,7 @@
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {ThemeColor} from "./Color.js";
 import {truncateToWidth} from "./terminalText.js";
+import {UiDecisionFlowQueue} from "./UiDecisionFlowQueue.js";
 
 type ValueOrLambda<T, K> = K | ((state: Partial<T>) => K);
 
@@ -80,9 +81,10 @@ export type UiInputDecision<T> = {
 };
 
 export class UiDecisionFlowManager {
-    private flowQueue: Promise<void> = Promise.resolve();
-
-    constructor(private readonly ctx: ExtensionContext) {}
+    constructor(
+        private readonly ctx: ExtensionContext,
+        private readonly queue: UiDecisionFlowQueue = new UiDecisionFlowQueue(),
+    ) {}
 
     async runFlow<T>(
         initialDecision: UiDecision<T>,
@@ -100,17 +102,19 @@ export class UiDecisionFlowManager {
             }
             return cancellation!;
         };
-        const scheduled = this.enqueue(() => this.runQueuedFlow(
+        const signal = options.signal
+            ? AbortSignal.any([options.signal, this.queue.signal])
+            : this.queue.signal;
+        if (signal.aborted) return cancel();
+
+        const queuedOptions = {...options, signal};
+        const scheduled = this.queue.enqueue(() => this.runQueuedFlow(
             initialDecision,
             allDecisions,
             state,
             cancel,
-            options,
+            queuedOptions,
         ));
-
-        const signal = options.signal;
-        if (!signal) return scheduled;
-        if (signal.aborted) return cancel();
 
         return new Promise<T | UiFlowShortcut>((resolve, reject) => {
             const onAbort = () => {
@@ -149,12 +153,6 @@ export class UiDecisionFlowManager {
             currentDecision = nextDecision;
         }
         return state as T;
-    }
-
-    private enqueue<T>(run: () => Promise<T>): Promise<T> {
-        const result = this.flowQueue.then(run, run);
-        this.flowQueue = result.then(() => undefined, () => undefined);
-        return result;
     }
 
     private async resolveDecision<T>(

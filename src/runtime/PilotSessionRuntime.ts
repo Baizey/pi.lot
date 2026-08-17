@@ -3,13 +3,9 @@ import PolicyRuntime from "../policy/PolicyRuntime";
 import {PolicyDao} from "../storage/PolicyDao";
 import {SqliteDatabase} from "../storage/sqlite.js";
 import {UiDecisionFlowManager} from "../tui/UiDecisionFlowManager.js";
+import {UiDecisionFlowQueue} from "../tui/UiDecisionFlowQueue.js";
 import {ToolDisplayController} from "../tui/tool/ToolDisplayController.js";
 import {PolicyDecisionFlow} from "../policy/PolicyDecisionFlow";
-
-export type PilotSessionRuntimeHandle = Pick<
-    PilotSessionRuntime,
-    "policyRuntime" | "decisionFlows" | "toolDisplay" | "close"
->;
 
 export type PilotSessionRuntimeOptions = {
     openDatabase?: () => SqliteDatabase;
@@ -20,15 +16,17 @@ export class PilotSessionRuntime {
     readonly decisionFlows: UiDecisionFlowManager;
     readonly toolDisplay: ToolDisplayController;
 
+    private readonly decisionFlowQueue: UiDecisionFlowQueue;
     private database: SqliteDatabase | null;
 
     constructor(ctx: ExtensionContext, options: PilotSessionRuntimeOptions = {}) {
+        this.decisionFlowQueue = new UiDecisionFlowQueue();
         const database = (options.openDatabase ?? (() => SqliteDatabase.readwrite("pilot")))();
         try {
             const policyDao = new PolicyDao(database);
             policyDao.initializeSchema();
 
-            const uiManager = new UiDecisionFlowManager(ctx)
+            const uiManager = new UiDecisionFlowManager(ctx, this.decisionFlowQueue)
             const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager})
 
             this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow);
@@ -42,6 +40,7 @@ export class PilotSessionRuntime {
     }
 
     close(): void {
+        this.decisionFlowQueue.close();
         const database = this.database;
         this.database = null;
         database?.close();

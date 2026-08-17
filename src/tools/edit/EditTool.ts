@@ -6,13 +6,13 @@ import {
     type ExtensionAPI,
     type Theme,
 } from "@earendil-works/pi-coding-agent";
-import type {PilotSessionRuntimeHandle} from "../../runtime/PilotSessionRuntime.js";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
 import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation.js";
 import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
+import {PilotSessionRuntime} from "../../runtime/PilotSessionRuntime";
 
 const EDIT_PRESENTATION = {
     toolName: "edit",
@@ -38,7 +38,7 @@ export class EditTool {
 
     constructor(
         private readonly pi: ExtensionAPI,
-        private readonly runtimeProvider: () => PilotSessionRuntimeHandle,
+        private readonly runtimeProvider: () => PilotSessionRuntime,
     ) {
     }
 

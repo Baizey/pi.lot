@@ -1,6 +1,5 @@
 import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {PilotSessionRuntime} from "./runtime/PilotSessionRuntime.js";
-import type {PilotSessionRuntimeHandle} from "./runtime/PilotSessionRuntime.js";
 import {BashTool} from "./tools/bash/BashTool.js";
 import {EditTool} from "./tools/edit/EditTool.js";
 import {ReadTool} from "./tools/read/ReadTool.js";
@@ -10,7 +9,7 @@ import {registerExperiments} from "./experiment/registerExperiments.js";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 
 export type PilotExtensionOptions = {
-    createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeHandle;
+    createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntime;
 };
 
 export default function pilotExtension(pi: ExtensionAPI): void {
@@ -18,8 +17,8 @@ export default function pilotExtension(pi: ExtensionAPI): void {
 }
 
 export class PilotExtension {
-    private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeHandle;
-    private sessionRuntime: PilotSessionRuntimeHandle | undefined;
+    private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntime;
+    private sessionRuntime: PilotSessionRuntime | undefined;
     private registered = false;
 
     constructor(
@@ -66,7 +65,7 @@ export class PilotExtension {
         runtime?.close();
     }
 
-    private requireSessionRuntime(): PilotSessionRuntimeHandle {
+    private requireSessionRuntime(): PilotSessionRuntime {
         if (!this.sessionRuntime) throw new Error("pi.lot session runtime is not available");
         return this.sessionRuntime;
     }

@@ -1,6 +1,6 @@
 import type {BashOperations, ExtensionAPI} from "@earendil-works/pi-coding-agent";
 import {createBashTool, createBashToolDefinition} from "@earendil-works/pi-coding-agent";
-import {HOST_FILESYSTEM_ROOT, runFuseSandboxedCommand} from "../../policy/path/fuse/fuse-runner.js";
+import {HOST_FILESYSTEM_ROOT, withFuseFilesystem} from "../../policy/path/fuse/fuse-runner.js";
 import {FuseDecision} from "../../policy/path/fuse/FuseFilesystem.js";
 import {FusePathPolicyAuthorizer} from "../../policy/path/fuse/FusePathPolicyAuthorizer.js";
 import type {ToolCallPathPolicyEvaluator} from "../../policy/PolicyRuntime";
@@ -8,7 +8,12 @@ import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection,} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
-import {PilotSessionRuntime, PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
+import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
+import {runNetworkSandboxedCommand} from "../../policy/network/NetworkSandbox.js";
+import {NetworkDecisionCoordinator} from "../../policy/network/NetworkPolicy.js";
+import {DEFAULT_NETWORK_POLICY_GRANULARITY} from "../../policy/network/NetworkPolicy.js";
+import {NetworkPolicyAuthorizer} from "../../policy/network/NetworkPolicyAuthorizer.js";
+import {NetworkDecision} from "../../policy/network/network-queue-protocol.js";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
@@ -114,14 +119,30 @@ export class BashTool {
     private createOperations(policy: ToolCallPathPolicyEvaluator): BashOperations {
         return {
             exec: async (command, cwd, {onData, signal, timeout, env}) => {
-                const authorizer = new FusePathPolicyAuthorizer({
+                const report = (message: string) => onData(Buffer.from(`${message}\n`));
+                const pathAuthorizer = new FusePathPolicyAuthorizer({
                     backingRoot: HOST_FILESYSTEM_ROOT,
                     policyEvaluator: policy,
-                    report: (message) => onData(Buffer.from(`${message}\n`)),
+                    report,
                 });
-                const result = await runFuseSandboxedCommand({
-                    command: ["/bin/bash", "-c", command],
+                const networkAuthorizer = new NetworkPolicyAuthorizer({policyEvaluator: policy, report});
+                const decisions = new NetworkDecisionCoordinator({
+                    granularity: DEFAULT_NETWORK_POLICY_GRANULARITY,
+                    decide: networkAuthorizer.decide,
+                });
+                const result = await withFuseFilesystem({
                     cwd,
+                    signal,
+                    onDecisionError: (error) => {
+                        onData(Buffer.from(
+                            `[pi.lot:fuse] decision=${FuseDecision.DENY} error=${JSON.stringify(this.errorMessage(error))}\n`,
+                        ));
+                    },
+                    decide: (event, decisionSignal) => pathAuthorizer.decide(event, decisionSignal),
+                }, ({mediatedHostRoot, cwd: resolvedCwd}) => runNetworkSandboxedCommand({
+                    command: ["/bin/bash", "-c", command],
+                    cwd: resolvedCwd,
+                    mediatedHostRoot,
                     env,
                     signal,
                     timeoutSeconds: timeout,
@@ -129,13 +150,14 @@ export class BashTool {
                     onStderr: onData,
                     onDecisionError: (error) => {
                         onData(Buffer.from(
-                            `[pi.lot:fuse] decision=${FuseDecision.DENY} error=${JSON.stringify(this.errorMessage(error))}\n`,
+                            `[pi.lot:network] decision=${NetworkDecision.DENY} error=${JSON.stringify(this.errorMessage(error))}\n`,
                         ));
                     },
-                    decide: (event, decisionSignal) => authorizer.decide(event, decisionSignal),
-                });
+                    decide: (event, decisionSignal) => decisions.decide(event, decisionSignal),
+                    authorizeHttpRequest: networkAuthorizer.authorizeHttpRequest,
+                }));
 
-                if (result.signal) throw new Error(`FUSE worker terminated by ${result.signal}`);
+                if (result.signal) throw new Error(`network worker terminated by ${result.signal}`);
                 return {exitCode: result.exitCode};
             },
         };

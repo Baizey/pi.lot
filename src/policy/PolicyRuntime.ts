@@ -56,14 +56,11 @@ export class PolicyRuntime {
         this.defaultsStore.save(this.defaultResponses);
     }
 
-    resetDefaultResponses(): "saved" | "built-in" {
-        const savedDefaults = this.defaultsStore?.load();
+    resetDefaultResponses(): void {
         Object.assign(
             this.defaultResponses,
-            initialPolicyDefaults,
-            savedDefaults ?? {},
+            this.defaultsStore?.load() ?? initialPolicyDefaults,
         );
-        return savedDefaults ? "saved" : "built-in";
     }
 
     private async evaluate(

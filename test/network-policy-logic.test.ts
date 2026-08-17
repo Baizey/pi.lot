@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {defaultPolicyAreas, PolicyLogic} from "../src/policy/PolicyLogic.js";
+import {initialPolicyDefaults} from "../src/policy/defaults.js";
 import {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
 import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
@@ -14,6 +15,7 @@ import {PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse
 import {PilotSessionRuntime} from "../src/runtime/PilotSessionRuntime.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
+import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 
 function policy(
     uri: string,
@@ -139,6 +141,23 @@ test("ports are exact and path scopes respect segment boundaries", () => {
     assert.equal(logic.evaluate("api.example.com:443/v10", PolicyAccessType.HTTP_GET)?.matchedReason, "port");
 });
 
+test("IPv6 policy targets retain bracketed ports", () => {
+    const logic = new PolicyLogic({
+        policies: [policy(
+            "[2001:db8::8]:443",
+            PolicyAccessType.TCP_ACCESS,
+            PolicyLifetime.SESSION,
+            PolicyResponse.ALLOWED,
+            "IPv6 endpoint",
+        )],
+    });
+
+    const result = logic.evaluate("[2001:db8::8]:443", PolicyAccessType.TCP_ACCESS);
+    assert.equal(result?.evaluatedUri, "[2001:db8::8]:443");
+    assert.equal(result?.matchedPattern, "[2001:db8::8]:443");
+    assert.equal(logic.evaluate("[2001:db8::8]:80", PolicyAccessType.TCP_ACCESS), null);
+});
+
 test("deletion is per access type and persistence includes only local and global policies", () => {
     const logic = new PolicyLogic({
         policies: [
@@ -240,7 +259,7 @@ test("session runtime loads persisted network policies from its database", async
 
         runtime = new PilotSessionRuntime(ctx, {
             openDatabase: () => SqliteDatabase.test(false, databaseFile),
-            policyDefaultsStore: {load: () => null, save() {}},
+            policyDefaultsStore: {load: () => structuredClone(initialPolicyDefaults), save() {}},
         });
         const result = await runtime.policyRuntime.beginToolCall()(
             "https://persistent.example/api/resource",
@@ -252,6 +271,31 @@ test("session runtime loads persisted network policies from its database", async
         runtime?.close();
         rmSync(directory, {recursive: true, force: true});
     }
+});
+
+test("network policy decisions use network-specific prompts", async () => {
+    const titles: string[] = [];
+    const ctx = {
+        hasUI: true,
+        mode: "rpc",
+        ui: {
+            async select(title: string, options: string[]): Promise<string | undefined> {
+                titles.push(title);
+                if (title.startsWith("Network policy scope")) return options[0];
+                if (title.startsWith("Network policy decision")) return "Allow";
+                if (title.startsWith("Network policy lifetime")) return "Once";
+                return undefined;
+            },
+        },
+    } as unknown as ExtensionContext;
+    const flow = new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)});
+
+    const choice = await flow.askForPolicy("example.com:443", PolicyAccessType.TCP_ACCESS);
+
+    assert.equal(choice.status, PolicyResponse.ALLOWED);
+    assert.equal(choice.lifetime, PolicyLifetime.ONCE);
+    assert.equal(titles.length, 3);
+    assert.equal(titles.every((title) => title.startsWith("Network policy")), true);
 });
 
 test("deny-by-default results are system decisions", () => {

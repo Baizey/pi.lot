@@ -2,17 +2,17 @@
 
 ## Status
 
-Design draft and target contract. A standalone transport and request-broker vertical slice is implemented as `bash-network`, including live per-command HTTP/HTTPS request decisions, but the complete specification and persistent policy integration are not implemented yet.
+Design contract and implementation notes for the network gate used by pi.lot's production Bash worker. Transport, request-broker, unified policy, and root-wide FUSE integration are implemented; remaining limitations are called out below.
 
 The current slice creates distinct workload and trusted gateway network namespaces inside one user namespace. The capability-free Bubblewrap worker has only a veth route to the gateway. Its nftables/NFQUEUE gate holds initial IPv4/IPv6 TCP and UDP effects for policy, while the gateway has the sole `slirp4netns` uplink. The gateway never forwards worker TCP: TPROXY delivers every approved non-loopback TCP flow to a native ingress that drops all capabilities after binding, and a trusted host-side TypeScript broker creates the separate upstream socket. UDP remains forwarded only after the worker gate. Killing either queue or TCP-ingress helper terminates the worker instead of restoring connectivity.
 
 Worker-only resolver and NSS files route ordinary hostname clients through a trusted host-side DNS proxy. Approved UDP queries are forwarded to the host resolver. Validated answer-section A and AAAA records receive bounded, worker-scoped synthetic leases. TCP keeps its synthetic destination through TPROXY so distinct hostnames sharing one real endpoint retain separate broker identities; the trusted relay connects only to the lease-selected real address. UDP leases use DNAT because UDP still follows the forwarding path. Unknown and expired synthetic destinations fail closed. Direct DNS to another resolver and TCP DNS fallback fail closed in this slice.
 
-The trusted TCP broker recognizes plaintext HTTP/1.0 and HTTP/1.1 independently of the originating executable. A request authorizer receives the actual scheme, method, canonical URL/path, hostname, source, synthetic destination, and selected upstream address before any upstream connection is created. The registered `bash-network` tool prompts for each exact method-and-canonical-URL scope and reuses identical decisions during that command. In this mode TLS is terminated with a per-run in-memory CA, common client trust variables point at a read-only session bundle, and the broker independently validates the real upstream certificate. Tests cover live UI wiring, denied HTTP and HTTPS requests, keep-alive request re-evaluation, CNAME attribution, and the smart-HTTP GET produced by a real `git fetch`. Direct runner callers can omit the authorizer to retain end-to-end TLS under coarse TCP policy.
+The trusted TCP broker recognizes plaintext HTTP/1.0 and HTTP/1.1 independently of the originating executable. A request authorizer receives the actual scheme, method, canonical URL/path, hostname, source, synthetic destination, and selected upstream address before any upstream connection is created. The production Bash worker evaluates method-and-canonical-URL scopes through the unified policy runtime. TLS is terminated with a per-run in-memory CA, common client trust variables point at a read-only session bundle, and the broker independently validates the real upstream certificate. Tests cover denied HTTP and HTTPS requests, keep-alive request re-evaluation, CNAME attribution, and the smart-HTTP GET produced by a real `git fetch`. Direct runner callers can omit the authorizer to retain end-to-end TLS under coarse TCP policy.
 
-A policy projector remains deliberately separate from detailed transport/request events and verdicts. The slice does not yet provide complete persistent network policy integration, active-flow revocation, IPv4-mapped IPv6 normalization, IPv6 extension headers, TCP DNS, HTTP/2, QUIC request mediation, or integration with the root-wide FUSE worker.
+A policy projector remains deliberately separate from detailed transport/request events and verdicts. Active-flow revocation, IPv4-mapped IPv6 normalization, IPv6 extension headers, TCP DNS, HTTP/2, and QUIC request mediation remain future work.
 
-The completed design applies to the `bash-fuse` architecture: a root-wide FUSE filesystem inside a Bubblewrap worker.
+The implementation composes the private network gate with a root-wide FUSE filesystem inside one Bubblewrap worker.
 
 ## Transparency principle
 
@@ -500,7 +500,7 @@ The tool must continue streaming ordinary stdout and stderr while policy events 
 
 ### Stage 3: brokered DNS identity
 
-- Implemented for uncompressed single-question class-IN UDP queries and answer-section A/AAAA/CNAME handling through the standalone `bash-network` worker.
+- Implemented for uncompressed single-question class-IN UDP queries and answer-section A/AAAA/CNAME handling through the production Bash worker.
 - The broker returns bounded synthetic address leases and binds TCP or UDP target identity to those leases before policy projection.
 - Remaining work includes TCP fallback, broader DNS protocol coverage, persistent canonical hostname rules, revocation, and integration with the production FUSE worker.
 

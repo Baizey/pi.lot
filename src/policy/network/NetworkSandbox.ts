@@ -86,6 +86,7 @@ const TCP_GATEWAY_MARK = "0x50490006";
 export type NetworkRunOptions = {
   command: string[];
   cwd: string;
+  mediatedHostRoot?: string;
   env?: NodeJS.ProcessEnv;
   dnsUpstream?: {address: string; port: number};
   additionalUpstreamCa?: string;
@@ -172,10 +173,13 @@ class NetworkSandboxRunner {
     this.validateOptions();
     if (this.options.signal?.aborted) throw new Error("aborted");
 
-    const cwd = await realpath(this.options.cwd);
+    const [cwd, mediatedHostRoot] = await Promise.all([
+      realpath(this.options.cwd),
+      realpath(this.options.mediatedHostRoot ?? "/"),
+    ]);
     try {
       await this.prepareRuntimeFiles();
-      this.startOuterProcess(cwd);
+      this.startOuterProcess(cwd, mediatedHostRoot);
       this.installCancellation();
       const status = await this.waitForBubblewrapStatus();
       this.workerNamespacePid = status["child-pid"];
@@ -268,7 +272,7 @@ class NetworkSandboxRunner {
     ]);
   }
 
-  private startOuterProcess(cwd: string): void {
+  private startOuterProcess(cwd: string, mediatedHostRoot: string): void {
     if (
       !this.resolverFile
       || !this.resolverDestination
@@ -279,7 +283,7 @@ class NetworkSandboxRunner {
     }
     const bwrapArguments = [
       "--unshare-net",
-      "--bind", "/", "/",
+      "--bind", mediatedHostRoot, "/",
       "--ro-bind", this.resolverFile, this.resolverDestination,
       "--ro-bind", this.nsswitchFile, this.nsswitchDestination,
       ...(this.caBundleFile ? ["--ro-bind", this.caBundleFile, this.caBundleFile] : []),

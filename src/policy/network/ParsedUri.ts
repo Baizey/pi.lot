@@ -36,21 +36,35 @@ export class ParsedUri {
             uri = uri.substring(0, slashIndex);
         }
 
-        const colonIndex = uri.indexOf(":");
-        if (colonIndex >= 0) {
-            const portRaw = uri.substring(colonIndex + 1)
+        let host = uri;
+        let portRaw: string | undefined;
+        if (uri.startsWith("[")) {
+            const match = /^\[([^\]]+)](?::(.*))?$/.exec(uri);
+            if (!match || isIP(match[1]!) !== 6) {
+                isValid = false;
+            } else {
+                host = match[1]!;
+                portRaw = match[2];
+            }
+        } else if (isIP(uri) === 0) {
+            const colonIndex = uri.indexOf(":");
+            if (colonIndex >= 0) {
+                host = uri.slice(0, colonIndex);
+                portRaw = uri.slice(colonIndex + 1);
+            }
+        }
+
+        if (portRaw !== undefined) {
             if (!/^\d+$/.test(portRaw)) {
                 isValid = false
             } else {
                 this.port = Number(portRaw)
-                if (this.port < 1 || this.port > 65_535)
-                    isValid = false
-                uri = uri.substring(0, colonIndex);
+                if (this.port < 1 || this.port > 65_535) isValid = false
             }
         }
 
-        isValid &&= !!uri
-        this.host = uri.toLowerCase()
+        isValid &&= !!host && (!host.includes(":") || isIP(host) === 6)
+        this.host = host.toLowerCase()
 
         this.isValid = isValid
     }
@@ -61,7 +75,7 @@ export class ParsedUri {
         const result: string[] = []
         let acc = ""
         if (this.port) {
-            acc = `${this.host}:${this.port}`
+            acc = this.authority()
             result.push(acc);
         } else if (isIP(this.host)) {
             acc = this.host
@@ -87,9 +101,13 @@ export class ParsedUri {
     fullUri(): string {
         if (!this.isValid) return this.raw
 
-        const port = this.port ? `:${this.port}` : ""
         const path = this.path ? this.path : ""
-        return this.host + port + path
+        return this.authority() + path
+    }
+
+    private authority(): string {
+        const host = isIP(this.host) === 6 && this.port ? `[${this.host}]` : this.host;
+        return this.port ? `${host}:${this.port}` : host;
     }
 
     isSubdomainOf(other: ParsedUri | string): boolean {

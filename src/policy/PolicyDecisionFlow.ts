@@ -59,18 +59,19 @@ export class PolicyDecisionFlow {
         scopes: string[],
     ): Record<keyof PolicyApproval, UiDecision<PolicyApproval>> {
         const target = `${accessType} ${evaluatedPath}`;
+        const policyKind = this.isFilesystemAccess(accessType) ? "Path" : "Network";
 
         return {
             scope: {
                 type: "select",
                 key: "scope",
-                title: `Path policy scope for ${target}\n`,
+                title: `${policyKind} policy scope for ${target}\n`,
                 options: scopes.map((scope) => ({title: scope, value: scope, next: "status"})),
             },
             status: {
                 type: "select",
                 key: "status",
-                title: (state) => `Path policy decision for ${target}\nScope: ${state.scope}\n`,
+                title: (state) => `${policyKind} policy decision for ${target}\nScope: ${state.scope}\n`,
                 options: [
                     {title: "Allow", value: PolicyResponse.ALLOWED, next: "lifetime"},
                     {title: "Deny", value: PolicyResponse.DENIED, next: "lifetime"},
@@ -79,7 +80,7 @@ export class PolicyDecisionFlow {
             lifetime: {
                 type: "select",
                 key: "lifetime",
-                title: (state) => `Path policy lifetime for ${target}\nDecision: ${state.status}\nScope: ${state.scope}\n`,
+                title: (state) => `${policyKind} policy lifetime for ${target}\nDecision: ${state.status}\nScope: ${state.scope}\n`,
                 options: this.lifeTimeOptions(accessType),
             },
             reason: {
@@ -176,14 +177,15 @@ export class PolicyDecisionFlow {
     }
 
     private policyScopes(accessType: PolicyAccessType, uri: string): string[] {
-        switch (accessType) {
-            case PolicyAccessType.FS_READ:
-            case PolicyAccessType.FS_WRITE:
-            case PolicyAccessType.FS_DELETE:
-                return this.filesystemScopes(uri)
-            default:
-                return this.networkScopes(uri)
-        }
+        return this.isFilesystemAccess(accessType)
+            ? this.filesystemScopes(uri)
+            : this.networkScopes(uri);
+    }
+
+    private isFilesystemAccess(accessType: PolicyAccessType): boolean {
+        return accessType === PolicyAccessType.FS_READ
+            || accessType === PolicyAccessType.FS_WRITE
+            || accessType === PolicyAccessType.FS_DELETE;
     }
 
     private networkScopes(uri: string) {

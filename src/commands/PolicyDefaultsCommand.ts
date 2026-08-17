@@ -40,8 +40,8 @@ export class PolicyDefaultsCommand {
                             provider.policyRuntime.saveDefaultResponses();
                             ctx.ui.notify("Saved current policy defaults to ~/.pilot/policy-defaults.json.", "info");
                         } else {
-                            const source = provider.policyRuntime.resetDefaultResponses();
-                            ctx.ui.notify(`Reset policy defaults from ${source} defaults.`, "info");
+                            provider.policyRuntime.resetDefaultResponses();
+                            ctx.ui.notify("Reset policy defaults.", "info");
                         }
                     } catch (error) {
                         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

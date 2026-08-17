@@ -17,7 +17,7 @@ import {ToolDisplayController} from "../src/tui/tool/ToolDisplayController.js";
 import {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime";
 import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue";
 
-const expectedToolNames = ["bash", "read", "edit", "write", "bash-network"];
+const expectedToolNames = ["bash", "read", "edit", "write"];
 
 function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
     return new PolicyRuntime(
@@ -116,16 +116,6 @@ test("the production extension installs built-in overrides immediately but defer
         bashTool.execute(
             "before-start",
             {command: "true", purpose: "Verify that Bash fails closed before session startup"},
-            undefined,
-            undefined,
-            ctx,
-        ),
-        /session runtime is not available/,
-    );
-    await assert.rejects(
-        registeredTool(harness, "bash-network").execute(
-            "network-before-start",
-            {command: "true", purpose: "Verify network runtime ownership"},
             undefined,
             undefined,
             ctx,

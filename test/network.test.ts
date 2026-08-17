@@ -15,9 +15,9 @@ import {
   NetworkTargetKind,
   parseNetworkQueueMessage,
   runNetworkSandboxedCommand,
-} from "../src/experiment/network/network-runner.js";
-import {parseTcpGatewayFlow} from "../src/experiment/network/tcp-gateway-protocol.js";
-import {TlsCertificateAuthority} from "../src/experiment/network/TlsCertificateAuthority.js";
+} from "../src/policy/network/NetworkSandbox.js";
+import {parseTcpGatewayFlow} from "../src/policy/network/tcp-gateway-protocol.js";
+import {TlsCertificateAuthority} from "../src/policy/network/TlsCertificateAuthority.js";
 
 test("the network queue protocol validates IPv4, IPv6, TCP, UDP, and DNS events", () => {
   assert.deepEqual(parseNetworkQueueMessage("PI_NETWORK_QUEUE\t3\tREADY"), {type: "READY"});

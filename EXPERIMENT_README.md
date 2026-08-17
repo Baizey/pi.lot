@@ -3,7 +3,7 @@
 Linux Pi extension providing kernel-mediated policy for shell-command I/O.
 
 - [`FUSE-MVP.md`](./FUSE-MVP.md) documents the FUSE filesystem-broker model.
-- [`NETWORK-MVP.md`](./NETWORK-MVP.md) specifies the private-namespace network gate being developed in `bash-network` for eventual FUSE-worker integration.
+- [`NETWORK-MVP.md`](./NETWORK-MVP.md) specifies the private-namespace network gate integrated with the FUSE worker.
 
 ## Transparency principle
 
@@ -23,11 +23,11 @@ The worker has no direct bind of the host root. Bubblewrap installs the FUSE mou
 
 Root-wide mediation now covers ordinary host files, mount aliases, hard-link names, and symlink targets regardless of whether they are inside Pi's working directory. The current Node FUSE passthrough does not yet reproduce every other pseudo-filesystem or pathname Unix-socket behavior; these compatibility gaps must not be mistaken for policy denials.
 
-## Bash execution paths
+## Bash execution path
 
-The production extension keeps filesystem mediation on the built-in `bash` override and also registers the separate experimental `bash-network` tool. The latter remains isolated from production Bash while its network boundary is developed.
+The production extension registers one built-in `bash` override. Every command receives both the root-wide FUSE view and the private network gate.
 
-### `bash` filesystem mediation
+### Filesystem mediation
 
 Each command receives the complete host filesystem through a TypeScript FUSE passthrough broker mounted as the Bubblewrap worker's `/`. The command still starts in Pi's working directory, but paths elsewhere on the host pass through the same broker.
 
@@ -37,7 +37,7 @@ The broker asks before policy-sensitive `READ`, `WRITE`, or `DELETE` operations.
 
 Attribute and entry caches are constrained and writeback caching is not enabled. Performance is intentionally not an MVP goal.
 
-### `bash-network`
+### Network mediation
 
 Each command runs with normal host-user identity, writable host filesystem access, environment, and pathname Unix-socket access in a capability-free Bubblewrap workload network namespace. A separate trusted gateway namespace owns the only `slirp4netns` uplink; the workload has only a veth route to that gateway. Both namespaces and all helpers are configured while Bubblewrap holds the worker on a blocking descriptor.
 
@@ -45,21 +45,21 @@ The workload nftables gate sends the first outbound IPv4 or IPv6 TCP SYN and the
 
 Worker-only resolver and NSS files force ordinary hostname clients away from host systemd-resolved IPC and onto a gated DNS proxy. Every outbound UDP DNS query is held and validated before the trusted proxy sends it to the host resolver. The proxy validates the response, follows answer-section CNAME attribution, and replaces approved A and AAAA answers with worker-scoped synthetic addresses. TCP retains that synthetic destination through TPROXY, while the broker separately receives the lease-selected real upstream address; shared real endpoints therefore cannot collapse distinct hostname identities. UDP leases use namespace DNAT because UDP still follows the forwarding path. Unknown or expired synthetic destinations fail closed instead of becoming literal-IP targets. Direct DNS to other resolvers and TCP DNS fallback currently fail closed.
 
-The TCP broker recognizes plaintext HTTP/1.0 and HTTP/1.1 independently of the originating command. Its request authorizer receives the actual scheme, method, canonical URL and path, hostname, source, synthetic destination, and selected upstream address before the upstream connection is created. The registered `bash-network` tool asks separately for each exact method-and-canonical-URL scope during a command and reuses decisions for identical requests. HTTPS is terminated with an in-memory per-run CA exposed to common clients through a read-only trust bundle, and the broker independently verifies the real upstream certificate. Keep-alive requests are evaluated separately. Tests exercise production UI wiring, curl, canonical paths, denied methods, CNAMEs, and the smart-HTTP GET emitted by a real `git fetch`. Direct runner users that omit the optional authorizer retain end-to-end TLS under coarse TCP policy.
+The TCP broker recognizes plaintext HTTP/1.0 and HTTP/1.1 independently of the originating command. Its request authorizer receives the actual scheme, method, canonical URL and path, hostname, source, synthetic destination, and selected upstream address before the upstream connection is created. The production Bash worker evaluates each method-and-canonical-URL scope through the shared policy runtime. HTTPS is terminated with an in-memory per-run CA exposed to common clients through a read-only trust bundle, and the broker independently verifies the real upstream certificate. Keep-alive requests are evaluated separately. Tests exercise curl, canonical paths, denied methods, CNAMEs, and the smart-HTTP GET emitted by a real `git fetch`. Direct runner users that omit the optional authorizer retain end-to-end TLS under coarse TCP policy.
 
-The enforcement core still emits a verdict and detailed audit event for every DNS query and TCP or UDP flow, including flows on the worker network namespace's loopback interface. A per-command policy projector independently controls user-approval granularity. For the registered `bash-network` tool, operation and address-family distinctions are fixed off: approving a hostname DNS request authorizes that exact hostname across DNS, TCP, UDP, IPv4, IPv6, and destination ports for the remainder of that invocation. Literal-IP flows begin at an exact address and port; literal 127/8 and `::1` flows normalize to the `localhost` policy identity. There is no runtime configuration surface for changing this granularity. Resolver transport family is diagnostic only. Raw logs remain detailed in every mode. `localhost` still names the private worker namespace, not the host namespace, so this does not restore transparent access to host-loopback-only services.
+The enforcement core emits a verdict event for every DNS query and TCP or UDP flow, including flows on the worker network namespace's loopback interface. A per-command policy projector independently controls approval granularity. Operation and address-family distinctions are fixed off: approving a hostname DNS request authorizes that exact hostname across DNS, TCP, UDP, IPv4, IPv6, and destination ports for the remainder of that invocation. Literal-IP flows begin at an exact address and port; literal 127/8 and `::1` flows normalize to the `localhost` policy identity. There is no runtime configuration surface for changing this granularity. Resolver transport family is diagnostic only. `localhost` still names the private worker namespace, not the host namespace, so this does not restore transparent access to host-loopback-only services.
 
-IPv4-mapped IPv6 policy normalization remains future work. Active-flow revocation, TCP DNS proxying, persistent request policies and lifetime choices, HTTP/2, HTTP/3/QUIC, WebSocket/CONNECT handling, and integration with the root-wide FUSE worker remain unimplemented. Request-aware mode fails closed on an unrecognized cleartext TCP preface; coarse mode can still carry explicitly approved opaque TCP or end-to-end TLS. Certificate-pinned clients and private trust implementations may fail under HTTPS interception rather than bypassing the gateway. Filesystem operations and pathname local IPC are deliberately not mediated by this tool. Because unprivileged network namespaces require a user namespace, the worker retains the host UID and primary GID but cannot necessarily retain every supplementary group; abstract Unix sockets are also network-namespace scoped.
+IPv4-mapped IPv6 policy normalization remains future work. Active-flow revocation, TCP DNS proxying, HTTP/2, HTTP/3/QUIC, and WebSocket/CONNECT handling remain unimplemented. Request-aware mode fails closed on an unrecognized cleartext TCP preface. Certificate-pinned clients and private trust implementations may fail under HTTPS interception rather than bypassing the gateway. Pathname local IPC remains outside network mediation. Because unprivileged network namespaces require a user namespace, the worker retains the host UID and primary GID but cannot necessarily retain every supplementary group; abstract Unix sockets are also network-namespace scoped.
 
 ## Requirements
 
 - Linux x86-64
 - Node.js and npm
 - A C compiler
-- `pkg-config` and `libnetfilter_queue` development files for `bash-network` (`libnetfilter_queue-devel` on Fedora/Bazzite; `libnetfilter-queue-dev` on Debian/Ubuntu)
+- `pkg-config` and `libnetfilter_queue` development files (`libnetfilter_queue-devel` on Fedora/Bazzite; `libnetfilter-queue-dev` on Debian/Ubuntu)
 - Bubblewrap (`bwrap`)
 - FUSE (`/dev/fuse` and `fusermount`) for pi.lot's Bash override and `bash-fuse`
-- User namespaces, nftables (`nft`), iproute2 (`ip`), `unshare`, `nsenter`, and `slirp4netns` for `bash-network`
+- User namespaces, nftables (`nft`), iproute2 (`ip`), `unshare`, `nsenter`, and `slirp4netns`
 
 ## Install
 
@@ -88,29 +88,29 @@ For focused network development:
 npm run test:network
 ```
 
-The tests exercise the experimental Pi tool integrations, verify production session-runtime ownership and decision-flow cancellation, and cover protocol validation, root-wide FUSE mediation inside and outside the command cwd, hidden broker paths, hard-link and symlink aliases, IPv4/IPv6 TCP and UDP deny/allow transitions, gated DNS, synthetic IPv4/IPv6 hostname leases, CNAME attribution and forwarding, loopback mediation, the policy-granularity matrix, unknown synthetic-address denial, denied host effects, delayed decisions, TCP retransmissions, source-port reuse, descendant mediation, and FUSE policy revocation on an open descriptor.
+The tests verify production session-runtime ownership and decision-flow cancellation, and cover the combined FUSE/network sandbox, protocol validation, root-wide FUSE mediation inside and outside the command cwd, hidden broker paths, hard-link and symlink aliases, IPv4/IPv6 TCP and UDP deny/allow transitions, gated DNS, synthetic IPv4/IPv6 hostname leases, CNAME attribution and forwarding, loopback mediation, the policy-granularity matrix, unknown synthetic-address denial, denied host effects, delayed decisions, TCP retransmissions, source-port reuse, descendant mediation, and FUSE policy revocation on an open descriptor.
 
 ## Project layout
 
 - `src/extension.ts` — pi.lot's production Pi extension entry point and session lifecycle composition.
 - `src/runtime/PilotSessionRuntime.ts` — session-owned policy database, policy runtimes, and decision-flow manager.
 - `src/tools/` — one folder per overridden Pi tool (`bash`, `read`, `edit`, and `write`).
-- `src/tools/bash/BashTool.ts` — built-in Bash override and FUSE worker lifecycle adapter.
+- `src/tools/bash/BashTool.ts` — built-in Bash override and combined FUSE/network lifecycle adapter.
 - `src/policy/path/fuse/FusePathPolicyAuthorizer.ts` — FUSE event-to-path-policy mapping and user decisions.
 - `src/policy/PolicyRuntime.ts` — tool-call, session, and persisted path-policy ownership.
 - `src/tui/UiDecisionFlowManager.ts` — reusable multi-step policy decision UI and TUI shortcuts.
 - `src/tui/tool/` — declarative tool presentation, bounded head/tail rendering, and session display controls.
-- `src/experiment/registerExperiments.ts` — registration and approval prompts for the experimental `bash-network` tool.
+- `src/policy/network/NetworkPolicyAuthorizer.ts` — network event and HTTP request mapping into the unified policy runtime.
 - `src/policy/path/fuse/fuse-runner.ts` — FUSE mount and Bubblewrap worker lifecycle.
 - `src/policy/path/fuse/FuseFilesystem.ts` — policy-mediating passthrough filesystem.
-- `src/experiment/network/network-runner.ts` — split workload/gateway namespaces, nftables/TPROXY setup, and helper lifecycle.
-- `src/experiment/network/TcpGatewayBroker.ts` — approved-flow correlation, protocol classification, transparent relay, and TLS termination.
-- `src/experiment/network/HttpRequestBroker.ts` — canonical HTTP/1 request events, request authorization, and verified upstream HTTP(S).
-- `src/experiment/network/TlsCertificateAuthority.ts` — in-memory per-run interception CA and leaf issuance.
-- `src/experiment/network/SyntheticDnsProxy.ts` — trusted DNS forwarding, response validation, synthetic lease allocation, and answer rewriting.
-- `src/experiment/network/NetworkPolicy.ts` — attributed target types, configurable policy projection, and per-command decision reuse.
-- `src/experiment/network/network-queue-protocol.ts` — validated TypeScript side of the NFQUEUE helper protocol.
-- `src/experiment/network/tcp-gateway-protocol.ts` — validated native-ingress flow metadata protocol.
+- `src/policy/network/NetworkSandbox.ts` — split workload/gateway namespaces, nftables/TPROXY setup, and helper lifecycle.
+- `src/policy/network/TcpGatewayBroker.ts` — approved-flow correlation, protocol classification, transparent relay, and TLS termination.
+- `src/policy/network/HttpRequestBroker.ts` — canonical HTTP/1 request events, request authorization, and verified upstream HTTP(S).
+- `src/policy/network/TlsCertificateAuthority.ts` — in-memory per-run interception CA and leaf issuance.
+- `src/policy/network/SyntheticDnsProxy.ts` — trusted DNS forwarding, response validation, synthetic lease allocation, and answer rewriting.
+- `src/policy/network/NetworkPolicy.ts` — attributed target types, configurable policy projection, and per-command decision reuse.
+- `src/policy/network/network-queue-protocol.ts` — validated TypeScript side of the NFQUEUE helper protocol.
+- `src/policy/network/tcp-gateway-protocol.ts` — validated native-ingress flow metadata protocol.
 - `native/pi-network-queue.c` — thin `libnetfilter_queue` packet hold/verdict adapter.
 - `native/pi-tcp-gateway.c` — capability-dropped transparent TCP ingress and bounded relay.
 - `scripts/build-native.mjs` — native adapter build.

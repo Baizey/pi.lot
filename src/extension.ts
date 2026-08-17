@@ -5,7 +5,6 @@ import {EditTool} from "./tools/edit/EditTool.js";
 import {ReadTool} from "./tools/read/ReadTool.js";
 import {WriteTool} from "./tools/write/WriteTool.js";
 import {TOOL_MINIMAL_KEY_TEXT} from "./tui/tool/ToolDisplayController.js";
-import {registerExperiments} from "./experiment/registerExperiments.js";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 
 export type PilotExtensionOptions = {
@@ -38,10 +37,6 @@ export class PilotExtension {
         new EditTool(this.pi, runtimeProvider).register();
         new WriteTool(this.pi, runtimeProvider).register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
-
-        registerExperiments(this.pi, () => {
-            runtimeProvider();
-        });
 
         this.pi.registerShortcut(TOOL_MINIMAL_KEY_TEXT, {
             description: "Toggle minimal tool display",

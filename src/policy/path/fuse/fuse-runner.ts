@@ -23,13 +23,34 @@ export type FuseRunResult = {
     signal: NodeJS.Signals | null;
 };
 
+export type FuseMountOptions = Pick<
+    FuseRunOptions,
+    "cwd" | "signal" | "onDecisionError" | "decide"
+>;
+
+export type FuseMountContext = {
+    mediatedHostRoot: string;
+    cwd: string;
+    abortDecisions(): void;
+};
+
 export async function runFuseSandboxedCommand(options: FuseRunOptions): Promise<FuseRunResult> {
     if (options.command.length === 0) throw new Error("FUSE sandbox command is required");
-    if (options.signal?.aborted) throw new Error("aborted");
     if (options.timeoutSeconds !== undefined
         && (!Number.isFinite(options.timeoutSeconds) || options.timeoutSeconds <= 0)) {
         throw new Error("timeout must be a positive finite number of seconds");
     }
+
+    return withFuseFilesystem(options, ({mediatedHostRoot, cwd, abortDecisions}) => (
+        runWorker(options, cwd, mediatedHostRoot, abortDecisions)
+    ));
+}
+
+export async function withFuseFilesystem<T>(
+    options: FuseMountOptions,
+    run: (context: FuseMountContext) => Promise<T>,
+): Promise<T> {
+    if (options.signal?.aborted) throw new Error("aborted");
 
     const commandCwd = await realpath(options.cwd);
     const temporaryDirectory = await mkdtemp(path.join("/var/tmp", "pilot-fuse-"));
@@ -39,7 +60,7 @@ export async function runFuseSandboxedCommand(options: FuseRunOptions): Promise<
     options.signal?.addEventListener("abort", abortDecisions, {once: true});
     let filesystem: FuseFilesystem | undefined;
     let mounted = false;
-    let result: FuseRunResult | undefined;
+    let result: T | undefined;
     let runError: unknown;
     try {
         await mkdir(mountpoint);
@@ -52,7 +73,7 @@ export async function runFuseSandboxedCommand(options: FuseRunOptions): Promise<
         });
         await filesystem.mount();
         mounted = true;
-        result = await runWorker(options, commandCwd, mountpoint, abortDecisions);
+        result = await run({mediatedHostRoot: mountpoint, cwd: commandCwd, abortDecisions});
     } catch (error) {
         runError = error;
     } finally {

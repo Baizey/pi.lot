@@ -2,7 +2,7 @@
 
 **Interactive permissions for [Pi](https://pi.dev) on Linux.**
 
-pi.lot lets Pi work across repositories and absolute paths without treating one directory as its entire world. Instead of placing the agent inside a fixed workspace, it asks for permission when a shell command tries to perform a policy-sensitive filesystem operation.
+pi.lot lets Pi work across repositories and absolute paths without treating one directory as its entire world. Instead of placing the agent inside a fixed workspace, it asks for permission when a shell command tries to perform a policy-sensitive filesystem or network operation.
 
 The goal is to let Pi work alongside you across the machine while keeping important effects visible and controllable.
 
@@ -33,11 +33,9 @@ Policies can cover one path or a wider directory scope. More-specific path polic
 
 Bash calls also include a short purpose explaining what the command is intended to achieve. That purpose is shown alongside permission requests.
 
-### Experimental network permissions
+### Network permissions
 
-pi.lot also includes a separate experimental tool named `bash-network`.
-
-It catches actual network activity from a command and its descendants rather than trying to recognize commands such as `curl`, Git, npm, or SSH. The current prototype covers:
+The normal Bash worker also catches actual network activity from a command and its descendants rather than trying to recognize commands such as `curl`, Git, npm, or SSH. It covers:
 
 - hostname resolution;
 - IPv4 and IPv6;
@@ -48,11 +46,9 @@ It catches actual network activity from a command and its descendants rather tha
 - `localhost` traffic inside the command's private network; and
 - a mandatory transparent TCP gateway with HTTP/HTTPS request mediation.
 
-The registered `bash-network` tool mediates the actual method and canonical URL produced by arbitrary clients—including Git smart HTTP—without parsing the shell command. After coarse flow approval, each new exact method-and-URL scope is held for a separate per-command decision before the gateway opens the target-side connection. Repeated identical scopes reuse that decision. Persistent request policies and broader lifetime choices remain under development.
+The worker mediates the actual method and canonical URL produced by arbitrary clients—including Git smart HTTP—without parsing the shell command. After coarse flow approval, each new method-and-URL scope is evaluated through the same one-call, session, and persistent policy runtime as filesystem access. The request remains held until policy allows it, before the gateway opens the target-side connection.
 
-Hostname access can be presented as one understandable permission even when a client performs several DNS, IPv4, and IPv6 operations internally. Detailed events remain available in the command log.
-
-The network system is still a standalone experiment and is not yet part of the normal Bash filesystem worker. To try it, ask Pi explicitly to use `bash-network` for a command.
+Filesystem and network mediation run in one sandbox. The command sees the complete host filesystem through the FUSE policy mount while its private network namespace routes outbound traffic through the network gate.
 
 ### Cleaner tool output
 
@@ -152,8 +148,7 @@ Use `/policy-defaults save` to persist the active values to `~/.pilot/policy-def
 
 - Linux only.
 - The project has not been security audited.
-- Network mediation is still a separate experimental tool.
-- Persistent network permissions and active-flow revocation are not implemented.
+- Active network-flow revocation is not implemented.
 - Some unusual filesystem, device, pseudo-filesystem, socket, DNS, and IPv6 behavior is not yet supported.
 - Preserved local IPC can ask another host process to perform network activity outside the network gate.
 - Unprivileged Linux namespaces may not preserve every supplementary group.
@@ -163,15 +158,13 @@ Unsupported, malformed, cancelled, or incomplete mediated operations are intende
 
 ## Project status
 
-The filesystem policy system, session runtime, and tool display controls are implemented as working MVPs. Network policy is a functional proof of concept undergoing further development.
+The filesystem and network policy systems, combined Bash sandbox, session runtime, and tool display controls are implemented as working MVPs.
 
 Near-term work includes:
 
-- integrating filesystem and network mediation into one Bash worker;
-- persistent path-style network policy;
 - active network-flow revocation;
 - broader filesystem and network compatibility; and
-- loading and saving runtime configuration.
+- further policy and runtime hardening.
 
 Features from `pi-agent-tools` that have not yet been ported include:
 

@@ -3,18 +3,15 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {initialPolicyDefaults} from "../src/policy/defaults.js";
+import {initialPolicyDefaults, PolicyDefaultJsonStorage} from "../src/policy/defaults.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
-import type {ResponseDefaults} from "../src/policy/types.js";
 import {ResponseType} from "../src/policy/types.js";
 import type {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
 import type {PolicyDaoInterface} from "../src/storage/PolicyDao.js";
-import {JsonFileLoader} from "../src/storage/JsonFileLoader";
-import {defaultPolicyAreas} from "../src/policy/PolicyLogic";
 
 test("JSON policy defaults are absent until saved and round-trip exactly", () => {
     withStore((store) => {
-        assert.equal(store.load(), null);
+        assert.deepEqual(store.load(), initialPolicyDefaults);
 
         const defaults = {
             ...initialPolicyDefaults,
@@ -52,7 +49,7 @@ test("policy runtime loads, saves, and resets active defaults through its store"
         runtime.saveDefaultResponses();
         runtime.setDefaultResponse("fs_write", ResponseType.ask_user);
 
-        assert.equal(runtime.resetDefaultResponses(), "saved");
+        runtime.resetDefaultResponses();
         assert.equal(runtime.defaultResponses.fs_write, ResponseType.allow);
     });
 });
@@ -62,15 +59,15 @@ test("policy runtime resets to built-in defaults when no JSON file exists", () =
         const runtime = new PolicyRuntime(emptyPolicyDao(), unusedDecisionFlow(), store);
         runtime.setDefaultResponse("fs_read", ResponseType.deny);
 
-        assert.equal(runtime.resetDefaultResponses(), "built-in");
+        runtime.resetDefaultResponses();
         assert.deepEqual(runtime.defaultResponses, initialPolicyDefaults);
     });
 });
 
-function withStore(run: (store: JsonFileLoader<ResponseDefaults>) => void): void {
+function withStore(run: (store: PolicyDefaultJsonStorage) => void): void {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-policy-defaults-"));
     try {
-        run(new JsonFileLoader<ResponseDefaults>("policy-defaults", defaultPolicyAreas, directory));
+        run(new PolicyDefaultJsonStorage("policy-defaults", directory));
     } finally {
         rmSync(directory, {recursive: true, force: true});
     }

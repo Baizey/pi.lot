@@ -118,7 +118,7 @@ test("policy-defaults saves and resets active defaults", async () => {
         Object.keys(initialPolicyDefaults).map((key) => [key, ResponseType.deny]),
     ));
     assert.deepEqual(notifications.at(-1), {
-        message: "Reset policy defaults from saved defaults.",
+        message: "Reset policy defaults.",
         type: "info",
     });
 
@@ -167,7 +167,6 @@ function runtime(
             },
             resetDefaultResponses() {
                 Object.assign(defaultResponses, savedDefaults ?? initialPolicyDefaults);
-                return savedDefaults ? "saved" : "built-in";
             },
         },
         decisionFlows: undefined,

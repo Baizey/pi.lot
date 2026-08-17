@@ -7,14 +7,14 @@ import {
     NetworkOperation,
     NetworkPolicyProjector,
     NetworkTargetKind,
-} from "../src/experiment/network/network-runner.js";
+} from "../src/policy/network/NetworkSandbox.js";
 import type {
     NetworkPolicyEvent,
     NetworkPolicyGranularity,
     NetworkPolicyScope,
-} from "../src/experiment/network/network-runner.js";
-import {DEFAULT_NETWORK_POLICY_GRANULARITY} from "../src/experiment/network/NetworkPolicy.js";
-import {SyntheticDnsLeaseTable} from "../src/experiment/network/SyntheticDnsProxy.js";
+} from "../src/policy/network/NetworkSandbox.js";
+import {DEFAULT_NETWORK_POLICY_GRANULARITY} from "../src/policy/network/NetworkPolicy.js";
+import {SyntheticDnsLeaseTable} from "../src/policy/network/SyntheticDnsProxy.js";
 
 const signal = new AbortController().signal;
 

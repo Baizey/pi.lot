@@ -10,7 +10,7 @@ import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
-import {PilotSessionRuntime} from "../../runtime/PilotSessionRuntime";
+import {PilotSessionRuntime, PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 
 const WRITE_PRESENTATION = {
     toolName: "write",
@@ -33,7 +33,7 @@ export class WriteTool {
 
     constructor(
         private readonly pi: ExtensionAPI,
-        private readonly runtimeProvider: () => PilotSessionRuntime,
+        private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
     ) {
     }
 

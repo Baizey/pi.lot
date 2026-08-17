@@ -7,7 +7,7 @@ import {
     PolicyResolutionSource,
     PolicyResult, ResponseDefaults, ResponseType
 } from "./types";
-import {PolicyDao} from "../storage/PolicyDao";
+import {PolicyDaoInterface} from "../storage/PolicyDao";
 import {PolicyDecisionFlow} from "./PolicyDecisionFlow";
 
 export type ToolCallPathPolicyEvaluator = (
@@ -27,7 +27,7 @@ export class PolicyRuntime {
     }
 
     constructor(
-        private readonly database: PolicyDao,
+        private readonly database: PolicyDaoInterface,
         private readonly decisionFlow: PolicyDecisionFlow,
     ) {
         this.sessionPolicy = new PolicyLogic({policies: database.loadPolicies()});

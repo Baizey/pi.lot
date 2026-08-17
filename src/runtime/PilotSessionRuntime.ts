@@ -11,7 +11,14 @@ export type PilotSessionRuntimeOptions = {
     openDatabase?: () => SqliteDatabase;
 };
 
-export class PilotSessionRuntime {
+export type PilotSessionRuntimeInterface = {
+    readonly policyRuntime: PolicyRuntime;
+    readonly decisionFlows: UiDecisionFlowManager;
+    readonly toolDisplay: ToolDisplayController;
+    close(): void
+}
+
+export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
     readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
     readonly toolDisplay: ToolDisplayController;

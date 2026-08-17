@@ -8,7 +8,7 @@ import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection,} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
-import {PilotSessionRuntime} from "../../runtime/PilotSessionRuntime";
+import {PilotSessionRuntime, PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
@@ -49,7 +49,7 @@ export class BashTool {
 
     constructor(
         private readonly pi: ExtensionAPI,
-        private readonly runtimeProvider: () => PilotSessionRuntime,
+        private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
     ) {
     }
 

@@ -13,7 +13,14 @@ type PathPolicyRuleRow = {
     reason: string;
 };
 
-export class PolicyDao {
+export type PolicyDaoInterface = {
+    initializeSchema(): void
+    loadPolicies(): Policy[]
+    upsertPolicies(policies: Policy[]): void
+    deletePolicy(pattern: string, accessType: PolicyAccessType): void
+}
+
+export class PolicyDao implements PolicyDaoInterface {
     private schemaInitialized = false;
 
     constructor(private readonly db: SqliteDatabase) {

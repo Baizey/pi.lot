@@ -11,34 +11,23 @@ import type {
 import pilotExtension, {PilotExtension} from "../src/extension.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
-import {PolicyDao} from "../src/storage/PolicyDao";
-import {NetworkPolicyRuntime} from "../src/policy/network/NetworkPolicyRuntime.js";
-import {NetworkPolicyDecisionFlow} from "../src/policy/network/NetworkPolicyDecisionFlow.js";
-import {NetworkPolicyDao} from "../src/storage/NetworkPolicyDao.js";
+import {PolicyDaoInterface} from "../src/storage/PolicyDao";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 import {ToolDisplayController} from "../src/tui/tool/ToolDisplayController.js";
+import {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime";
+import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue";
 
 const expectedToolNames = ["bash", "read", "edit", "write", "bash-network"];
 
-function createPathPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
+function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
     return new PolicyRuntime(
         {
+            initializeSchema: () => undefined,
             loadPolicies: () => [],
             upsertPolicies() {},
             deletePolicy() {},
-        } as unknown as PolicyDao,
+        } satisfies PolicyDaoInterface,
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
-    );
-}
-
-function createNetworkPolicyRuntime(ctx: ExtensionContext): NetworkPolicyRuntime {
-    return new NetworkPolicyRuntime(
-        {
-            loadPolicies: () => [],
-            upsertPolicies() {},
-            deletePolicy() {},
-        } as unknown as NetworkPolicyDao,
-        new NetworkPolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
 }
 
@@ -170,8 +159,7 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
         createSessionRuntime(runtimeContext) {
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
-                pathPolicy: createPathPolicyRuntime(runtimeContext),
-                networkPolicy: createNetworkPolicyRuntime(runtimeContext),
+                policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay,
                 close() {},
@@ -231,13 +219,14 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
 
     new PilotExtension(harness.pi, {
         createSessionRuntime(runtimeContext) {
+            const queue = new UiDecisionFlowQueue();
+            const database = null
             return {
-                pathPolicy: createPathPolicyRuntime(runtimeContext),
-                networkPolicy: createNetworkPolicyRuntime(runtimeContext),
-                decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                policyRuntime: createPolicyRuntime(runtimeContext),
+                decisionFlows: new UiDecisionFlowManager(runtimeContext, queue),
                 toolDisplay: new ToolDisplayController(runtimeContext),
                 close() {},
-            };
+            } satisfies PilotSessionRuntimeInterface;
         },
     }).register();
     await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
@@ -368,12 +357,10 @@ test("one session runtime owns the production tool overrides until session shutd
     new PilotExtension(harness.pi, {
         createSessionRuntime(runtimeContext) {
             runtimeCreations++;
-            const pathPolicy = createPathPolicyRuntime(runtimeContext);
-            const networkPolicy = createNetworkPolicyRuntime(runtimeContext);
+            const policy = createPolicyRuntime(runtimeContext);
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
-                pathPolicy,
-                networkPolicy,
+                policyRuntime: policy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay,
                 close() {
@@ -444,6 +431,7 @@ function extensionHarness(): ExtensionHarness {
         registerShortcut(key: string, options: {handler: ShortcutHandler}) {
             shortcuts.set(key, options.handler);
         },
+        registerCommand() {},
         on(event: string, handler: unknown) {
             if (event === "session_start") startHandler = handler as SessionStartHandler;
             if (event === "session_shutdown") shutdownHandler = handler as SessionShutdownHandler;

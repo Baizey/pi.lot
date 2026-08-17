@@ -10,9 +10,9 @@ import {PolicyLogic} from "../src/policy/PolicyLogic";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow";
-import type {SecurityPolicy} from "../src/policy/path/types.js";
-import {PolicyAccessType} from "../src/policy/path/types.js";
-import {PolicyLifetime, PolicyResponse} from "../src/policy/types";
+import type {Policy} from "../src/policy/types";
+import {PolicyAccessType, PolicyLifetime, PolicyResponse, ResponseType} from "../src/policy/types";
+import {resolvePhysicalPath} from "../src/policy/path/validation.js";
 import {PolicyDao} from "../src/storage/PolicyDao";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 import type {UiDecision} from "../src/tui/UiDecisionFlowManager.js";
@@ -24,9 +24,9 @@ function policy(
     lifetime: PolicyLifetime,
     status: PolicyResponse,
     reason: string,
-): SecurityPolicy {
+): Policy {
     return {
-        path: target,
+        pattern: target,
         info: {
             [accessType]: PolicyLogic.createStatus(accessType, lifetime, status, reason),
         },
@@ -67,17 +67,17 @@ function unexpectedDecisionFlow(): PolicyDecisionFlow {
 test("a path and access type identify one policy whose properties can be replaced", () => {
     const target = path.join(os.tmpdir(), "pi-policy-replacement");
     const logic = new PolicyLogic({
-        policies: [policy(target, PolicyAccessType.READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "initial")],
+        policies: [policy(target, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "initial")],
     });
 
     logic.addPolicies([
-        policy(target, PolicyAccessType.READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "replacement"),
+        policy(target, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "replacement"),
     ]);
 
     const snapshot = logic.allPolicies();
     assert.equal(snapshot.length, 1);
-    assert.deepEqual(snapshot[0]?.info[PolicyAccessType.READ], {
-        accessType: PolicyAccessType.READ,
+    assert.deepEqual(snapshot[0]?.info[PolicyAccessType.FS_READ], {
+        accessType: PolicyAccessType.FS_READ,
         lifetime: PolicyLifetime.SESSION,
         status: PolicyResponse.DENIED,
         reason: "replacement",
@@ -89,45 +89,45 @@ test("different access types coexist at one path", () => {
     const logic = new PolicyLogic();
 
     logic.addPolicies([
-        policy(target, PolicyAccessType.READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "read"),
-        policy(target, PolicyAccessType.WRITE, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "write"),
+        policy(target, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "read"),
+        policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "write"),
     ]);
 
     const snapshot = logic.allPolicies();
     assert.equal(snapshot.length, 1);
-    assert.equal(snapshot[0]?.info[PolicyAccessType.READ]?.reason, "read");
-    assert.equal(snapshot[0]?.info[PolicyAccessType.WRITE]?.reason, "write");
+    assert.equal(snapshot[0]?.info[PolicyAccessType.FS_READ]?.reason, "read");
+    assert.equal(snapshot[0]?.info[PolicyAccessType.FS_WRITE]?.reason, "write");
 });
 
 test("deleting an access policy does not depend on its lifetime", () => {
     const target = path.join(os.tmpdir(), "pi-policy-deletion");
     const logic = new PolicyLogic({
         policies: [
-            policy(target, PolicyAccessType.READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "read"),
-            policy(target, PolicyAccessType.WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "write"),
+            policy(target, PolicyAccessType.FS_READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "read"),
+            policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "write"),
         ],
     });
 
-    logic.removePolicies([{uri: target, accessTypes: [PolicyAccessType.READ]}]);
+    logic.removePolicies([{uri: target, accessTypes: [PolicyAccessType.FS_READ]}]);
 
-    assert.equal(logic.evaluate(target, PolicyAccessType.READ), null);
-    assert.equal(logic.evaluate(target, PolicyAccessType.WRITE)?.matchedLifetime, PolicyLifetime.SESSION);
+    assert.equal(logic.evaluate(target, PolicyAccessType.FS_READ), null);
+    assert.equal(logic.evaluate(target, PolicyAccessType.FS_WRITE)?.matchedLifetime, PolicyLifetime.SESSION);
 });
 
 test("only local and global policies are included in the persisted snapshot", () => {
     const base = path.join(os.tmpdir(), "pi-policy-persistence");
     const logic = new PolicyLogic({
         policies: [
-            policy(path.join(base, "once"), PolicyAccessType.READ, PolicyLifetime.ONCE, PolicyResponse.ALLOWED, "once"),
-            policy(path.join(base, "session"), PolicyAccessType.READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "session"),
-            policy(path.join(base, "local"), PolicyAccessType.READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local"),
-            policy(path.join(base, "global"), PolicyAccessType.READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "global"),
+            policy(path.join(base, "once"), PolicyAccessType.FS_READ, PolicyLifetime.ONCE, PolicyResponse.ALLOWED, "once"),
+            policy(path.join(base, "session"), PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "session"),
+            policy(path.join(base, "local"), PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local"),
+            policy(path.join(base, "global"), PolicyAccessType.FS_READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "global"),
         ],
     });
 
     const persisted = logic.persistedPolicies();
     assert.deepEqual(
-        persisted.map((item) => item.info[PolicyAccessType.READ]?.lifetime),
+        persisted.map((item) => item.info[PolicyAccessType.FS_READ]?.lifetime),
         [PolicyLifetime.LOCAL, PolicyLifetime.GLOBAL],
     );
 });
@@ -135,12 +135,12 @@ test("only local and global policies are included in the persisted snapshot", ()
 test("a policy on the filesystem root applies to the root and every descendant", () => {
     const logic = new PolicyLogic({
         policies: [
-            policy("/", PolicyAccessType.WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "root policy"),
+            policy("/", PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "root policy"),
         ],
     });
 
     for (const target of ["/", "/tmp", "/var/home/example/nested/file.txt"]) {
-        const result = logic.evaluate(target, PolicyAccessType.WRITE);
+        const result = logic.evaluate(target, PolicyAccessType.FS_WRITE);
         assert.equal(result?.matchedPattern, "/");
         assert.equal(result?.matchedStatus, PolicyResponse.DENIED);
         assert.equal(result?.matchedReason, "root policy");
@@ -150,18 +150,18 @@ test("a policy on the filesystem root applies to the root and every descendant",
 test("recording a root policy applies it to later tool calls", async () => {
     const decisions = scriptedDecisionFlow([{
         uri: "/",
-        accessType: PolicyAccessType.WRITE,
+        accessType: PolicyAccessType.FS_WRITE,
         lifetime: PolicyLifetime.SESSION,
         status: PolicyResponse.DENIED,
         reason: "recorded root policy",
     }]);
     const runtime = new PolicyRuntime(pathPolicyDao(), decisions.flow);
 
-    const recorded = await runtime.beginToolCall()("/", PolicyAccessType.WRITE);
+    const recorded = await runtime.beginToolCall()("/", PolicyAccessType.FS_WRITE);
     assert.equal(recorded.matchedPattern, "/");
     assert.equal(recorded.matchedStatus, PolicyResponse.DENIED);
 
-    const laterResult = await runtime.beginToolCall()("/var/home/example/file.txt", PolicyAccessType.WRITE);
+    const laterResult = await runtime.beginToolCall()("/var/home/example/file.txt", PolicyAccessType.FS_WRITE);
     assert.equal(laterResult.matchedPattern, "/");
     assert.equal(laterResult.matchedLifetime, PolicyLifetime.SESSION);
     assert.equal(laterResult.matchedReason, "recorded root policy");
@@ -173,13 +173,13 @@ test("the most-specific path policy wins", () => {
     const child = path.join(parent, "child");
     const logic = new PolicyLogic({
         policies: [
-            policy(parent, PolicyAccessType.READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "parent"),
-            policy(child, PolicyAccessType.READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "child"),
+            policy(parent, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "parent"),
+            policy(child, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "child"),
         ],
     });
 
-    const result = logic.evaluate(path.join(child, "file.txt"), PolicyAccessType.READ);
-    assert.equal(result?.matchedPattern, PolicyLogic.resolvePhysicalPath(child));
+    const result = logic.evaluate(path.join(child, "file.txt"), PolicyAccessType.FS_READ);
+    assert.equal(result?.matchedPattern, resolvePhysicalPath(child));
     assert.equal(result?.matchedStatus, PolicyResponse.DENIED);
 });
 
@@ -189,12 +189,12 @@ test("path policy matching preserves Linux case sensitivity", () => {
     const lowerCasePath = path.join(parent, "target");
     const logic = new PolicyLogic({
         policies: [
-            policy(upperCasePath, PolicyAccessType.WRITE, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "exact case"),
+            policy(upperCasePath, PolicyAccessType.FS_WRITE, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "exact case"),
         ],
     });
 
-    assert.equal(logic.evaluate(upperCasePath, PolicyAccessType.WRITE)?.matchedStatus, PolicyResponse.ALLOWED);
-    assert.equal(logic.evaluate(lowerCasePath, PolicyAccessType.WRITE), null);
+    assert.equal(logic.evaluate(upperCasePath, PolicyAccessType.FS_WRITE)?.matchedStatus, PolicyResponse.ALLOWED);
+    assert.equal(logic.evaluate(lowerCasePath, PolicyAccessType.FS_WRITE), null);
 });
 
 test("local and global path policies round-trip through SQLite", () => {
@@ -205,9 +205,9 @@ test("local and global path policies round-trip through SQLite", () => {
         const target = path.join(directory, "workspace");
         const saved = new PolicyLogic({
             policies: [
-                policy(target, PolicyAccessType.READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local read"),
-                policy(target, PolicyAccessType.WRITE, PolicyLifetime.GLOBAL, PolicyResponse.DENIED, "global write"),
-                policy(target, PolicyAccessType.DELETE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "session delete"),
+                policy(target, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local read"),
+                policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.GLOBAL, PolicyResponse.DENIED, "global write"),
+                policy(target, PolicyAccessType.FS_DELETE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "session delete"),
             ],
         });
         const dao = new PolicyDao(database);
@@ -215,9 +215,9 @@ test("local and global path policies round-trip through SQLite", () => {
         dao.upsertPolicies(saved.persistedPolicies());
 
         const loaded = new PolicyLogic({policies: dao.loadPolicies()});
-        assert.equal(loaded.evaluate(target, PolicyAccessType.READ)?.matchedLifetime, PolicyLifetime.LOCAL);
-        assert.equal(loaded.evaluate(target, PolicyAccessType.WRITE)?.matchedLifetime, PolicyLifetime.GLOBAL);
-        assert.equal(loaded.evaluate(target, PolicyAccessType.DELETE), null);
+        assert.equal(loaded.evaluate(target, PolicyAccessType.FS_READ)?.matchedLifetime, PolicyLifetime.LOCAL);
+        assert.equal(loaded.evaluate(target, PolicyAccessType.FS_WRITE)?.matchedLifetime, PolicyLifetime.GLOBAL);
+        assert.equal(loaded.evaluate(target, PolicyAccessType.FS_DELETE), null);
     } finally {
         database.close();
         rmSync(directory, {recursive: true, force: true});
@@ -226,32 +226,32 @@ test("local and global path policies round-trip through SQLite", () => {
 
 test("runtime policy ownership follows tool-call, session, and local lifetimes", async () => {
     const target = path.join(os.tmpdir(), "pi-policy-runtime");
-    let persisted: SecurityPolicy[] = [];
+    let persisted: Policy[] = [];
     const decisions = scriptedDecisionFlow([
         {
             uri: target,
-            accessType: PolicyAccessType.READ,
+            accessType: PolicyAccessType.FS_READ,
             lifetime: PolicyLifetime.ONCE,
             status: PolicyResponse.ALLOWED,
             reason: "once",
         },
         {
             uri: target,
-            accessType: PolicyAccessType.READ,
+            accessType: PolicyAccessType.FS_READ,
             lifetime: PolicyLifetime.ONCE,
             status: PolicyResponse.DENIED,
             reason: "second call",
         },
         {
             uri: target,
-            accessType: PolicyAccessType.WRITE,
+            accessType: PolicyAccessType.FS_WRITE,
             lifetime: PolicyLifetime.SESSION,
             status: PolicyResponse.DENIED,
             reason: "session",
         },
         {
             uri: target,
-            accessType: PolicyAccessType.DELETE,
+            accessType: PolicyAccessType.FS_DELETE,
             lifetime: PolicyLifetime.LOCAL,
             status: PolicyResponse.ALLOWED,
             reason: "local",
@@ -263,23 +263,24 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
             persisted = structuredClone(policies);
         },
     }), decisions.flow);
+    runtime.setDefaultResponse("fs_read", ResponseType.ask_user);
     const firstCall = runtime.beginToolCall();
     const secondCall = runtime.beginToolCall();
 
-    assert.equal((await firstCall(target, PolicyAccessType.READ)).matchedLifetime, PolicyLifetime.ONCE);
-    assert.equal((await firstCall(target, PolicyAccessType.READ)).matchedReason, "once");
-    assert.equal((await secondCall(target, PolicyAccessType.READ)).matchedReason, "second call");
+    assert.equal((await firstCall(target, PolicyAccessType.FS_READ)).matchedLifetime, PolicyLifetime.ONCE);
+    assert.equal((await firstCall(target, PolicyAccessType.FS_READ)).matchedReason, "once");
+    assert.equal((await secondCall(target, PolicyAccessType.FS_READ)).matchedReason, "second call");
 
-    assert.equal((await firstCall(target, PolicyAccessType.WRITE)).matchedLifetime, PolicyLifetime.SESSION);
-    assert.equal((await secondCall(target, PolicyAccessType.WRITE)).matchedLifetime, PolicyLifetime.SESSION);
+    assert.equal((await firstCall(target, PolicyAccessType.FS_WRITE)).matchedLifetime, PolicyLifetime.SESSION);
+    assert.equal((await secondCall(target, PolicyAccessType.FS_WRITE)).matchedLifetime, PolicyLifetime.SESSION);
     assert.deepEqual(persisted, []);
 
-    assert.equal((await firstCall(target, PolicyAccessType.DELETE)).matchedLifetime, PolicyLifetime.LOCAL);
+    assert.equal((await firstCall(target, PolicyAccessType.FS_DELETE)).matchedLifetime, PolicyLifetime.LOCAL);
     assert.equal(decisions.callCount(), 4);
 
     const nextSessionDecisions = scriptedDecisionFlow([{
         uri: target,
-        accessType: PolicyAccessType.WRITE,
+        accessType: PolicyAccessType.FS_WRITE,
         lifetime: PolicyLifetime.ONCE,
         status: PolicyResponse.ALLOWED,
         reason: "new session",
@@ -288,10 +289,10 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
         loadPolicies: () => structuredClone(persisted),
     }), nextSessionDecisions.flow);
     assert.equal(
-        (await nextSession.beginToolCall()(target, PolicyAccessType.DELETE)).matchedLifetime,
+        (await nextSession.beginToolCall()(target, PolicyAccessType.FS_DELETE)).matchedLifetime,
         PolicyLifetime.LOCAL,
     );
-    assert.equal((await nextSession.beginToolCall()(target, PolicyAccessType.WRITE)).matchedReason, "new session");
+    assert.equal((await nextSession.beginToolCall()(target, PolicyAccessType.FS_WRITE)).matchedReason, "new session");
 });
 
 test("FUSE path approval uses the decision flow manager and records session policy", async () => {
@@ -341,7 +342,7 @@ test("FUSE path approval uses the decision flow manager and records session poli
         assert.equal(promptTitles.every((title) => title.includes(target)), true);
         assert.equal(reports.length, 0);
         assert.equal(
-            (await runtime.beginToolCall()(target, PolicyAccessType.WRITE)).matchedLifetime,
+            (await runtime.beginToolCall()(target, PolicyAccessType.FS_WRITE)).matchedLifetime,
             PolicyLifetime.SESSION,
         );
     } finally {
@@ -393,7 +394,7 @@ test("FUSE path denial records the optional reason collected by the decision flo
         assert.equal(decision, FuseDecision.DENY);
         assert.equal(reasonPrompts, 1);
         assert.equal(reports[0]?.includes(denialReason), true);
-        assert.equal((await toolCall(target, PolicyAccessType.WRITE)).matchedReason, denialReason);
+        assert.equal((await toolCall(target, PolicyAccessType.FS_WRITE)).matchedReason, denialReason);
     } finally {
         rmSync(workspace, {recursive: true, force: true});
     }
@@ -491,10 +492,10 @@ test("a non-interactive path decision fails closed without opening a prompt", as
 
         assert.equal(decision, FuseDecision.DENY);
         assert.equal(prompts, 0);
-        assert.match(reports[0] ?? "", /No path policy scope selected/);
-        assert.equal((await toolCall(target, PolicyAccessType.WRITE)).matchedLifetime, PolicyLifetime.ONCE);
+        assert.match(reports[0] ?? "", /No uri policy scope selected/);
+        assert.equal((await toolCall(target, PolicyAccessType.FS_WRITE)).matchedLifetime, PolicyLifetime.ONCE);
         assert.equal(
-            (await runtime.beginToolCall()(target, PolicyAccessType.WRITE)).matchedStatus,
+            (await runtime.beginToolCall()(target, PolicyAccessType.FS_WRITE)).matchedStatus,
             PolicyResponse.DENIED,
         );
     } finally {

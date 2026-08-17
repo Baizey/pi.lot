@@ -13,7 +13,6 @@ import {
     ResponseType
 } from "./types";
 import path from "node:path";
-import {resolvePhysicalPath} from "./path/validation";
 import {ParsedUri} from "./network/ParsedUri";
 
 export type PathPolicyLogicOptions = {
@@ -152,7 +151,7 @@ export class PolicyLogic {
     private findPolicy(evaluatedPath: string, accessType: PolicyAccessType): Policy | undefined {
         return this.policies
             .filter((policy) => policy.info[accessType] && this.isUnderPolicy(accessType, evaluatedPath, policy.pattern))
-            .sort((left, right) => right.pattern.localeCompare(left.pattern))[0];
+            .sort((left, right) => right.pattern.length - left.pattern.length)[0];
     }
 
     private isUnderPolicy(
@@ -171,15 +170,17 @@ export class PolicyLogic {
     }
 
     private standardizePolicy(policy: Policy): Policy {
+        const accessType = Object.values(policy.info).find((status) => status)?.accessType;
         return {
-            pattern: resolvePhysicalPath(policy.pattern),
+            pattern: accessType ? resolveUri(accessType, policy.pattern) : policy.pattern,
             info: policy.info,
         };
     }
 
     private standardizeDeleteRequest(request: PolicyDeleteRequest): PolicyDeleteRequest {
+        const accessType = request.accessTypes[0];
         return {
-            uri: resolvePhysicalPath(request.uri),
+            uri: accessType ? resolveUri(accessType, request.uri) : request.uri,
             accessTypes: [...request.accessTypes],
         };
     }

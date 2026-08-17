@@ -4,6 +4,7 @@ import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-cod
 import {PolicyDefaultsCommand} from "../src/commands/PolicyDefaultsCommand.js";
 import type {ResponseDefaults} from "../src/policy/types.js";
 import {ResponseType} from "../src/policy/types.js";
+import type {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime.js";
 
 type Completion = {
     value: string;
@@ -26,6 +27,7 @@ test("policy-defaults autocompletes responses and full response/key arguments", 
     assert.deepEqual(await complete(command, "a"), [
         {value: "allow", label: "allow"},
         {value: "ask_user", label: "ask_user"},
+        {value: "ask_llm", label: "ask_llm"},
     ]);
     assert.deepEqual(
         (await complete(command, "allow "))?.map((item) => item.value),
@@ -42,20 +44,16 @@ test("policy-defaults autocompletes responses and full response/key arguments", 
         (await complete(command, "deny web_"))?.map((item) => item.value),
         ["deny web_read", "deny web_write", "deny web_extra"],
     );
-    assert.equal(await complete(command, "ask_llm "), null);
-    assert.equal(await complete(command, "allow fs_read "), null);
+    assert.equal((await complete(command, "ask_llm "))?.[0]?.value, "ask_llm all");
+    assert.deepEqual(await complete(command, "allow fs_read "), []);
     assert.equal(runtimeRequests, 0);
 });
 
 test("policy-defaults reports and changes session defaults", async () => {
     const defaults = initialDefaults();
     const changes: Array<[keyof ResponseDefaults, ResponseType]> = [];
-    const command = registeredCommand(() => ({
-        defaultResponses: defaults,
-        setDefaultResponse(key: keyof ResponseDefaults, response: ResponseType) {
-            changes.push([key, response]);
-            defaults[key] = response;
-        },
+    const command = registeredCommand(() => runtime(defaults, (key, response) => {
+        changes.push([key, response]);
     }));
     const notifications: Array<{message: string; type: string}> = [];
     const ctx = {
@@ -78,9 +76,12 @@ test("policy-defaults reports and changes session defaults", async () => {
     });
 
     await command.handler("ask_llm fs_read", ctx);
-    assert.equal(changes.length, 1);
-    assert.match(notifications.at(-1)?.message ?? "", /^Usage: \/policy-defaults/);
-    assert.equal(notifications.at(-1)?.type, "error");
+    assert.deepEqual(changes.at(-1), ["fs_read", ResponseType.ask_llm]);
+    assert.equal(defaults.fs_read, ResponseType.ask_llm);
+    assert.deepEqual(notifications.at(-1), {
+        message: "Policy default fs_read = ask_llm for this session.",
+        type: "info",
+    });
 });
 
 function registeredCommand(runtimeProvider: ConstructorParameters<typeof PolicyDefaultsCommand>[1]): RegisteredCommand {
@@ -112,11 +113,20 @@ function initialDefaults(): ResponseDefaults {
     };
 }
 
-function runtime(defaultResponses: ResponseDefaults) {
+function runtime(
+    defaultResponses: ResponseDefaults,
+    onChange?: (key: keyof ResponseDefaults, response: ResponseType) => void,
+): PilotSessionRuntimeInterface {
     return {
-        defaultResponses,
-        setDefaultResponse(key: keyof ResponseDefaults, response: ResponseType) {
-            defaultResponses[key] = response;
+        policyRuntime: {
+            defaultResponses,
+            setDefaultResponse(key: keyof ResponseDefaults, response: ResponseType) {
+                onChange?.(key, response);
+                defaultResponses[key] = response;
+            },
         },
-    };
+        decisionFlows: undefined,
+        toolDisplay: undefined,
+        close() {},
+    } as unknown as PilotSessionRuntimeInterface;
 }

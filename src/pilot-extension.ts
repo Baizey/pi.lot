@@ -67,8 +67,11 @@ export class PilotExtension {
 
     private stopSession(): Promise<void> {
         const runtime = this.sessionRuntime;
-        this.sessionRuntime = undefined;
-        return this.mcpExtension.stopSession().finally(() => runtime?.close());
+        // Existing tool components may render while asynchronous shutdown cleanup is in flight.
+        return this.mcpExtension.stopSession().finally(() => {
+            if (this.sessionRuntime === runtime) this.sessionRuntime = undefined;
+            runtime?.close();
+        });
     }
 
     private requireSessionRuntime(): PilotSessionRuntimeInterface {

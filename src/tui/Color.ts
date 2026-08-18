@@ -48,6 +48,7 @@ export enum ThemeColor {
     thinkingXhigh = "thinkingXhigh",
     thinkingMax = "thinkingMax",
     bashMode = "bashMode",
+    searchMatchText = "searchMatchText",
 }
 
 type AssertNever<T extends never> = T;

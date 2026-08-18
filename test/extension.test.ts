@@ -193,6 +193,71 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
 });
 
+test("Bash components remain renderable while session shutdown is in progress", async () => {
+    const harness = extensionHarness();
+    const ctx = {
+        cwd: process.cwd(),
+        hasUI: true,
+        mode: "tui",
+        ui: {setToolsExpanded() {}},
+    } as unknown as ExtensionContext;
+    const theme = {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+    } as unknown as Theme;
+    let releaseMcpStop!: () => void;
+    const mcpStop = new Promise<void>((resolve) => {
+        releaseMcpStop = resolve;
+    });
+    let runtimeCloses = 0;
+
+    new PilotExtension(harness.pi, {
+        createMcpExtension: () => ({
+            register() {},
+            async startSession() {},
+            stopSession: () => mcpStop,
+            toolDefinitions: () => [],
+        }),
+        createSessionRuntime(runtimeContext) {
+            return {
+                policyRuntime: createPolicyRuntime(runtimeContext),
+                decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                toolDisplay: new ToolDisplayController(runtimeContext),
+                close() {
+                    runtimeCloses++;
+                },
+            };
+        },
+    }).register();
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+
+    const bashTool = registeredTool(harness, "bash");
+    assert.ok(bashTool.renderCall);
+    const call = bashTool.renderCall(
+        {purpose: "Keep rendering during teardown", command: "echo complete"},
+        theme,
+        {expanded: false, isError: false},
+    );
+    const shutdown = harness.sessionShutdown()({type: "session_shutdown", reason: "reload"}, ctx);
+
+    let renderError: unknown;
+    let renderedLines: string[] | undefined;
+    try {
+        renderedLines = call.render(120);
+    } catch (error) {
+        renderError = error;
+    }
+    releaseMcpStop();
+    await shutdown;
+
+    assert.ifError(renderError);
+    assert.deepEqual(renderedLines, [
+        "bash | Keep rendering during teardown",
+        "    echo complete",
+    ]);
+    assert.equal(runtimeCloses, 1);
+});
+
 test("read, edit, and write preserve native rendering while honoring minimal mode", async () => {
     initTheme("dark");
     const harness = extensionHarness();
@@ -415,6 +480,7 @@ function createNoopMcpExtension() {
         register() {},
         async startSession() {},
         async stopSession() {},
+        toolDefinitions: () => [],
     };
 }
 

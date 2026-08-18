@@ -17,6 +17,10 @@
 - Follow language-independent software-design principles. Do not imitate JavaScript conventions when they weaken
   types, encapsulation, explicit ownership, or testability.
 
+### JS/TS specific
+
+- avoid index.(ts|js), accept slightly bigger imports directly from the source
+
 ## The bigger picture
 
 - Design for:

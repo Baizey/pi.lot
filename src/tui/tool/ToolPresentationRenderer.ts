@@ -112,7 +112,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         const body = resolved.filter((argument) => argument.placement === ToolArgumentPlacement.BODY);
         const inline = body.filter((argument) => argument.layout === ToolArgumentLayout.INLINE);
         const blocks = body.filter((argument) => argument.layout === ToolArgumentLayout.BLOCK);
-        const showLabels = resolved.length !== 1;
+        const showLabels = body.length !== 1;
         return [
             title,
             ...inline.flatMap((argument) => this.bodyArgumentLines(argument, args, theme, showLabels, mode)),

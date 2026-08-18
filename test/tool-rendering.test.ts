@@ -200,6 +200,42 @@ test("known arguments retain declared order, unknown arguments sort, and blocks 
     );
 });
 
+test("body argument values honor their configured colors", () => {
+    type Args = {
+        inline: string;
+        block: string;
+    };
+    const presentation = {
+        toolName: "colored",
+        arguments: [
+            {key: "inline", color: ThemeColor.warning},
+            {key: "block", layout: ToolArgumentLayout.BLOCK, color: ThemeColor.text},
+        ],
+    } satisfies ToolPresentationSpec<Args>;
+    const colorTheme = {
+        fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+        bold: (text: string) => text,
+    } as unknown as Theme;
+    const renderer = new ToolPresentationRenderer(
+        presentation,
+        new MutableDisplayMode(ToolDisplayMode.FULL),
+    );
+
+    assert.deepEqual(
+        renderer.renderCall({
+            inline: "configured inline",
+            block: "first\nsecond",
+        }, colorTheme).render(120),
+        [
+            "<toolTitle>colored</toolTitle>",
+            "    <dim>inline:</dim> <warning>configured inline</warning>",
+            "    <dim>block:</dim>",
+            "        <text>first</text>",
+            "        <text>second</text>",
+        ],
+    );
+});
+
 test("a sole body argument is displayed without its name", () => {
     type Args = {path: string};
     const presentation = {

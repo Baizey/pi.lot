@@ -61,7 +61,7 @@ export class EditTool {
             ...definition,
 
             async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<EditToolDetails | undefined>> {
-                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_READ, signal)
+                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_WRITE, signal)
                 if (result.matchedStatus === PolicyResponse.DENIED) {
                     throw new Error(result.toDenyMessage())
                 }

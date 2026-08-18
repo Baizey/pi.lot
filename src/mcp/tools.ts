@@ -31,6 +31,11 @@ type McpToolRegistrar = Pick<ExtensionAPI, "registerTool"> & Partial<Pick<Extens
 export class McpToolRegistry {
     private readonly registeredPiToolNames = new Set<string>();
     private readonly registeredByServerTool = new Map<string, string>();
+    private readonly definitionsByServerTool = new Map<string, {
+        serverName: string;
+        mcpToolName: string;
+        definition: ToolDefinition<any, any>;
+    }>();
 
     constructor(
         private readonly pi: McpToolRegistrar,
@@ -61,14 +66,20 @@ export class McpToolRegistry {
                 }
                 const key = serverToolKey(serverName, tool.name);
                 if (this.registeredByServerTool.has(key)) continue;
-                this.pi.registerTool(createMcpPiTool({
+                const definition = createMcpPiTool({
                     serverName,
                     mcpTool: tool,
                     piToolName,
                     manager: this.manager,
                     store: this.store,
-                }));
+                });
+                this.pi.registerTool(definition);
                 this.registeredByServerTool.set(key, piToolName);
+                this.definitionsByServerTool.set(key, {
+                    serverName,
+                    mcpToolName: tool.name,
+                    definition: definition as unknown as ToolDefinition<any, any>,
+                });
                 this.registeredPiToolNames.add(piToolName);
                 result.registered.push({serverName, mcpToolName: tool.name, piToolName});
             }
@@ -78,6 +89,15 @@ export class McpToolRegistry {
 
     registeredToolNames(): string[] {
         return [...this.registeredPiToolNames].sort();
+    }
+
+    registeredToolDefinitions(config: McpConfigSnapshot = this.store.load()): ToolDefinition<any, any>[] {
+        return [...this.definitionsByServerTool.values()]
+            .filter(({serverName, mcpToolName}) => {
+                const server = config.servers[serverName];
+                return Boolean(server && shouldRegisterMcpTool(server, mcpToolName));
+            })
+            .map(({definition}) => definition);
     }
 }
 

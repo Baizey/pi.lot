@@ -1,4 +1,4 @@
-import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI, ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {McpManager} from "./client.js";
 import {registerMcpCommand} from "./commands.js";
 import {McpConfigStore} from "./config.js";
@@ -14,6 +14,7 @@ export interface McpExtensionInterface {
     register(): void;
     startSession(ctx: ExtensionContext): Promise<void>;
     stopSession(): Promise<void>;
+    toolDefinitions(): ToolDefinition<any, any>[];
 }
 
 export class McpExtension implements McpExtensionInterface {
@@ -65,5 +66,9 @@ export class McpExtension implements McpExtensionInterface {
         if (!this.sessionStarted) return;
         this.sessionStarted = false;
         await this.manager.disconnectAll();
+    }
+
+    toolDefinitions(): ToolDefinition<any, any>[] {
+        return this.registry.registeredToolDefinitions();
     }
 }

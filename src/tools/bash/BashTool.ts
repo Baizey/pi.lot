@@ -1,4 +1,4 @@
-import type {BashOperations, ExtensionAPI} from "@earendil-works/pi-coding-agent";
+import type {BashOperations, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {createBashTool, createBashToolDefinition} from "@earendil-works/pi-coding-agent";
 import {HOST_FILESYSTEM_ROOT, withFuseFilesystem} from "../../policy/path/fuse/fuse-runner.js";
 import {FuseDecision} from "../../policy/path/fuse/FuseFilesystem.js";
@@ -10,15 +10,14 @@ import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.
 import {ThemeColor} from "../../tui/Color.js";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {runNetworkSandboxedCommand} from "../../policy/network/NetworkSandbox.js";
-import {NetworkDecisionCoordinator} from "../../policy/network/NetworkPolicy.js";
-import {DEFAULT_NETWORK_POLICY_GRANULARITY} from "../../policy/network/NetworkPolicy.js";
+import {DEFAULT_NETWORK_POLICY_GRANULARITY, NetworkDecisionCoordinator} from "../../policy/network/NetworkPolicy.js";
 import {NetworkPolicyAuthorizer} from "../../policy/network/NetworkPolicyAuthorizer.js";
 import {NetworkDecision} from "../../policy/network/network-queue-protocol.js";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
 
-type FuseBashToolInput = {
+type BashToolInput = {
     command: string;
     purpose: string;
     timeout?: number;
@@ -42,15 +41,17 @@ const BASH_PRESENTATION = {
             key: "command",
             layout: ToolArgumentLayout.BLOCK,
             direction: ToolTextDirection.HEAD,
+            color: ThemeColor.text
         },
     ],
     result: {
         direction: ToolTextDirection.TAIL,
     },
-} satisfies ToolPresentationSpec<FuseBashToolInput>;
+} satisfies ToolPresentationSpec<BashToolInput>;
 
 export class BashTool {
     private registered = false;
+    private definition: ToolDefinition<any, any> | undefined;
 
     constructor(
         private readonly pi: ExtensionAPI,
@@ -61,7 +62,11 @@ export class BashTool {
     register(): void {
         if (this.registered) throw new Error("FUSE bash tool is already registered");
         this.registered = true;
+        this.pi.registerTool(this.toolDefinition());
+    }
 
+    toolDefinition(): ToolDefinition<any, any> {
+        if (this.definition) return this.definition;
         const bashDefinition = createBashToolDefinition(process.cwd());
         type PurposeParameter = (typeof bashDefinition.parameters.properties)["command"] & {
             description: string;
@@ -83,28 +88,31 @@ export class BashTool {
             maxLength: MAX_PURPOSE_LENGTH,
             pattern: "^[^\\r\\n]+$",
         } satisfies PurposeParameter;
+
         const parameters = {
             ...bashDefinition.parameters,
             properties: {...bashDefinition.parameters.properties, purpose: purposeParameter} satisfies Properties,
             required: [...bashDefinition.parameters.required, "purpose"] satisfies Required,
         };
+
         const renderer = new ToolPresentationRenderer(BASH_PRESENTATION, {
             currentMode: () => this.runtimeProvider().toolDisplay.currentMode(),
         });
-        this.pi.registerTool({
+
+        const definition = {
             ...bashDefinition,
             description: `${bashDefinition.description} Include a concise, one-line purpose for the command.`,
             parameters,
             prepareArguments: undefined,
+
             renderCall: (args, theme, context) => {
                 this.runtimeProvider().toolDisplay.synchronizeExpanded(context.expanded);
                 return renderer.renderCall(args, theme);
             },
-            renderResult: (result, _options, theme, context) => renderer.renderResult(
-                result,
-                theme,
-                {isError: context.isError},
-            ),
+
+            renderResult: (result, _options, theme, context) =>
+                renderer.renderResult(result, theme, {isError: context.isError}),
+
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
                 const policy = runtime.policyRuntime.beginToolCall();
@@ -113,7 +121,13 @@ export class BashTool {
                 });
                 return sandboxedBash.execute(id, params, signal, onUpdate);
             },
-        });
+
+        } as const satisfies ToolDefinition<typeof parameters, any>;
+
+        const untyped = definition as any as ToolDefinition<typeof parameters, any>;
+
+        this.definition = untyped
+        return untyped
     }
 
     private createOperations(policy: ToolCallPathPolicyEvaluator): BashOperations {

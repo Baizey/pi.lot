@@ -207,7 +207,7 @@ test("local and global path policies round-trip through SQLite", () => {
             policies: [
                 policy(target, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local read"),
                 policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.GLOBAL, PolicyResponse.DENIED, "global write"),
-                policy(target, PolicyAccessType.FS_DELETE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "session delete"),
+                policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "session delete"),
             ],
         });
         const dao = new PolicyDao(database);
@@ -217,7 +217,7 @@ test("local and global path policies round-trip through SQLite", () => {
         const loaded = new PolicyLogic({policies: dao.loadPolicies()});
         assert.equal(loaded.evaluate(target, PolicyAccessType.FS_READ)?.matchedLifetime, PolicyLifetime.LOCAL);
         assert.equal(loaded.evaluate(target, PolicyAccessType.FS_WRITE)?.matchedLifetime, PolicyLifetime.GLOBAL);
-        assert.equal(loaded.evaluate(target, PolicyAccessType.FS_DELETE), null);
+        assert.equal(loaded.evaluate(target, PolicyAccessType.FS_WRITE), null);
     } finally {
         database.close();
         rmSync(directory, {recursive: true, force: true});
@@ -251,7 +251,7 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
         },
         {
             uri: target,
-            accessType: PolicyAccessType.FS_DELETE,
+            accessType: PolicyAccessType.FS_WRITE,
             lifetime: PolicyLifetime.LOCAL,
             status: PolicyResponse.ALLOWED,
             reason: "local",
@@ -275,7 +275,7 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
     assert.equal((await secondCall(target, PolicyAccessType.FS_WRITE)).matchedLifetime, PolicyLifetime.SESSION);
     assert.deepEqual(persisted, []);
 
-    assert.equal((await firstCall(target, PolicyAccessType.FS_DELETE)).matchedLifetime, PolicyLifetime.LOCAL);
+    assert.equal((await firstCall(target, PolicyAccessType.FS_WRITE)).matchedLifetime, PolicyLifetime.LOCAL);
     assert.equal(decisions.callCount(), 4);
 
     const nextSessionDecisions = scriptedDecisionFlow([{
@@ -289,7 +289,7 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
         loadPolicies: () => structuredClone(persisted),
     }), nextSessionDecisions.flow);
     assert.equal(
-        (await nextSession.beginToolCall()(target, PolicyAccessType.FS_DELETE)).matchedLifetime,
+        (await nextSession.beginToolCall()(target, PolicyAccessType.FS_WRITE)).matchedLifetime,
         PolicyLifetime.LOCAL,
     );
     assert.equal((await nextSession.beginToolCall()(target, PolicyAccessType.FS_WRITE)).matchedReason, "new session");

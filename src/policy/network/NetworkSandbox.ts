@@ -324,10 +324,20 @@ class NetworkSandboxRunner {
     this.outerExit = waitForChild(child);
   }
 
-  private workerEnvironment(): NodeJS.ProcessEnv | undefined {
-    if (!this.caBundleFile) return this.options.env;
-    return {
+  private workerEnvironment(): NodeJS.ProcessEnv {
+    const environment: NodeJS.ProcessEnv = {
       ...(this.options.env ?? process.env),
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_ASKPASS: "/bin/false",
+      GIT_CREDENTIAL_INTERACTIVE: "never",
+      GCM_INTERACTIVE: "Never",
+      GH_PROMPT_DISABLED: "1",
+      SSH_ASKPASS: "/bin/false",
+      SSH_ASKPASS_REQUIRE: "never",
+    };
+    if (!this.caBundleFile) return environment;
+    return {
+      ...environment,
       SSL_CERT_FILE: this.caBundleFile,
       CURL_CA_BUNDLE: this.caBundleFile,
       GIT_SSL_CAINFO: this.caBundleFile,

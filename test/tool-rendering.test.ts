@@ -60,7 +60,7 @@ test("tool display controls remember the regular mode while minimal is active", 
     assert.deepEqual(expandedStates, [false, true, false, true, false, true, false, false]);
 });
 
-test("full Bash presentation promotes purpose and timeout while retaining the command label", () => {
+test("full Bash presentation promotes purpose and timeout and omits the sole body argument label", () => {
     const mode = new MutableDisplayMode(ToolDisplayMode.FULL);
     const renderer = new ToolPresentationRenderer(bashPresentation(), mode);
 
@@ -72,9 +72,8 @@ test("full Bash presentation promotes purpose and timeout while retaining the co
         }, plainTheme).render(120),
         [
             "bash | Build the native helper (timeout 300s)",
-            "    command:",
-            "        npm run build",
-            "        npm test",
+            "    npm run build",
+            "    npm test",
         ],
     );
     assert.deepEqual(
@@ -118,8 +117,7 @@ test("rendered components observe display-mode changes without being replaced", 
 
     assert.deepEqual(call.render(120), [
         "bash | Track display mode",
-        "    command:",
-        "        echo complete",
+        "    echo complete",
     ]);
     assert.deepEqual(result.render(120), ["", "complete"]);
 
@@ -138,16 +136,15 @@ test("truncated presentation keeps argument heads and output tails", () => {
         renderer.renderCall({purpose: "Exercise truncation", command}, plainTheme).render(120),
         [
             "bash | Exercise truncation",
-            "    command:",
-            "        line 1",
-            "        line 2",
-            "        line 3",
-            "        line 4",
-            "        line 5",
-            "        line 6",
-            "        line 7",
-            "        line 8",
-            "        ... (2 more lines, ctrl+o to expand)",
+            "    line 1",
+            "    line 2",
+            "    line 3",
+            "    line 4",
+            "    line 5",
+            "    line 6",
+            "    line 7",
+            "    line 8",
+            "    ... (2 more lines, ctrl+o to expand)",
         ],
     );
     assert.deepEqual(

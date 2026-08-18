@@ -1,7 +1,8 @@
-import {request as createHttpRequest} from "node:http";
-import type {IncomingHttpHeaders, IncomingMessage, Server, ServerResponse} from "node:http";
+import {once} from "node:events";
+import {Agent as HttpAgent, request as createHttpRequest} from "node:http";
+import type {ClientRequest, IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse} from "node:http";
 import {createServer} from "node:http";
-import {request as createHttpsRequest} from "node:https";
+import {Agent as HttpsAgent, request as createHttpsRequest} from "node:https";
 import {isIP} from "node:net";
 import type {Socket} from "node:net";
 import {checkServerIdentity, rootCertificates} from "node:tls";
@@ -34,9 +35,13 @@ export type HttpRequestBrokerOptions = {
     onError?: (error: unknown) => void;
 };
 
+export const HTTP_GATEWAY_MAX_HEADER_BYTES = 64 * 1024;
+const MAX_HTTP_HEADER_COUNT = 2_000;
+
 type HttpConnectionContext = {
     approval: TcpGatewayApproval;
     scheme: "http" | "https";
+    agent: HttpAgent;
     tail: Promise<void>;
 };
 
@@ -49,11 +54,14 @@ export class HttpRequestBroker {
 
     constructor(options: HttpRequestBrokerOptions = {}) {
         this.options = options;
-        this.server = createServer((request, response) => this.enqueueRequest(request, response));
+        this.server = createServer(
+            {maxHeaderSize: HTTP_GATEWAY_MAX_HEADER_BYTES},
+            (request, response) => this.enqueueRequest(request, response),
+        );
         this.server.headersTimeout = 5_000;
         this.server.requestTimeout = 0;
         this.server.keepAliveTimeout = 5_000;
-        this.server.maxHeadersCount = 100;
+        this.server.maxHeadersCount = MAX_HTTP_HEADER_COUNT;
         this.server.maxRequestsPerSocket = 1_000;
         this.server.on("clientError", (error, socket) => {
             this.reportError(error);
@@ -68,7 +76,11 @@ export class HttpRequestBroker {
             socket.destroy();
             return;
         }
-        this.contexts.set(socket, {approval, scheme, tail: Promise.resolve()});
+        const agent = scheme === "http"
+            ? new HttpAgent({keepAlive: true, maxSockets: 1, maxFreeSockets: 1})
+            : new HttpsAgent({keepAlive: true, maxSockets: 1, maxFreeSockets: 1});
+        this.contexts.set(socket, {approval, scheme, agent, tail: Promise.resolve()});
+        socket.once("close", () => agent.destroy());
         this.server.emit("connection", socket);
         socket.resume();
     }
@@ -117,6 +129,7 @@ export class HttpRequestBroker {
             response,
             context.approval,
             event,
+            context.agent,
             this.options.additionalUpstreamCa,
         );
     }
@@ -241,6 +254,7 @@ async function forwardRequest(
     response: ServerResponse,
     approval: TcpGatewayApproval,
     event: HttpRequestEvent,
+    agent: HttpAgent,
     additionalUpstreamCa: string | undefined,
 ): Promise<void> {
     await new Promise<void>((resolve, reject) => {
@@ -251,8 +265,8 @@ async function forwardRequest(
             family: approval.family === NetworkAddressFamily.IPV4 ? 4 : 6,
             method: event.method,
             path: event.path,
-            headers: forwardedHeaders(request.headers),
-            agent: false,
+            headers: forwardedRawHeaders(request.rawHeaders),
+            agent,
             ...(event.scheme === "https"
                 ? {
                     servername: isIP(event.hostname) === 0 ? event.hostname : undefined,
@@ -271,10 +285,14 @@ async function forwardRequest(
             response.writeHead(
                 upstreamResponse.statusCode ?? 502,
                 upstreamResponse.statusMessage,
-                forwardedHeaders(upstreamResponse.headers),
+                forwardedRawHeaders(upstreamResponse.rawHeaders),
             );
+            upstreamResponse.once("end", () => {
+                const trailers = forwardedRawHeaders(upstreamResponse.rawTrailers);
+                if (trailers.length > 0) response.addTrailers(outgoingHeaders(trailers));
+                resolve();
+            });
             upstreamResponse.pipe(response);
-            upstreamResponse.once("end", resolve);
             upstreamResponse.once("error", reject);
         });
         upstream.once("error", reject);
@@ -290,24 +308,60 @@ async function forwardRequest(
         response.once("close", () => {
             if (!response.writableEnded) upstream.destroy();
         });
-        request.pipe(upstream);
+        void forwardRequestBody(request, upstream).catch((error) => {
+            upstream.destroy();
+            reject(error);
+        });
     });
 }
 
-function forwardedHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
-    const forwarded = {...headers};
-    for (const token of headers.connection?.split(",") ?? []) {
-        const name = token.trim().toLowerCase();
-        if (name) delete forwarded[name];
+async function forwardRequestBody(request: IncomingMessage, upstream: ClientRequest): Promise<void> {
+    for await (const chunk of request) {
+        if (!upstream.write(chunk)) await once(upstream, "drain");
     }
-    delete forwarded.connection;
-    delete forwarded["proxy-connection"];
-    delete forwarded["proxy-authorization"];
-    delete forwarded["proxy-authenticate"];
-    delete forwarded["keep-alive"];
-    delete forwarded.te;
-    delete forwarded.trailer;
-    delete forwarded.upgrade;
+    const trailers = forwardedRawHeaders(request.rawTrailers);
+    if (trailers.length > 0) upstream.addTrailers(outgoingHeaders(trailers));
+    upstream.end();
+}
+
+function outgoingHeaders(rawHeaders: readonly string[]): OutgoingHttpHeaders {
+    const result: OutgoingHttpHeaders = {};
+    for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
+        const name = rawHeaders[index]!;
+        const value = rawHeaders[index + 1]!;
+        const existing = result[name];
+        if (existing === undefined) result[name] = value;
+        else if (Array.isArray(existing)) result[name] = [...existing, value];
+        else result[name] = [String(existing), value];
+    }
+    return result;
+}
+
+function forwardedRawHeaders(rawHeaders: readonly string[]): string[] {
+    const excluded = new Set([
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "transfer-encoding",
+        "upgrade",
+    ]);
+    for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
+        if (rawHeaders[index]?.toLowerCase() !== "connection") continue;
+        for (const token of rawHeaders[index + 1]!.split(",")) {
+            const name = token.trim().toLowerCase();
+            if (name) excluded.add(name);
+        }
+    }
+
+    const forwarded: string[] = [];
+    for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
+        const name = rawHeaders[index]!;
+        if (excluded.has(name.toLowerCase())) continue;
+        forwarded.push(name, rawHeaders[index + 1]!);
+    }
     return forwarded;
 }
 

@@ -1,7 +1,7 @@
 import {createConnection, createServer, isIP} from "node:net";
 import type {Server, Socket} from "node:net";
 import {TLSSocket} from "node:tls";
-import {HttpRequestBroker} from "./HttpRequestBroker.js";
+import {HTTP_GATEWAY_MAX_HEADER_BYTES, HttpRequestBroker} from "./HttpRequestBroker.js";
 import type {HttpRequestAuthorizer} from "./HttpRequestBroker.js";
 import {NetworkAddressFamily} from "./network-queue-protocol.js";
 import type {NetworkEndpoint} from "./network-queue-protocol.js";
@@ -15,7 +15,7 @@ const APPROVAL_TTL_MILLISECONDS = 30_000;
 const HEADER_TIMEOUT_MILLISECONDS = 5_000;
 const TLS_HANDSHAKE_TIMEOUT_MILLISECONDS = 5_000;
 const PROTOCOL_SNIFF_TIMEOUT_MILLISECONDS = 250;
-const MAX_PROTOCOL_SNIFF_BYTES = 8_192;
+const MAX_PROTOCOL_SNIFF_BYTES = HTTP_GATEWAY_MAX_HEADER_BYTES;
 
 export type TcpGatewayApproval = TcpGatewayFlow & {
     upstream: NetworkEndpoint;

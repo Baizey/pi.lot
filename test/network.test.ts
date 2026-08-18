@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {createSocket} from "node:dgram";
 import {existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {createServer as createHttpServer} from "node:http";
@@ -847,6 +848,306 @@ test("the HTTPS gateway observes the exact smart-HTTP URL produced by git fetch"
   }
 });
 
+test("the HTTPS gateway preserves noninteractive Git credentials without allowing prompts", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-git-auth-test-"));
+  const helperPath = path.join(workspace, "credential-helper.sh");
+  const askpassPath = path.join(workspace, "askpass.sh");
+  const askpassMarker = path.join(workspace, "askpass-invoked");
+  writeFileSync(helperPath, [
+    "#!/bin/sh",
+    "while IFS= read -r line && [ -n \"$line\" ]; do :; done",
+    "printf 'username=pilot\\npassword=secret\\n'",
+    "",
+  ].join("\n"), {mode: 0o700});
+  writeFileSync(askpassPath, [
+    "#!/bin/sh",
+    `touch ${shellQuote(askpassMarker)}`,
+    "printf 'should-not-be-used\\n'",
+    "",
+  ].join("\n"), {mode: 0o700});
+  const expectedAuthorization = `Basic ${Buffer.from("pilot:secret").toString("base64")}`;
+  const upstreamAuthority = new TlsCertificateAuthority();
+  const authorizationHeaders: Array<string | undefined> = [];
+  const server = createHttpsServer(
+    upstreamAuthority.serverCredentials("10.0.2.2"),
+    (request, response) => {
+      authorizationHeaders.push(request.headers.authorization);
+      if (request.headers.authorization !== expectedAuthorization) {
+        response.writeHead(401, {"www-authenticate": "Basic realm=\"pilot-test\""});
+        response.end("credentials required");
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        [
+          `git -c credential.helper=${shellQuote(`!${helperPath}`)} ls-remote 'https://10.0.2.2:${address.port}/baizey/repository.git' >/dev/null 2>&1 || true`,
+          `if git -c credential.helper= ls-remote 'https://10.0.2.2:${address.port}/baizey/repository.git' >/dev/null 2>&1; then exit 90; fi`,
+        ].join("; "),
+      ],
+      cwd: workspace,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "1",
+        GIT_ASKPASS: askpassPath,
+        GIT_CREDENTIAL_INTERACTIVE: "always",
+        GCM_INTERACTIVE: "Always",
+        GH_PROMPT_DISABLED: "0",
+        SSH_ASKPASS: askpassPath,
+        SSH_ASKPASS_REQUIRE: "force",
+      },
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 15,
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest() {
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(authorizationHeaders[0], undefined);
+    assert.equal(authorizationHeaders.includes(expectedAuthorization), true);
+    assert.equal(existsSync(askpassMarker), false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTPS gateway preserves end-to-end request and response data", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-https-integrity-test-"));
+  const requestPath = path.join(workspace, "request.bin");
+  const responsePath = path.join(workspace, "response.bin");
+  const responseHeadersPath = path.join(workspace, "response.headers");
+  const requestBody = patternedBuffer(2 * 1024 * 1024, 17);
+  const responseBody = patternedBuffer(3 * 1024 * 1024, 91);
+  writeFileSync(requestPath, requestBody);
+  const upstreamAuthority = new TlsCertificateAuthority();
+  let receivedMethod = "";
+  let receivedTarget = "";
+  let receivedHeaders: string[] = [];
+  let receivedBody = Buffer.alloc(0);
+  let receivedContinue = false;
+  const handleRequest: Parameters<typeof createHttpsServer>[1] = (request, response) => {
+    receivedMethod = request.method ?? "";
+    receivedTarget = request.url ?? "";
+    receivedHeaders = request.rawHeaders;
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      receivedBody = Buffer.concat(chunks);
+      response.setHeader("content-type", "application/octet-stream");
+      response.setHeader("x-pilot-duplicate", ["response-one", "response-two"]);
+      response.end(responseBody);
+    });
+  };
+  const server = createHttpsServer(upstreamAuthority.serverCredentials("10.0.2.2"));
+  server.on("request", handleRequest);
+  server.on("checkContinue", (request, response) => {
+    receivedContinue = true;
+    response.writeContinue();
+    handleRequest(request, response);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        [
+          "curl --noproxy '*' --silent --show-error --http1.1 --path-as-is",
+          "--request POST",
+          "--header 'authorization: Bearer pilot-test-token'",
+          "--header 'git-protocol: version=2'",
+          "--header 'expect: 100-continue'",
+          "--header 'x-pilot-duplicate: request-one'",
+          "--header 'x-pilot-duplicate: request-two'",
+          `--data-binary @${shellQuote(requestPath)}`,
+          `--dump-header ${shellQuote(responseHeadersPath)}`,
+          `--output ${shellQuote(responsePath)}`,
+          `'https://10.0.2.2:${address.port}/repository/a/../git-upload-pack?service=git-upload-pack&token=a%2Fb'`,
+        ].join(" "),
+      ],
+      cwd: workspace,
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 20,
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest() {
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(receivedMethod, "POST");
+    assert.equal(receivedContinue, true);
+    assert.equal(receivedTarget, "/repository/git-upload-pack?service=git-upload-pack&token=a%2Fb");
+    assert.deepEqual(rawHeaderValues(receivedHeaders, "authorization"), ["Bearer pilot-test-token"]);
+    assert.deepEqual(rawHeaderValues(receivedHeaders, "git-protocol"), ["version=2"]);
+    assert.deepEqual(rawHeaderValues(receivedHeaders, "x-pilot-duplicate"), ["request-one", "request-two"]);
+    assert.equal(sha256(receivedBody), sha256(requestBody));
+    assert.equal(sha256(readFileSync(responsePath)), sha256(responseBody));
+    assert.deepEqual(
+      rawHeaderValues(parseRawHttpHeaders(readFileSync(responseHeadersPath, "utf8")), "x-pilot-duplicate"),
+      ["response-one", "response-two"],
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTP gateway preserves long request targets and large header sets", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-http-large-headers-test-"));
+  const query = `value=${"a".repeat(12_000)}%2Ftail`;
+  const expectedTarget = `/repository/info/refs?${query}`;
+  const customHeaders = Array.from({length: 150}, (_value, index) => [
+    `x-pilot-header-${index}`,
+    `value-${index}`,
+  ] as const);
+  let receivedTarget = "";
+  let receivedHeaders: string[] = [];
+  let authorizedRawTarget = "";
+  const server = createHttpServer((request, response) => {
+    receivedTarget = request.url ?? "";
+    receivedHeaders = request.rawHeaders;
+    response.end("OK");
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        "/bin/bash",
+        "-c",
+        [
+          "curl --noproxy '*' --silent --show-error --http1.1",
+          ...customHeaders.map(([name, value]) => `--header ${shellQuote(`${name}: ${value}`)}`),
+          shellQuote(`http://10.0.2.2:${address.port}${expectedTarget}`),
+        ].join(" "),
+      ],
+      cwd: workspace,
+      timeoutSeconds: 20,
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest(event) {
+        authorizedRawTarget = event.rawTarget;
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(authorizedRawTarget, expectedTarget);
+    assert.equal(receivedTarget, expectedTarget);
+    for (const [name, value] of customHeaders) {
+      assert.deepEqual(rawHeaderValues(receivedHeaders, name), [value]);
+    }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTPS gateway preserves chunked bodies and trailers", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-https-trailers-test-"));
+  const upstreamAuthority = new TlsCertificateAuthority();
+  let requestBody = "";
+  let requestTrailers: Record<string, string | undefined> = {};
+  const server = createHttpsServer(
+    upstreamAuthority.serverCredentials("10.0.2.2"),
+    (request, response) => {
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        requestBody += chunk;
+      });
+      request.on("end", () => {
+        requestTrailers = request.trailers;
+        response.writeHead(200, {
+          "content-type": "text/plain",
+          trailer: "x-response-trailer",
+        });
+        response.write("response-one|");
+        response.write("response-two");
+        response.addTrailers({"x-response-trailer": "response-finished"});
+        response.end();
+      });
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  let output = "";
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        process.execPath,
+        "--input-type=module",
+        "--eval",
+        [
+          "import {request} from 'node:https'",
+          `const result = await new Promise((resolve, reject) => { const value = request({host: '10.0.2.2', port: ${address.port}, path: '/trailers', method: 'POST', headers: {trailer: 'x-request-trailer'}}, (response) => { let body = ''; response.setEncoding('utf8'); response.on('data', (chunk) => body += chunk); response.on('end', () => resolve({body, trailers: response.trailers})); }); value.on('error', reject); value.write('request-one|'); value.write('request-two'); value.addTrailers({'x-request-trailer': 'request-finished'}); value.end(); })`,
+          "console.log(JSON.stringify(result))",
+        ].join("; "),
+      ],
+      cwd: workspace,
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 20,
+      onStdout(data) {
+        output += data.toString();
+      },
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest() {
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(requestBody, "request-one|request-two");
+    assert.equal(requestTrailers["x-request-trailer"], "request-finished");
+    assert.deepEqual(JSON.parse(output), {
+      body: "response-one|response-two",
+      trailers: {"x-response-trailer": "response-finished"},
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
 test("the HTTP gateway evaluates every request on one keep-alive client connection", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-http-keepalive-test-"));
   const upstreamPaths: string[] = [];
@@ -900,6 +1201,64 @@ test("the HTTP gateway evaluates every request on one keep-alive client connecti
     assert.equal(acceptedConnections, 1);
     assert.deepEqual(authorizedPaths, ["/first", "/second"]);
     assert.deepEqual(upstreamPaths, ["/first"]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTP gateway reuses one upstream connection for allowed keep-alive requests", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-http-upstream-keepalive-test-"));
+  const upstreamPaths: string[] = [];
+  const server = createHttpServer((request, response) => {
+    upstreamPaths.push(request.url ?? "");
+    response.end("OK");
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let acceptedConnections = 0;
+  let tcpDecisions = 0;
+  let authorizedRequests = 0;
+  server.on("connection", () => {
+    acceptedConnections++;
+  });
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        process.execPath,
+        "--input-type=module",
+        "--eval",
+        [
+          "import {Agent, request} from 'node:http'",
+          "const agent = new Agent({keepAlive: true, maxSockets: 1})",
+          `const send = (path) => new Promise((resolve, reject) => { const value = request({host: '10.0.2.2', port: ${address.port}, path, agent}, (response) => { response.resume(); response.once('end', resolve); }); value.once('error', reject); value.end(); })`,
+          "for (let index = 0; index < 20; index++) await send(`/request-${index}`)",
+          "agent.destroy()",
+        ].join("; "),
+      ],
+      cwd: workspace,
+      timeoutSeconds: 15,
+      decide() {
+        tcpDecisions++;
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest() {
+        authorizedRequests++;
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(tcpDecisions, 1);
+    assert.equal(authorizedRequests, 20);
+    assert.equal(acceptedConnections, 1);
+    assert.deepEqual(upstreamPaths, Array.from({length: 20}, (_value, index) => `/request-${index}`));
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(workspace, {recursive: true, force: true});
@@ -1578,6 +1937,33 @@ async function waitForPath(target: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`timed out waiting for ${target}`);
+}
+
+function patternedBuffer(length: number, seed: number): Buffer {
+  return Buffer.from(Array.from({length}, (_value, index) => (index * 31 + seed) % 256));
+}
+
+function sha256(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function rawHeaderValues(rawHeaders: string[], name: string): string[] {
+  const normalizedName = name.toLowerCase();
+  const values: string[] = [];
+  for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
+    if (rawHeaders[index]?.toLowerCase() === normalizedName) values.push(rawHeaders[index + 1]!);
+  }
+  return values;
+}
+
+function parseRawHttpHeaders(value: string): string[] {
+  const result: string[] = [];
+  for (const line of value.split(/\r?\n/).slice(1)) {
+    const separator = line.indexOf(":");
+    if (separator < 1) continue;
+    result.push(line.slice(0, separator), line.slice(separator + 1).trimStart());
+  }
+  return result;
 }
 
 function shellQuote(value: string): string {

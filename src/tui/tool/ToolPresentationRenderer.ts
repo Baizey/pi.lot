@@ -140,7 +140,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         const contentColor = options.isError ? ThemeColor.error : ThemeColor.toolOutput;
         return [
             "",
-            ...rows.map((row) => this.resultRow(row, theme, contentColor)),
+            ...rows.map((row) => this.textRow(row, theme, contentColor)),
         ];
     }
 
@@ -204,8 +204,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
         showLabel: boolean,
         mode: ToolDisplayMode,
     ): string[] {
+        const contentColor = argument.presentation?.color ?? ThemeColor.dim;
         if (argument.layout === ToolArgumentLayout.INLINE) {
-            const value = theme.fg(ThemeColor.dim, this.formattedValue(argument, args, false));
+            const value = theme.fg(contentColor, this.formattedValue(argument, args, false));
             if (!showLabel) return [`    ${value}`];
             const label = theme.fg(ThemeColor.dim, `${this.argumentLabel(argument)}:`);
             return [`    ${label} ${value}`];
@@ -220,7 +221,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
             maxFullLines: argument.presentation?.maxFullLines ?? DEFAULT_MAX_ARGUMENT_LINES,
         });
         const valueIndent = showLabel ? "        " : "    ";
-        const lines = rows.map((row) => `${valueIndent}${this.argumentRow(row, theme)}`);
+        const lines = rows.map((row) => `${valueIndent}${this.textRow(row, theme, contentColor)}`);
         if (!showLabel) return lines;
         return [`    ${theme.fg(ThemeColor.dim, `${this.argumentLabel(argument)}:`)}`, ...lines];
     }
@@ -243,16 +244,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         return theme.fg(ThemeColor.toolTitle, theme.bold(this.presentation.toolName));
     }
 
-    private argumentRow(row: TextWindowRow, theme: Theme): string {
-        if (row.kind === "content") return theme.fg(ThemeColor.dim, row.text);
-        if (row.kind === "fold") return foldNotice(row.omitted, row.direction, theme);
-        if (row.kind === "lines-omitted") {
-            return theme.fg(ThemeColor.warning, omittedLinesNotice(row.omitted));
-        }
-        return theme.fg(ThemeColor.warning, "[display truncated]");
-    }
-
-    private resultRow(row: TextWindowRow, theme: Theme, contentColor: ThemeColor): string {
+    private textRow(row: TextWindowRow, theme: Theme, contentColor: ThemeColor): string {
         if (row.kind === "content") return theme.fg(contentColor, row.text);
         if (row.kind === "fold") return foldNotice(row.omitted, row.direction, theme);
         if (row.kind === "lines-omitted") {

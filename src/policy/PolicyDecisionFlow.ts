@@ -97,7 +97,6 @@ export class PolicyDecisionFlow {
         switch (accessType) {
             case PolicyAccessType.FS_READ:
             case PolicyAccessType.FS_WRITE:
-            case PolicyAccessType.FS_DELETE:
                 return [
                     {title: "Once", value: PolicyLifetime.ONCE, next: this.reasonDecisionAfterDenial},
                     {title: "This session", value: PolicyLifetime.SESSION, next: this.reasonDecisionAfterDenial},
@@ -185,7 +184,6 @@ export class PolicyDecisionFlow {
     private isFilesystemAccess(accessType: PolicyAccessType): boolean {
         return accessType === PolicyAccessType.FS_READ
             || accessType === PolicyAccessType.FS_WRITE
-            || accessType === PolicyAccessType.FS_DELETE;
     }
 
     private networkScopes(uri: string) {

@@ -89,7 +89,6 @@ export class PolicyLogic {
             case PolicyAccessType.FS_READ:
                 return defaults.fs_read
             case PolicyAccessType.FS_WRITE:
-            case PolicyAccessType.FS_DELETE:
                 return defaults.fs_write;
             case PolicyAccessType.HTTP_GET:
                 return defaults.web_read;
@@ -162,7 +161,6 @@ export class PolicyLogic {
         switch (accessType) {
             case PolicyAccessType.FS_READ:
             case PolicyAccessType.FS_WRITE:
-            case PolicyAccessType.FS_DELETE:
                 return this.isSameOrChildPath(evaluatedUri, pattern)
             default:
                 return new ParsedUri(evaluatedUri).isSubdomainOf(pattern)

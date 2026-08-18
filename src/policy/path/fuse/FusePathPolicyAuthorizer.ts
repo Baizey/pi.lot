@@ -55,7 +55,7 @@ export class FusePathPolicyAuthorizer {
             case FuseAccessType.WRITE:
                 return PolicyAccessType.FS_WRITE;
             case FuseAccessType.DELETE:
-                return PolicyAccessType.FS_DELETE;
+                return PolicyAccessType.FS_WRITE;
             default:
                 throw new Error(`Unsupported FUSE access type: ${String(access.access)}`);
         }

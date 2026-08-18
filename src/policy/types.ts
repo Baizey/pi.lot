@@ -15,7 +15,6 @@ export function resolveUri(accessType: PolicyAccessType, uri: string): string {
     switch (accessType) {
         case PolicyAccessType.FS_READ:
         case PolicyAccessType.FS_WRITE:
-        case PolicyAccessType.FS_DELETE:
             return resolvePhysicalPath(uri)
         default:
             return new ParsedUri(uri).fullUri()
@@ -36,7 +35,6 @@ export enum PolicyAccessType {
     // File system
     FS_READ = "FS_READ",
     FS_WRITE = "FS_WRITE",
-    FS_DELETE = "FS_DELETE",
 
     // HTTP and HTTPS
     HTTP_ACCESS = "HTTP",

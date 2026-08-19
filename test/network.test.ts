@@ -408,6 +408,18 @@ test("a synthetic IPv6 DNS lease attributes and forwards a hostname connection",
     dnsAddresses: {ipv6: "fd00::2"},
     realAddress: "fd00::2",
     syntheticAddress: "2001:2::1",
+    globalIpv6Available: false,
+  });
+});
+
+test("DNS omits global IPv6 answers when the gateway host cannot route them", async () => {
+  await verifySyntheticHostnameConnection({
+    hostname: "ipv4-fallback.service.test",
+    hostListenAddress: "127.0.0.1",
+    dnsAddresses: {ipv4: "10.0.2.2", ipv6: "2001:db8::8"},
+    realAddress: "10.0.2.2",
+    syntheticAddress: "198.18.0.1",
+    globalIpv6Available: false,
   });
 });
 
@@ -775,6 +787,7 @@ test("request-aware mode fails closed instead of forwarding an opaque TCP prefac
   assert.ok(address && typeof address === "object");
 
   let acceptedConnections = 0;
+  const decisionErrors: string[] = [];
   const gatewayErrors: string[] = [];
   server.on("connection", () => {
     acceptedConnections++;
@@ -789,6 +802,9 @@ test("request-aware mode fails closed instead of forwarding an opaque TCP prefac
       cwd: workspace,
       timeoutSeconds: 10,
       onDecisionError(error) {
+        decisionErrors.push(error instanceof Error ? error.message : String(error));
+      },
+      onNetworkError(error) {
         gatewayErrors.push(error instanceof Error ? error.message : String(error));
       },
       decide() {
@@ -801,6 +817,7 @@ test("request-aware mode fails closed instead of forwarding an opaque TCP prefac
 
     assert.equal(result.exitCode, 0);
     assert.equal(acceptedConnections, 0);
+    assert.deepEqual(decisionErrors, []);
     assert.deepEqual(gatewayErrors, ["request-aware gateway denied an opaque TCP protocol"]);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1825,6 +1842,7 @@ async function verifySyntheticHostnameConnection(testCase: {
   dnsAddresses: {ipv4?: string; ipv6?: string};
   realAddress: string;
   syntheticAddress: string;
+  globalIpv6Available?: boolean;
 }): Promise<void> {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-dns-lease-test-"));
   const httpServer = createServer((socket) => {
@@ -1893,6 +1911,7 @@ async function verifySyntheticHostnameConnection(testCase: {
       ],
       cwd: workspace,
       dnsUpstream: {address: dnsAddress.address, port: dnsAddress.port},
+      globalIpv6Available: testCase.globalIpv6Available,
       timeoutSeconds: 10,
       onStdout(data) {
         output += data.toString();

@@ -170,6 +170,11 @@ export class BashTool {
                             `[pi.lot:network] decision=${NetworkDecision.DENY} error=${JSON.stringify(this.errorMessage(error))}\n`,
                         ));
                     },
+                    onNetworkError: (error) => {
+                        onData(Buffer.from(
+                            `[pi.lot:network] error=${JSON.stringify(this.errorMessage(error))}\n`,
+                        ));
+                    },
                     decide: (event, decisionSignal) => decisions.decide(event, decisionSignal),
                     authorizeHttpRequest: fullNetworkInspection
                         ? networkAuthorizer.authorizeHttpRequest

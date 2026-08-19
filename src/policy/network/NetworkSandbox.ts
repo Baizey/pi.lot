@@ -1,8 +1,9 @@
 import {spawn} from "node:child_process";
 import type {ChildProcess} from "node:child_process";
-import {existsSync} from "node:fs";
+import {existsSync, readFileSync} from "node:fs";
 import {mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
 import {isIP} from "node:net";
+import {networkInterfaces} from "node:os";
 import path from "node:path";
 import {createInterface} from "node:readline";
 import type {Readable, Writable} from "node:stream";
@@ -92,11 +93,13 @@ export type NetworkRunOptions = {
   env?: NodeJS.ProcessEnv;
   dnsUpstream?: {address: string; port: number};
   additionalUpstreamCa?: string;
+  globalIpv6Available?: boolean;
   signal?: AbortSignal;
   timeoutSeconds?: number;
   onStdout?: (data: Buffer) => void;
   onStderr?: (data: Buffer) => void;
   onDecisionError?: (error: unknown) => void;
+  onNetworkError?: (error: unknown) => void;
   authorizeHttpRequest?: HttpRequestAuthorizer;
   decide: (event: NetworkPolicyEvent, signal: AbortSignal) => NetworkDecision | Promise<NetworkDecision>;
 };
@@ -166,7 +169,7 @@ class NetworkSandboxRunner {
       authorizeHttpRequest: options.authorizeHttpRequest,
       certificateAuthority: this.tlsCertificateAuthority,
       additionalUpstreamCa: options.additionalUpstreamCa,
-      onError: (error) => this.reportDecisionError(error),
+      onError: (error) => this.reportNetworkError(error),
       onFatalError: (error) => this.fail(error),
     });
   }
@@ -259,7 +262,8 @@ class NetworkSandboxRunner {
       upstreamAddress: this.options.dnsUpstream?.address ?? parseUpstreamDnsAddress(hostResolver),
       upstreamPort: this.options.dnsUpstream?.port,
       leases: this.dnsLeases,
-      onError: (error) => this.reportDecisionError(error),
+      globalIpv6Available: this.options.globalIpv6Available ?? hostHasGlobalIpv6Connectivity(),
+      onError: (error) => this.reportNetworkError(error),
       onFatalError: (error) => this.fail(error),
     });
     await Promise.all([
@@ -721,6 +725,14 @@ class NetworkSandboxRunner {
     }
   }
 
+  private reportNetworkError(error: unknown): void {
+    try {
+      (this.options.onNetworkError ?? this.options.onDecisionError)?.(error);
+    } catch {
+      // Error reporting must not affect the failed network operation.
+    }
+  }
+
   private async waitForIpv6Ready(): Promise<void> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 300; attempt++) {
@@ -960,6 +972,34 @@ function hostAddressForGateway(address: string): string {
   if (address === "10.0.2.2") return "127.0.0.1";
   if (address === "fd00::2") return "::1";
   return address;
+}
+
+function hostHasGlobalIpv6Connectivity(): boolean {
+  const hasGlobalAddress = Object.values(networkInterfaces()).some((addresses) => addresses?.some((address) => (
+    !address.internal
+    && isIP(address.address) === 6
+    && isGlobalIpv6Address(address.address)
+  )));
+  if (!hasGlobalAddress) return false;
+
+  try {
+    const defaultDestination = "0".repeat(32);
+    return readFileSync("/proc/net/ipv6_route", "utf8").split("\n").some((line) => {
+      const fields = line.trim().split(/\s+/);
+      return fields.length >= 10
+        && fields[0] === defaultDestination
+        && fields[1] === "00"
+        && fields[9] !== "lo"
+        && (Number.parseInt(fields[8]!, 16) & 0x1) !== 0;
+    });
+  } catch {
+    return false;
+  }
+}
+
+function isGlobalIpv6Address(address: string): boolean {
+  const firstGroup = Number.parseInt(address.split(":", 1)[0]!, 16);
+  return Number.isFinite(firstGroup) && (firstGroup & 0xe000) === 0x2000;
 }
 
 function namespaceArguments(pid: number): string[] {

@@ -57,6 +57,7 @@ export type SyntheticDnsProxyOptions = {
     upstreamAddress: string;
     upstreamPort?: number;
     leases: SyntheticDnsLeaseTable;
+    globalIpv6Available?: boolean;
     onError?: (error: unknown) => void;
     onFatalError?: (error: unknown) => void;
 };
@@ -315,6 +316,13 @@ export class SyntheticDnsProxy {
         ) {
             throw new Error("upstream DNS response did not match its query");
         }
+        if (
+            question.type === DNS_TYPE_AAAA
+            && this.options.globalIpv6Available === false
+            && hasOnlyGlobalIpv6Answers(response, parsed, question.name)
+        ) {
+            return createDnsNoDataResponse(query);
+        }
         return rewriteAddressAnswers(response, parsed, question.name, this.options.leases);
     }
 
@@ -344,23 +352,7 @@ async function rewriteAddressAnswers(
     leases: SyntheticDnsLeaseTable,
 ): Promise<Buffer> {
     const response = Buffer.from(original);
-    const attributedNames = new Set([requestedName]);
-    let changed = true;
-    while (changed) {
-        changed = false;
-        for (const answer of parsed.answers) {
-            if (
-                answer.type === DNS_TYPE_CNAME
-                && answer.class === DNS_CLASS_IN
-                && answer.cname
-                && attributedNames.has(answer.owner)
-                && !attributedNames.has(answer.cname)
-            ) {
-                attributedNames.add(answer.cname);
-                changed = true;
-            }
-        }
-    }
+    const attributedNames = attributedAnswerNames(parsed, requestedName);
 
     let rewritten = false;
     for (const answer of parsed.answers) {
@@ -383,6 +375,49 @@ async function rewriteAddressAnswers(
     }
     if (rewritten) response.writeUInt16BE(response.readUInt16BE(2) & ~0x0020, 2);
     return response;
+}
+
+function attributedAnswerNames(parsed: ParsedDnsResponse, requestedName: string): Set<string> {
+    const attributedNames = new Set([requestedName]);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const answer of parsed.answers) {
+            if (
+                answer.type === DNS_TYPE_CNAME
+                && answer.class === DNS_CLASS_IN
+                && answer.cname
+                && attributedNames.has(answer.owner)
+                && !attributedNames.has(answer.cname)
+            ) {
+                attributedNames.add(answer.cname);
+                changed = true;
+            }
+        }
+    }
+    return attributedNames;
+}
+
+function hasOnlyGlobalIpv6Answers(
+    response: Buffer,
+    parsed: ParsedDnsResponse,
+    requestedName: string,
+): boolean {
+    const attributedNames = attributedAnswerNames(parsed, requestedName);
+    const addresses = parsed.answers.filter((answer) => (
+        answer.class === DNS_CLASS_IN
+        && attributedNames.has(answer.owner)
+        && (answer.type === DNS_TYPE_A || answer.type === DNS_TYPE_AAAA)
+    ));
+    return addresses.length > 0 && addresses.every((answer) => (
+        answer.type === DNS_TYPE_AAAA
+        && answer.dataLength === 16
+        && isGlobalIpv6Bytes(response.subarray(answer.dataOffset, answer.dataOffset + answer.dataLength))
+    ));
+}
+
+function isGlobalIpv6Bytes(bytes: Buffer): boolean {
+    return bytes.length === 16 && (bytes[0]! & 0xe0) === 0x20;
 }
 
 function validateDnsHostname(hostname: string): void {
@@ -544,6 +579,17 @@ async function forwardDnsQuery(
             });
         });
     });
+}
+
+function createDnsNoDataResponse(query: Buffer): Buffer {
+    const question = parseDnsQuestion(query, false);
+    const response = Buffer.from(query.subarray(0, question.questionEnd));
+    const preservedFlags = query.readUInt16BE(2) & 0x0110;
+    response.writeUInt16BE(0x8080 | preservedFlags, 2);
+    response.writeUInt16BE(0, 6);
+    response.writeUInt16BE(0, 8);
+    response.writeUInt16BE(0, 10);
+    return response;
 }
 
 function createDnsFailureResponse(query: Buffer): Buffer | null {

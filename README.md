@@ -48,6 +48,8 @@ The normal Bash worker also catches actual network activity from a command and i
 
 The worker mediates the actual method and canonical URL produced by arbitrary clients—including Git smart HTTP—without parsing the shell command. After coarse flow approval, each new method-and-URL scope is evaluated through the same one-call, session, and persistent policy runtime as filesystem access. The request remains held until policy allows it, before the gateway opens the target-side connection.
 
+When the gateway host has no global IPv6 address and default route, public AAAA answers are returned as DNS NODATA so dual-stack clients fall back to IPv4 before connecting. Local and ULA IPv6 traffic remains available and policy-visible.
+
 Filesystem and network mediation run in one sandbox. The command sees the complete host filesystem through the FUSE policy mount while its private network namespace routes outbound traffic through the network gate.
 
 Full HTTPS method/path inspection is enabled at the start of every session. If a client uses an unsupported private trust store or certificate pinning, disable interception for later Bash calls with:

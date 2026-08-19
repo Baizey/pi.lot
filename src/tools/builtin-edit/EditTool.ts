@@ -12,7 +12,7 @@ import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
-import {PilotSessionRuntime, PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
+import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 
 const EDIT_PRESENTATION = {
     toolName: "edit",
@@ -39,6 +39,7 @@ export class EditTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
+        private readonly toolDisplayProvider: () => PilotSessionRuntimeInterface["toolDisplay"],
     ) {
     }
 
@@ -54,7 +55,7 @@ export class EditTool {
         const nativeRenderCall = definition.renderCall;
         const nativeRenderResult = definition.renderResult;
         const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION, {
-            currentMode: () => this.runtimeProvider().toolDisplay.currentMode(),
+            currentMode: () => this.toolDisplayProvider().currentMode(),
         });
 
         this.pi.registerTool({
@@ -90,7 +91,7 @@ export class EditTool {
     }
 
     private synchronizeMode(expanded: boolean): ToolDisplayMode {
-        return this.runtimeProvider().toolDisplay.synchronizeExpanded(expanded);
+        return this.toolDisplayProvider().synchronizeExpanded(expanded);
     }
 
     private showSummary(

@@ -56,11 +56,12 @@ export class BashTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
+        private readonly toolDisplayProvider: () => PilotSessionRuntimeInterface["toolDisplay"],
     ) {
     }
 
     register(): void {
-        if (this.registered) throw new Error("FUSE bash tool is already registered");
+        if (this.registered) throw new Error("FUSE builtin-bash tool is already registered");
         this.registered = true;
         this.pi.registerTool(this.toolDefinition());
     }
@@ -96,7 +97,7 @@ export class BashTool {
         };
 
         const renderer = new ToolPresentationRenderer(BASH_PRESENTATION, {
-            currentMode: () => this.runtimeProvider().toolDisplay.currentMode(),
+            currentMode: () => this.toolDisplayProvider().currentMode(),
         });
 
         const definition = {
@@ -106,7 +107,7 @@ export class BashTool {
             prepareArguments: undefined,
 
             renderCall: (args, theme, context) => {
-                this.runtimeProvider().toolDisplay.synchronizeExpanded(context.expanded);
+                this.toolDisplayProvider().synchronizeExpanded(context.expanded);
                 return renderer.renderCall(args, theme);
             },
 
@@ -157,7 +158,7 @@ export class BashTool {
                     },
                     decide: (event, decisionSignal) => pathAuthorizer.decide(event, decisionSignal),
                 }, ({mediatedHostRoot, cwd: resolvedCwd}) => runNetworkSandboxedCommand({
-                    command: ["/bin/bash", "-c", command],
+                    command: ["/bin/builtin-bash", "-c", command],
                     cwd: resolvedCwd,
                     mediatedHostRoot,
                     env,

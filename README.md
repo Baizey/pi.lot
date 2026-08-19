@@ -109,6 +109,25 @@ Manage connections and exposure with:
 
 MCP is an explicit capability boundary, not part of pi.lot's filesystem or network mediation. Stdio servers run as ordinary host processes, HTTP transports use the host network, and exposed MCP tools may perform effects outside Bash policy.
 
+### Subagents
+
+pi.lot provides child agents with separate model context and conversation state through four agent-callable tools:
+
+- `subagent_spawn` starts `sync`, `async`, or `conversation` work;
+- `subagent_status` inspects jobs and can wait for active work;
+- `subagent_message` continues an idle conversation session; and
+- `subagent_stop` stops a job and its descendants.
+
+Capabilities are explicit. A child receives only its requested toolkits:
+
+- `bash` provides the same policy-mediated Bash implementation owned by the root pi.lot session;
+- `mcp` provides MCP tools that are currently exposed; and
+- `delegate` allows bounded nested delegation.
+
+Children default to no tools and inherit the invoking model, thinking level, and working directory unless the spawn request overrides them. Nested children cannot exceed their parent's toolkit ceiling. The coordinator limits concurrent turns, delegation depth, retained output, and retained jobs; root session shutdown aborts all active children before policy and MCP resources close.
+
+Child agents currently use Pi's in-process SDK with in-memory sessions. They have independent model context, but they are not separate operating-system processes. Async jobs and conversations are not persisted across root session shutdown.
+
 ## Why not use a workspace sandbox?
 
 A workspace sandbox is useful when an agent should only see one directory. That is not always how Pi is used.
@@ -206,6 +225,7 @@ Use `/policy-defaults save` to persist the active values to `~/.pilot/policy-def
 - Unprivileged Linux namespaces may not preserve every supplementary group.
 - An allowed operation retains your ordinary host-user permissions.
 - MCP servers and MCP tool effects are intentionally outside filesystem and network policy mediation.
+- Subagents have separate model sessions but currently share the root Pi process.
 
 Unsupported, malformed, cancelled, or incomplete mediated operations are intended to fail closed.
 
@@ -215,7 +235,7 @@ The filesystem and network policy systems, combined Bash sandbox, session runtim
 
 Features from `pi-agent-tools` that have not yet been ported include:
 
-- subagents;
+- subagent personas, model profiles, persistence, and tree UI;
 - web search and reading;
 - agent-visible session search; and
 - shell-command policy.

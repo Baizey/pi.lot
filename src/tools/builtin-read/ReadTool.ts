@@ -11,7 +11,7 @@ import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
-import {PilotSessionRuntime, PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
+import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 
 const READ_PRESENTATION = {
     toolName: "read",
@@ -45,6 +45,7 @@ export class ReadTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
+        private readonly toolDisplayProvider: () => PilotSessionRuntimeInterface["toolDisplay"],
     ) {}
 
     register(): void {
@@ -59,7 +60,7 @@ export class ReadTool {
         const nativeRenderCall = definition.renderCall;
         const nativeRenderResult = definition.renderResult;
         const presentation = new ToolPresentationRenderer(READ_PRESENTATION, {
-            currentMode: () => this.runtimeProvider().toolDisplay.currentMode(),
+            currentMode: () => this.toolDisplayProvider().currentMode(),
         });
 
         this.pi.registerTool({
@@ -92,7 +93,7 @@ export class ReadTool {
     }
 
     private synchronizeMode(expanded: boolean): ToolDisplayMode {
-        return this.runtimeProvider().toolDisplay.synchronizeExpanded(expanded);
+        return this.toolDisplayProvider().synchronizeExpanded(expanded);
     }
 
     private setText(component: unknown, text: string): void {

@@ -4,7 +4,7 @@
 
 This is the single backlog for pi.lot's filesystem and network policy boundary. It replaces the former FUSE and network MVP specifications.
 
-The old specifications were compared with the current implementation in `src/policy/`, `src/tools/bash/`, `native/`, and the integration tests. Requirements that are already implemented are summarized below; only incomplete, partial, or newly exposed work is carried forward.
+The old specifications were compared with the current implementation in `src/policy/`, `src/tools/builtin-bash/`, `native/`, and the integration tests. Requirements that are already implemented are summarized below; only incomplete, partial, or newly exposed work is carried forward.
 
 pi.lot remains experimental and unaudited. This file is a roadmap, not a claim that the current worker is a hardened sandbox.
 
@@ -161,5 +161,6 @@ Unless the architecture is intentionally expanded, the following remain boundari
 - An allowed operation retains the invoking user's ordinary host permissions.
 - A worker can delegate effects to a preserved host service over pathname IPC; those effects originate outside the worker's direct filesystem/network reference monitor.
 - MCP transports and exposed MCP tools are explicit host capabilities outside the filesystem and network policy boundary.
+- Subagents currently run as independent in-memory Pi sessions inside the root process; only their `bash` toolkit enters the shared filesystem/network policy boundary.
 - Revocation cannot undo effects already delivered before its revision barrier.
 - Inbound service publishing, cross-platform support, and protection from host-kernel exploitation are not current policy goals.

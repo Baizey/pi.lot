@@ -17,7 +17,16 @@ import {ToolDisplayController} from "../src/tui/tool/ToolDisplayController.js";
 import {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime";
 import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue";
 
-const expectedToolNames = ["bash", "read", "edit", "write"];
+const expectedToolNames = [
+    "bash",
+    "read",
+    "edit",
+    "write",
+    "subagent_spawn",
+    "subagent_status",
+    "subagent_message",
+    "subagent_stop",
+];
 
 function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
     return new PolicyRuntime(
@@ -98,7 +107,10 @@ test("the production extension installs built-in overrides immediately but defer
     const harness = extensionHarness();
     const ctx = {cwd: process.cwd()} as ExtensionContext;
 
-    new PilotExtension(harness.pi, {createMcpExtension: createNoopMcpExtension}).register();
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        createSubagentRuntime: createNoopSubagentRuntime,
+    }).register();
 
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
     const bashTool = registeredTool(harness, "bash");
@@ -147,6 +159,7 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
+        createSubagentRuntime: createNoopSubagentRuntime,
         createSessionRuntime(runtimeContext) {
             const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
@@ -195,7 +208,7 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
 });
 
-test("Bash components remain renderable while session shutdown is in progress", async () => {
+test("Bash components remain renderable during and after session shutdown", async () => {
     const harness = extensionHarness();
     const ctx = {
         cwd: process.cwd(),
@@ -255,11 +268,13 @@ test("Bash components remain renderable while session shutdown is in progress", 
     await shutdown;
 
     assert.ifError(renderError);
-    assert.deepEqual(renderedLines, [
+    const expectedLines = [
         "bash | Keep rendering during teardown",
         "    echo complete",
-    ]);
+    ];
+    assert.deepEqual(renderedLines, expectedLines);
     assert.equal(runtimeCloses, 1);
+    assert.deepEqual(call.render(120), expectedLines);
 });
 
 test("read, edit, and write preserve native rendering while honoring minimal mode", async () => {
@@ -279,9 +294,9 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
+        createSubagentRuntime: createNoopSubagentRuntime,
         createSessionRuntime(runtimeContext) {
             const queue = new UiDecisionFlowQueue();
-            const database = null
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext, queue),
@@ -419,6 +434,7 @@ test("one session runtime owns the production tool overrides until session shutd
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
+        createSubagentRuntime: createNoopSubagentRuntime,
         createSessionRuntime(runtimeContext) {
             runtimeCreations++;
             const policy = createPolicyRuntime(runtimeContext);
@@ -489,6 +505,14 @@ function createNoopMcpExtension() {
         async startSession() {},
         async stopSession() {},
         toolDefinitions: () => [],
+    };
+}
+
+function createNoopSubagentRuntime() {
+    return {
+        async startSession() {},
+        async stopSession() {},
+        coordinator(): never { throw new Error("No coordinator in extension tests"); },
     };
 }
 

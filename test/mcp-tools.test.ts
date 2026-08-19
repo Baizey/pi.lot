@@ -82,6 +82,7 @@ test("exposed MCP tools register once and re-check exposure when called", async 
         assert.deepEqual(first.registered.map((item) => item.piToolName), ["mcp_demo_echo"]);
         assert.equal(second.registered.length, 0);
         assert.equal(registered.length, 1);
+        assert.deepEqual(registry.registeredToolDefinitions().map((tool) => tool.name), ["mcp_demo_echo"]);
 
         const updates: unknown[] = [];
         const result = await registered[0]!.execute(
@@ -97,6 +98,7 @@ test("exposed MCP tools register once and re-check exposure when called", async 
 
         const hidden = store.setToolExposure("demo", McpCommandAction.HIDE, ["echo"]);
         manager.updateConfig(hidden);
+        assert.deepEqual(registry.registeredToolDefinitions(), []);
         await assert.rejects(
             registered[0]!.execute("call-2", {value: "blocked"}, undefined, undefined, {} as ExtensionContext),
             /not exposed/,

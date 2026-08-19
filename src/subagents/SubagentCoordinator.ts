@@ -1,0 +1,492 @@
+import {AsyncLocalStorage} from "node:async_hooks";
+import crypto from "node:crypto";
+import {SubagentToolkitRegistry, uniqueToolkits} from "./SubagentToolkitRegistry.js";
+import {
+    SubagentJobStatus,
+    SubagentRunMode,
+    SubagentToolkit,
+    type SubagentChildSession,
+    type SubagentChildSessionFactory,
+    type SubagentJobSnapshot,
+    type SubagentRequest,
+} from "./types.js";
+
+const MAX_JOB_OUTPUT_CHARS = 50_000;
+const DEFAULT_MAX_CONCURRENCY = 1_000;
+const DEFAULT_MAX_DEPTH = 100;
+const DEFAULT_MAX_JOBS = 100_000;
+
+type DelegationContext = {
+    jobId: string;
+    depth: number;
+    ceiling: ReadonlySet<SubagentToolkit>;
+};
+
+type SubagentJob = {
+    id: string;
+    parentId?: string;
+    depth: number;
+    request: SubagentRequest;
+    status: SubagentJobStatus;
+    createdAt: number;
+    startedAt?: number;
+    finishedAt?: number;
+    latestLine?: string;
+    output?: string;
+    error?: string;
+    turns: number;
+    nextTask: string;
+    session?: SubagentChildSession;
+    controller?: AbortController;
+    runPromise?: Promise<void>;
+    stopRequested: boolean;
+    timedOut: boolean;
+};
+
+export type SubagentCoordinatorOptions = {
+    maxConcurrency?: number;
+    maxDepth?: number;
+    maxJobs?: number;
+};
+
+export type SpawnedSubagent = {
+    job: SubagentJobSnapshot;
+};
+
+export class SubagentCoordinator {
+    private readonly jobs = new Map<string, SubagentJob>();
+    private readonly queue: SubagentJob[] = [];
+    private readonly changes = new Set<() => void>();
+    private readonly delegationContext = new AsyncLocalStorage<DelegationContext>();
+    private readonly maxConcurrency: number;
+    private readonly maxDepth: number;
+    private readonly maxJobs: number;
+    private activeCount = 0;
+    private closed = false;
+
+    constructor(
+        private readonly sessionFactory: SubagentChildSessionFactory,
+        readonly toolkits: SubagentToolkitRegistry,
+        options: SubagentCoordinatorOptions = {},
+    ) {
+        this.maxConcurrency = positiveInteger(options.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
+        this.maxDepth = nonNegativeInteger(options.maxDepth, DEFAULT_MAX_DEPTH);
+        this.maxJobs = positiveInteger(options.maxJobs, DEFAULT_MAX_JOBS);
+    }
+
+    async spawn(
+        request: SubagentRequest,
+        signal?: AbortSignal,
+        onUpdate?: (job: SubagentJobSnapshot) => void,
+    ): Promise<SpawnedSubagent> {
+        this.requireOpen();
+        if (signal?.aborted) throw abortError();
+        const normalized = this.validateRequest(request);
+        const parent = this.delegationContext.getStore();
+        const depth = parent ? parent.depth + 1 : 0;
+        if (depth > this.maxDepth) {
+            throw new Error(`Subagent delegation depth ${depth} exceeds the maximum ${this.maxDepth}`);
+        }
+        if (parent) {
+            if (!parent.ceiling.has(SubagentToolkit.DELEGATE)) {
+                throw new Error("This subagent was not granted the delegate toolkit");
+            }
+            for (const toolkit of normalized.toolkits) {
+                if (!parent.ceiling.has(toolkit)) {
+                    throw new Error(`Nested subagent toolkit exceeds the parent ceiling: ${toolkit}`);
+                }
+            }
+        }
+
+        this.evictCompletedJobs();
+        const job: SubagentJob = {
+            id: `subagent-${crypto.randomUUID()}`,
+            parentId: parent?.jobId,
+            depth,
+            request: normalized,
+            status: SubagentJobStatus.QUEUED,
+            createdAt: Date.now(),
+            turns: 0,
+            nextTask: normalized.task,
+            stopRequested: false,
+            timedOut: false,
+        };
+        this.jobs.set(job.id, job);
+        this.queue.push(job);
+        this.notify(job, onUpdate);
+        this.pump();
+
+        if (normalized.mode === SubagentRunMode.SYNC) {
+            await this.waitForJob(job, signal, onUpdate);
+            if (job.status !== SubagentJobStatus.COMPLETED) throw jobError(job);
+        }
+        return {job: snapshot(job)};
+    }
+
+    list(jobIds?: string[]): SubagentJobSnapshot[] {
+        const jobs = this.selectJobs(jobIds);
+        return jobs.map(snapshot);
+    }
+
+    async status(
+        jobIds?: string[],
+        waitSeconds = 0,
+        signal?: AbortSignal,
+        onUpdate?: (jobs: SubagentJobSnapshot[]) => void,
+    ): Promise<SubagentJobSnapshot[]> {
+        const jobs = this.selectJobs(jobIds);
+        if (waitSeconds <= 0 || jobs.every((job) => !isActive(job.status))) return jobs.map(snapshot);
+        if (signal?.aborted) throw abortError();
+
+        await new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const finish = (error?: Error) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
+                this.changes.delete(changed);
+                signal?.removeEventListener("abort", aborted);
+                error ? reject(error) : resolve();
+            };
+            const changed = () => {
+                onUpdate?.(jobs.map(snapshot));
+                if (jobs.every((job) => !isActive(job.status))) finish();
+            };
+            const aborted = () => finish(abortError());
+            const timeout = setTimeout(() => finish(), Math.max(0, waitSeconds) * 1000);
+            timeout.unref();
+            this.changes.add(changed);
+            signal?.addEventListener("abort", aborted, {once: true});
+        });
+        return jobs.map(snapshot);
+    }
+
+    message(jobId: string, task: string): SubagentJobSnapshot {
+        this.requireOpen();
+        const job = this.requireJob(jobId);
+        if (job.request.mode !== SubagentRunMode.CONVERSATION) {
+            throw new Error(`Subagent job is not a conversation: ${jobId}`);
+        }
+        if (job.status !== SubagentJobStatus.IDLE) {
+            throw new Error(`Subagent conversation is not idle: ${jobId} (${job.status})`);
+        }
+        const normalizedTask = requiredText(task, "task", 100_000);
+        job.request = {...job.request, task: normalizedTask};
+        job.nextTask = normalizedTask;
+        job.status = SubagentJobStatus.QUEUED;
+        job.latestLine = "Queued follow-up";
+        job.finishedAt = undefined;
+        job.error = undefined;
+        job.stopRequested = false;
+        job.timedOut = false;
+        this.queue.push(job);
+        this.notify(job);
+        this.pump();
+        return snapshot(job);
+    }
+
+    async stop(jobId: string): Promise<SubagentJobSnapshot> {
+        const root = this.requireJob(jobId);
+        const descendants = [...this.jobs.values()]
+            .filter((job) => isDescendant(job, root.id, this.jobs))
+            .sort((left, right) => right.depth - left.depth);
+        for (const job of descendants) await this.stopOne(job);
+        await this.stopOne(root);
+        return snapshot(root);
+    }
+
+    async close(): Promise<void> {
+        if (this.closed) return;
+        this.closed = true;
+        const jobs = [...this.jobs.values()].sort((left, right) => right.depth - left.depth);
+        await Promise.all(jobs.map((job) => this.stopOne(job)));
+        this.queue.splice(0);
+        this.changes.clear();
+    }
+
+    private validateRequest(request: SubagentRequest): SubagentRequest {
+        const mode = Object.values(SubagentRunMode).includes(request.mode)
+            ? request.mode
+            : (() => { throw new Error(`Unsupported subagent mode: ${String(request.mode)}`); })();
+        const toolkits = uniqueToolkits(request.toolkits);
+        this.toolkits.resolve(toolkits);
+        return {
+            ...request,
+            task: requiredText(request.task, "task", 100_000),
+            role: requiredText(request.role, "role", 120),
+            mode,
+            toolkits,
+            cwd: requiredText(request.cwd, "cwd", 10_000),
+            timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, 3_600),
+            model: optionalText(request.model, "model", 500),
+            systemPrompt: optionalText(request.systemPrompt, "systemPrompt", 100_000),
+            contextPaths: request.contextPaths?.map((entry) => requiredText(entry, "context path", 10_000)),
+        };
+    }
+
+    private pump(): void {
+        while (!this.closed && this.activeCount < this.maxConcurrency) {
+            const job = this.queue.shift();
+            if (!job) break;
+            if (job.status !== SubagentJobStatus.QUEUED) continue;
+            this.activeCount++;
+            const running = this.executeTurn(job).finally(() => {
+                this.activeCount--;
+                if (job.runPromise === running) job.runPromise = undefined;
+                this.pump();
+            });
+            job.runPromise = running;
+            void running;
+        }
+    }
+
+    private async executeTurn(job: SubagentJob): Promise<void> {
+        job.status = SubagentJobStatus.RUNNING;
+        job.startedAt ??= Date.now();
+        job.latestLine = "Starting";
+        job.stopRequested = false;
+        job.timedOut = false;
+        const controller = new AbortController();
+        job.controller = controller;
+        const timeout = setTimeout(() => {
+            job.timedOut = true;
+            job.latestLine = "Timed out; stopping";
+            controller.abort();
+            void job.session?.abort();
+            this.notify(job);
+        }, job.request.timeoutSeconds * 1000);
+        timeout.unref();
+        this.notify(job);
+
+        try {
+            const tools = this.toolkits.resolve(job.request.toolkits);
+            job.session ??= await this.sessionFactory.create(job.request, tools, controller.signal);
+            if (controller.signal.aborted) throw abortError();
+            const output = await this.delegationContext.run({
+                jobId: job.id,
+                depth: job.depth,
+                ceiling: new Set(job.request.toolkits),
+            }, () => job.session!.prompt(job.nextTask, controller.signal, (update) => {
+                job.latestLine = update.latestLine;
+                if (update.output !== undefined) job.output = boundedOutput(update.output);
+                this.notify(job);
+            }));
+            if (controller.signal.aborted) throw abortError();
+            job.output = boundedOutput(output);
+            job.latestLine = lastMeaningfulLine(output);
+            job.turns++;
+            if (job.request.mode === SubagentRunMode.CONVERSATION) {
+                job.status = SubagentJobStatus.IDLE;
+            } else {
+                job.status = SubagentJobStatus.COMPLETED;
+                job.finishedAt = Date.now();
+            }
+        } catch (error) {
+            job.error = errorMessage(error);
+            job.finishedAt = Date.now();
+            job.status = job.timedOut
+                ? SubagentJobStatus.TIMED_OUT
+                : job.stopRequested || controller.signal.aborted
+                    ? SubagentJobStatus.CANCELLED
+                    : SubagentJobStatus.FAILED;
+            job.latestLine = job.error;
+        } finally {
+            clearTimeout(timeout);
+            job.controller = undefined;
+            if (job.status !== SubagentJobStatus.IDLE) {
+                job.session?.dispose();
+                job.session = undefined;
+            }
+            this.notify(job);
+        }
+    }
+
+    private async stopOne(job: SubagentJob): Promise<void> {
+        if (job.status === SubagentJobStatus.QUEUED) {
+            const index = this.queue.indexOf(job);
+            if (index >= 0) this.queue.splice(index, 1);
+            job.stopRequested = true;
+            job.status = SubagentJobStatus.CANCELLED;
+            job.finishedAt = Date.now();
+            job.latestLine = "Cancelled before starting";
+            job.session?.dispose();
+            job.session = undefined;
+            this.notify(job);
+            return;
+        }
+        if (job.status === SubagentJobStatus.RUNNING) {
+            job.stopRequested = true;
+            job.latestLine = "Stopping";
+            job.controller?.abort();
+            await job.session?.abort().catch(() => undefined);
+            await job.runPromise;
+            return;
+        }
+        if (job.status === SubagentJobStatus.IDLE) {
+            job.stopRequested = true;
+            job.status = SubagentJobStatus.CANCELLED;
+            job.finishedAt = Date.now();
+            job.latestLine = "Stopped";
+            job.session?.dispose();
+            job.session = undefined;
+            this.notify(job);
+        }
+    }
+
+    private waitForJob(
+        job: SubagentJob,
+        signal?: AbortSignal,
+        onUpdate?: (job: SubagentJobSnapshot) => void,
+    ): Promise<void> {
+        if (!isActive(job.status)) return Promise.resolve();
+        return new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const finish = (error?: Error) => {
+                if (settled) return;
+                settled = true;
+                this.changes.delete(changed);
+                signal?.removeEventListener("abort", aborted);
+                error ? reject(error) : resolve();
+            };
+            const changed = () => {
+                onUpdate?.(snapshot(job));
+                if (!isActive(job.status)) finish();
+            };
+            const aborted = () => {
+                void this.stop(job.id);
+                finish(abortError());
+            };
+            this.changes.add(changed);
+            signal?.addEventListener("abort", aborted, {once: true});
+            if (!isActive(job.status)) finish();
+        });
+    }
+
+    private selectJobs(jobIds?: string[]): SubagentJob[] {
+        if (!jobIds || jobIds.length === 0) {
+            return [...this.jobs.values()].sort((left, right) => right.createdAt - left.createdAt);
+        }
+        return [...new Set(jobIds)].map((jobId) => this.requireJob(jobId));
+    }
+
+    private requireJob(jobId: string): SubagentJob {
+        const job = this.jobs.get(jobId);
+        if (!job) throw new Error(`Unknown subagent job: ${jobId}`);
+        return job;
+    }
+
+    private requireOpen(): void {
+        if (this.closed) throw new Error("Subagent coordinator is closed");
+    }
+
+    private evictCompletedJobs(): void {
+        if (this.jobs.size < this.maxJobs) return;
+        const evictable = [...this.jobs.values()]
+            .filter((job) => (
+                isTerminal(job.status)
+                && ![...this.jobs.values()].some((candidate) => isDescendant(candidate, job.id, this.jobs))
+            ))
+            .sort((left, right) => (left.finishedAt ?? left.createdAt) - (right.finishedAt ?? right.createdAt));
+        while (this.jobs.size >= this.maxJobs && evictable.length > 0) {
+            this.jobs.delete(evictable.shift()!.id);
+        }
+        if (this.jobs.size >= this.maxJobs) throw new Error(`Subagent job limit reached (${this.maxJobs})`);
+    }
+
+    private notify(job: SubagentJob, direct?: (job: SubagentJobSnapshot) => void): void {
+        direct?.(snapshot(job));
+        for (const listener of [...this.changes]) listener();
+    }
+}
+
+function snapshot(job: SubagentJob): SubagentJobSnapshot {
+    return {
+        id: job.id,
+        parentId: job.parentId,
+        depth: job.depth,
+        status: job.status,
+        mode: job.request.mode,
+        role: job.request.role,
+        task: job.request.task,
+        toolkits: [...job.request.toolkits],
+        cwd: job.request.cwd,
+        model: job.request.model,
+        startedAt: job.startedAt,
+        finishedAt: job.finishedAt,
+        latestLine: job.latestLine,
+        output: job.output,
+        error: job.error,
+        turns: job.turns,
+    };
+}
+
+function isActive(status: SubagentJobStatus): boolean {
+    return status === SubagentJobStatus.QUEUED || status === SubagentJobStatus.RUNNING;
+}
+
+function isTerminal(status: SubagentJobStatus): boolean {
+    return status === SubagentJobStatus.COMPLETED
+        || status === SubagentJobStatus.FAILED
+        || status === SubagentJobStatus.CANCELLED
+        || status === SubagentJobStatus.TIMED_OUT;
+}
+
+function isDescendant(job: SubagentJob, ancestorId: string, jobs: Map<string, SubagentJob>): boolean {
+    let parentId = job.parentId;
+    while (parentId) {
+        if (parentId === ancestorId) return true;
+        parentId = jobs.get(parentId)?.parentId;
+    }
+    return false;
+}
+
+function jobError(job: SubagentJob): Error {
+    return new Error(`Subagent ${job.id} ${job.status}: ${job.error ?? job.latestLine ?? "unknown error"}`);
+}
+
+function requiredText(value: unknown, name: string, maxLength: number): string {
+    if (typeof value !== "string" || !value.trim()) throw new Error(`Subagent ${name} is required`);
+    if (value.length > maxLength) throw new Error(`Subagent ${name} exceeds ${maxLength} characters`);
+    return value;
+}
+
+function optionalText(value: unknown, name: string, maxLength: number): string | undefined {
+    if (value === undefined) return undefined;
+    return requiredText(value, name, maxLength);
+}
+
+function boundedNumber(value: unknown, name: string, minimum: number, maximum: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum) {
+        throw new Error(`Subagent ${name} must be between ${minimum} and ${maximum}`);
+    }
+    return value;
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+    return value === undefined ? fallback : Math.max(1, Math.floor(value));
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+    return value === undefined ? fallback : Math.max(0, Math.floor(value));
+}
+
+function boundedOutput(text: string): string {
+    if (text.length <= MAX_JOB_OUTPUT_CHARS) return text;
+    const half = Math.floor((MAX_JOB_OUTPUT_CHARS - 40) / 2);
+    return `${text.slice(0, half)}\n[Subagent output truncated]\n${text.slice(-half)}`;
+}
+
+function lastMeaningfulLine(text: string): string {
+    const line = text.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean).at(-1) ?? "Completed";
+    return line.length <= 300 ? line : `${line.slice(0, 299)}…`;
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function abortError(): Error {
+    const error = new Error("Subagent operation was aborted");
+    error.name = "AbortError";
+    return error;
+}

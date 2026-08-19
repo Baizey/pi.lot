@@ -213,6 +213,7 @@ Features from `pi-agent-tools` that have not yet been ported include:
 ## Technical details
 
 - [`EXPERIMENT_README.md`](./EXPERIMENT_README.md) describes the current implementation.
+- [`CLIENT_TRUST_SUPPORT.md`](./CLIENT_TRUST_SUPPORT.md) lists HTTPS interception trust adapters and limitations.
 - [`POLICY_FUTURE_WORK.md`](./POLICY_FUTURE_WORK.md) records the remaining filesystem and network policy work.
 
 ## License

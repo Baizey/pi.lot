@@ -28,6 +28,7 @@ import type {HttpRequestAuthorizer} from "./HttpRequestBroker.js";
 import {TcpGatewayBroker} from "./TcpGatewayBroker.js";
 import type {TcpGatewayApproval} from "./TcpGatewayBroker.js";
 import {TlsCertificateAuthority} from "./TlsCertificateAuthority.js";
+import {ClientTrust} from "./trust/ClientTrust.js";
 import {resolveNativeExecutable} from "../../runtime/NativeExecutable.js";
 
 export {
@@ -151,7 +152,7 @@ class NetworkSandboxRunner {
   private resolverDestination: string | undefined;
   private nsswitchFile: string | undefined;
   private nsswitchDestination: string | undefined;
-  private caBundleFile: string | undefined;
+  private clientTrust: ClientTrust | undefined;
 
   constructor(options: NetworkRunOptions) {
     this.options = options;
@@ -224,41 +225,35 @@ class NetworkSandboxRunner {
     this.resolverFile = path.join(temporaryDirectory, "resolv.conf");
     this.nsswitchFile = path.join(temporaryDirectory, "nsswitch.conf");
     const managedTrust = this.tlsCertificateAuthority !== undefined || this.options.additionalUpstreamCa !== undefined;
-    this.caBundleFile = managedTrust ? path.join(temporaryDirectory, "ca-bundle.pem") : undefined;
-    const [hostNsswitch, hostResolver, resolverDestination, nsswitchDestination, hostCaBundle] = await Promise.all([
+    const [hostNsswitch, hostResolver, resolverDestination, nsswitchDestination, clientTrust] = await Promise.all([
       readFile("/etc/nsswitch.conf", "utf8"),
       readFile("/etc/resolv.conf", "utf8"),
       realpath("/etc/resolv.conf"),
       realpath("/etc/nsswitch.conf"),
-      managedTrust ? readHostCaBundle(this.options.env) : Promise.resolve(undefined),
+      managedTrust
+        ? ClientTrust.create({
+          runtimeDirectory: temporaryDirectory,
+          environment: this.options.env,
+          additionalCa: this.options.additionalUpstreamCa,
+          interceptionCa: this.tlsCertificateAuthority?.certificatePem,
+        })
+        : Promise.resolve(undefined),
     ]);
     this.resolverDestination = resolverDestination;
     this.nsswitchDestination = nsswitchDestination;
+    this.clientTrust = clientTrust;
     const hostsEntry = /^\s*hosts\s*:.*$/m;
     const workerNsswitch = hostsEntry.test(hostNsswitch)
       ? hostNsswitch.replace(hostsEntry, "hosts:      files myhostname dns")
       : `${hostNsswitch.trimEnd()}\nhosts:      files myhostname dns\n`;
-    const runtimeWrites = [
+    await Promise.all([
       writeFile(
         this.resolverFile,
         "nameserver 10.0.2.3\nnameserver fd00::3\noptions edns0\n",
         {mode: 0o400},
       ),
       writeFile(this.nsswitchFile, workerNsswitch, {mode: 0o400}),
-    ];
-    if (this.caBundleFile && hostCaBundle) {
-      runtimeWrites.push(writeFile(
-        this.caBundleFile,
-        [
-          hostCaBundle.trimEnd(),
-          this.options.additionalUpstreamCa?.trim(),
-          this.tlsCertificateAuthority?.certificatePem.trim(),
-          "",
-        ].filter((certificate): certificate is string => Boolean(certificate)).join("\n"),
-        {mode: 0o400},
-      ));
-    }
-    await Promise.all(runtimeWrites);
+    ]);
 
     this.dnsProxy = new SyntheticDnsProxy({
       upstreamAddress: this.options.dnsUpstream?.address ?? parseUpstreamDnsAddress(hostResolver),
@@ -289,7 +284,7 @@ class NetworkSandboxRunner {
       "--proc", "/proc",
       "--ro-bind", this.resolverFile, this.resolverDestination,
       "--ro-bind", this.nsswitchFile, this.nsswitchDestination,
-      ...(this.caBundleFile ? ["--ro-bind", this.caBundleFile, this.caBundleFile] : []),
+      ...(this.clientTrust?.bubblewrapArguments() ?? []),
       "--dev-bind", "/dev", "/dev",
       "--cap-drop", "ALL",
       "--die-with-parent",
@@ -335,16 +330,7 @@ class NetworkSandboxRunner {
       SSH_ASKPASS: "/bin/false",
       SSH_ASKPASS_REQUIRE: "never",
     };
-    if (!this.caBundleFile) return environment;
-    return {
-      ...environment,
-      SSL_CERT_FILE: this.caBundleFile,
-      CURL_CA_BUNDLE: this.caBundleFile,
-      GIT_SSL_CAINFO: this.caBundleFile,
-      NODE_EXTRA_CA_CERTS: this.caBundleFile,
-      NPM_CONFIG_CAFILE: this.caBundleFile,
-      REQUESTS_CA_BUNDLE: this.caBundleFile,
-    };
+    return this.clientTrust?.environment(environment) ?? environment;
   }
 
   private async waitForBubblewrapStatus(): Promise<BubblewrapStatus> {
@@ -904,7 +890,7 @@ class NetworkSandboxRunner {
     this.resolverDestination = undefined;
     this.nsswitchFile = undefined;
     this.nsswitchDestination = undefined;
-    this.caBundleFile = undefined;
+    this.clientTrust = undefined;
     if (temporaryDirectory) await rm(temporaryDirectory, {recursive: true, force: true});
   }
 
@@ -933,25 +919,6 @@ function parseUpstreamDnsAddress(resolverConfiguration: string): string {
     if (match?.[1] && isIP(match[1]) !== 0) return match[1];
   }
   throw new Error("host resolver configuration contains no supported nameserver");
-}
-
-async function readHostCaBundle(environment: NodeJS.ProcessEnv | undefined): Promise<string> {
-  const candidates = [
-    environment?.SSL_CERT_FILE,
-    process.env.SSL_CERT_FILE,
-    "/etc/ssl/certs/ca-certificates.crt",
-    "/etc/pki/tls/certs/ca-bundle.crt",
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      const contents = await readFile(candidate, "utf8");
-      if (contents.includes("-----BEGIN CERTIFICATE-----")) return contents;
-    } catch {
-      // Try the next host trust-bundle location.
-    }
-  }
-  throw new Error("network sandbox could not locate a host CA bundle");
 }
 
 function resolveNetworkQueueAdapter(): string {

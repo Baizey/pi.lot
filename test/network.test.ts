@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {spawnSync} from "node:child_process";
 import {createHash} from "node:crypto";
 import {createSocket} from "node:dgram";
 import {existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync} from "node:fs";
@@ -19,6 +20,10 @@ import {
 } from "../src/policy/network/NetworkSandbox.js";
 import {parseTcpGatewayFlow} from "../src/policy/network/tcp-gateway-protocol.js";
 import {TlsCertificateAuthority} from "../src/policy/network/TlsCertificateAuthority.js";
+
+const JAVA_TOOLCHAIN_AVAILABLE = ["java", "javac"].every(
+  (command) => spawnSync(command, ["-version"], {stdio: "ignore"}).status === 0,
+);
 
 test("the network queue protocol validates IPv4, IPv6, TCP, UDP, and DNS events", () => {
   assert.deepEqual(parseNetworkQueueMessage("PI_NETWORK_QUEUE\t3\tREADY"), {type: "READY"});
@@ -621,6 +626,79 @@ test("the HTTPS gateway terminates TLS and denies a method and path before upstr
         path: "/baizey/allowed?ref=main",
       },
     ]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
+test("the HTTPS gateway provides its interception CA to Java JSSE clients", {skip: !JAVA_TOOLCHAIN_AVAILABLE}, async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-java-trust-test-"));
+  const sourceFile = path.join(workspace, "HttpsProbe.java");
+  writeFileSync(sourceFile, [
+    "import java.io.ByteArrayOutputStream;",
+    "import java.io.InputStream;",
+    "import java.net.URL;",
+    "import javax.net.ssl.HttpsURLConnection;",
+    "public class HttpsProbe {",
+    "  public static void main(String[] arguments) throws Exception {",
+    "    HttpsURLConnection connection = (HttpsURLConnection) new URL(arguments[0]).openConnection();",
+    "    connection.setRequestMethod(\"GET\");",
+    "    int status = connection.getResponseCode();",
+    "    InputStream input = connection.getInputStream();",
+    "    ByteArrayOutputStream body = new ByteArrayOutputStream();",
+    "    byte[] buffer = new byte[1024];",
+    "    for (int read; (read = input.read(buffer)) >= 0;) body.write(buffer, 0, read);",
+    "    System.out.print(status + \":\" + new String(body.toByteArray(), \"UTF-8\"));",
+    "  }",
+    "}",
+  ].join("\n"));
+  const compilation = spawnSync("javac", [sourceFile], {encoding: "utf8"});
+  assert.equal(compilation.status, 0, `${compilation.stdout}\n${compilation.stderr}`);
+  const upstreamAuthority = new TlsCertificateAuthority();
+  const server = createHttpsServer(
+    upstreamAuthority.serverCredentials("10.0.2.2"),
+    (_request, response) => response.end("JAVA"),
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  let output = "";
+  let errorOutput = "";
+  const gatewayErrors: string[] = [];
+  const requests: Array<{method: string; path: string}> = [];
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: ["java", "-cp", workspace, "HttpsProbe", `https://10.0.2.2:${address.port}/from-java?mode=jsse`],
+      cwd: workspace,
+      additionalUpstreamCa: upstreamAuthority.certificatePem,
+      timeoutSeconds: 30,
+      onStdout(data) {
+        output += data.toString();
+      },
+      onStderr(data) {
+        errorOutput += data.toString();
+      },
+      onDecisionError(error) {
+        gatewayErrors.push(error instanceof Error ? error.message : String(error));
+      },
+      decide() {
+        return NetworkDecision.ALLOW;
+      },
+      authorizeHttpRequest(event) {
+        requests.push({method: event.method, path: event.path});
+        return true;
+      },
+    });
+
+    assert.equal(result.exitCode, 0, `${errorOutput}\n${gatewayErrors.join("\n")}`);
+    assert.equal(output, "200:JAVA");
+    assert.deepEqual(gatewayErrors, []);
+    assert.deepEqual(requests, [{method: "GET", path: "/from-java?mode=jsse"}]);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(workspace, {recursive: true, force: true});

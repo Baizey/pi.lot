@@ -17,6 +17,8 @@ export type PilotSessionRuntimeInterface = {
     readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
     readonly toolDisplay: ToolDisplayController;
+    readonly fullNetworkInspection: boolean;
+    setFullNetworkInspection(enabled: boolean): void;
     close(): void
 }
 
@@ -27,6 +29,7 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
 
     private readonly decisionFlowQueue: UiDecisionFlowQueue;
     private database: SqliteDatabase | null;
+    private fullNetworkInspectionEnabled = true;
 
     constructor(ctx: ExtensionContext, options: PilotSessionRuntimeOptions = {}) {
         this.decisionFlowQueue = new UiDecisionFlowQueue();
@@ -47,6 +50,14 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             database.close();
             throw error;
         }
+    }
+
+    get fullNetworkInspection(): boolean {
+        return this.fullNetworkInspectionEnabled;
+    }
+
+    setFullNetworkInspection(enabled: boolean): void {
+        this.fullNetworkInspectionEnabled = enabled;
     }
 
     close(): void {

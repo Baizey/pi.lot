@@ -50,6 +50,14 @@ The worker mediates the actual method and canonical URL produced by arbitrary cl
 
 Filesystem and network mediation run in one sandbox. The command sees the complete host filesystem through the FUSE policy mount while its private network namespace routes outbound traffic through the network gate.
 
+Full HTTPS method/path inspection is enabled at the start of every session. If a client uses an unsupported private trust store or certificate pinning, disable interception for later Bash calls with:
+
+```text
+/network-inspection off
+```
+
+In this compatibility mode, HTTP and TLS bytes are relayed unmodified and HTTPS remains end-to-end. DNS and TCP hostname/port policy still applies, but method/path policy is unavailable. Use `/network-inspection on` to restore full inspection, or `/network-inspection` to show the active session value.
+
 ### Cleaner tool output
 
 pi.lot adds shared display modes to Pi's Bash, Read, Edit, and Write tools:

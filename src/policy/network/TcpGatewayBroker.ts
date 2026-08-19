@@ -140,11 +140,15 @@ export class TcpGatewayBroker {
 
         const sniffed = await sniffClientProtocol(client);
         if (sniffed.bytes.length > 0) client.unshift(sniffed.bytes);
+        if (!this.options.authorizeHttpRequest) {
+            await this.relayUnmodified(client, approval);
+            return;
+        }
         if (sniffed.protocol === "http1") {
             this.httpBroker.accept(client, approval, "http");
             return;
         }
-        if (sniffed.protocol === "tls" && this.options.authorizeHttpRequest) {
+        if (sniffed.protocol === "tls") {
             const certificateAuthority = this.certificateAuthority;
             if (!certificateAuthority) throw new Error("TLS gateway certificate authority is unavailable");
             const identity = approval.hostname ?? approval.destination.address;
@@ -179,10 +183,10 @@ export class TcpGatewayBroker {
             this.httpBroker.accept(tlsClient, approval, "https");
             return;
         }
-        if (this.options.authorizeHttpRequest) {
-            throw new Error("request-aware gateway denied an opaque TCP protocol");
-        }
+        throw new Error("request-aware gateway denied an opaque TCP protocol");
+    }
 
+    private async relayUnmodified(client: Socket, approval: TcpGatewayApproval): Promise<void> {
         const upstream = createConnection({
             host: approval.upstream.address,
             port: approval.upstream.port,

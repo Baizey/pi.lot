@@ -72,3 +72,5 @@ These levels describe default trust discovery. Explicit command options or appli
 - clients that explicitly replace the injected CA configuration.
 
 The gateway must fail closed when such a client rejects the interception certificate. Certificate rejection is a transport compatibility failure, not a network policy denial.
+
+For clients that cannot be adapted, `/network-inspection off` disables request-level interception for subsequent Bash calls in the current session. TLS then remains end-to-end and bytes are relayed unmodified. Coarse DNS and TCP hostname/port policy remains active, but HTTPS method/path policy is unavailable. Every new session defaults back to `/network-inspection on`.

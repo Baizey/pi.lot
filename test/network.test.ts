@@ -808,6 +808,73 @@ test("request-aware mode fails closed instead of forwarding an opaque TCP prefac
   }
 });
 
+test("coarse network inspection relays plaintext HTTP bytes without request mediation", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-coarse-http-test-"));
+  let expectedRequest = "";
+  let receivedRequest = "";
+  const server = createServer((socket) => {
+    socket.on("data", (data) => {
+      receivedRequest += data.toString();
+      if (Buffer.byteLength(receivedRequest) >= Buffer.byteLength(expectedRequest)) {
+        socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  expectedRequest = [
+    "pOsT /raw/../target?mode=coarse HTTP/1.1",
+    `hOsT: 10.0.2.2:${address.port}`,
+    "X-Unusual-Header: first",
+    "x-unusual-header: second",
+    "Content-Length: 4",
+    "Connection: close",
+    "",
+    "BODY",
+  ].join("\r\n");
+  const encodedRequest = Buffer.from(expectedRequest).toString("base64");
+  let output = "";
+  const operations: NetworkOperation[] = [];
+
+  try {
+    const result = await runNetworkSandboxedCommand({
+      command: [
+        process.execPath,
+        "--input-type=module",
+        "--eval",
+        [
+          "import {createConnection} from 'node:net'",
+          `const request = Buffer.from('${encodedRequest}', 'base64')`,
+          `const socket = createConnection(${address.port}, '10.0.2.2', () => socket.write(request))`,
+          "socket.on('data', (data) => process.stdout.write(data))",
+          "await new Promise((resolve, reject) => { socket.once('end', resolve); socket.once('error', reject) })",
+        ].join("; "),
+      ],
+      cwd: workspace,
+      timeoutSeconds: 10,
+      onStdout(data) {
+        output += data.toString();
+      },
+      decide(event) {
+        operations.push(event.operation);
+        return NetworkDecision.ALLOW;
+      },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(receivedRequest, expectedRequest);
+    assert.match(output, /\r\n\r\nOK$/);
+    assert.deepEqual(operations, [NetworkOperation.TCP_CONNECT]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(workspace, {recursive: true, force: true});
+  }
+});
+
 test("TLS remains end-to-end when request-aware HTTPS mediation is not configured", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-opaque-tls-test-"));
   const upstreamAuthority = new TlsCertificateAuthority();

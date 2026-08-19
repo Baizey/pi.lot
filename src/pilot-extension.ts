@@ -6,6 +6,7 @@ import {ReadTool} from "./tools/read/ReadTool.js";
 import {WriteTool} from "./tools/write/WriteTool.js";
 import {TOOL_MINIMAL_KEY_TEXT} from "./tui/tool/ToolDisplayController.js";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
+import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 
 export type PilotExtensionOptions = {
@@ -41,6 +42,7 @@ export class PilotExtension {
         new EditTool(this.pi, runtimeProvider).register();
         new WriteTool(this.pi, runtimeProvider).register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
+        new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         this.mcpExtension.register();
 
         this.pi.registerShortcut(TOOL_MINIMAL_KEY_TEXT, {

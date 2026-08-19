@@ -117,7 +117,7 @@ export class BashTool {
                 const runtime = this.runtimeProvider();
                 const policy = runtime.policyRuntime.beginToolCall();
                 const sandboxedBash = createBashTool(ctx.cwd, {
-                    operations: this.createOperations(policy),
+                    operations: this.createOperations(policy, runtime.fullNetworkInspection),
                 });
                 return sandboxedBash.execute(id, params, signal, onUpdate);
             },
@@ -130,7 +130,10 @@ export class BashTool {
         return untyped
     }
 
-    private createOperations(policy: ToolCallPathPolicyEvaluator): BashOperations {
+    private createOperations(
+        policy: ToolCallPathPolicyEvaluator,
+        fullNetworkInspection: boolean,
+    ): BashOperations {
         return {
             exec: async (command, cwd, {onData, signal, timeout, env}) => {
                 const report = (message: string) => onData(Buffer.from(`${message}\n`));
@@ -168,7 +171,9 @@ export class BashTool {
                         ));
                     },
                     decide: (event, decisionSignal) => decisions.decide(event, decisionSignal),
-                    authorizeHttpRequest: networkAuthorizer.authorizeHttpRequest,
+                    authorizeHttpRequest: fullNetworkInspection
+                        ? networkAuthorizer.authorizeHttpRequest
+                        : undefined,
                 }));
 
                 if (result.signal) throw new Error(`network worker terminated by ${result.signal}`);

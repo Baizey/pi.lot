@@ -153,6 +153,8 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay,
+                fullNetworkInspection: true,
+                setFullNetworkInspection() {},
                 close() {},
             };
         },
@@ -223,6 +225,8 @@ test("Bash components remain renderable while session shutdown is in progress", 
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay: new ToolDisplayController(runtimeContext),
+                fullNetworkInspection: true,
+                setFullNetworkInspection() {},
                 close() {
                     runtimeCloses++;
                 },
@@ -282,6 +286,8 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext, queue),
                 toolDisplay: new ToolDisplayController(runtimeContext),
+                fullNetworkInspection: true,
+                setFullNetworkInspection() {},
                 close() {},
             } satisfies PilotSessionRuntimeInterface;
         },
@@ -421,6 +427,8 @@ test("one session runtime owns the production tool overrides until session shutd
                 policyRuntime: policy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 toolDisplay,
+                fullNetworkInspection: true,
+                setFullNetworkInspection() {},
                 close() {
                     runtimeCloses++;
                 },

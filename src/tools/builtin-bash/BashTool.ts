@@ -158,7 +158,7 @@ export class BashTool {
                     },
                     decide: (event, decisionSignal) => pathAuthorizer.decide(event, decisionSignal),
                 }, ({mediatedHostRoot, cwd: resolvedCwd}) => runNetworkSandboxedCommand({
-                    command: ["/bin/builtin-bash", "-c", command],
+                    command: ["/bin/bash", "-c", command],
                     cwd: resolvedCwd,
                     mediatedHostRoot,
                     env,

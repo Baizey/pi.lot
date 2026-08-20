@@ -17,7 +17,7 @@ import {SubagentStatusTool} from "./tools/subagent-status/SubagentStatusTool.js"
 import {SubagentMessageTool} from "./tools/subagent-message/SubagentMessageTool.js";
 import {SubagentStopTool} from "./tools/subagent-stop/SubagentStopTool.js";
 import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
-import {ToolFullDisplayCommand} from "./commands/ToolFullDisplayCommand.js";
+import {ViewFullToolCommand} from "./commands/ViewFullToolCommand.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -80,7 +80,7 @@ export class PilotExtension {
         new EditTool(this.pi, runtimeProvider, this.displayRows).register();
         new WriteTool(this.pi, runtimeProvider, this.displayRows).register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
-        new ToolFullDisplayCommand(this.pi, this.displayRows).register();
+        new ViewFullToolCommand(this.pi, this.displayRows).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         this.mcpExtension.register();
         this.subagentSpawnTool.register();

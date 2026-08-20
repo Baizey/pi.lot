@@ -45,12 +45,13 @@ export class ToolDisplayRows {
         }));
     }
 
-    toggle(toolCallId: string): boolean {
+    toggle(toolCallId: string): boolean | undefined {
         const row = this.rows.get(toolCallId);
-        if (!row) return false;
-        row.state.pilotFullDisplay = !row.state.pilotFullDisplay;
+        if (!row) return undefined;
+        const full = !row.state.pilotFullDisplay;
+        row.state.pilotFullDisplay = full;
         row.invalidate();
-        return true;
+        return full;
     }
 
     clear(): void {

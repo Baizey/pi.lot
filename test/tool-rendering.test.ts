@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {Theme} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI, Theme} from "@earendil-works/pi-coding-agent";
 import {
     ToolArgumentLayout,
     ToolArgumentPlacement,
@@ -12,14 +12,14 @@ import {ToolPresentationRenderer} from "../src/tui/tool/ToolPresentationRenderer
 import {ThemeColor} from "../src/tui/Color.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
-import {ToolFullDisplayCommand} from "../src/commands/ToolFullDisplayCommand.js";
+import {ViewFullToolCommand} from "../src/commands/ViewFullToolCommand.js";
 
 const plainTheme = {
     fg: (_color: string, text: string) => text,
     bold: (text: string) => text,
 } as unknown as Theme;
 
-test("tool-full shows a bounded chronological window with the newest row selected", async () => {
+test("view-full-tool bounds the chronological window and toggles rows without closing", async () => {
     const rows = new ToolDisplayRows();
     const states = Array.from({length: 20}, () => ({} as {pilotFullDisplay?: boolean}));
     const invalidations = Array.from({length: 20}, () => 0);
@@ -32,26 +32,27 @@ test("tool-full shows a bounded chronological window with the newest row selecte
     }
 
     let command: {handler(args: string, ctx: any): Promise<void>} | undefined;
-    new ToolFullDisplayCommand({
+    new ViewFullToolCommand({
         registerCommand(_name, options) {
             command = options as typeof command;
         },
-    }, rows).register();
+    } as ExtensionAPI, rows).register();
     assert.ok(command);
 
     await command.handler("", {
         ui: {
             async custom(factory: any) {
-                let selected: string | undefined;
+                let closed = false;
                 const component = factory(
                     {requestRender() {}},
                     plainTheme,
                     {
                         matches(data: string, keybinding: string) {
-                            return data === "\r" && keybinding === "tui.select.confirm";
+                            return (data === "\r" && keybinding === "tui.select.confirm")
+                                || (data === "\x1b" && keybinding === "tui.select.cancel");
                         },
                     },
-                    (value: string | undefined) => selected = value,
+                    () => closed = true,
                 );
                 const optionLines = component.render(120)
                     .filter((line: string) => line.includes("○") || line.includes("●"));
@@ -59,8 +60,16 @@ test("tool-full shows a bounded chronological window with the newest row selecte
                 assert.match(optionLines[0]!, /15\. bash — Call 15/);
                 assert.match(optionLines.at(-1)!, /^→ ○ 20\. bash — Call 20/);
                 assert.equal(optionLines.some((line: string) => /14\. bash — Call 14/.test(line)), false);
+
                 component.handleInput("\r");
-                return selected;
+                assert.equal(closed, false);
+                assert.match(
+                    component.render(120).find((line: string) => line.startsWith("→"))!,
+                    /^→ ● 20\. bash — Call 20/,
+                );
+
+                component.handleInput("\x1b");
+                assert.equal(closed, true);
             },
             notify() {},
         },

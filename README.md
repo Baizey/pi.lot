@@ -99,7 +99,7 @@ Pathname IPC is outside filesystem and network mediation. A preserved host servi
 
 ### Cleaner tool output
 
-pi.lot uses Pi's native `Ctrl+O` expansion state as a global density toggle for built-in, subagent, and MCP tools. Collapsed tools show a minimal title-only view; expanded tools show bounded argument and result previews. Use `/tool-full` to select one tool call and toggle its row-local full view.
+pi.lot uses Pi's native `Ctrl+O` expansion state as a global density toggle for built-in, subagent, and MCP tools. Collapsed tools show a minimal title-only view; expanded tools show bounded argument and result previews. Use `/view-full-tool` to toggle row-local full views. Enter toggles the selected row without closing the bounded list; Escape closes it.
 
 Full Read and Write views retain Pi's native text and syntax highlighting, Read retains native image behavior, and full Edit views retain Pi's native diff preview.
 

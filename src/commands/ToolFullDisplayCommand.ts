@@ -1,8 +1,15 @@
-import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
+import type {
+    ExtensionAPI,
+    ExtensionCommandContext,
+    KeybindingsManager,
+    Theme,
+} from "@earendil-works/pi-coding-agent";
+import {truncateToWidth} from "@earendil-works/pi-tui";
 import {ToolDisplayRows, type ToolDisplayRow} from "../tui/tool/ToolDisplayRows.js";
 
 const COMMAND_NAME = "tool-full";
 const MAX_SUMMARY_LENGTH = 80;
+const TOOL_ROWS_AROUND_SELECTION = 5;
 
 export class ToolFullDisplayCommand {
     constructor(
@@ -21,17 +28,87 @@ export class ToolFullDisplayCommand {
                     return;
                 }
 
-                const choices = rows.map(formatChoice);
-                const selected = await ctx.ui.select("Toggle full tool display", choices);
-                if (!selected) return;
-
-                const index = choices.indexOf(selected);
-                const row = rows[index];
-                if (!row || !this.rows.toggle(row.toolCallId)) {
+                const toolCallId = await selectToolRow(ctx, rows);
+                if (!toolCallId) return;
+                if (!this.rows.toggle(toolCallId)) {
                     ctx.ui.notify("That tool call is no longer available.", "warning");
                 }
             },
         });
+    }
+}
+
+function selectToolRow(
+    ctx: ExtensionCommandContext,
+    rows: ToolDisplayRow[],
+): Promise<string | undefined> {
+    const items = rows.map((row) => ({
+        value: row.toolCallId,
+        label: formatChoice(row),
+    }));
+
+    return ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => new ToolDisplaySelector(
+        items,
+        theme,
+        keybindings,
+        (value) => done(value),
+        () => done(undefined),
+        () => tui.requestRender(),
+    ));
+}
+
+class ToolDisplaySelector {
+    private selectedIndex: number;
+
+    constructor(
+        private readonly items: Array<{value: string; label: string}>,
+        private readonly theme: Theme,
+        private readonly keybindings: KeybindingsManager,
+        private readonly select: (value: string) => void,
+        private readonly cancel: () => void,
+        private readonly changed: () => void,
+    ) {
+        this.selectedIndex = items.length - 1;
+    }
+
+    render(width: number): string[] {
+        const start = Math.max(0, this.selectedIndex - TOOL_ROWS_AROUND_SELECTION);
+        const end = Math.min(this.items.length, this.selectedIndex + TOOL_ROWS_AROUND_SELECTION + 1);
+        const options = this.items.slice(start, end).map((item, offset) => {
+            const selected = start + offset === this.selectedIndex;
+            const line = `${selected ? "→" : " "} ${item.label}`;
+            return selected ? this.theme.fg("accent", line) : line;
+        });
+        return [
+            this.theme.fg("accent", this.theme.bold("Toggle full tool display")),
+            "",
+            ...options,
+            this.theme.fg("dim", `  (${this.selectedIndex + 1}/${this.items.length})`),
+            "",
+            this.theme.fg("dim", "↑↓ navigate • enter select • esc cancel"),
+        ].map((line) => truncateToWidth(line, width));
+    }
+
+    handleInput(data: string): void {
+        if (this.keybindings.matches(data, "tui.select.up")) {
+            if (this.selectedIndex > 0) {
+                this.selectedIndex--;
+                this.changed();
+            }
+        } else if (this.keybindings.matches(data, "tui.select.down")) {
+            if (this.selectedIndex < this.items.length - 1) {
+                this.selectedIndex++;
+                this.changed();
+            }
+        } else if (this.keybindings.matches(data, "tui.select.confirm")) {
+            const item = this.items[this.selectedIndex];
+            if (item) this.select(item.value);
+        } else if (this.keybindings.matches(data, "tui.select.cancel")) {
+            this.cancel();
+        }
+    }
+
+    invalidate(): void {
     }
 }
 

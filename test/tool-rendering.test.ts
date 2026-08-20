@@ -19,22 +19,17 @@ const plainTheme = {
     bold: (text: string) => text,
 } as unknown as Theme;
 
-test("tool-full selects one row, toggles its full state, and invalidates only that row", async () => {
+test("tool-full shows a bounded chronological window with the newest row selected", async () => {
     const rows = new ToolDisplayRows();
-    const bashState: {pilotFullDisplay?: boolean} = {};
-    const readState: {pilotFullDisplay?: boolean} = {};
-    let bashInvalidations = 0;
-    let readInvalidations = 0;
-    rows.observe("bash", {purpose: "Run tests"}, {
-        toolCallId: "bash-call",
-        state: bashState,
-        invalidate: () => bashInvalidations++,
-    });
-    rows.observe("read", {path: "src/index.ts"}, {
-        toolCallId: "read-call",
-        state: readState,
-        invalidate: () => readInvalidations++,
-    });
+    const states = Array.from({length: 20}, () => ({} as {pilotFullDisplay?: boolean}));
+    const invalidations = Array.from({length: 20}, () => 0);
+    for (let index = 0; index < states.length; index++) {
+        rows.observe("bash", {purpose: `Call ${index + 1}`}, {
+            toolCallId: `call-${index + 1}`,
+            state: states[index]!,
+            invalidate: () => invalidations[index]++,
+        });
+    }
 
     let command: {handler(args: string, ctx: any): Promise<void>} | undefined;
     new ToolFullDisplayCommand({
@@ -46,19 +41,35 @@ test("tool-full selects one row, toggles its full state, and invalidates only th
 
     await command.handler("", {
         ui: {
-            async select(_title: string, choices: string[]) {
-                assert.match(choices[0]!, /read.*src\/index\.ts/);
-                assert.match(choices[1]!, /bash.*Run tests/);
-                return choices[1];
+            async custom(factory: any) {
+                let selected: string | undefined;
+                const component = factory(
+                    {requestRender() {}},
+                    plainTheme,
+                    {
+                        matches(data: string, keybinding: string) {
+                            return data === "\r" && keybinding === "tui.select.confirm";
+                        },
+                    },
+                    (value: string | undefined) => selected = value,
+                );
+                const optionLines = component.render(120)
+                    .filter((line: string) => line.includes("○") || line.includes("●"));
+                assert.equal(optionLines.length, 6);
+                assert.match(optionLines[0]!, /15\. bash — Call 15/);
+                assert.match(optionLines.at(-1)!, /^→ ○ 20\. bash — Call 20/);
+                assert.equal(optionLines.some((line: string) => /14\. bash — Call 14/.test(line)), false);
+                component.handleInput("\r");
+                return selected;
             },
             notify() {},
         },
     });
 
-    assert.equal(bashState.pilotFullDisplay, true);
-    assert.equal(readState.pilotFullDisplay, undefined);
-    assert.equal(bashInvalidations, 1);
-    assert.equal(readInvalidations, 0);
+    assert.equal(states[19]!.pilotFullDisplay, true);
+    assert.equal(states.slice(0, -1).every((state) => state.pilotFullDisplay === undefined), true);
+    assert.equal(invalidations[19], 1);
+    assert.equal(invalidations.slice(0, -1).every((count) => count === 0), true);
 });
 
 test("global expansion selects truncated display while the row-local override selects full display", () => {

@@ -36,7 +36,7 @@ export class ToolDisplayRows {
     }
 
     list(): ToolDisplayRow[] {
-        return [...this.rows.entries()].reverse().map(([toolCallId, row]) => ({
+        return [...this.rows.entries()].map(([toolCallId, row]) => ({
             toolCallId,
             toolName: row.toolName,
             args: row.args,

@@ -12,6 +12,7 @@ import {ThemeColor} from "../../tui/Color.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
 
 const EDIT_PRESENTATION = {
     toolName: "edit",
@@ -38,6 +39,7 @@ export class EditTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
+        private readonly displayRows: ToolDisplayRows,
     ) {
     }
 
@@ -66,6 +68,7 @@ export class EditTool {
             },
 
             renderCall: (args, theme, context) => {
+                this.displayRows.observe("edit", args, context);
                 const mode = resolveToolDisplayMode(context.expanded, context.state);
                 return mode === ToolDisplayMode.FULL
                     ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})

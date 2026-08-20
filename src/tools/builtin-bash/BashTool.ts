@@ -15,6 +15,7 @@ import {NetworkPolicyAuthorizer} from "../../policy/network/NetworkPolicyAuthori
 import {NetworkDecision} from "../../policy/network/network-queue-protocol.js";
 import type {HostCredentialIpcOptions} from "../../policy/network/ipc/HostCredentialIpc.js";
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
@@ -58,6 +59,7 @@ export class BashTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
+        private readonly displayRows: ToolDisplayRows,
     ) {
     }
 
@@ -116,11 +118,14 @@ export class BashTool {
                 return sandboxedBash.execute(id, params, signal, onUpdate);
             },
 
-            renderCall: (args, theme, context) => presentation.renderCall(
-                args,
-                theme,
-                resolveToolDisplayMode(context.expanded, context.state),
-            ),
+            renderCall: (args, theme, context) => {
+                this.displayRows.observe("bash", args, context);
+                return presentation.renderCall(
+                    args,
+                    theme,
+                    resolveToolDisplayMode(context.expanded, context.state),
+                );
+            },
 
             renderResult: (result, options, theme, context) => presentation.renderResult(
                 result,

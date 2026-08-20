@@ -13,6 +13,7 @@ import {
 } from "../../tui/tool/ToolPresentation.js";
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
 import {ThemeColor} from "../../tui/Color.js";
 
 type MessageToolInput = {jobId: string; task: string};
@@ -42,8 +43,9 @@ export class SubagentMessageTool {
     constructor(
         private readonly pi: Pick<ExtensionAPI, "registerTool">,
         coordinator: CoordinatorProvider,
+        displayRows: ToolDisplayRows,
     ) {
-        this.definition = createDefinition(coordinator) as unknown as ToolDefinition<any, any>;
+        this.definition = createDefinition(coordinator, displayRows) as unknown as ToolDefinition<any, any>;
     }
 
     register(): void {
@@ -57,7 +59,10 @@ export class SubagentMessageTool {
     }
 }
 
-function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any, SubagentToolDetails> {
+function createDefinition(
+    coordinator: CoordinatorProvider,
+    displayRows: ToolDisplayRows,
+): ToolDefinition<any, SubagentToolDetails> {
     const presentation = new ToolPresentationRenderer(MESSAGE_PRESENTATION);
     return {
         name: "subagent_message",
@@ -71,11 +76,14 @@ function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any,
             const input = params as MessageToolInput;
             return subagentToolResult([coordinator().message(input.jobId, input.task)]);
         },
-        renderCall: (args, theme, context) => presentation.renderCall(
-            args as MessageToolInput,
-            theme,
-            resolveToolDisplayMode(context.expanded, context.state),
-        ),
+        renderCall: (args, theme, context) => {
+            displayRows.observe("subagent_message", args, context);
+            return presentation.renderCall(
+                args as MessageToolInput,
+                theme,
+                resolveToolDisplayMode(context.expanded, context.state),
+            );
+        },
         renderResult: (result, options, theme, context) => presentation.renderResult(
             result,
             theme,

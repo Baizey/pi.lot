@@ -16,10 +16,12 @@ import {SubagentSpawnTool} from "./tools/subagent-spawn/SubagentSpawnTool.js";
 import {SubagentStatusTool} from "./tools/subagent-status/SubagentStatusTool.js";
 import {SubagentMessageTool} from "./tools/subagent-message/SubagentMessageTool.js";
 import {SubagentStopTool} from "./tools/subagent-stop/SubagentStopTool.js";
+import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
+import {ToolFullDisplayCommand} from "./commands/ToolFullDisplayCommand.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
-    createMcpExtension?: (pi: ExtensionAPI) => McpExtensionInterface;
+    createMcpExtension?: (pi: ExtensionAPI, displayRows: ToolDisplayRows) => McpExtensionInterface;
     createSubagentRuntime?: (capabilities: SubagentCapabilities) => SubagentRuntimeInterface;
 };
 
@@ -30,6 +32,7 @@ export default function pilotExtension(pi: ExtensionAPI): void {
 
 export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
+    private readonly displayRows = new ToolDisplayRows();
     private readonly bashTool: BashTool;
     private readonly mcpExtension: McpExtensionInterface;
     private readonly subagentRuntime: SubagentRuntimeInterface;
@@ -46,13 +49,16 @@ export class PilotExtension {
     ) {
         this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
         const runtimeProvider = () => this.requireSessionRuntime();
-        this.bashTool = new BashTool(pi, runtimeProvider);
-        this.mcpExtension = (options.createMcpExtension ?? ((extensionApi) => new McpExtension(extensionApi)))(pi);
+        this.bashTool = new BashTool(pi, runtimeProvider, this.displayRows);
+        this.mcpExtension = (
+            options.createMcpExtension
+            ?? ((extensionApi, displayRows) => new McpExtension(extensionApi, {displayRows}))
+        )(pi, this.displayRows);
         const coordinator = () => this.subagentRuntime.coordinator();
-        this.subagentSpawnTool = new SubagentSpawnTool(pi, coordinator);
-        this.subagentStatusTool = new SubagentStatusTool(pi, coordinator);
-        this.subagentMessageTool = new SubagentMessageTool(pi, coordinator);
-        this.subagentStopTool = new SubagentStopTool(pi, coordinator);
+        this.subagentSpawnTool = new SubagentSpawnTool(pi, coordinator, this.displayRows);
+        this.subagentStatusTool = new SubagentStatusTool(pi, coordinator, this.displayRows);
+        this.subagentMessageTool = new SubagentMessageTool(pi, coordinator, this.displayRows);
+        this.subagentStopTool = new SubagentStopTool(pi, coordinator, this.displayRows);
         const capabilities: SubagentCapabilities = {
             bash: () => [this.bashTool.toolDefinition()],
             mcp: () => this.mcpExtension.toolDefinitions(),
@@ -70,10 +76,11 @@ export class PilotExtension {
 
         const runtimeProvider = () => this.requireSessionRuntime();
         this.bashTool.register();
-        new ReadTool(this.pi, runtimeProvider).register();
-        new EditTool(this.pi, runtimeProvider).register();
-        new WriteTool(this.pi, runtimeProvider).register();
+        new ReadTool(this.pi, runtimeProvider, this.displayRows).register();
+        new EditTool(this.pi, runtimeProvider, this.displayRows).register();
+        new WriteTool(this.pi, runtimeProvider, this.displayRows).register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
+        new ToolFullDisplayCommand(this.pi, this.displayRows).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         this.mcpExtension.register();
         this.subagentSpawnTool.register();
@@ -82,6 +89,8 @@ export class PilotExtension {
         this.subagentStopTool.register();
 
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
+        this.pi.on("session_compact", () => this.displayRows.clear());
+        this.pi.on("session_tree", () => this.displayRows.clear());
         this.pi.on("session_shutdown", () => this.stopSession());
     }
 
@@ -93,6 +102,7 @@ export class PilotExtension {
         return this.startOwnedExtensions(ctx).catch(async (error) => {
             this.sessionRuntime = undefined;
             await this.stopOwnedExtensions().catch(() => undefined);
+            this.displayRows.clear();
             runtime.close();
             throw error;
         });
@@ -102,6 +112,7 @@ export class PilotExtension {
         const runtime = this.sessionRuntime;
         return this.stopOwnedExtensions().finally(() => {
             if (this.sessionRuntime === runtime) this.sessionRuntime = undefined;
+            this.displayRows.clear();
             runtime?.close();
         });
     }

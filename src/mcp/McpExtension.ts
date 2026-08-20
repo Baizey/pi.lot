@@ -3,11 +3,13 @@ import {McpManager} from "./client.js";
 import {registerMcpCommand} from "./commands.js";
 import {McpConfigStore} from "./config.js";
 import {McpToolRegistry} from "./tools.js";
+import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
 
 export type McpExtensionServices = {
     store?: McpConfigStore;
     manager?: McpManager;
     registry?: McpToolRegistry;
+    displayRows?: ToolDisplayRows;
 };
 
 export interface McpExtensionInterface {
@@ -31,7 +33,12 @@ export class McpExtension implements McpExtensionInterface {
     ) {
         this.store = services.store ?? new McpConfigStore();
         this.manager = services.manager ?? new McpManager(this.store.load());
-        this.registry = services.registry ?? new McpToolRegistry(pi, this.manager, this.store);
+        this.registry = services.registry ?? new McpToolRegistry(
+            pi,
+            this.manager,
+            this.store,
+            services.displayRows,
+        );
     }
 
     register(): void {

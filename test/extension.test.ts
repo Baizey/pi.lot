@@ -175,9 +175,10 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
         command: Array.from({length: 10}, (_, index) => `echo ${index + 1}`).join("\n"),
     };
     const output = {content: [{type: "text", text: "one\ntwo\nthree\nfour\nfive\nsix"}]};
+    const displayState: Record<string, unknown> = {};
 
     assert.deepEqual(
-        bashTool.renderCall(args, theme, {expanded: false, isError: false}).render(120),
+        bashTool.renderCall(args, theme, toolRenderContext(args, displayState)).render(120),
         ["bash | Verify native display controls"],
     );
     assert.deepEqual(
@@ -185,7 +186,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
             output,
             {expanded: false, isPartial: false},
             theme,
-            {expanded: false, isError: false},
+            toolRenderContext(args, displayState),
         ).render(120),
         [],
     );
@@ -193,7 +194,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
     const truncatedCall = bashTool.renderCall(
         args,
         theme,
-        {expanded: true, isError: false},
+        toolRenderContext(args, displayState, {expanded: true}),
     ).render(120);
     assert.equal(truncatedCall.length, 10);
     assert.equal(truncatedCall.at(-1), "    ... (2 more lines)");
@@ -202,7 +203,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
             output,
             {expanded: true, isPartial: false},
             theme,
-            {expanded: true, isError: false},
+            toolRenderContext(args, displayState, {expanded: true}),
         ).render(120),
         ["", "... (1 earlier line)", "two", "three", "four", "five", "six"],
     );
@@ -211,7 +212,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
     const fullCall = bashTool.renderCall(
         args,
         theme,
-        {expanded: false, isError: false, state: fullState},
+        toolRenderContext(args, fullState),
     ).render(120);
     assert.equal(fullCall.length, 11);
     assert.equal(fullCall.at(-1), "    echo 10");
@@ -220,7 +221,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
             output,
             {expanded: false, isPartial: false},
             theme,
-            {expanded: false, isError: false, state: fullState},
+            toolRenderContext(args, fullState),
         ).render(120),
         ["", "one", "two", "three", "four", "five", "six"],
     );
@@ -278,7 +279,11 @@ test("Bash components remain renderable during and after session shutdown", asyn
     const call = bashTool.renderCall(
         {purpose: "Keep rendering during teardown", command: "echo complete"},
         theme,
-        {expanded: true, isError: false},
+        toolRenderContext(
+            {purpose: "Keep rendering during teardown", command: "echo complete"},
+            {},
+            {expanded: true},
+        ),
     );
     const shutdown = harness.sessionShutdown()({type: "session_shutdown", reason: "reload"}, ctx);
 

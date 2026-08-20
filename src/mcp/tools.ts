@@ -18,6 +18,7 @@ import type {ToolPresentationSpec} from "../tui/tool/ToolPresentation.js";
 import {ToolTextDirection} from "../tui/tool/ToolPresentation.js";
 import {resolveToolDisplayMode} from "../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../tui/tool/ToolPresentationRenderer.js";
+import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
 
 const maxMcpTextOutputChars = 80_000;
 
@@ -45,6 +46,7 @@ export class McpToolRegistry {
         private readonly pi: McpToolRegistrar,
         private readonly manager: McpManager,
         private readonly store: McpConfigStore,
+        private readonly displayRows: ToolDisplayRows = new ToolDisplayRows(),
     ) {}
 
     registerAvailableTools(config: McpConfigSnapshot = this.store.load()): McpToolRegistrationResult {
@@ -76,6 +78,7 @@ export class McpToolRegistry {
                     piToolName,
                     manager: this.manager,
                     store: this.store,
+                    displayRows: this.displayRows,
                 });
                 this.pi.registerTool(definition);
                 this.registeredByServerTool.set(key, piToolName);
@@ -163,6 +166,7 @@ function createMcpPiTool(input: {
     piToolName: string;
     manager: McpManager;
     store: McpConfigStore;
+    displayRows: ToolDisplayRows;
 }): ToolDefinition<any, McpToolDetails | undefined> {
     const description = [
         `MCP tool '${input.mcpTool.name}' from server '${input.serverName}'.`,
@@ -217,11 +221,14 @@ function createMcpPiTool(input: {
             };
             return {content: converted.content, details};
         },
-        renderCall: (args, theme, context) => presentation.renderCall(
-            args as Record<string, unknown>,
-            theme,
-            resolveToolDisplayMode(context.expanded, context.state),
-        ),
+        renderCall: (args, theme, context) => {
+            input.displayRows.observe(input.piToolName, args, context);
+            return presentation.renderCall(
+                args as Record<string, unknown>,
+                theme,
+                resolveToolDisplayMode(context.expanded, context.state),
+            );
+        },
         renderResult: (result, options, theme, context) => presentation.renderResult(
             result,
             theme,

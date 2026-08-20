@@ -24,6 +24,7 @@ import {
 } from "../../tui/tool/ToolPresentation.js";
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
 import {ThemeColor} from "../../tui/Color.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 900;
@@ -89,8 +90,9 @@ export class SubagentSpawnTool {
     constructor(
         private readonly pi: Pick<ExtensionAPI, "registerTool">,
         coordinator: CoordinatorProvider,
+        displayRows: ToolDisplayRows,
     ) {
-        this.definition = createDefinition(coordinator) as unknown as ToolDefinition<any, any>;
+        this.definition = createDefinition(coordinator, displayRows) as unknown as ToolDefinition<any, any>;
     }
 
     register(): void {
@@ -104,7 +106,10 @@ export class SubagentSpawnTool {
     }
 }
 
-function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any, SubagentToolDetails> {
+function createDefinition(
+    coordinator: CoordinatorProvider,
+    displayRows: ToolDisplayRows,
+): ToolDefinition<any, SubagentToolDetails> {
     const presentation = new ToolPresentationRenderer(SPAWN_PRESENTATION);
     return {
         name: "subagent_spawn",
@@ -142,11 +147,14 @@ function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any,
                 : undefined);
             return subagentToolResult([result.job]);
         },
-        renderCall: (args, theme, context) => presentation.renderCall(
-            args as SpawnToolInput,
-            theme,
-            resolveToolDisplayMode(context.expanded, context.state),
-        ),
+        renderCall: (args, theme, context) => {
+            displayRows.observe("subagent_spawn", args, context);
+            return presentation.renderCall(
+                args as SpawnToolInput,
+                theme,
+                resolveToolDisplayMode(context.expanded, context.state),
+            );
+        },
         renderResult: (result, options, theme, context) => presentation.renderResult(
             result,
             theme,

@@ -8,6 +8,7 @@ import {SubagentMessageTool} from "../src/tools/subagent-message/SubagentMessage
 import {SubagentSpawnTool} from "../src/tools/subagent-spawn/SubagentSpawnTool.js";
 import {SubagentStatusTool} from "../src/tools/subagent-status/SubagentStatusTool.js";
 import {SubagentStopTool} from "../src/tools/subagent-stop/SubagentStopTool.js";
+import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 
 const expectedNames = ["subagent_spawn", "subagent_status", "subagent_message", "subagent_stop"];
 
@@ -21,11 +22,12 @@ test("each subagent tool registers independently and delegates only to the coord
         if (!coordinator) throw new Error("Subagent session is not available");
         return coordinator;
     };
+    const displayRows = new ToolDisplayRows();
     const tools = [
-        new SubagentSpawnTool(pi, coordinatorProvider),
-        new SubagentStatusTool(pi, coordinatorProvider),
-        new SubagentMessageTool(pi, coordinatorProvider),
-        new SubagentStopTool(pi, coordinatorProvider),
+        new SubagentSpawnTool(pi, coordinatorProvider, displayRows),
+        new SubagentStatusTool(pi, coordinatorProvider, displayRows),
+        new SubagentMessageTool(pi, coordinatorProvider, displayRows),
+        new SubagentStopTool(pi, coordinatorProvider, displayRows),
     ];
     for (const tool of tools) tool.register();
 

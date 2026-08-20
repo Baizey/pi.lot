@@ -11,11 +11,55 @@ import {resolveToolDisplayMode, ToolDisplayMode} from "../src/tui/tool/ToolDispl
 import {ToolPresentationRenderer} from "../src/tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../src/tui/Color.js";
 import {displayWidth} from "../src/tui/terminalText.js";
+import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
+import {ToolFullDisplayCommand} from "../src/commands/ToolFullDisplayCommand.js";
 
 const plainTheme = {
     fg: (_color: string, text: string) => text,
     bold: (text: string) => text,
 } as unknown as Theme;
+
+test("tool-full selects one row, toggles its full state, and invalidates only that row", async () => {
+    const rows = new ToolDisplayRows();
+    const bashState: {pilotFullDisplay?: boolean} = {};
+    const readState: {pilotFullDisplay?: boolean} = {};
+    let bashInvalidations = 0;
+    let readInvalidations = 0;
+    rows.observe("bash", {purpose: "Run tests"}, {
+        toolCallId: "bash-call",
+        state: bashState,
+        invalidate: () => bashInvalidations++,
+    });
+    rows.observe("read", {path: "src/index.ts"}, {
+        toolCallId: "read-call",
+        state: readState,
+        invalidate: () => readInvalidations++,
+    });
+
+    let command: {handler(args: string, ctx: any): Promise<void>} | undefined;
+    new ToolFullDisplayCommand({
+        registerCommand(_name, options) {
+            command = options as typeof command;
+        },
+    }, rows).register();
+    assert.ok(command);
+
+    await command.handler("", {
+        ui: {
+            async select(_title: string, choices: string[]) {
+                assert.match(choices[0]!, /read.*src\/index\.ts/);
+                assert.match(choices[1]!, /bash.*Run tests/);
+                return choices[1];
+            },
+            notify() {},
+        },
+    });
+
+    assert.equal(bashState.pilotFullDisplay, true);
+    assert.equal(readState.pilotFullDisplay, undefined);
+    assert.equal(bashInvalidations, 1);
+    assert.equal(readInvalidations, 0);
+});
 
 test("global expansion selects truncated display while the row-local override selects full display", () => {
     assert.equal(resolveToolDisplayMode(false, {}), ToolDisplayMode.MINIMAL);

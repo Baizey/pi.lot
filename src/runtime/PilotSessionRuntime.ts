@@ -7,10 +7,16 @@ import {UiDecisionFlowQueue} from "../tui/UiDecisionFlowQueue.js";
 import {ToolDisplayController} from "../tui/tool/ToolDisplayController.js";
 import {PolicyDecisionFlow} from "../policy/PolicyDecisionFlow";
 import {PolicyDefaultJsonStorage, PolicyDefaultJsonStorageInterface} from "../policy/defaults";
+import type {HostCredentialIpcOptions} from "../policy/network/ipc/HostCredentialIpc.js";
+import {
+    HostCredentialIpcConfigStore,
+    type HostCredentialIpcConfigStoreInterface,
+} from "../policy/network/ipc/HostCredentialIpcConfig.js";
 
 export type PilotSessionRuntimeOptions = {
     openDatabase?: () => SqliteDatabase;
     policyDefaultsStore?: PolicyDefaultJsonStorageInterface;
+    credentialIpcConfigStore?: HostCredentialIpcConfigStoreInterface;
 };
 
 export type PilotSessionRuntimeInterface = {
@@ -18,6 +24,7 @@ export type PilotSessionRuntimeInterface = {
     readonly decisionFlows: UiDecisionFlowManager;
     readonly toolDisplay: ToolDisplayController;
     readonly fullNetworkInspection: boolean;
+    readonly hostCredentialIpc?: HostCredentialIpcOptions;
     setFullNetworkInspection(enabled: boolean): void;
     close(): void
 }
@@ -26,6 +33,7 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
     readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
     readonly toolDisplay: ToolDisplayController;
+    readonly hostCredentialIpc: HostCredentialIpcOptions;
 
     private readonly decisionFlowQueue: UiDecisionFlowQueue;
     private database: SqliteDatabase | null;
@@ -45,6 +53,9 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow, defaultsStore);
             this.decisionFlows = uiManager;
             this.toolDisplay = new ToolDisplayController(ctx);
+            this.hostCredentialIpc = (
+                options.credentialIpcConfigStore ?? new HostCredentialIpcConfigStore()
+            ).load(process.env);
             this.database = database;
         } catch (error) {
             database.close();

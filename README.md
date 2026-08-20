@@ -60,6 +60,43 @@ Full HTTPS method/path inspection is enabled at the start of every session. If a
 
 In this compatibility mode, HTTP and TLS bytes are relayed unmodified and HTTPS remains end-to-end. DNS and TCP hostname/port policy still applies, but method/path policy is unavailable. Use `/network-inspection on` to restore full inspection, or `/network-inspection` to show the active session value.
 
+### Host credential IPC
+
+The worker inherits the Pi process environment and sees ordinary credential files through the mediated filesystem. pi.lot also preserves selected host credential protocols whose live Unix-socket inodes cannot pass through FUSE:
+
+- Secret Service clients receive a per-command D-Bus proxy filtered to `org.freedesktop.secrets`; and
+- the live socket named by `SSH_AUTH_SOCK` is imported read-only, covering OpenSSH agents and compatible providers such as 1Password.
+
+These are protocol capabilities rather than tool-specific integrations. GitHub CLI, libsecret, `go-keyring`, Git credential helpers, SSH, and other compatible clients keep their normal authentication behavior. The proxy and socket mounts exist only for the Bash call and are removed during cleanup.
+
+Missing configuration uses the built-in Secret Service and SSH-agent defaults. Create `~/.pilot/credential-ipc.json` to replace them or add other real-world protocols:
+
+```json
+{
+  "version": 1,
+  "sessionBus": {
+    "enabled": true,
+    "talk": ["org.freedesktop.secrets"]
+  },
+  "unixSockets": [
+    {
+      "id": "ssh-agent",
+      "environment": "SSH_AUTH_SOCK",
+      "optional": true
+    },
+    {
+      "id": "gpg-agent",
+      "path": "${XDG_RUNTIME_DIR}/gnupg/S.gpg-agent",
+      "optional": true
+    }
+  ]
+}
+```
+
+Each socket declares exactly one source: an environment variable containing its pathname, or an absolute pathname. Paths support only explicit `${VARIABLE}` expansion—no shell syntax. `optional` defaults to `true`; missing required sockets are reported as IPC errors. Set an entry's `enabled` field to `false` to keep it documented but inactive. Configuration is strictly validated and loaded once when the Pi session starts.
+
+Pathname IPC is outside filesystem and network mediation. A preserved host service may perform effects on the worker's behalf using the user's normal authority; those delegated effects are an explicit boundary of the current model.
+
 ### Cleaner tool output
 
 pi.lot adds shared display modes to Pi's Bash, Read, Edit, and Write tools:
@@ -157,6 +194,7 @@ You will need:
 - nftables
 - iproute2
 - `slirp4netns`
+- `xdg-dbus-proxy`
 - a C compiler and `pkg-config`
 - `libnetfilter_queue` development files
 

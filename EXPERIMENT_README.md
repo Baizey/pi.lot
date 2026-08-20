@@ -38,7 +38,7 @@ Attribute and entry caches are constrained and writeback caching is not enabled.
 
 ### Network mediation
 
-Each command runs with normal host-user identity, writable mediated host filesystem access, and its environment in a capability-free Bubblewrap workload network namespace. The standalone network runner preserves pathname Unix-socket access; the combined FUSE worker still has pathname-socket compatibility gaps. A separate trusted gateway namespace owns the only `slirp4netns` uplink; the workload has only a veth route to that gateway. Both namespaces and all helpers are configured while Bubblewrap holds the worker on a blocking descriptor.
+Each command runs with normal host-user identity, writable mediated host filesystem access, and its environment in a capability-free Bubblewrap workload network namespace. The standalone network runner preserves pathname Unix-socket access. The combined FUSE worker imports selected live host credential sockets after installing its mediated root: configured session-bus names use a per-command filtered `xdg-dbus-proxy`, while configured pathname sockets are read-only bind-mounted by inode. Missing `~/.pilot/credential-ipc.json` configuration defaults to `org.freedesktop.secrets` and `SSH_AUTH_SOCK`; the versioned JSON format can add D-Bus names, environment-discovered sockets, and absolute or environment-expanded socket paths. Other pathname sockets still have compatibility gaps. A separate trusted gateway namespace owns the only `slirp4netns` uplink; the workload has only a veth route to that gateway. Both namespaces and all helpers are configured while Bubblewrap holds the worker on a blocking descriptor.
 
 The workload nftables gate sends the first outbound IPv4 or IPv6 TCP SYN and the first datagram of each ordinary UDP flow to a small `libnetfilter_queue` helper. The helper holds that exact packet while TypeScript requests a decision. UDP approved by the worker gate may be forwarded through the gateway. TCP is never forwarded: gateway TPROXY terminates every approved non-loopback TCP flow at a native ingress, which sends validated original-flow metadata and bytes to a trusted host TypeScript broker. Only that broker creates the separate upstream socket. The ingress drops all capabilities and disables ptrace access after binding its transparent listeners. `DENY`, malformed metadata, helper failure, or broker failure creates no target-side connection and cannot fall back to direct TCP.
 
@@ -58,7 +58,7 @@ Versioned live policy replacement, IPv4-mapped IPv6 policy normalization, active
 - `pkg-config` and `libnetfilter_queue` development files (`libnetfilter_queue-devel` on Fedora/Bazzite; `libnetfilter-queue-dev` on Debian/Ubuntu)
 - Bubblewrap (`bwrap`)
 - FUSE (`/dev/fuse` and `fusermount`) for pi.lot's Bash override and `bash-fuse`
-- User namespaces, nftables (`nft`), iproute2 (`ip`), `unshare`, `nsenter`, and `slirp4netns`
+- User namespaces, nftables (`nft`), iproute2 (`ip`), `unshare`, `nsenter`, `slirp4netns`, and `xdg-dbus-proxy`
 
 ## Install
 
@@ -109,6 +109,9 @@ The tests verify production session-runtime ownership and decision-flow cancella
 - `src/policy/network/HttpRequestBroker.ts` — canonical HTTP/1 request events, request authorization, and verified upstream HTTP(S).
 - `src/policy/network/TlsCertificateAuthority.ts` — in-memory per-run interception CA and leaf issuance.
 - `src/policy/network/trust/ClientTrust.ts` — per-run trust artifact lifecycle and Linux system-bundle overlays.
+- `src/policy/network/ipc/HostCredentialIpc.ts` — filtered session D-Bus and imported host credential sockets.
+- `src/policy/network/ipc/HostCredentialIpcConfig.ts` — strict versioned `~/.pilot/credential-ipc.json` loading.
+- `src/policy/network/worker/WorkerRuntimeResource.ts` — validated environment and bind-mount composition for worker resources.
 - `src/policy/network/trust/ClientTrustAdapters.ts` — machine-readable supported client environments and trust injection.
 - `src/policy/network/trust/JavaTrustStore.ts` — Java-compatible PKCS12 trusted-certificate encoding.
 - `src/policy/network/SyntheticDnsProxy.ts` — trusted DNS forwarding, response validation, synthetic lease allocation, and answer rewriting.

@@ -30,6 +30,15 @@ import {TcpGatewayBroker} from "./TcpGatewayBroker.js";
 import type {TcpGatewayApproval} from "./TcpGatewayBroker.js";
 import {TlsCertificateAuthority} from "./TlsCertificateAuthority.js";
 import {ClientTrust} from "./trust/ClientTrust.js";
+import {
+  prepareHostCredentialIpc,
+} from "./ipc/HostCredentialIpc.js";
+import type {HostCredentialIpcOptions} from "./ipc/HostCredentialIpc.js";
+import {
+  applyWorkerResourceEnvironment,
+  workerBindMountArguments,
+} from "./worker/WorkerRuntimeResource.js";
+import type {WorkerBindMount, WorkerRuntimeResource} from "./worker/WorkerRuntimeResource.js";
 import {resolveNativeExecutable} from "../../runtime/NativeExecutable.js";
 
 export {
@@ -93,6 +102,7 @@ export type NetworkRunOptions = {
   env?: NodeJS.ProcessEnv;
   dnsUpstream?: {address: string; port: number};
   additionalUpstreamCa?: string;
+  hostCredentialIpc?: HostCredentialIpcOptions;
   globalIpv6Available?: boolean;
   signal?: AbortSignal;
   timeoutSeconds?: number;
@@ -100,6 +110,7 @@ export type NetworkRunOptions = {
   onStderr?: (data: Buffer) => void;
   onDecisionError?: (error: unknown) => void;
   onNetworkError?: (error: unknown) => void;
+  onIpcError?: (error: unknown) => void;
   authorizeHttpRequest?: HttpRequestAuthorizer;
   decide: (event: NetworkPolicyEvent, signal: AbortSignal) => NetworkDecision | Promise<NetworkDecision>;
 };
@@ -155,7 +166,7 @@ class NetworkSandboxRunner {
   private resolverDestination: string | undefined;
   private nsswitchFile: string | undefined;
   private nsswitchDestination: string | undefined;
-  private clientTrust: ClientTrust | undefined;
+  private workerResources: WorkerRuntimeResource[] = [];
 
   constructor(options: NetworkRunOptions) {
     this.options = options;
@@ -184,6 +195,7 @@ class NetworkSandboxRunner {
     ]);
     try {
       await this.prepareRuntimeFiles();
+      if (this.fatalError) throw this.fatalError;
       this.startOuterProcess(cwd, mediatedHostRoot);
       this.installCancellation();
       const status = await this.waitForBubblewrapStatus();
@@ -227,6 +239,16 @@ class NetworkSandboxRunner {
     this.temporaryDirectory = temporaryDirectory;
     this.resolverFile = path.join(temporaryDirectory, "resolv.conf");
     this.nsswitchFile = path.join(temporaryDirectory, "nsswitch.conf");
+    if (this.options.hostCredentialIpc) {
+      const credentialResources = await prepareHostCredentialIpc({
+        runtimeDirectory: temporaryDirectory,
+        environment: this.options.env ?? process.env,
+        ipc: this.options.hostCredentialIpc,
+        onError: this.options.onIpcError,
+        onFatalError: (error) => this.fail(error),
+      });
+      this.workerResources.push(...credentialResources);
+    }
     const managedTrust = this.tlsCertificateAuthority !== undefined || this.options.additionalUpstreamCa !== undefined;
     const [hostNsswitch, hostResolver, resolverDestination, nsswitchDestination, clientTrust] = await Promise.all([
       readFile("/etc/nsswitch.conf", "utf8"),
@@ -244,7 +266,7 @@ class NetworkSandboxRunner {
     ]);
     this.resolverDestination = resolverDestination;
     this.nsswitchDestination = nsswitchDestination;
-    this.clientTrust = clientTrust;
+    if (clientTrust) this.workerResources.push(clientTrust);
     const hostsEntry = /^\s*hosts\s*:.*$/m;
     const workerNsswitch = hostsEntry.test(hostNsswitch)
       ? hostNsswitch.replace(hostsEntry, "hosts:      files myhostname dns")
@@ -281,14 +303,17 @@ class NetworkSandboxRunner {
     ) {
       throw new Error("network sandbox runtime configuration is not available");
     }
+    const workerMounts: WorkerBindMount[] = [
+      {source: this.resolverFile, destination: this.resolverDestination, readOnly: true},
+      {source: this.nsswitchFile, destination: this.nsswitchDestination, readOnly: true},
+      ...this.workerResources.flatMap((resource) => resource.mounts()),
+    ];
     const bwrapArguments = [
       "--unshare-net",
       "--unshare-pid",
       "--bind", mediatedHostRoot, "/",
       "--proc", "/proc",
-      "--ro-bind", this.resolverFile, this.resolverDestination,
-      "--ro-bind", this.nsswitchFile, this.nsswitchDestination,
-      ...(this.clientTrust?.bubblewrapArguments() ?? []),
+      ...workerBindMountArguments(workerMounts),
       "--dev-bind", "/dev", "/dev",
       "--cap-drop", "ALL",
       "--die-with-parent",
@@ -334,7 +359,7 @@ class NetworkSandboxRunner {
       SSH_ASKPASS: "/bin/false",
       SSH_ASKPASS_REQUIRE: "never",
     };
-    return this.clientTrust?.environment(environment) ?? environment;
+    return applyWorkerResourceEnvironment(environment, this.workerResources);
   }
 
   private async waitForBubblewrapStatus(): Promise<BubblewrapStatus> {
@@ -885,6 +910,8 @@ class NetworkSandboxRunner {
     killProcess(this.tcpIngress);
     killProcess(this.slirp);
     killProcessGroup(this.outerProcess?.pid);
+    const workerResources = this.workerResources;
+    this.workerResources = [];
     await Promise.allSettled([
       settleChild(this.queueHelper),
       settleChild(this.tcpIngress),
@@ -892,6 +919,7 @@ class NetworkSandboxRunner {
       this.outerExit,
       this.dnsProxy?.close(),
       this.tcpBroker.close(),
+      ...workerResources.map((resource) => resource.close?.()),
     ]);
     this.dnsProxy = undefined;
     this.tcpIngress = undefined;
@@ -902,7 +930,6 @@ class NetworkSandboxRunner {
     this.resolverDestination = undefined;
     this.nsswitchFile = undefined;
     this.nsswitchDestination = undefined;
-    this.clientTrust = undefined;
     if (temporaryDirectory) await rm(temporaryDirectory, {recursive: true, force: true});
   }
 

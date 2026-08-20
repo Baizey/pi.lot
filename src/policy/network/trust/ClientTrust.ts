@@ -6,6 +6,8 @@ import {
 } from "./ClientTrustAdapters.js";
 import type {ClientTrustArtifactPaths} from "./ClientTrustAdapters.js";
 import {createJavaTrustStore, JAVA_TRUST_STORE_PASSWORD} from "./JavaTrustStore.js";
+import type {WorkerBindMount, WorkerRuntimeResource} from "../worker/WorkerRuntimeResource.js";
+import {workerBindMountArguments} from "../worker/WorkerRuntimeResource.js";
 
 const SYSTEM_CA_BUNDLE_CANDIDATES = [
     "/etc/ssl/certs/ca-certificates.crt",
@@ -23,7 +25,7 @@ export type ClientTrustOptions = {
     interceptionCa?: string;
 };
 
-export class ClientTrust {
+export class ClientTrust implements WorkerRuntimeResource {
     readonly combinedPemFile: string;
     readonly javaPkcs12File: string;
     readonly javaTrustStoreAliases: readonly string[];
@@ -64,14 +66,20 @@ export class ClientTrust {
         return applyClientTrustAdapters(base, this.artifacts());
     }
 
-    bubblewrapArguments(): string[] {
+    mounts(): readonly WorkerBindMount[] {
         return [
-            "--ro-bind", this.combinedPemFile, this.combinedPemFile,
-            "--ro-bind", this.javaPkcs12File, this.javaPkcs12File,
-            ...this.systemCaBundleDestinations.flatMap((destination) => [
-                "--ro-bind", this.combinedPemFile, destination,
-            ]),
+            {source: this.combinedPemFile, destination: this.combinedPemFile, readOnly: true},
+            {source: this.javaPkcs12File, destination: this.javaPkcs12File, readOnly: true},
+            ...this.systemCaBundleDestinations.map((destination) => ({
+                source: this.combinedPemFile,
+                destination,
+                readOnly: true,
+            })),
         ];
+    }
+
+    bubblewrapArguments(): string[] {
+        return workerBindMountArguments(this.mounts());
     }
 
     private artifacts(): ClientTrustArtifactPaths {

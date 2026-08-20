@@ -15,15 +15,27 @@ import {PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse
 test("one sandbox mediates the complete host filesystem and outbound network", async () => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pilot-combined-sandbox-"));
     const deniedFile = path.join(workspace, "blocked.txt");
+    const socketPath = path.join(workspace, "host-agent.sock");
     const server = createServer((socket) => {
         socket.once("data", () => {
             socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
         });
     });
-    await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", resolve);
+    const agentServer = createServer((socket) => {
+        socket.once("data", () => {
+            socket.end("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nAGENT");
+        });
     });
+    await Promise.all([
+        new Promise<void>((resolve, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", resolve);
+        }),
+        new Promise<void>((resolve, reject) => {
+            agentServer.once("error", reject);
+            agentServer.listen(socketPath, resolve);
+        }),
+    ]);
     const address = server.address();
     assert.ok(address && typeof address === "object");
 
@@ -62,10 +74,15 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
                     "for descriptor in /proc/$$/fd/*; do if [ \"$(readlink \"$descriptor\")\" = /dev/fuse ]; then echo LEAKED_FUSE_FD; exit 91; fi; done",
                     `printf blocked > ${shellQuote(deniedFile)}`,
                     `curl --noproxy '*' --silent http://10.0.2.2:${address.port}`,
+                    "curl --unix-socket \"$SSH_AUTH_SOCK\" --silent http://localhost",
                 ].join("; "),
             ],
             cwd,
             mediatedHostRoot,
+            env: {...process.env, SSH_AUTH_SOCK: socketPath},
+            hostCredentialIpc: {
+                unixSockets: [{id: "test-agent", environment: "SSH_AUTH_SOCK"}],
+            },
             timeoutSeconds: 15,
             onStdout: (data) => output.push(data),
             onStderr: (data) => output.push(data),
@@ -77,12 +94,16 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
         assert.equal(existsSync(deniedFile), false);
         assert.match(Buffer.concat(output).toString(), /ACCESS DENIED/);
         assert.match(Buffer.concat(output).toString(), /OK/);
+        assert.match(Buffer.concat(output).toString(), /AGENT/);
         assert.doesNotMatch(Buffer.concat(output).toString(), /LEAKED_FUSE_FD/);
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.FS_WRITE), true);
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.TCP_ACCESS), true);
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.HTTP_GET), true);
     } finally {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await Promise.all([
+            new Promise<void>((resolve) => server.close(() => resolve())),
+            new Promise<void>((resolve) => agentServer.close(() => resolve())),
+        ]);
         rmSync(workspace, {recursive: true, force: true});
     }
 });

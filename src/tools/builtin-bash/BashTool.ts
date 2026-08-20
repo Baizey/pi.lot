@@ -13,6 +13,7 @@ import {runNetworkSandboxedCommand} from "../../policy/network/NetworkSandbox.js
 import {DEFAULT_NETWORK_POLICY_GRANULARITY, NetworkDecisionCoordinator} from "../../policy/network/NetworkPolicy.js";
 import {NetworkPolicyAuthorizer} from "../../policy/network/NetworkPolicyAuthorizer.js";
 import {NetworkDecision} from "../../policy/network/network-queue-protocol.js";
+import type {HostCredentialIpcOptions} from "../../policy/network/ipc/HostCredentialIpc.js";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
@@ -118,7 +119,11 @@ export class BashTool {
                 const runtime = this.runtimeProvider();
                 const policy = runtime.policyRuntime.beginToolCall();
                 const sandboxedBash = createBashTool(ctx.cwd, {
-                    operations: this.createOperations(policy, runtime.fullNetworkInspection),
+                    operations: this.createOperations(
+                        policy,
+                        runtime.fullNetworkInspection,
+                        runtime.hostCredentialIpc,
+                    ),
                 });
                 return sandboxedBash.execute(id, params, signal, onUpdate);
             },
@@ -134,6 +139,7 @@ export class BashTool {
     private createOperations(
         policy: ToolCallPathPolicyEvaluator,
         fullNetworkInspection: boolean,
+        hostCredentialIpc?: HostCredentialIpcOptions,
     ): BashOperations {
         return {
             exec: async (command, cwd, {onData, signal, timeout, env}) => {
@@ -162,6 +168,7 @@ export class BashTool {
                     cwd: resolvedCwd,
                     mediatedHostRoot,
                     env,
+                    hostCredentialIpc,
                     signal,
                     timeoutSeconds: timeout,
                     onStdout: onData,
@@ -174,6 +181,11 @@ export class BashTool {
                     onNetworkError: (error) => {
                         onData(Buffer.from(
                             `[pi.lot:network] error=${JSON.stringify(this.errorMessage(error))}\n`,
+                        ));
+                    },
+                    onIpcError: (error) => {
+                        onData(Buffer.from(
+                            `[pi.lot:ipc] error=${JSON.stringify(this.errorMessage(error))}\n`,
                         ));
                     },
                     decide: (event, decisionSignal) => decisions.decide(event, decisionSignal),

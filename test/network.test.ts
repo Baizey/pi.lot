@@ -142,12 +142,16 @@ test("the network worker preserves host access, has no gate capabilities, and de
           `if [ -e /proc/${process.pid} ]; then exit 92; fi`,
           "grep '^CapEff:' /proc/self/status",
           "grep '^hosts:' /etc/nsswitch.conf",
-          `curl --unix-socket ${shellQuote(socketPath)} --silent http://localhost`,
+          "curl --unix-socket \"$SSH_AUTH_SOCK\" --silent http://localhost",
           `printf x > /dev/udp/10.0.2.2/${udpAddress.port} || true`,
         ].join("; "),
       ],
       cwd: workspace,
-      timeoutSeconds: 10,
+      env: {...process.env, SSH_AUTH_SOCK: socketPath},
+      hostCredentialIpc: {
+        unixSockets: [{id: "test-agent", environment: "SSH_AUTH_SOCK"}],
+      },
+      timeoutSeconds: 20,
       onStdout(data) {
         output += data.toString();
       },

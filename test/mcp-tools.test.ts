@@ -3,7 +3,7 @@ import {mkdtempSync, rmSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type {ExtensionAPI, ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI, ExtensionContext, Theme, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {McpManager} from "../src/mcp/client.js";
 import {McpConfigStore, sanitizeMcpConfig} from "../src/mcp/config.js";
 import {
@@ -83,6 +83,48 @@ test("exposed MCP tools register once and re-check exposure when called", async 
         assert.equal(second.registered.length, 0);
         assert.equal(registered.length, 1);
         assert.deepEqual(registry.registeredToolDefinitions().map((tool) => tool.name), ["mcp_demo_echo"]);
+        const tool = registered[0]!;
+        assert.ok(tool.renderCall && tool.renderResult);
+        const theme = plainTheme();
+        const longArgs = {value: numberedLines(10)};
+        assert.deepEqual(
+            tool.renderCall(longArgs, theme, renderContext(longArgs)).render(120),
+            ["mcp_demo_echo"],
+        );
+        assert.equal(
+            tool.renderCall(longArgs, theme, renderContext(longArgs, {}, true)).render(120).at(-1),
+            "    ... (2 more lines)",
+        );
+        assert.equal(
+            tool.renderCall(
+                longArgs,
+                theme,
+                renderContext(longArgs, {pilotFullDisplay: true}),
+            ).render(120).at(-1),
+            "    line 10",
+        );
+        const longResult = {
+            content: [{type: "text" as const, text: numberedLines(10)}],
+            details: undefined,
+        };
+        assert.deepEqual(
+            tool.renderResult(
+                longResult,
+                {expanded: false, isPartial: false},
+                theme,
+                renderContext(longArgs),
+            ).render(120),
+            [],
+        );
+        assert.deepEqual(
+            tool.renderResult(
+                longResult,
+                {expanded: true, isPartial: false},
+                theme,
+                renderContext(longArgs, {}, true),
+            ).render(120),
+            ["", "... (5 earlier lines)", "line 6", "line 7", "line 8", "line 9", "line 10"],
+        );
 
         const updates: unknown[] = [];
         const result = await registered[0]!.execute(
@@ -108,3 +150,34 @@ test("exposed MCP tools register once and re-check exposure when called", async 
         rmSync(directory, {recursive: true, force: true});
     }
 });
+
+function plainTheme(): Theme {
+    return {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+    } as unknown as Theme;
+}
+
+function renderContext(
+    args: unknown,
+    state: Record<string, unknown> = {},
+    expanded = false,
+): any {
+    return {
+        args,
+        state,
+        toolCallId: "mcp-test-call",
+        cwd: process.cwd(),
+        invalidate() {},
+        executionStarted: true,
+        argsComplete: true,
+        isPartial: false,
+        expanded,
+        showImages: false,
+        isError: false,
+    };
+}
+
+function numberedLines(count: number): string {
+    return Array.from({length: count}, (_, index) => `line ${index + 1}`).join("\n");
+}

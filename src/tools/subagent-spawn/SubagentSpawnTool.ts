@@ -16,6 +16,15 @@ import {
     objectSchema,
     stringSchema,
 } from "../types";
+import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
+import {
+    ToolArgumentLayout,
+    ToolArgumentPlacement,
+    ToolTextDirection,
+} from "../../tui/tool/ToolPresentation.js";
+import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
+import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
+import {ThemeColor} from "../../tui/Color.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 900;
 
@@ -32,6 +41,46 @@ type SpawnToolInput = {
 };
 
 type CoordinatorProvider = () => SubagentCoordinator;
+
+const SPAWN_PRESENTATION = {
+    toolName: "subagent_spawn",
+    arguments: [
+        {
+            key: "role",
+            placement: ToolArgumentPlacement.TITLE_PRIMARY,
+            color: ThemeColor.text,
+        },
+        {
+            key: "mode",
+            placement: ToolArgumentPlacement.TITLE_SECONDARY,
+            format: (value) => ` (${String(value)})`,
+        },
+        {
+            key: "toolkits",
+            format: (value) => Array.isArray(value) && value.length > 0 ? value.join(", ") : "(none)",
+        },
+        {key: "cwd"},
+        {key: "timeoutSeconds", label: "timeout", format: (value) => `${String(value)}s`},
+        {key: "model"},
+        {
+            key: "task",
+            layout: ToolArgumentLayout.BLOCK,
+            color: ThemeColor.text,
+        },
+        {
+            key: "systemPrompt",
+            label: "system prompt",
+            layout: ToolArgumentLayout.BLOCK,
+        },
+        {
+            key: "contextPaths",
+            label: "context paths",
+            layout: ToolArgumentLayout.BLOCK,
+            format: (value) => Array.isArray(value) ? value.join("\n") : String(value),
+        },
+    ],
+    result: {direction: ToolTextDirection.TAIL, previewLines: 8},
+} satisfies ToolPresentationSpec<SpawnToolInput>;
 
 export class SubagentSpawnTool {
     private readonly definition: ToolDefinition<any, any>;
@@ -56,6 +105,7 @@ export class SubagentSpawnTool {
 }
 
 function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any, SubagentToolDetails> {
+    const presentation = new ToolPresentationRenderer(SPAWN_PRESENTATION);
     return {
         name: "subagent_spawn",
         label: "Spawn subagent",
@@ -92,6 +142,17 @@ function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any,
                 : undefined);
             return subagentToolResult([result.job]);
         },
+        renderCall: (args, theme, context) => presentation.renderCall(
+            args as SpawnToolInput,
+            theme,
+            resolveToolDisplayMode(context.expanded, context.state),
+        ),
+        renderResult: (result, options, theme, context) => presentation.renderResult(
+            result,
+            theme,
+            {isError: context.isError},
+            resolveToolDisplayMode(options.expanded, context.state),
+        ),
     };
 }
 

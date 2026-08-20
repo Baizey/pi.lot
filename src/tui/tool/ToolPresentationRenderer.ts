@@ -6,22 +6,18 @@ import {
 import {ThemeColor} from "../Color.js";
 import {renderLineFactory} from "../terminalText.js";
 import type {TextComponent} from "../terminalText.js";
-import {
-    TOOL_EXPANDED_KEY_TEXT,
-    ToolDisplayMode,
-} from "./ToolDisplayController.js";
-import type {ToolDisplayModeSource} from "./ToolDisplayController.js";
-import {
-    ToolArgumentLayout,
-    ToolArgumentPlacement,
-    ToolTextDirection,
-} from "./ToolPresentation.js";
 import type {
     ToolArgumentPresentation,
     ToolPresentationSpec,
     ToolResultLike,
     ToolResultPresentation,
 } from "./ToolPresentation.js";
+import {
+    ToolArgumentLayout,
+    ToolArgumentPlacement,
+    ToolTextDirection,
+} from "./ToolPresentation.js";
+import {ToolDisplayMode} from "./ToolDisplayMode.js";
 
 const DEFAULT_ARGUMENT_PREVIEW_LINES = 8;
 const DEFAULT_RESULT_PREVIEW_LINES = 5;
@@ -51,7 +47,6 @@ export class ToolPresentationRenderer<TArgs extends object> {
 
     constructor(
         private readonly presentation: ToolPresentationSpec<TArgs>,
-        private readonly displayMode: ToolDisplayModeSource,
     ) {
         this.validatePresentation();
         for (const argument of presentation.arguments) {
@@ -62,22 +57,22 @@ export class ToolPresentationRenderer<TArgs extends object> {
         }
     }
 
-    renderCall(args: Partial<TArgs> | undefined, theme: Theme): TextComponent {
+    renderCall(args: Partial<TArgs> | undefined, theme: Theme, mode: ToolDisplayMode): TextComponent {
         const normalizedArgs = (args ?? {}) as Partial<TArgs>;
-        return renderLineFactory(() => this.toolCallLines(normalizedArgs, theme));
+        return renderLineFactory(() => this.toolCallLines(normalizedArgs, theme, mode));
     }
 
     renderResult(
         result: ToolResultLike,
         theme: Theme,
-        options: ToolResultRenderOptions = {},
+        options: ToolResultRenderOptions,
+        mode: ToolDisplayMode,
     ): TextComponent {
-        return renderLineFactory(() => this.toolResultLines(result, theme, options));
+        return renderLineFactory(() => this.toolResultLines(result, theme, options, mode));
     }
 
-    private toolCallLines(args: Partial<TArgs>, theme: Theme): string[] {
+    private toolCallLines(args: Partial<TArgs>, theme: Theme, mode: ToolDisplayMode): string[] {
         const resolved = this.resolveArguments(args);
-        const mode = this.displayMode.currentMode();
         const lines = mode === ToolDisplayMode.MINIMAL
             ? this.minimalCallLines(resolved, args, theme)
             : this.regularCallLines(resolved, args, theme, mode);
@@ -124,14 +119,15 @@ export class ToolPresentationRenderer<TArgs extends object> {
         result: ToolResultLike,
         theme: Theme,
         options: ToolResultRenderOptions,
+        mode: ToolDisplayMode,
     ): string[] {
-        if (this.displayMode.currentMode() === ToolDisplayMode.MINIMAL) return [];
+        if (mode === ToolDisplayMode.MINIMAL) return [];
 
         const text = collectResultText(result);
         if (!text) return [];
         const resultPresentation = this.presentation.result ?? {};
         const rows = selectTextRows(text, {
-            mode: this.displayMode.currentMode(),
+            mode,
             direction: resultPresentation.direction ?? ToolTextDirection.TAIL,
             previewLines: resultPresentation.previewLines ?? DEFAULT_RESULT_PREVIEW_LINES,
             maxCharacters: resultPresentation.maxCharacters ?? DEFAULT_MAX_BYTES,
@@ -379,7 +375,7 @@ function collectResultText(result: ToolResultLike): string {
 }
 
 function inferredLayout(value: unknown): ToolArgumentLayout {
-    if (typeof value === "string" && /\r|\n/.test(value)) return ToolArgumentLayout.BLOCK;
+    if (typeof value === "string" && /[\r\n]/.test(value)) return ToolArgumentLayout.BLOCK;
     if (value !== null && typeof value === "object") return ToolArgumentLayout.BLOCK;
     return ToolArgumentLayout.INLINE;
 }
@@ -413,9 +409,7 @@ function bigintJsonValue(_key: string, value: unknown): unknown {
 function foldNotice(omitted: number, direction: ToolTextDirection, theme: Theme): string {
     const location = direction === ToolTextDirection.TAIL ? "earlier" : "more";
     const count = `${omitted} ${location} ${omitted === 1 ? "line" : "lines"}`;
-    return theme.fg(ThemeColor.muted, `... (${count}, `)
-        + theme.fg(ThemeColor.dim, TOOL_EXPANDED_KEY_TEXT)
-        + theme.fg(ThemeColor.muted, " to expand)");
+    return theme.fg(ThemeColor.muted, `... (${count})`);
 }
 
 function omittedLinesNotice(omitted: number): string {

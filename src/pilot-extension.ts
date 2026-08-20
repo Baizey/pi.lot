@@ -4,7 +4,6 @@ import {BashTool} from "./tools/builtin-bash/BashTool.js";
 import {EditTool} from "./tools/builtin-edit/EditTool.js";
 import {ReadTool} from "./tools/builtin-read/ReadTool.js";
 import {WriteTool} from "./tools/builtin-write/WriteTool.js";
-import {TOOL_MINIMAL_KEY_TEXT} from "./tui/tool/ToolDisplayController.js";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
@@ -39,7 +38,6 @@ export class PilotExtension {
     private readonly subagentMessageTool: SubagentMessageTool;
     private readonly subagentStopTool: SubagentStopTool;
     private sessionRuntime: PilotSessionRuntimeInterface | undefined;
-    private lastToolDisplay: PilotSessionRuntimeInterface["toolDisplay"] | undefined;
     private registered = false;
 
     constructor(
@@ -48,8 +46,7 @@ export class PilotExtension {
     ) {
         this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
         const runtimeProvider = () => this.requireSessionRuntime();
-        const toolDisplayProvider = () => this.requireToolDisplay();
-        this.bashTool = new BashTool(pi, runtimeProvider, toolDisplayProvider);
+        this.bashTool = new BashTool(pi, runtimeProvider);
         this.mcpExtension = (options.createMcpExtension ?? ((extensionApi) => new McpExtension(extensionApi)))(pi);
         const coordinator = () => this.subagentRuntime.coordinator();
         this.subagentSpawnTool = new SubagentSpawnTool(pi, coordinator);
@@ -72,11 +69,10 @@ export class PilotExtension {
         this.registered = true;
 
         const runtimeProvider = () => this.requireSessionRuntime();
-        const toolDisplayProvider = () => this.requireToolDisplay();
         this.bashTool.register();
-        new ReadTool(this.pi, runtimeProvider, toolDisplayProvider).register();
-        new EditTool(this.pi, runtimeProvider, toolDisplayProvider).register();
-        new WriteTool(this.pi, runtimeProvider, toolDisplayProvider).register();
+        new ReadTool(this.pi, runtimeProvider).register();
+        new EditTool(this.pi, runtimeProvider).register();
+        new WriteTool(this.pi, runtimeProvider).register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         this.mcpExtension.register();
@@ -85,12 +81,6 @@ export class PilotExtension {
         this.subagentMessageTool.register();
         this.subagentStopTool.register();
 
-        this.pi.registerShortcut(TOOL_MINIMAL_KEY_TEXT, {
-            description: "Toggle minimal tool display",
-            handler: () => {
-                this.requireSessionRuntime().toolDisplay.toggleMinimal();
-            },
-        });
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
         this.pi.on("session_shutdown", () => this.stopSession());
     }
@@ -100,7 +90,6 @@ export class PilotExtension {
 
         const runtime = this.createSessionRuntime(ctx);
         this.sessionRuntime = runtime;
-        this.lastToolDisplay = runtime.toolDisplay;
         return this.startOwnedExtensions(ctx).catch(async (error) => {
             this.sessionRuntime = undefined;
             await this.stopOwnedExtensions().catch(() => undefined);
@@ -111,8 +100,6 @@ export class PilotExtension {
 
     private stopSession(): Promise<void> {
         const runtime = this.sessionRuntime;
-        // Keep the display controller reachable after teardown because Pi may render stale tool
-        // components until it replaces the transcript during /new, /resume, /fork, or /reload.
         return this.stopOwnedExtensions().finally(() => {
             if (this.sessionRuntime === runtime) this.sessionRuntime = undefined;
             runtime?.close();
@@ -151,11 +138,5 @@ export class PilotExtension {
     private requireSessionRuntime(): PilotSessionRuntimeInterface {
         if (!this.sessionRuntime) throw new Error("pi.lot session runtime is not available");
         return this.sessionRuntime;
-    }
-
-    private requireToolDisplay(): PilotSessionRuntimeInterface["toolDisplay"] {
-        const toolDisplay = this.sessionRuntime?.toolDisplay ?? this.lastToolDisplay;
-        if (!toolDisplay) throw new Error("pi.lot tool display is not available");
-        return toolDisplay;
     }
 }

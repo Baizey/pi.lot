@@ -5,9 +5,35 @@ import {
     subagentToolResult,
 } from "../../subagents/SubagentToolResult";
 import {objectSchema, stringSchema} from "../types";
+import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
+import {
+    ToolArgumentLayout,
+    ToolArgumentPlacement,
+    ToolTextDirection,
+} from "../../tui/tool/ToolPresentation.js";
+import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
+import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
+import {ThemeColor} from "../../tui/Color.js";
 
 type MessageToolInput = {jobId: string; task: string};
 type CoordinatorProvider = () => SubagentCoordinator;
+
+const MESSAGE_PRESENTATION = {
+    toolName: "subagent_message",
+    arguments: [
+        {
+            key: "jobId",
+            placement: ToolArgumentPlacement.TITLE_PRIMARY,
+            color: ThemeColor.text,
+        },
+        {
+            key: "task",
+            layout: ToolArgumentLayout.BLOCK,
+            color: ThemeColor.text,
+        },
+    ],
+    result: {direction: ToolTextDirection.TAIL, previewLines: 8},
+} satisfies ToolPresentationSpec<MessageToolInput>;
 
 export class SubagentMessageTool {
     private readonly definition: ToolDefinition<any, any>;
@@ -32,6 +58,7 @@ export class SubagentMessageTool {
 }
 
 function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any, SubagentToolDetails> {
+    const presentation = new ToolPresentationRenderer(MESSAGE_PRESENTATION);
     return {
         name: "subagent_message",
         label: "Message subagent",
@@ -44,5 +71,16 @@ function createDefinition(coordinator: CoordinatorProvider): ToolDefinition<any,
             const input = params as MessageToolInput;
             return subagentToolResult([coordinator().message(input.jobId, input.task)]);
         },
+        renderCall: (args, theme, context) => presentation.renderCall(
+            args as MessageToolInput,
+            theme,
+            resolveToolDisplayMode(context.expanded, context.state),
+        ),
+        renderResult: (result, options, theme, context) => presentation.renderResult(
+            result,
+            theme,
+            {isError: context.isError},
+            resolveToolDisplayMode(options.expanded, context.state),
+        ),
     };
 }

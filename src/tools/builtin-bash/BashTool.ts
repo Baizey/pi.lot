@@ -5,7 +5,7 @@ import {FuseDecision} from "../../policy/path/fuse/FuseFilesystem.js";
 import {FusePathPolicyAuthorizer} from "../../policy/path/fuse/FusePathPolicyAuthorizer.js";
 import type {ToolCallPathPolicyEvaluator} from "../../policy/PolicyRuntime";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
-import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection,} from "../../tui/tool/ToolPresentation.js";
+import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
@@ -14,6 +14,7 @@ import {DEFAULT_NETWORK_POLICY_GRANULARITY, NetworkDecisionCoordinator} from "..
 import {NetworkPolicyAuthorizer} from "../../policy/network/NetworkPolicyAuthorizer.js";
 import {NetworkDecision} from "../../policy/network/network-queue-protocol.js";
 import type {HostCredentialIpcOptions} from "../../policy/network/ipc/HostCredentialIpc.js";
+import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
@@ -42,7 +43,7 @@ const BASH_PRESENTATION = {
             key: "command",
             layout: ToolArgumentLayout.BLOCK,
             direction: ToolTextDirection.HEAD,
-            color: ThemeColor.text
+            color: ThemeColor.text,
         },
     ],
     result: {
@@ -57,7 +58,6 @@ export class BashTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
-        private readonly toolDisplayProvider: () => PilotSessionRuntimeInterface["toolDisplay"],
     ) {
     }
 
@@ -97,24 +97,12 @@ export class BashTool {
             required: [...bashDefinition.parameters.required, "purpose"] satisfies Required,
         };
 
-        const renderer = new ToolPresentationRenderer(BASH_PRESENTATION, {
-            currentMode: () => this.toolDisplayProvider().currentMode(),
-        });
-
+        const presentation = new ToolPresentationRenderer(BASH_PRESENTATION);
         const definition = {
             ...bashDefinition,
             description: `${bashDefinition.description} Include a concise, one-line purpose for the command.`,
             parameters,
             prepareArguments: undefined,
-
-            renderCall: (args, theme, context) => {
-                this.toolDisplayProvider().synchronizeExpanded(context.expanded);
-                return renderer.renderCall(args, theme);
-            },
-
-            renderResult: (result, _options, theme, context) =>
-                renderer.renderResult(result, theme, {isError: context.isError}),
-
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
                 const policy = runtime.policyRuntime.beginToolCall();
@@ -128,12 +116,25 @@ export class BashTool {
                 return sandboxedBash.execute(id, params, signal, onUpdate);
             },
 
+            renderCall: (args, theme, context) => presentation.renderCall(
+                args,
+                theme,
+                resolveToolDisplayMode(context.expanded, context.state),
+            ),
+
+            renderResult: (result, options, theme, context) => presentation.renderResult(
+                result,
+                theme,
+                {isError: context.isError},
+                resolveToolDisplayMode(options.expanded, context.state),
+            ),
+
         } as const satisfies ToolDefinition<typeof parameters, any>;
 
         const untyped = definition as any as ToolDefinition<typeof parameters, any>;
 
-        this.definition = untyped
-        return untyped
+        this.definition = untyped;
+        return untyped;
     }
 
     private createOperations(

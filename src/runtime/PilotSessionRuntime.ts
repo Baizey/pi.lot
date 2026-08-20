@@ -4,7 +4,6 @@ import {PolicyDao} from "../storage/PolicyDao";
 import {SqliteDatabase} from "../storage/sqlite.js";
 import {UiDecisionFlowManager} from "../tui/UiDecisionFlowManager.js";
 import {UiDecisionFlowQueue} from "../tui/UiDecisionFlowQueue.js";
-import {ToolDisplayController} from "../tui/tool/ToolDisplayController.js";
 import {PolicyDecisionFlow} from "../policy/PolicyDecisionFlow";
 import {PolicyDefaultJsonStorage, PolicyDefaultJsonStorageInterface} from "../policy/defaults";
 import type {HostCredentialIpcOptions} from "../policy/network/ipc/HostCredentialIpc.js";
@@ -22,7 +21,6 @@ export type PilotSessionRuntimeOptions = {
 export type PilotSessionRuntimeInterface = {
     readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
-    readonly toolDisplay: ToolDisplayController;
     readonly fullNetworkInspection: boolean;
     readonly hostCredentialIpc?: HostCredentialIpcOptions;
     setFullNetworkInspection(enabled: boolean): void;
@@ -32,7 +30,6 @@ export type PilotSessionRuntimeInterface = {
 export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
     readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
-    readonly toolDisplay: ToolDisplayController;
     readonly hostCredentialIpc: HostCredentialIpcOptions;
 
     private readonly decisionFlowQueue: UiDecisionFlowQueue;
@@ -52,7 +49,6 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             const defaultsStore = options.policyDefaultsStore ?? new PolicyDefaultJsonStorage();
             this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow, defaultsStore);
             this.decisionFlows = uiManager;
-            this.toolDisplay = new ToolDisplayController(ctx);
             this.hostCredentialIpc = (
                 options.credentialIpcConfigStore ?? new HostCredentialIpcConfigStore()
             ).load(process.env);

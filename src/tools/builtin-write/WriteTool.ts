@@ -5,12 +5,12 @@ import {
     type WriteToolInput,
 } from "@earendil-works/pi-coding-agent";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
-import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection,} from "../../tui/tool/ToolPresentation.js";
-import {ToolDisplayMode} from "../../tui/tool/ToolDisplayController.js";
+import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../../tui/Color.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
+import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 
 const WRITE_PRESENTATION = {
     toolName: "write",
@@ -34,12 +34,11 @@ export class WriteTool {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
-        private readonly toolDisplayProvider: () => PilotSessionRuntimeInterface["toolDisplay"],
     ) {
     }
 
     register(): void {
-        const runtimeProvider = this.runtimeProvider
+        const runtimeProvider = this.runtimeProvider;
         if (this.registered) throw new Error("Write tool is already registered");
         this.registered = true;
 
@@ -49,69 +48,35 @@ export class WriteTool {
         }
         const nativeRenderCall = definition.renderCall;
         const nativeRenderResult = definition.renderResult;
-        const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION, {
-            currentMode: () => this.toolDisplayProvider().currentMode(),
-        });
-
+        const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION);
         this.pi.registerTool({
             ...definition,
             async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<undefined>> {
-                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_WRITE, signal)
+                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_WRITE, signal);
                 if (result.matchedStatus === PolicyResponse.DENIED) {
-                    throw new Error(result.toDenyMessage())
+                    throw new Error(result.toDenyMessage());
                 }
-                return await definition.execute(toolCallId, params, signal, onUpdate, ctx)
+                return await definition.execute(toolCallId, params, signal, onUpdate, ctx);
             },
+
             renderCall: (args, theme, context) => {
-                const mode = this.synchronizeMode(context.expanded);
-                const component = nativeRenderCall(args, theme, context);
-                if (mode === ToolDisplayMode.MINIMAL) {
-                    this.setText(
-                        component,
-                        presentation.renderCall(args, theme).render(Number.POSITIVE_INFINITY).join("\n"),
-                    );
-                }
-                return component;
+                const mode = resolveToolDisplayMode(context.expanded, context.state);
+                return mode === ToolDisplayMode.FULL
+                    ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})
+                    : presentation.renderCall(args, theme, mode);
             },
+
             renderResult: (result, options, theme, context) => {
-                const mode = this.synchronizeMode(context.expanded);
-                const lastComponent = context.isError
-                    ? this.hasMethod(context.lastComponent, "setText") ? context.lastComponent : undefined
-                    : this.hasMethod(context.lastComponent, "clear") ? context.lastComponent : undefined;
-                const component = nativeRenderResult(result, options, theme, {
-                    ...context,
-                    lastComponent,
-                });
-                if (mode === ToolDisplayMode.MINIMAL) this.clearResult(component);
-                return component;
+                const mode = resolveToolDisplayMode(options.expanded, context.state);
+                return mode === ToolDisplayMode.FULL
+                    ? nativeRenderResult(
+                        result,
+                        {...options, expanded: true},
+                        theme,
+                        {...context, expanded: true, lastComponent: undefined},
+                    )
+                    : presentation.renderResult(result, theme, {isError: context.isError}, mode);
             },
         });
-    }
-
-    private synchronizeMode(expanded: boolean): ToolDisplayMode {
-        return this.toolDisplayProvider().synchronizeExpanded(expanded);
-    }
-
-    private clearResult(component: unknown): void {
-        if (this.hasMethod(component, "setText")) {
-            (component as { setText(value: string): void }).setText("");
-            return;
-        }
-        if (this.hasMethod(component, "clear")) {
-            (component as { clear(): void }).clear();
-            return;
-        }
-        throw new Error("Pi's Write result renderer returned an unsupported component");
-    }
-
-    private setText(component: unknown, text: string): void {
-        if (!this.hasMethod(component, "setText")) {
-            throw new Error("Pi's Write call renderer did not return a mutable text component");
-        }
-        (component as { setText(value: string): void }).setText(text);
-    }
-
-    private hasMethod(value: unknown, key: string): boolean {
-        return Boolean(value && typeof (value as Record<string, unknown>)[key] === "function");
     }
 }

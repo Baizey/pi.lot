@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {initTheme} from "@earendil-works/pi-coding-agent";
 import type {
     ExtensionAPI,
     ExtensionContext,
@@ -8,12 +7,12 @@ import type {
     SessionStartEvent,
     Theme,
 } from "@earendil-works/pi-coding-agent";
+import {initTheme} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import {PolicyDaoInterface} from "../src/storage/PolicyDao";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
-import {ToolDisplayController} from "../src/tui/tool/ToolDisplayController.js";
 import {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime";
 import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue";
 
@@ -33,8 +32,10 @@ function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
         {
             initializeSchema: () => undefined,
             loadPolicies: () => [],
-            upsertPolicies() {},
-            deletePolicy() {},
+            upsertPolicies() {
+            },
+            deletePolicy() {
+            },
         } satisfies PolicyDaoInterface,
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
@@ -78,16 +79,16 @@ type RegisteredTool = {
     ) => RenderComponent;
     renderResult?: (
         result: {
-            content: Array<{type: string; text?: string}>;
+            content: Array<{ type: string; text?: string }>;
             details?: Record<string, unknown>;
         },
-        options: {expanded: boolean; isPartial: boolean},
+        options: { expanded: boolean; isPartial: boolean },
         theme: Theme,
         context: RegisteredToolRenderContext,
     ) => RenderComponent;
     execute: (
         id: string,
-        params: {command: string; purpose: string; timeout?: number},
+        params: { command: string; purpose: string; timeout?: number },
         signal: AbortSignal | undefined,
         onUpdate: undefined,
         ctx: ExtensionContext,
@@ -98,7 +99,7 @@ type ExtensionHarness = {
     pi: ExtensionAPI;
     registeredTools: RegisteredTool[];
     registeredToolNames: string[];
-    shortcut: (key: string) => ShortcutHandler;
+    hasShortcut: (key: string) => boolean;
     sessionStart: () => SessionStartHandler;
     sessionShutdown: () => SessionShutdownHandler;
 };
@@ -134,23 +135,18 @@ test("the production extension installs built-in overrides immediately but defer
         ),
         /session runtime is not available/,
     );
-    assert.equal(typeof harness.shortcut("alt+o"), "function");
+    assert.equal(harness.hasShortcut("alt+o"), false);
     assert.equal(typeof harness.sessionStart(), "function");
     assert.equal(typeof harness.sessionShutdown(), "function");
 });
 
-test("Alt+O toggles the production Bash renderer through the session runtime", async () => {
+test("Pi's expanded state switches Bash between minimal and truncated while row state reserves full", async () => {
     const harness = extensionHarness();
-    const expandedStates: boolean[] = [];
     const ctx = {
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {
-            setToolsExpanded(expanded: boolean) {
-                expandedStates.push(expanded);
-            },
-        },
+        ui: {setToolsExpanded() {}},
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -161,11 +157,9 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
         createMcpExtension: createNoopMcpExtension,
         createSubagentRuntime: createNoopSubagentRuntime,
         createSessionRuntime(runtimeContext) {
-            const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                toolDisplay,
                 fullNetworkInspection: true,
                 setFullNetworkInspection() {},
                 close() {},
@@ -175,35 +169,61 @@ test("Alt+O toggles the production Bash renderer through the session runtime", a
     await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
 
     const bashTool = registeredTool(harness, "bash");
-    assert.ok(bashTool?.renderCall);
-    assert.ok(bashTool.renderResult);
+    assert.ok(bashTool.renderCall && bashTool.renderResult);
     const args = {
-        purpose: "Verify live display controls",
+        purpose: "Verify native display controls",
         command: Array.from({length: 10}, (_, index) => `echo ${index + 1}`).join("\n"),
     };
-    const call = bashTool.renderCall(args, theme, {expanded: false, isError: false});
-    const result = bashTool.renderResult(
-        {content: [{type: "text", text: "one\ntwo\nthree\nfour\nfive\nsix"}]},
-        {expanded: false, isPartial: false},
-        theme,
-        {expanded: false, isError: false},
+    const output = {content: [{type: "text", text: "one\ntwo\nthree\nfour\nfive\nsix"}]};
+
+    assert.deepEqual(
+        bashTool.renderCall(args, theme, {expanded: false, isError: false}).render(120),
+        ["bash | Verify native display controls"],
+    );
+    assert.deepEqual(
+        bashTool.renderResult(
+            output,
+            {expanded: false, isPartial: false},
+            theme,
+            {expanded: false, isError: false},
+        ).render(120),
+        [],
     );
 
-    assert.match(call.render(120).at(-1) ?? "", /2 more lines/);
-    assert.match(result.render(120)[1] ?? "", /1 earlier line/);
-    harness.shortcut("alt+o")(ctx);
-    assert.deepEqual(call.render(120), ["bash | Verify live display controls"]);
-    assert.deepEqual(result.render(120), []);
-    harness.shortcut("alt+o")(ctx);
-    assert.match(call.render(120).at(-1) ?? "", /2 more lines/);
+    const truncatedCall = bashTool.renderCall(
+        args,
+        theme,
+        {expanded: true, isError: false},
+    ).render(120);
+    assert.equal(truncatedCall.length, 10);
+    assert.equal(truncatedCall.at(-1), "    ... (2 more lines)");
+    assert.deepEqual(
+        bashTool.renderResult(
+            output,
+            {expanded: true, isPartial: false},
+            theme,
+            {expanded: true, isError: false},
+        ).render(120),
+        ["", "... (1 earlier line)", "two", "three", "four", "five", "six"],
+    );
 
-    bashTool.renderCall(args, theme, {expanded: true, isError: false});
-    assert.equal(call.render(120).some((line) => line.includes("more lines")), false);
-    harness.shortcut("alt+o")(ctx);
-    assert.deepEqual(call.render(120), ["bash | Verify live display controls"]);
-    harness.shortcut("alt+o")(ctx);
-    assert.equal(call.render(120).some((line) => line.includes("more lines")), false);
-    assert.deepEqual(expandedStates, [false, false, false, false, true]);
+    const fullState = {pilotFullDisplay: true};
+    const fullCall = bashTool.renderCall(
+        args,
+        theme,
+        {expanded: false, isError: false, state: fullState},
+    ).render(120);
+    assert.equal(fullCall.length, 11);
+    assert.equal(fullCall.at(-1), "    echo 10");
+    assert.deepEqual(
+        bashTool.renderResult(
+            output,
+            {expanded: false, isPartial: false},
+            theme,
+            {expanded: false, isError: false, state: fullState},
+        ).render(120),
+        ["", "one", "two", "three", "four", "five", "six"],
+    );
 
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
 });
@@ -214,7 +234,10 @@ test("Bash components remain renderable during and after session shutdown", asyn
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {setToolsExpanded() {}},
+        ui: {
+            setToolsExpanded() {
+            }
+        },
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -228,8 +251,10 @@ test("Bash components remain renderable during and after session shutdown", asyn
 
     new PilotExtension(harness.pi, {
         createMcpExtension: () => ({
-            register() {},
-            async startSession() {},
+            register() {
+            },
+            async startSession() {
+            },
             stopSession: () => mcpStop,
             toolDefinitions: () => [],
         }),
@@ -237,9 +262,9 @@ test("Bash components remain renderable during and after session shutdown", asyn
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                toolDisplay: new ToolDisplayController(runtimeContext),
                 fullNetworkInspection: true,
-                setFullNetworkInspection() {},
+                setFullNetworkInspection() {
+                },
                 close() {
                     runtimeCloses++;
                 },
@@ -253,7 +278,7 @@ test("Bash components remain renderable during and after session shutdown", asyn
     const call = bashTool.renderCall(
         {purpose: "Keep rendering during teardown", command: "echo complete"},
         theme,
-        {expanded: false, isError: false},
+        {expanded: true, isError: false},
     );
     const shutdown = harness.sessionShutdown()({type: "session_shutdown", reason: "reload"}, ctx);
 
@@ -277,14 +302,17 @@ test("Bash components remain renderable during and after session shutdown", asyn
     assert.deepEqual(call.render(120), expectedLines);
 });
 
-test("read, edit, and write preserve native rendering while honoring minimal mode", async () => {
+test("read, edit, and write use minimal/truncated presentation and reserve native rendering for full", async () => {
     initTheme("dark");
     const harness = extensionHarness();
     const ctx = {
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {setToolsExpanded() {}},
+        ui: {
+            setToolsExpanded() {
+            }
+        },
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -300,10 +328,11 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext, queue),
-                toolDisplay: new ToolDisplayController(runtimeContext),
                 fullNetworkInspection: true,
-                setFullNetworkInspection() {},
-                close() {},
+                setFullNetworkInspection() {
+                },
+                close() {
+                },
             } satisfies PilotSessionRuntimeInterface;
         },
     }).register();
@@ -327,24 +356,29 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
             {oldText: "old two", newText: "new two"},
         ],
     };
-    const readState = {};
-    const writeState = {};
-    const editState = {};
-    let readCallContext = toolRenderContext(readArgs, readState);
-    let writeCallContext = toolRenderContext(writeArgs, writeState);
-    let editCallContext = toolRenderContext(editArgs, editState);
+    const readState: Record<string, unknown> = {};
+    const writeState: Record<string, unknown> = {};
+    const editState: Record<string, unknown> = {};
+    let readCallContext = toolRenderContext(readArgs, readState, {expanded: true});
+    let writeCallContext = toolRenderContext(writeArgs, writeState, {expanded: true});
+    let editCallContext = toolRenderContext(editArgs, editState, {expanded: true});
     let readCall = readTool.renderCall(readArgs, theme, readCallContext);
     let writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     let editCall = editTool.renderCall(editArgs, theme, editCallContext);
 
-    assert.equal(readCall.render(120).some((line) => line.includes("notes.data")), true);
-    assert.equal(writeCall.render(120).some((line) => line.includes("alpha")), true);
-    assert.equal(editCall.render(120).some((line) => line.includes("2 replacements")), true);
+    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["read | notes.data:2-3"]);
+    assert.deepEqual(
+        writeCall.render(120).map((line) => line.trimEnd()),
+        ["write | created.data", "    alpha", "    beta"],
+    );
+    assert.deepEqual(
+        editCall.render(120).map((line) => line.trimEnd()),
+        ["edit | changed.data (2 replacements)"],
+    );
 
-    harness.shortcut("alt+o")(ctx);
-    readCallContext = {...readCallContext, lastComponent: readCall};
-    writeCallContext = {...writeCallContext, lastComponent: writeCall};
-    editCallContext = {...editCallContext, lastComponent: editCall};
+    readCallContext = {...readCallContext, expanded: false, lastComponent: readCall};
+    writeCallContext = {...writeCallContext, expanded: false, lastComponent: writeCall};
+    editCallContext = {...editCallContext, expanded: false, lastComponent: editCall};
     readCall = readTool.renderCall(readArgs, theme, readCallContext);
     writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     editCall = editTool.renderCall(editArgs, theme, editCallContext);
@@ -399,8 +433,23 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
         [],
     );
 
-    harness.shortcut("alt+o")(ctx);
-    editCallContext = {...editCallContext, expanded: true, lastComponent: editCall};
+    readState.pilotFullDisplay = true;
+    writeState.pilotFullDisplay = true;
+    editState.pilotFullDisplay = true;
+    readCall = readTool.renderCall(
+        readArgs,
+        theme,
+        {...readCallContext, expanded: false, lastComponent: readCall},
+    );
+    writeCall = writeTool.renderCall(
+        writeArgs,
+        theme,
+        {...writeCallContext, expanded: false, lastComponent: writeCall},
+    );
+    assert.equal(readCall.render(120)[0]?.includes("read |"), false);
+    assert.equal(writeCall.render(120)[0]?.includes("write |"), false);
+
+    editCallContext = {...editCallContext, expanded: false, lastComponent: editCall};
     editCall = editTool.renderCall(editArgs, theme, editCallContext);
     editTool.renderResult(
         {
@@ -411,9 +460,9 @@ test("read, edit, and write preserve native rendering while honoring minimal mod
                 firstChangedLine: 1,
             },
         },
-        {expanded: true, isPartial: false},
+        {expanded: false, isPartial: false},
         theme,
-        toolRenderContext(editArgs, editState, {expanded: true}),
+        toolRenderContext(editArgs, editState, {expanded: false}),
     );
     assert.equal(editCall.render(120).some((line) => line.includes("old value")), true);
     assert.equal(editCall.render(120).some((line) => line.includes("new value")), true);
@@ -438,13 +487,12 @@ test("one session runtime owns the production tool overrides until session shutd
         createSessionRuntime(runtimeContext) {
             runtimeCreations++;
             const policy = createPolicyRuntime(runtimeContext);
-            const toolDisplay = new ToolDisplayController(runtimeContext);
             return {
                 policyRuntime: policy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                toolDisplay,
                 fullNetworkInspection: true,
-                setFullNetworkInspection() {},
+                setFullNetworkInspection() {
+                },
                 close() {
                     runtimeCloses++;
                 },
@@ -488,7 +536,8 @@ function toolRenderContext(
         state,
         toolCallId: `test-${String(args.path ?? "tool")}`,
         cwd: process.cwd(),
-        invalidate() {},
+        invalidate() {
+        },
         lastComponent: options.lastComponent,
         executionStarted: true,
         argsComplete: false,
@@ -501,18 +550,25 @@ function toolRenderContext(
 
 function createNoopMcpExtension() {
     return {
-        register() {},
-        async startSession() {},
-        async stopSession() {},
+        register() {
+        },
+        async startSession() {
+        },
+        async stopSession() {
+        },
         toolDefinitions: () => [],
     };
 }
 
 function createNoopSubagentRuntime() {
     return {
-        async startSession() {},
-        async stopSession() {},
-        coordinator(): never { throw new Error("No coordinator in extension tests"); },
+        async startSession() {
+        },
+        async stopSession() {
+        },
+        coordinator(): never {
+            throw new Error("No coordinator in extension tests");
+        },
     };
 }
 
@@ -527,10 +583,11 @@ function extensionHarness(): ExtensionHarness {
             registeredTools.push(tool);
             registeredToolNames.push(tool.name);
         },
-        registerShortcut(key: string, options: {handler: ShortcutHandler}) {
+        registerShortcut(key: string, options: { handler: ShortcutHandler }) {
             shortcuts.set(key, options.handler);
         },
-        registerCommand() {},
+        registerCommand() {
+        },
         on(event: string, handler: unknown) {
             if (event === "session_start") startHandler = handler as SessionStartHandler;
             if (event === "session_shutdown") shutdownHandler = handler as SessionShutdownHandler;
@@ -541,10 +598,8 @@ function extensionHarness(): ExtensionHarness {
         pi,
         registeredTools,
         registeredToolNames,
-        shortcut(key) {
-            const handler = shortcuts.get(key);
-            assert.ok(handler);
-            return handler;
+        hasShortcut(key) {
+            return shortcuts.has(key);
         },
         sessionStart() {
             assert.ok(startHandler);

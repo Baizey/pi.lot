@@ -14,6 +14,10 @@ import type {
     McpToolCallResult,
     McpToolDetails,
 } from "./types.js";
+import type {ToolPresentationSpec} from "../tui/tool/ToolPresentation.js";
+import {ToolTextDirection} from "../tui/tool/ToolPresentation.js";
+import {resolveToolDisplayMode} from "../tui/tool/ToolDisplayMode.js";
+import {ToolPresentationRenderer} from "../tui/tool/ToolPresentationRenderer.js";
 
 const maxMcpTextOutputChars = 80_000;
 
@@ -164,6 +168,11 @@ function createMcpPiTool(input: {
         `MCP tool '${input.mcpTool.name}' from server '${input.serverName}'.`,
         input.mcpTool.description ?? "No MCP tool description provided.",
     ].join(" ");
+    const presentation = new ToolPresentationRenderer({
+        toolName: input.piToolName,
+        arguments: [],
+        result: {direction: ToolTextDirection.TAIL},
+    } satisfies ToolPresentationSpec<Record<string, unknown>>);
 
     return {
         name: input.piToolName,
@@ -208,6 +217,17 @@ function createMcpPiTool(input: {
             };
             return {content: converted.content, details};
         },
+        renderCall: (args, theme, context) => presentation.renderCall(
+            args as Record<string, unknown>,
+            theme,
+            resolveToolDisplayMode(context.expanded, context.state),
+        ),
+        renderResult: (result, options, theme, context) => presentation.renderResult(
+            result,
+            theme,
+            {isError: context.isError},
+            resolveToolDisplayMode(options.expanded, context.state),
+        ),
     };
 }
 

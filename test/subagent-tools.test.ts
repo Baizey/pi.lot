@@ -15,9 +15,7 @@ const expectedNames = ["subagent_spawn", "subagent_status", "subagent_message", 
 test("each subagent tool registers independently and delegates only to the coordinator", async () => {
     const registered: ToolDefinition<any, any>[] = [];
     const pi = {
-        registerTool(tool: ToolDefinition<any, any>) {
-            registered.push(tool);
-        },
+        registerTool(tool: ToolDefinition<any, any>) { registered.push(tool); },
     };
     let coordinator: SubagentCoordinator | undefined;
     const coordinatorProvider = () => {
@@ -36,14 +34,13 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.deepEqual(registered.map((tool) => tool.name), expectedNames);
     assert.deepEqual(tools.map((tool) => tool.toolDefinition().name), expectedNames);
     assert.equal(registered.every((tool) => tool.renderCall && tool.renderResult), true);
-    assert.equal(registered.every((tool) => tool.renderShell === "self"), true);
 
     const theme = plainTheme();
     const minimalCalls = [
-        [{task: "Delegate work", role: "reviewer", mode: "sync"}, " subagent_spawn | reviewer (sync)"],
-        [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, " subagent_status | job-1, job-2 (wait 2s)"],
-        [{jobId: "job-1", task: "Continue"}, " subagent_message | job-1"],
-        [{jobId: "job-1"}, " subagent_stop | job-1"],
+        [{task: "Delegate work", role: "reviewer", mode: "sync"}, "subagent_spawn | reviewer (sync)"],
+        [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, "subagent_status | job-1, job-2 (wait 2s)"],
+        [{jobId: "job-1", task: "Continue"}, "subagent_message | job-1"],
+        [{jobId: "job-1"}, "subagent_stop | job-1"],
     ] as const;
     for (let index = 0; index < registered.length; index++) {
         const tool = registered[index]!;
@@ -64,13 +61,13 @@ test("each subagent tool registers independently and delegates only to the coord
         theme,
         renderContext(spawnArgs, {}, true),
     ).render(120);
-    assert.equal(truncatedCall.at(-1), "     ... (2 more lines)");
+    assert.equal(truncatedCall.at(-1), "    ... (2 more lines)");
     const fullCall = registered[0]!.renderCall!(
         spawnArgs,
         theme,
         renderContext(spawnArgs, {pilotFullDisplay: true}),
     ).render(120);
-    assert.equal(fullCall.at(-1), "     line 10");
+    assert.equal(fullCall.at(-1), "    line 10");
 
     const output = {content: [{type: "text" as const, text: numberedLines(10)}], details: {jobs: []}};
     assert.deepEqual(
@@ -80,7 +77,7 @@ test("each subagent tool registers independently and delegates only to the coord
             theme,
             renderContext(spawnArgs, {}, true),
         ).render(120),
-        [" ", " ... (2 earlier lines)", ...numberedLineArray(8, 3).map((line) => ` ${line}`)],
+        ["", "... (2 earlier lines)", ...numberedLineArray(8, 3)],
     );
 
     await assert.rejects(invoke(registered[0]!, {task: "before", role: "reviewer"}), /session is not available/);
@@ -88,13 +85,9 @@ test("each subagent tool registers independently and delegates only to the coord
     const factory: SubagentChildSessionFactory = {
         async create() {
             return {
-                async prompt(task) {
-                    return `completed: ${task}`;
-                },
-                async abort() {
-                },
-                dispose() {
-                },
+                async prompt(task) { return `completed: ${task}`; },
+                async abort() {},
+                dispose() {},
             };
         },
     };
@@ -109,7 +102,6 @@ test("each subagent tool registers independently and delegates only to the coord
 function plainTheme(): Theme {
     return {
         fg: (_color: string, text: string) => text,
-        bg: (_color: string, text: string) => text,
         bold: (text: string) => text,
     } as unknown as Theme;
 }
@@ -124,8 +116,7 @@ function renderContext(
         state,
         toolCallId: "test-call",
         cwd: process.cwd(),
-        invalidate() {
-        },
+        invalidate() {},
         executionStarted: true,
         argsComplete: true,
         isPartial: false,
@@ -156,7 +147,7 @@ function invoke(tool: ToolDefinition<any, any>, params: unknown): Promise<unknow
 function textResult(result: unknown): string {
     if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) return "";
     return result.content
-        .filter((part): part is { type: "text"; text: string } => (
+        .filter((part): part is {type: "text"; text: string} => (
             typeof part === "object"
             && part !== null
             && "type" in part

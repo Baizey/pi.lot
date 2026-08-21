@@ -10,10 +10,9 @@ import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPrese
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
-import {ToolStatusRail} from "../../tui/tool/ToolStatusRail.js";
 import {ThemeColor} from "../../tui/Color.js";
 
-type StopToolInput = { jobId: string };
+type StopToolInput = {jobId: string};
 type CoordinatorProvider = () => SubagentCoordinator;
 
 const STOP_PRESENTATION = {
@@ -58,7 +57,6 @@ function createDefinition(
         name: "subagent_stop",
         label: "Stop subagent",
         description: "Stop a queued, running, or idle subagent and all of its descendants.",
-        renderShell: "self",
         parameters: objectSchema({jobId: stringSchema("Subagent job id")}, ["jobId"]),
         async execute(_id, params): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as StopToolInput;
@@ -67,25 +65,17 @@ function createDefinition(
         },
         renderCall: (args, theme, context) => {
             displayRows.observe("subagent_stop", args, context);
-            return new ToolStatusRail(
-                presentation.renderCall(
-                    args as StopToolInput,
-                    theme,
-                    resolveToolDisplayMode(context.expanded, context.state),
-                ),
+            return presentation.renderCall(
+                args as StopToolInput,
                 theme,
-                context,
+                resolveToolDisplayMode(context.expanded, context.state),
             );
         },
-        renderResult: (result, options, theme, context) => new ToolStatusRail(
-            presentation.renderResult(
-                result,
-                theme,
-                {isError: context.isError},
-                resolveToolDisplayMode(options.expanded, context.state),
-            ),
+        renderResult: (result, options, theme, context) => presentation.renderResult(
+            result,
             theme,
-            context,
+            {isError: context.isError},
+            resolveToolDisplayMode(options.expanded, context.state),
         ),
     };
 }

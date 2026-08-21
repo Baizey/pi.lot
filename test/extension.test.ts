@@ -146,10 +146,14 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {setToolsExpanded() {}},
+        ui: {
+            setToolsExpanded() {
+            }
+        },
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
+        bg: (_color: string, text: string) => text,
         bold: (text: string) => text,
     } as unknown as Theme;
 
@@ -161,8 +165,10 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
-                setFullNetworkInspection() {},
-                close() {},
+                setFullNetworkInspection() {
+                },
+                close() {
+                },
             };
         },
     }).register();
@@ -170,6 +176,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
 
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool.renderCall && bashTool.renderResult);
+    assert.equal(bashTool.renderShell, "self");
     const args = {
         purpose: "Verify native display controls",
         command: Array.from({length: 10}, (_, index) => `echo ${index + 1}`).join("\n"),
@@ -179,7 +186,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
 
     assert.deepEqual(
         bashTool.renderCall(args, theme, toolRenderContext(args, displayState)).render(120),
-        ["bash | Verify native display controls"],
+        [" bash | Verify native display controls"],
     );
     assert.deepEqual(
         bashTool.renderResult(
@@ -197,7 +204,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
         toolRenderContext(args, displayState, {expanded: true}),
     ).render(120);
     assert.equal(truncatedCall.length, 10);
-    assert.equal(truncatedCall.at(-1), "    ... (2 more lines)");
+    assert.equal(truncatedCall.at(-1), "     ... (2 more lines)");
     assert.deepEqual(
         bashTool.renderResult(
             output,
@@ -205,7 +212,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
             theme,
             toolRenderContext(args, displayState, {expanded: true}),
         ).render(120),
-        ["", "... (1 earlier line)", "two", "three", "four", "five", "six"],
+        [" ", " ... (1 earlier line)", " two", " three", " four", " five", " six"],
     );
 
     const fullState = {pilotFullDisplay: true};
@@ -215,7 +222,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
         toolRenderContext(args, fullState),
     ).render(120);
     assert.equal(fullCall.length, 11);
-    assert.equal(fullCall.at(-1), "    echo 10");
+    assert.equal(fullCall.at(-1), "     echo 10");
     assert.deepEqual(
         bashTool.renderResult(
             output,
@@ -223,7 +230,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
             theme,
             toolRenderContext(args, fullState),
         ).render(120),
-        ["", "one", "two", "three", "four", "five", "six"],
+        [" ", " one", " two", " three", " four", " five", " six"],
     );
 
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
@@ -242,6 +249,7 @@ test("Bash components remain renderable during and after session shutdown", asyn
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
+        bg: (_color: string, text: string) => text,
         bold: (text: string) => text,
     } as unknown as Theme;
     let releaseMcpStop!: () => void;
@@ -299,8 +307,8 @@ test("Bash components remain renderable during and after session shutdown", asyn
 
     assert.ifError(renderError);
     const expectedLines = [
-        "bash | Keep rendering during teardown",
-        "    echo complete",
+        " bash | Keep rendering during teardown",
+        "     echo complete",
     ];
     assert.deepEqual(renderedLines, expectedLines);
     assert.equal(runtimeCloses, 1);
@@ -349,7 +357,7 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
     assert.ok(readTool.renderCall && readTool.renderResult);
     assert.ok(editTool.renderCall && editTool.renderResult);
     assert.ok(writeTool.renderCall && writeTool.renderResult);
-    assert.equal(editTool.renderShell, "self");
+    assert.equal([readTool, editTool, writeTool].every((tool) => tool.renderShell === "self"), true);
     assert.equal(typeof editTool.prepareArguments, "function");
 
     const readArgs = {path: "notes.data", offset: 2, limit: 2};
@@ -371,14 +379,14 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
     let writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     let editCall = editTool.renderCall(editArgs, theme, editCallContext);
 
-    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["read | notes.data:2-3"]);
+    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), [" read | notes.data:2-3"]);
     assert.deepEqual(
         writeCall.render(120).map((line) => line.trimEnd()),
-        ["write | created.data", "    alpha", "    beta"],
+        [" write | created.data", "     alpha", "     beta"],
     );
     assert.deepEqual(
         editCall.render(120).map((line) => line.trimEnd()),
-        ["edit | changed.data (2 replacements)"],
+        [" edit | changed.data (2 replacements)"],
     );
 
     readCallContext = {...readCallContext, expanded: false, lastComponent: readCall};
@@ -388,8 +396,8 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
     writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     editCall = editTool.renderCall(editArgs, theme, editCallContext);
 
-    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["read | notes.data:2-3"]);
-    assert.deepEqual(writeCall.render(120).map((line) => line.trimEnd()), ["write | created.data"]);
+    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), [" read | notes.data:2-3"]);
+    assert.deepEqual(writeCall.render(120).map((line) => line.trimEnd()), [" write | created.data"]);
     assert.equal(editCall.render(120).some((line) => line.includes("edit | changed.data")), true);
     assert.equal(editCall.render(120).some((line) => line.includes("2 replacements")), true);
     assert.deepEqual(
@@ -398,7 +406,7 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
             theme,
             toolRenderContext({path: "notes.data", limit: 2}, {}),
         ).render(120).map((line) => line.trimEnd()),
-        ["read | notes.data:1-2"],
+        [" read | notes.data:1-2"],
     );
     assert.deepEqual(
         readTool.renderCall(
@@ -406,7 +414,7 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
             theme,
             toolRenderContext({path: "notes.data", offset: 2}, {}),
         ).render(120).map((line) => line.trimEnd()),
-        ["read | notes.data:2"],
+        [" read | notes.data:2"],
     );
 
     const errorResult = {content: [{type: "text", text: "visible error details"}]};

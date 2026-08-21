@@ -14,9 +14,10 @@ import {
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {ToolStatusRail} from "../../tui/tool/ToolStatusRail.js";
 import {ThemeColor} from "../../tui/Color.js";
 
-type MessageToolInput = {jobId: string; task: string};
+type MessageToolInput = { jobId: string; task: string };
 type CoordinatorProvider = () => SubagentCoordinator;
 
 const MESSAGE_PRESENTATION = {
@@ -68,6 +69,7 @@ function createDefinition(
         name: "subagent_message",
         label: "Message subagent",
         description: "Send the next task to an idle conversation subagent while preserving its real child session.",
+        renderShell: "self",
         parameters: objectSchema({
             jobId: stringSchema("Conversation job id"),
             task: stringSchema("Next task or follow-up message"),
@@ -78,17 +80,25 @@ function createDefinition(
         },
         renderCall: (args, theme, context) => {
             displayRows.observe("subagent_message", args, context);
-            return presentation.renderCall(
-                args as MessageToolInput,
+            return new ToolStatusRail(
+                presentation.renderCall(
+                    args as MessageToolInput,
+                    theme,
+                    resolveToolDisplayMode(context.expanded, context.state),
+                ),
                 theme,
-                resolveToolDisplayMode(context.expanded, context.state),
+                context,
             );
         },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
+        renderResult: (result, options, theme, context) => new ToolStatusRail(
+            presentation.renderResult(
+                result,
+                theme,
+                {isError: context.isError},
+                resolveToolDisplayMode(options.expanded, context.state),
+            ),
             theme,
-            {isError: context.isError},
-            resolveToolDisplayMode(options.expanded, context.state),
+            context,
         ),
     };
 }

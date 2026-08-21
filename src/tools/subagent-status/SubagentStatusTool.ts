@@ -15,9 +15,10 @@ import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPrese
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {ToolStatusRail} from "../../tui/tool/ToolStatusRail.js";
 import {ThemeColor} from "../../tui/Color.js";
 
-type StatusToolInput = {jobIds?: string[]; waitSeconds?: number};
+type StatusToolInput = { jobIds?: string[]; waitSeconds?: number };
 type CoordinatorProvider = () => SubagentCoordinator;
 
 const STATUS_PRESENTATION = {
@@ -70,6 +71,7 @@ function createDefinition(
         name: "subagent_status",
         label: "Subagent status",
         description: "Inspect subagent jobs and optionally wait for selected running jobs to settle.",
+        renderShell: "self",
         parameters: objectSchema({
             jobIds: arraySchema(stringSchema("Subagent job id"), "Jobs to inspect; omit to list all jobs"),
             waitSeconds: numberSchema("Maximum time to wait for selected jobs", 0, 3_600, 0),
@@ -86,17 +88,25 @@ function createDefinition(
         },
         renderCall: (args, theme, context) => {
             displayRows.observe("subagent_status", args, context);
-            return presentation.renderCall(
-                args as StatusToolInput,
+            return new ToolStatusRail(
+                presentation.renderCall(
+                    args as StatusToolInput,
+                    theme,
+                    resolveToolDisplayMode(context.expanded, context.state),
+                ),
                 theme,
-                resolveToolDisplayMode(context.expanded, context.state),
+                context,
             );
         },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
+        renderResult: (result, options, theme, context) => new ToolStatusRail(
+            presentation.renderResult(
+                result,
+                theme,
+                {isError: context.isError},
+                resolveToolDisplayMode(options.expanded, context.state),
+            ),
             theme,
-            {isError: context.isError},
-            resolveToolDisplayMode(options.expanded, context.state),
+            context,
         ),
     };
 }

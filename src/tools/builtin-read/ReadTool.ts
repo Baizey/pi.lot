@@ -13,6 +13,7 @@ import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {ToolStatusRail} from "../../tui/tool/ToolStatusRail.js";
 
 const READ_PRESENTATION = {
     toolName: "read",
@@ -65,6 +66,7 @@ export class ReadTool {
         const presentation = new ToolPresentationRenderer(READ_PRESENTATION);
         this.pi.registerTool({
             ...definition,
+            renderShell: "self",
             async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<ReadToolDetails | undefined>> {
                 const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_READ, signal);
                 if (result.matchedStatus === PolicyResponse.DENIED) {
@@ -76,14 +78,15 @@ export class ReadTool {
             renderCall: (args, theme, context) => {
                 this.displayRows.observe("read", args, context);
                 const mode = resolveToolDisplayMode(context.expanded, context.state);
-                return mode === ToolDisplayMode.FULL
+                const component = mode === ToolDisplayMode.FULL
                     ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})
                     : presentation.renderCall(args, theme, mode);
+                return new ToolStatusRail(component, theme, context);
             },
 
             renderResult: (result, options, theme, context) => {
                 const mode = resolveToolDisplayMode(options.expanded, context.state);
-                return mode === ToolDisplayMode.FULL
+                const component = mode === ToolDisplayMode.FULL
                     ? nativeRenderResult(
                         result,
                         {...options, expanded: true},
@@ -91,6 +94,7 @@ export class ReadTool {
                         {...context, expanded: true, lastComponent: undefined},
                     )
                     : presentation.renderResult(result, theme, {isError: context.isError}, mode);
+                return new ToolStatusRail(component, theme, context);
             },
         });
     }

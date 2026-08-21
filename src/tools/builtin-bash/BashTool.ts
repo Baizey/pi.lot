@@ -16,6 +16,7 @@ import {NetworkDecision} from "../../policy/network/network-queue-protocol.js";
 import type {HostCredentialIpcOptions} from "../../policy/network/ipc/HostCredentialIpc.js";
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {ToolStatusRail} from "../../tui/tool/ToolStatusRail.js";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
@@ -104,6 +105,7 @@ export class BashTool {
             ...bashDefinition,
             description: `${bashDefinition.description} Include a concise, one-line purpose for the command.`,
             parameters,
+            renderShell: "self",
             prepareArguments: undefined,
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
@@ -120,18 +122,26 @@ export class BashTool {
 
             renderCall: (args, theme, context) => {
                 this.displayRows.observe("bash", args, context);
-                return presentation.renderCall(
-                    args,
+                return new ToolStatusRail(
+                    presentation.renderCall(
+                        args,
+                        theme,
+                        resolveToolDisplayMode(context.expanded, context.state),
+                    ),
                     theme,
-                    resolveToolDisplayMode(context.expanded, context.state),
+                    context,
                 );
             },
 
-            renderResult: (result, options, theme, context) => presentation.renderResult(
-                result,
+            renderResult: (result, options, theme, context) => new ToolStatusRail(
+                presentation.renderResult(
+                    result,
+                    theme,
+                    {isError: context.isError},
+                    resolveToolDisplayMode(options.expanded, context.state),
+                ),
                 theme,
-                {isError: context.isError},
-                resolveToolDisplayMode(options.expanded, context.state),
+                context,
             ),
 
         } as const satisfies ToolDefinition<typeof parameters, any>;

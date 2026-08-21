@@ -49,7 +49,8 @@ test("exposed MCP tools register once and re-check exposure when called", async 
     });
     store.save(config);
     const manager = new McpManager(config, () => ({
-        async connect() {},
+        async connect() {
+        },
         async listTools() {
             return [{
                 name: "echo",
@@ -65,7 +66,8 @@ test("exposed MCP tools register once and re-check exposure when called", async 
             options.onprogress?.({progress: 1, total: 1, message: "done"});
             return {content: [{type: "text", text: String(args.value)}]};
         },
-        async close() {},
+        async close() {
+        },
     }));
     const registered: ToolDefinition[] = [];
     const pi = {
@@ -85,15 +87,16 @@ test("exposed MCP tools register once and re-check exposure when called", async 
         assert.deepEqual(registry.registeredToolDefinitions().map((tool) => tool.name), ["mcp_demo_echo"]);
         const tool = registered[0]!;
         assert.ok(tool.renderCall && tool.renderResult);
+        assert.equal(tool.renderShell, "self");
         const theme = plainTheme();
         const longArgs = {value: numberedLines(10)};
         assert.deepEqual(
             tool.renderCall(longArgs, theme, renderContext(longArgs)).render(120),
-            ["mcp_demo_echo"],
+            [" mcp_demo_echo"],
         );
         assert.equal(
             tool.renderCall(longArgs, theme, renderContext(longArgs, {}, true)).render(120).at(-1),
-            "    ... (2 more lines)",
+            "     ... (2 more lines)",
         );
         assert.equal(
             tool.renderCall(
@@ -101,7 +104,7 @@ test("exposed MCP tools register once and re-check exposure when called", async 
                 theme,
                 renderContext(longArgs, {pilotFullDisplay: true}),
             ).render(120).at(-1),
-            "    line 10",
+            "     line 10",
         );
         const longResult = {
             content: [{type: "text" as const, text: numberedLines(10)}],
@@ -123,7 +126,7 @@ test("exposed MCP tools register once and re-check exposure when called", async 
                 theme,
                 renderContext(longArgs, {}, true),
             ).render(120),
-            ["", "... (5 earlier lines)", "line 6", "line 7", "line 8", "line 9", "line 10"],
+            [" ", " ... (5 earlier lines)", " line 6", " line 7", " line 8", " line 9", " line 10"],
         );
 
         const updates: unknown[] = [];
@@ -135,7 +138,7 @@ test("exposed MCP tools register once and re-check exposure when called", async 
             {} as ExtensionContext,
         );
         assert.deepEqual(result.content, [{type: "text", text: "hello"}]);
-        assert.equal(result.details && (result.details as {server?: string}).server, "demo");
+        assert.equal(result.details && (result.details as { server?: string }).server, "demo");
         assert.equal(updates.length, 1);
 
         const hidden = store.setToolExposure("demo", McpCommandAction.HIDE, ["echo"]);
@@ -154,6 +157,7 @@ test("exposed MCP tools register once and re-check exposure when called", async 
 function plainTheme(): Theme {
     return {
         fg: (_color: string, text: string) => text,
+        bg: (_color: string, text: string) => text,
         bold: (text: string) => text,
     } as unknown as Theme;
 }
@@ -168,7 +172,8 @@ function renderContext(
         state,
         toolCallId: "mcp-test-call",
         cwd: process.cwd(),
-        invalidate() {},
+        invalidate() {
+        },
         executionStarted: true,
         argsComplete: true,
         isPartial: false,

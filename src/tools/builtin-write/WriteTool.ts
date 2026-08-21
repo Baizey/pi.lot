@@ -12,6 +12,7 @@ import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {ToolStatusRail} from "../../tui/tool/ToolStatusRail.js";
 
 const WRITE_PRESENTATION = {
     toolName: "write",
@@ -53,6 +54,7 @@ export class WriteTool {
         const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION);
         this.pi.registerTool({
             ...definition,
+            renderShell: "self",
             async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<undefined>> {
                 const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_WRITE, signal);
                 if (result.matchedStatus === PolicyResponse.DENIED) {
@@ -64,14 +66,15 @@ export class WriteTool {
             renderCall: (args, theme, context) => {
                 this.displayRows.observe("write", args, context);
                 const mode = resolveToolDisplayMode(context.expanded, context.state);
-                return mode === ToolDisplayMode.FULL
+                const component = mode === ToolDisplayMode.FULL
                     ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})
                     : presentation.renderCall(args, theme, mode);
+                return new ToolStatusRail(component, theme, context);
             },
 
             renderResult: (result, options, theme, context) => {
                 const mode = resolveToolDisplayMode(options.expanded, context.state);
-                return mode === ToolDisplayMode.FULL
+                const component = mode === ToolDisplayMode.FULL
                     ? nativeRenderResult(
                         result,
                         {...options, expanded: true},
@@ -79,6 +82,7 @@ export class WriteTool {
                         {...context, expanded: true, lastComponent: undefined},
                     )
                     : presentation.renderResult(result, theme, {isError: context.isError}, mode);
+                return new ToolStatusRail(component, theme, context);
             },
         });
     }

@@ -25,6 +25,7 @@ import {
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {ToolStatusRail} from "../../tui/tool/ToolStatusRail.js";
 import {ThemeColor} from "../../tui/Color.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 900;
@@ -116,6 +117,7 @@ function createDefinition(
         label: "Spawn subagent",
         description: "Start a scoped child agent. Sync waits for its result; async and conversation return a job id immediately.",
         promptSnippet: "Delegate independent work to an in-process child agent with explicit toolkits.",
+        renderShell: "self",
         parameters: objectSchema({
             task: stringSchema("Task to delegate"),
             role: stringSchema("Concise role or title for the child agent", 120),
@@ -149,21 +151,29 @@ function createDefinition(
         },
         renderCall: (args, theme, context) => {
             displayRows.observe("subagent_spawn", args, context);
-            return presentation.renderCall(
-                args as SpawnToolInput,
+            return new ToolStatusRail(
+                presentation.renderCall(
+                    args as SpawnToolInput,
+                    theme,
+                    resolveToolDisplayMode(context.expanded, context.state),
+                ),
                 theme,
-                resolveToolDisplayMode(context.expanded, context.state),
+                context,
             );
         },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
+        renderResult: (result, options, theme, context) => new ToolStatusRail(
+            presentation.renderResult(
+                result,
+                theme,
+                {isError: context.isError},
+                resolveToolDisplayMode(options.expanded, context.state),
+            ),
             theme,
-            {isError: context.isError},
-            resolveToolDisplayMode(options.expanded, context.state),
+            context,
         ),
     };
 }
 
-function canonicalModel(model: {provider: string; id: string} | undefined): string | undefined {
+function canonicalModel(model: { provider: string; id: string } | undefined): string | undefined {
     return model ? `${model.provider}/${model.id}` : undefined;
 }

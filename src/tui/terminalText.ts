@@ -34,8 +34,8 @@ export function renderLines(lines: readonly string[]): TextComponent {
 export function renderLineFactory(buildLines: () => readonly string[]): TextComponent {
     return {
         render(width: number): string[] {
-            // Pi resets SGR state after each rendered line. Keeping our own trailing
-            // full reset would clear the surrounding tool Box background before its padding.
+            // Pi resets SGR state after each rendered line, so a trailing full reset is redundant
+            // and can interfere with styling applied by an enclosing component.
             return buildLines().map((line) => withoutTrailingFullReset(truncateToWidth(line, width)));
         },
         invalidate(): void {

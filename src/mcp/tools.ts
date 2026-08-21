@@ -19,16 +19,17 @@ import {ToolTextDirection} from "../tui/tool/ToolPresentation.js";
 import {resolveToolDisplayMode} from "../tui/tool/ToolDisplayMode.js";
 import {ToolPresentationRenderer} from "../tui/tool/ToolPresentationRenderer.js";
 import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
+import {ToolStatusRail} from "../tui/tool/ToolStatusRail.js";
 
 const maxMcpTextOutputChars = 80_000;
 
 type McpOutputContent =
-    | {type: "text"; text: string}
-    | {type: "image"; data: string; mimeType: string};
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string };
 
 export type McpToolRegistrationResult = {
-    registered: Array<{serverName: string; mcpToolName: string; piToolName: string}>;
-    skipped: Array<{serverName: string; mcpToolName: string; reason: string}>;
+    registered: Array<{ serverName: string; mcpToolName: string; piToolName: string }>;
+    skipped: Array<{ serverName: string; mcpToolName: string; reason: string }>;
 };
 
 type McpToolRegistrar = Pick<ExtensionAPI, "registerTool"> & Partial<Pick<ExtensionAPI, "getAllTools">>;
@@ -47,7 +48,8 @@ export class McpToolRegistry {
         private readonly manager: McpManager,
         private readonly store: McpConfigStore,
         private readonly displayRows: ToolDisplayRows = new ToolDisplayRows(),
-    ) {}
+    ) {
+    }
 
     registerAvailableTools(config: McpConfigSnapshot = this.store.load()): McpToolRegistrationResult {
         const result: McpToolRegistrationResult = {registered: [], skipped: []};
@@ -183,6 +185,7 @@ function createMcpPiTool(input: {
         label: input.mcpTool.title ?? input.piToolName,
         description,
         promptSnippet: description,
+        renderShell: "self",
         parameters: normalizeMcpInputSchema(input.mcpTool.inputSchema) as any,
         async execute(_toolCallId, params, signal, onUpdate): Promise<AgentToolResult<McpToolDetails | undefined>> {
             const latestConfig = input.store.load();
@@ -208,7 +211,7 @@ function createMcpPiTool(input: {
             const converted = formatMcpResultText(result);
             if (result.isError) {
                 throw new Error(converted.content
-                    .filter((item): item is Extract<McpOutputContent, {type: "text"}> => item.type === "text")
+                    .filter((item): item is Extract<McpOutputContent, { type: "text" }> => item.type === "text")
                     .map((item) => item.text)
                     .join("\n") || `MCP tool failed: ${input.serverName}/${input.mcpTool.name}`);
             }
@@ -223,17 +226,25 @@ function createMcpPiTool(input: {
         },
         renderCall: (args, theme, context) => {
             input.displayRows.observe(input.piToolName, args, context);
-            return presentation.renderCall(
-                args as Record<string, unknown>,
+            return new ToolStatusRail(
+                presentation.renderCall(
+                    args as Record<string, unknown>,
+                    theme,
+                    resolveToolDisplayMode(context.expanded, context.state),
+                ),
                 theme,
-                resolveToolDisplayMode(context.expanded, context.state),
+                context,
             );
         },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
+        renderResult: (result, options, theme, context) => new ToolStatusRail(
+            presentation.renderResult(
+                result,
+                theme,
+                {isError: context.isError},
+                resolveToolDisplayMode(options.expanded, context.state),
+            ),
             theme,
-            {isError: context.isError},
-            resolveToolDisplayMode(options.expanded, context.state),
+            context,
         ),
     };
 }
@@ -252,7 +263,7 @@ function progressUpdater(
     serverName: string,
     toolName: string,
     piToolName: string,
-): ((progress: {progress: number; total?: number; message?: string}) => void) | undefined {
+): ((progress: { progress: number; total?: number; message?: string }) => void) | undefined {
     if (!onUpdate) return undefined;
     return (progress) => {
         const total = progress.total !== undefined ? `/${progress.total}` : "";

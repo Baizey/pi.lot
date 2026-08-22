@@ -60,6 +60,37 @@ Full HTTPS method/path inspection is enabled at the start of every session. If a
 
 In this compatibility mode, HTTP and TLS bytes are relayed unmodified and HTTPS remains end-to-end. DNS and TCP hostname/port policy still applies, but method/path policy is unavailable. Use `/network-inspection on` to restore full inspection, or `/network-inspection` to show the active session value.
 
+### Web search
+
+pi.lot exposes one provider-agnostic `web_search` tool. Backend selection and ordered fallback are internal; the agent cannot select a provider. Supported backends are SearXNG, Brave Search, Tavily, Serper, keyless DuckDuckGo HTML search, and the active Pi model's native search for Gemini, OpenAI Responses, Codex, GitHub Copilot Responses, and Claude.
+
+The tool is a trusted extension operation, like the built-in Read, Edit, and Write wrappers. It does not launch the Bash sandbox. Each provider request and redirect is checked against the policy runtime using its actual HTTP method and URL before `fetch` runs. Responses have configurable time and size limits, and credentials are removed from cross-origin redirects.
+
+Provider order and limits can be set in `~/.pilot/web-search.json`:
+
+```json
+{
+  "version": 1,
+  "providers": ["searxng", "brave", "tavily", "serper", "native", "duckduckgo"],
+  "requestTimeoutMs": 30000,
+  "maxResponseBytes": 2097152,
+  "searxng": {
+    "baseUrl": "https://search.example.com"
+  },
+  "brave": {
+    "apiKey": "..."
+  },
+  "tavily": {
+    "apiKey": "..."
+  },
+  "serper": {
+    "apiKey": "..."
+  }
+}
+```
+
+The configuration file is optional. Unconfigured providers are skipped, and DuckDuckGo remains available without credentials. The `native` backend is available when the active conversation model supports provider-native search and appears in Pi's authenticated model registry; it reuses Pi's `/login`, `auth.json`, custom model, OAuth, Codex, or Copilot authentication instead of duplicating credentials in this file. It never silently switches to a different logged-in model. Because the file can contain hosted-search API keys, restrict it to your user account with `chmod 600 ~/.pilot/web-search.json`.
+
 ### Host credential IPC
 
 The worker inherits the Pi process environment and sees ordinary credential files through the mediated filesystem. pi.lot also preserves selected host credential protocols whose live Unix-socket inodes cannot pass through FUSE:
@@ -257,6 +288,7 @@ Use `/policy-defaults save` to persist the active values to `~/.pilot/policy-def
 - The combined worker's `/proc`, `/dev`, pseudo-filesystem, and pathname-socket contract needs further hardening and compatibility work.
 - Some DNS, HTTP/TLS, UDP-lifecycle, and IPv6 behavior is not yet supported.
 - Preserved local IPC can ask another host process to perform network activity outside the network gate.
+- The keyless DuckDuckGo search fallback depends on its public HTML format and may require maintenance when that format changes.
 - Unprivileged Linux namespaces may not preserve every supplementary group.
 - An allowed operation retains your ordinary host-user permissions.
 - MCP servers and MCP tool effects are intentionally outside filesystem and network policy mediation.

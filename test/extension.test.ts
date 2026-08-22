@@ -18,6 +18,7 @@ import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue";
 
 const expectedToolNames = [
     "bash",
+    "web_search",
     "read",
     "edit",
     "write",

@@ -18,6 +18,7 @@ import {SubagentMessageTool} from "./tools/subagent-message/SubagentMessageTool.
 import {SubagentStopTool} from "./tools/subagent-stop/SubagentStopTool.js";
 import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
 import {ViewFullToolCommand} from "./commands/ViewFullToolCommand.js";
+import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -76,6 +77,7 @@ export class PilotExtension {
 
         const runtimeProvider = () => this.requireSessionRuntime();
         this.bashTool.register();
+        new WebSearchTool(this.pi, runtimeProvider, this.displayRows).register();
         new ReadTool(this.pi, runtimeProvider, this.displayRows).register();
         new EditTool(this.pi, runtimeProvider, this.displayRows).register();
         new WriteTool(this.pi, runtimeProvider, this.displayRows).register();

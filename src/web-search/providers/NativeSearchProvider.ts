@@ -142,6 +142,7 @@ async function searchGoogle(
             snippet: snippets.get(index) ?? "",
         });
     }
+    prioritizeAnswerLinks(answer, results);
     return {answer, results};
 }
 
@@ -230,6 +231,7 @@ async function searchOpenAI(
             }
         }
     }
+    prioritizeAnswerLinks(answer, results);
     return {answer, results};
 }
 
@@ -266,7 +268,7 @@ function collectOpenAIAnnotation(value: unknown, results: WebSearchResult[]): vo
     const url = annotation?.url ?? nested?.url;
     if (typeof url !== "string") return;
     const title = annotation?.title ?? nested?.title;
-    pushResult(results, {
+    pushCitation(results, {
         title: typeof title === "string" ? title : titleFromUrl(url),
         url,
         snippet: "",
@@ -338,22 +340,29 @@ async function searchAnthropic(
         if (event.type === "content_block_delta") {
             const delta = record(event.delta);
             if (delta?.type === "text_delta" && typeof delta.text === "string") answer += delta.text;
-            if (delta?.type === "citations_delta") collectAnthropicSource(delta.citation, results);
+            if (delta?.type === "citations_delta") collectAnthropicSource(delta.citation, results, true);
         }
     }
+    prioritizeAnswerLinks(answer, results);
     return {answer, results};
 }
 
-function collectAnthropicSource(value: unknown, results: WebSearchResult[]): void {
+function collectAnthropicSource(
+    value: unknown,
+    results: WebSearchResult[],
+    citation = false,
+): void {
     const source = record(value);
     if (typeof source?.url !== "string") return;
     const snippet = source.cited_text ?? source.snippet;
-    pushResult(results, {
+    const result = {
         title: typeof source.title === "string" ? source.title : titleFromUrl(source.url),
         url: source.url,
         snippet: typeof snippet === "string" ? snippet : "",
         ...(typeof source.page_age === "string" ? {publishedAt: source.page_age} : {}),
-    });
+    };
+    if (citation) pushCitation(results, result);
+    else pushResult(results, result);
 }
 
 function throwNativeEventError(event: Record<string, unknown>): void {
@@ -463,6 +472,28 @@ function parseSseJson(body: string): Record<string, unknown>[] {
     }
     flush();
     return events;
+}
+
+function prioritizeAnswerLinks(answer: string, results: WebSearchResult[]): void {
+    const citations: WebSearchResult[] = [];
+    const pattern = /\[([^\]]+)]\((https?:\/\/[^\s)]+)\)/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(answer)) !== null) {
+        const url = match[2]!;
+        if (citations.some((result) => result.url === url)) continue;
+        const existing = results.find((result) => result.url === url);
+        if (existing) citations.push(existing);
+        else citations.push({title: match[1]!.trim() || titleFromUrl(url), url, snippet: ""});
+    }
+    if (citations.length === 0) return;
+    const citedUrls = new Set(citations.map((result) => result.url));
+    results.splice(0, results.length, ...citations, ...results.filter((result) => !citedUrls.has(result.url)));
+}
+
+function pushCitation(results: WebSearchResult[], result: WebSearchResult): void {
+    const existingIndex = results.findIndex((existing) => existing.url === result.url);
+    const existing = existingIndex < 0 ? undefined : results.splice(existingIndex, 1)[0];
+    results.unshift(existing ?? result);
 }
 
 function pushResult(results: WebSearchResult[], result: WebSearchResult): void {

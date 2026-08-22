@@ -51,7 +51,10 @@ test("Copilot native search uses Pi's resolved endpoint and Responses search", a
     const response = await provider.search({query: "question", maxResults: 5}, fakeHttp(async (value) => {
         request = value;
         return sseResponse(
-            {type: "response.output_text.delta", delta: "Copilot answer"},
+            {
+                type: "response.output_text.delta",
+                delta: "Copilot answer [cited source](https://source.example/cited)",
+            },
             {
                 type: "response.output_item.done",
                 item: {
@@ -64,8 +67,9 @@ test("Copilot native search uses Pi's resolved endpoint and Responses search", a
 
     assert.equal(String(request!.url), "https://api.enterprise-copilot.example/v1/responses");
     assert.deepEqual(JSON.parse(request!.body ?? "{}").tools, [{type: "web_search"}]);
-    assert.equal(response.answer, "Copilot answer");
-    assert.equal(response.results[0]?.url, "https://source.example/copilot");
+    assert.equal(response.answer, "Copilot answer [cited source](https://source.example/cited)");
+    assert.equal(response.results[0]?.url, "https://source.example/cited");
+    assert.equal(response.results[1]?.url, "https://source.example/copilot");
 });
 
 test("Codex native search uses Pi OAuth metadata and requires server search", async () => {

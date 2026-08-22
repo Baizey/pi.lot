@@ -1,10 +1,9 @@
-import {spawn} from "node:child_process";
-import type {ChildProcess} from "node:child_process";
 import type {Readable} from "node:stream";
 import {existsSync} from "node:fs";
 import {realpath, stat} from "node:fs/promises";
 import path from "node:path";
 import type {WorkerBindMount, WorkerRuntimeResource} from "../worker/WorkerRuntimeResource.js";
+import {ManagedChildProcess} from "../../../runtime/ManagedChildProcess.js";
 
 const XDG_DBUS_PROXY_PATH = "/usr/bin/xdg-dbus-proxy";
 const DBUS_NAME_PATTERN = /^(?:[A-Za-z_][A-Za-z0-9_-]*\.)+[A-Za-z_][A-Za-z0-9_-]*(?:\.\*)?$/;
@@ -90,17 +89,15 @@ class FilteredSessionBusProxy implements WorkerRuntimeResource {
     private stopping = false;
 
     private constructor(
-        private readonly child: ChildProcess,
-        private readonly readiness: Readable,
+        private readonly child: ManagedChildProcess,
         private readonly socketPath: string,
         private readonly errorText: () => string,
         private readonly onFatalError?: (error: unknown) => void,
     ) {
-        child.once("error", (error) => this.reportFatal(error));
-        child.once("exit", (code, signal) => {
-            if (this.stopping) return;
+        void child.waitForExit().then(({exitCode, signal}) => {
+            if (this.stopping || child.failure) return;
             this.reportFatal(new Error(
-                `filtered session D-Bus proxy exited unexpectedly: ${formatExit(code, signal)}${this.errorDetail()}`,
+                `filtered session D-Bus proxy exited unexpectedly: ${formatExit(exitCode, signal)}${this.errorDetail()}`,
             ));
         });
     }
@@ -122,19 +119,31 @@ class FilteredSessionBusProxy implements WorkerRuntimeResource {
         }
 
         const socketPath = path.join(options.runtimeDirectory, "credential-session-bus");
-        const child = spawn(XDG_DBUS_PROXY_PATH, [
-            "--fd=3",
-            options.upstreamAddress,
-            socketPath,
-            "--filter",
-            ...talkNames.map((name) => `--talk=${name}`),
-        ], {
-            detached: false,
-            stdio: ["ignore", "ignore", "pipe", "pipe"],
+        let proxy: FilteredSessionBusProxy | undefined;
+        let startupFailure: Error | undefined;
+        const child = ManagedChildProcess.spawn({
+            name: "filtered session D-Bus proxy",
+            command: XDG_DBUS_PROXY_PATH,
+            arguments: [
+                "--fd=3",
+                options.upstreamAddress,
+                socketPath,
+                "--filter",
+                ...talkNames.map((name) => `--talk=${name}`),
+            ],
+            spawnOptions: {
+                detached: false,
+                stdio: ["ignore", "ignore", "pipe", "pipe"],
+            },
+            onFailure(error) {
+                startupFailure ??= error;
+                proxy?.reportFatal(error);
+            },
         });
-        const readiness = child.stdio[3] as Readable | null;
+        const readiness = child.readable(3);
         if (!readiness) {
-            child.kill("SIGKILL");
+            child.terminate();
+            await child.settle();
             throw new Error("Secret Service D-Bus proxy readiness descriptor was not created");
         }
 
@@ -145,23 +154,31 @@ class FilteredSessionBusProxy implements WorkerRuntimeResource {
             }
         });
         const errorText = () => stderr.trim();
+        const exitedDuringStartup = () => child.wait().then(({exitCode, signal}) => {
+            throw new Error(
+                `filtered session D-Bus proxy exited before readiness: ${formatExit(exitCode, signal)}`
+                + `${errorText() ? `: ${errorText()}` : ""}`,
+            );
+        });
 
         try {
-            await waitForProxyReady(child, readiness, errorText);
-            const socketStat = await stat(socketPath);
+            await Promise.race([waitForProxyReady(readiness), exitedDuringStartup()]);
+            if (startupFailure) throw startupFailure;
+            const socketStat = await Promise.race([stat(socketPath), exitedDuringStartup()]);
             if (!socketStat.isSocket()) throw new Error("filtered session D-Bus proxy did not create a Unix socket");
-            return new FilteredSessionBusProxy(
+            proxy = new FilteredSessionBusProxy(
                 child,
-                readiness,
                 socketPath,
                 errorText,
                 options.onFatalError,
             );
+            return proxy;
         } catch (error) {
-            readiness.destroy();
-            child.kill("SIGKILL");
-            await settleChild(child);
-            throw error;
+            child.beginShutdown();
+            child.destroy(3);
+            child.terminate();
+            await child.settle();
+            throw startupFailure ?? error;
         }
     }
 
@@ -176,14 +193,11 @@ class FilteredSessionBusProxy implements WorkerRuntimeResource {
     async close(): Promise<void> {
         if (this.stopping) return;
         this.stopping = true;
-        this.readiness.destroy();
-        const settled = await Promise.race([
-            settleChild(this.child).then(() => true),
-            delay(PROXY_CLOSE_TIMEOUT_MILLISECONDS).then(() => false),
-        ]);
-        if (!settled) {
-            this.child.kill("SIGKILL");
-            await settleChild(this.child);
+        this.child.beginShutdown();
+        this.child.destroy(3);
+        if (!await this.child.settle(PROXY_CLOSE_TIMEOUT_MILLISECONDS)) {
+            this.child.terminate();
+            await this.child.settle();
         }
     }
 
@@ -286,53 +300,28 @@ function validateEnvironmentVariable(variable: string): void {
     }
 }
 
-function waitForProxyReady(
-    child: ChildProcess,
-    readiness: Readable,
-    errorText: () => string,
-): Promise<void> {
+function waitForProxyReady(readiness: Readable): Promise<void> {
     return new Promise<void>((resolve, reject) => {
         const cleanup = () => {
             readiness.off("data", onReady);
+            readiness.off("end", onReadinessEnd);
             readiness.off("error", onReadinessError);
-            child.off("error", onChildError);
-            child.off("exit", onExit);
         };
         const onReady = () => {
             cleanup();
             resolve();
         };
+        const onReadinessEnd = () => {
+            cleanup();
+            reject(new Error("filtered session D-Bus proxy closed its readiness descriptor before signaling"));
+        };
         const onReadinessError = (error: Error) => {
             cleanup();
             reject(error);
         };
-        const onChildError = (error: Error) => {
-            cleanup();
-            reject(error);
-        };
-        const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-            cleanup();
-            const detail = errorText();
-            reject(new Error(
-                `filtered session D-Bus proxy exited before readiness: ${formatExit(code, signal)}${detail ? `: ${detail}` : ""}`,
-            ));
-        };
         readiness.once("data", onReady);
+        readiness.once("end", onReadinessEnd);
         readiness.once("error", onReadinessError);
-        child.once("error", onChildError);
-        child.once("exit", onExit);
-    });
-}
-
-function settleChild(child: ChildProcess): Promise<void> {
-    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-    return new Promise((resolve) => child.once("close", () => resolve()));
-}
-
-function delay(milliseconds: number): Promise<void> {
-    return new Promise((resolve) => {
-        const timeout = setTimeout(resolve, milliseconds);
-        timeout.unref();
     });
 }
 

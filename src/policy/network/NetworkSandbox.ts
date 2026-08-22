@@ -1,12 +1,10 @@
-import {spawn} from "node:child_process";
-import type {ChildProcess} from "node:child_process";
 import {existsSync, readFileSync} from "node:fs";
 import {mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
 import {isIP} from "node:net";
 import {networkInterfaces} from "node:os";
 import path from "node:path";
 import {createInterface} from "node:readline";
-import type {Readable, Writable} from "node:stream";
+import type {Readable} from "node:stream";
 import {fileURLToPath} from "node:url";
 import {
   formatNetworkQueueVerdict,
@@ -40,6 +38,7 @@ import {
 } from "./worker/WorkerRuntimeResource.js";
 import type {WorkerBindMount, WorkerRuntimeResource} from "./worker/WorkerRuntimeResource.js";
 import {resolveNativeExecutable} from "../../runtime/NativeExecutable.js";
+import {ManagedChildProcess} from "../../runtime/ManagedChildProcess.js";
 
 export {
   NetworkAddressFamily,
@@ -136,13 +135,11 @@ class NetworkSandboxRunner {
   private readonly options: NetworkRunOptions;
   private readonly decisionAbort = new AbortController();
 
-  private outerProcess: ChildProcess | undefined;
+  private outerProcess: ManagedChildProcess | undefined;
   private outerExit: Promise<NetworkRunResult> | undefined;
   private outerStderr = "";
-  private releaseWorker: Writable | undefined;
   private workerNamespacePid: number | undefined;
-  private queueHelper: ChildProcess | undefined;
-  private queueInput: Writable | undefined;
+  private queueHelper: ManagedChildProcess | undefined;
   private queueLines: ReturnType<typeof createInterface> | undefined;
   private queueReady = false;
   private pendingEvent = false;
@@ -151,10 +148,9 @@ class NetworkSandboxRunner {
   private dnsProxy: SyntheticDnsProxy | undefined;
   private readonly tlsCertificateAuthority: TlsCertificateAuthority | undefined;
   private readonly tcpBroker: TcpGatewayBroker;
-  private tcpIngress: ChildProcess | undefined;
+  private tcpIngress: ManagedChildProcess | undefined;
   private tcpIngressLines: ReturnType<typeof createInterface> | undefined;
-  private slirp: ChildProcess | undefined;
-  private slirpExit: Writable | undefined;
+  private slirp: ManagedChildProcess | undefined;
   private fatalError: unknown;
   private stopping = false;
   private aborted = false;
@@ -210,7 +206,7 @@ class NetworkSandboxRunner {
       await this.startQueueHelper();
       await this.startSlirp();
       await this.waitForIpv6Ready();
-      this.unblockWorker();
+      await this.unblockWorker();
 
       const outerExit = this.outerExit;
       if (!outerExit) throw new Error("network sandbox exit monitor is unavailable");
@@ -325,27 +321,33 @@ class NetworkSandboxRunner {
       ...this.options.command,
     ];
 
-    const child = spawn(resolveNativeExecutable("pi-exec-clean-native"), [
-      "4",
-      UNSHARE_PATH,
-      "--user", "--map-current-user", "--net", "--",
-      BWRAP_PATH,
-      ...bwrapArguments,
-    ], {
-      cwd,
-      env: this.workerEnvironment(),
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+    const child = ManagedChildProcess.spawn({
+      name: "network sandbox worker",
+      command: resolveNativeExecutable("pi-exec-clean-native"),
+      arguments: [
+        "4",
+        UNSHARE_PATH,
+        "--user", "--map-current-user", "--net", "--",
+        BWRAP_PATH,
+        ...bwrapArguments,
+      ],
+      spawnOptions: {
+        cwd,
+        env: this.workerEnvironment(),
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+      },
+      terminateProcessGroup: true,
+      onFailure: (error) => this.fail(error),
     });
 
     this.outerProcess = child;
-    this.releaseWorker = child.stdio[4] as Writable;
     child.stdout?.on("data", (data: Buffer) => this.options.onStdout?.(data));
     child.stderr?.on("data", (data: Buffer) => {
       this.outerStderr += data.toString();
       this.options.onStderr?.(data);
     });
-    this.outerExit = waitForChild(child);
+    this.outerExit = child.wait();
   }
 
   private workerEnvironment(): NodeJS.ProcessEnv {
@@ -363,7 +365,7 @@ class NetworkSandboxRunner {
   }
 
   private async waitForBubblewrapStatus(): Promise<BubblewrapStatus> {
-    const statusStream = this.outerProcess?.stdio[3] as Readable | undefined;
+    const statusStream = this.outerProcess?.readable(3);
     if (!statusStream || !this.outerExit) throw new Error("bubblewrap status pipe was not created");
 
     const status = await Promise.race([
@@ -490,15 +492,6 @@ class NetworkSandboxRunner {
   }
 
   private async startTcpIngress(): Promise<number> {
-    const child = spawn(NSENTER_PATH, [
-      ...namespaceArguments(this.gatewayPid()),
-      resolveTcpGatewayAdapter(),
-      "10.0.2.2",
-      String(this.tcpBroker.port),
-    ], {stdio: ["ignore", "pipe", "pipe"]});
-    this.tcpIngress = child;
-
-    let stderr = "";
     let readyPort: number | undefined;
     let resolveReady!: (port: number) => void;
     let rejectReady!: (error: Error) => void;
@@ -510,15 +503,28 @@ class NetworkSandboxRunner {
       rejectReady(error);
       this.fail(error);
     };
+    const child = ManagedChildProcess.spawn({
+      name: "TCP gateway ingress",
+      command: NSENTER_PATH,
+      arguments: [
+        ...namespaceArguments(this.gatewayPid()),
+        resolveTcpGatewayAdapter(),
+        "10.0.2.2",
+        String(this.tcpBroker.port),
+      ],
+      spawnOptions: {stdio: ["ignore", "pipe", "pipe"]},
+      onFailure: failHelper,
+    });
+    this.tcpIngress = child;
 
+    let stderr = "";
     child.stderr?.on("data", (data: Buffer) => {
       stderr += data.toString();
     });
-    child.once("error", failHelper);
-    child.once("close", (code, signal) => {
-      if (this.stopping || this.aborted || this.timedOut) return;
+    void child.waitForExit().then(({exitCode, signal}) => {
+      if (this.stopping || this.aborted || this.timedOut || child.failure) return;
       failHelper(new Error(
-        `TCP gateway ingress exited unexpectedly: ${formatExit({exitCode: code, signal})}${stderr ? `: ${stderr.trim()}` : ""}`,
+        `TCP gateway ingress exited unexpectedly: ${formatExit({exitCode, signal})}${stderr ? `: ${stderr.trim()}` : ""}`,
       ));
     });
 
@@ -539,14 +545,6 @@ class NetworkSandboxRunner {
   }
 
   private async startQueueHelper(): Promise<void> {
-    const child = spawn(NSENTER_PATH, [
-      ...namespaceArguments(this.workerPid()),
-      resolveNetworkQueueAdapter(),
-    ], {stdio: ["pipe", "pipe", "pipe"]});
-    this.queueHelper = child;
-    this.queueInput = child.stdin ?? undefined;
-
-    let stderr = "";
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => {
@@ -557,19 +555,30 @@ class NetworkSandboxRunner {
       rejectReady(error);
       this.fail(error);
     };
+    const child = ManagedChildProcess.spawn({
+      name: "network queue helper",
+      command: NSENTER_PATH,
+      arguments: [
+        ...namespaceArguments(this.workerPid()),
+        resolveNetworkQueueAdapter(),
+      ],
+      spawnOptions: {stdio: ["pipe", "pipe", "pipe"]},
+      onFailure: failHelper,
+    });
+    this.queueHelper = child;
 
+    let stderr = "";
     child.stderr?.on("data", (data: Buffer) => {
       stderr += data.toString();
     });
-    child.once("error", failHelper);
-    child.once("close", (code, signal) => {
-      if (this.stopping || this.aborted || this.timedOut) return;
+    void child.waitForExit().then(({exitCode, signal}) => {
+      if (this.stopping || this.aborted || this.timedOut || child.failure) return;
       failHelper(new Error(
-        `network queue helper exited unexpectedly: ${formatExit({exitCode: code, signal})}${stderr ? `: ${stderr.trim()}` : ""}`,
+        `network queue helper exited unexpectedly: ${formatExit({exitCode, signal})}${stderr ? `: ${stderr.trim()}` : ""}`,
       ));
     });
 
-    if (!this.queueInput) throw new Error("network queue helper stdin was not created");
+    if (!child.writable(0)) throw new Error("network queue helper stdin was not created");
     const stdout = child.stdout;
     if (!stdout) throw new Error("network queue helper stdout was not created");
     this.queueLines = createInterface({input: stdout});
@@ -593,44 +602,48 @@ class NetworkSandboxRunner {
   }
 
   private async startSlirp(): Promise<void> {
-    const child = spawn(SLIRP4NETNS_PATH, [
-      "--configure",
-      "--enable-ipv6",
-      "--disable-dns",
-      "--ready-fd=3",
-      "--exit-fd=4",
-      String(this.gatewayPid()),
-      "tap0",
-    ], {stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"]});
+    const child = ManagedChildProcess.spawn({
+      name: "slirp4netns",
+      command: SLIRP4NETNS_PATH,
+      arguments: [
+        "--configure",
+        "--enable-ipv6",
+        "--disable-dns",
+        "--ready-fd=3",
+        "--exit-fd=4",
+        String(this.gatewayPid()),
+        "tap0",
+      ],
+      spawnOptions: {stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"]},
+      onFailure: (error) => this.fail(error),
+    });
     this.slirp = child;
-    this.slirpExit = child.stdio[4] as Writable;
 
     let stderr = "";
     child.stderr?.on("data", (data: Buffer) => {
       stderr += data.toString();
     });
-    child.once("error", (error) => this.fail(error));
-    child.once("close", (code, signal) => {
-      if (!this.stopping && !this.aborted && !this.timedOut) {
-        this.fail(new Error(`slirp4netns exited unexpectedly: ${formatExit({exitCode: code, signal})}${stderr ? `: ${stderr.trim()}` : ""}`));
+    void child.waitForExit().then(({exitCode, signal}) => {
+      if (!this.stopping && !this.aborted && !this.timedOut && !child.failure) {
+        this.fail(new Error(`slirp4netns exited unexpectedly: ${formatExit({exitCode, signal})}${stderr ? `: ${stderr.trim()}` : ""}`));
       }
     });
 
-    const ready = child.stdio[3] as Readable | undefined;
+    const ready = child.readable(3);
     if (!ready) throw new Error("slirp4netns ready pipe was not created");
     await Promise.race([
       waitForData(ready),
-      waitForChild(child).then((result) => {
+      child.wait().then((result) => {
         throw new Error(`slirp4netns exited before becoming ready: ${formatExit(result)}${stderr ? `: ${stderr.trim()}` : ""}`);
       }),
     ]);
   }
 
-  private unblockWorker(): void {
-    if (!this.releaseWorker) throw new Error("bubblewrap block pipe was not created");
-    this.releaseWorker.write(Buffer.from([1]));
-    this.releaseWorker.end();
-    this.releaseWorker = undefined;
+  private async unblockWorker(): Promise<void> {
+    const worker = this.outerProcess;
+    if (!worker?.writable(4)) throw new Error("bubblewrap block pipe was not created");
+    await worker.write(4, Buffer.from([1]));
+    worker.end(4);
   }
 
   private onQueueEvent(event: NetworkQueueEvent): void {
@@ -678,8 +691,9 @@ class NetworkSandboxRunner {
     }
 
     if (this.stopping || this.decisionAbort.signal.aborted) return;
-    if (!this.queueInput) throw new Error("network queue helper verdict stream is unavailable");
-    await writeToStream(this.queueInput, formatNetworkQueueVerdict(queueEvent.sequence, decision));
+    const helper = this.queueHelper;
+    if (!helper?.writable(0)) throw new Error("network queue helper verdict stream is unavailable");
+    await helper.write(0, formatNetworkQueueVerdict(queueEvent.sequence, decision));
   }
 
   private tcpGatewayApproval(
@@ -826,11 +840,17 @@ class NetworkSandboxRunner {
     description: string,
     input?: string,
   ): Promise<string> {
-    const child = spawn(NSENTER_PATH, [
-      ...namespaceArguments(namespacePid),
-      executable,
-      ...arguments_,
-    ], {stdio: ["pipe", "pipe", "pipe"]});
+    const child = ManagedChildProcess.spawn({
+      name: description,
+      command: NSENTER_PATH,
+      arguments: [
+        ...namespaceArguments(namespacePid),
+        executable,
+        ...arguments_,
+      ],
+      spawnOptions: {stdio: ["pipe", "pipe", "pipe"]},
+      onFailure: (error) => this.fail(error),
+    });
 
     let stdout = "";
     let stderr = "";
@@ -840,9 +860,9 @@ class NetworkSandboxRunner {
     child.stderr?.on("data", (data: Buffer) => {
       stderr += data.toString();
     });
-    child.stdin?.end(input);
+    child.end(0, input);
 
-    const result = await waitForChild(child);
+    const result = await child.wait();
     if (result.exitCode !== 0 || result.signal) {
       await new Promise((resolve) => setTimeout(resolve, 20));
       const detail = stderr.trim() || stdout.trim();
@@ -882,12 +902,10 @@ class NetworkSandboxRunner {
   }
 
   private terminate(): void {
-    killProcessGroup(this.outerProcess?.pid);
-    this.queueInput?.end();
-    killProcess(this.queueHelper);
-    killProcess(this.tcpIngress);
-    this.slirpExit?.end();
-    killProcess(this.slirp);
+    this.outerProcess?.terminate();
+    this.queueHelper?.terminate();
+    this.tcpIngress?.terminate();
+    this.slirp?.terminate();
   }
 
   private async cleanup(): Promise<void> {
@@ -896,20 +914,11 @@ class NetworkSandboxRunner {
     if (this.timeout) clearTimeout(this.timeout);
     if (this.onAbort) this.options.signal?.removeEventListener("abort", this.onAbort);
     this.onAbort = undefined;
-    this.releaseWorker?.end();
-    this.releaseWorker = undefined;
     this.queueLines?.close();
     this.queueLines = undefined;
-    this.queueInput?.end();
-    this.queueInput = undefined;
     this.tcpIngressLines?.close();
     this.tcpIngressLines = undefined;
-    this.slirpExit?.end();
-    this.slirpExit = undefined;
-    killProcess(this.queueHelper);
-    killProcess(this.tcpIngress);
-    killProcess(this.slirp);
-    killProcessGroup(this.outerProcess?.pid);
+    this.terminate();
     const workerResources = this.workerResources;
     this.workerResources = [];
     await Promise.allSettled([
@@ -921,8 +930,11 @@ class NetworkSandboxRunner {
       this.tcpBroker.close(),
       ...workerResources.map((resource) => resource.close?.()),
     ]);
-    this.dnsProxy = undefined;
+    this.outerProcess = undefined;
+    this.queueHelper = undefined;
     this.tcpIngress = undefined;
+    this.slirp = undefined;
+    this.dnsProxy = undefined;
     this.workerNamespacePid = undefined;
     const temporaryDirectory = this.temporaryDirectory;
     this.temporaryDirectory = undefined;
@@ -1198,55 +1210,10 @@ async function waitForData(stream: Readable): Promise<void> {
   });
 }
 
-async function waitForChild(child: ChildProcess): Promise<NetworkRunResult> {
-  return new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (exitCode, signal) => resolve({exitCode, signal}));
-  });
-}
-
-async function settleChild(child: ChildProcess | undefined): Promise<void> {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, 1000);
-    child.once("close", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-  });
+async function settleChild(child: ManagedChildProcess | undefined): Promise<void> {
+  await child?.settle();
 }
 
 function formatExit(result: NetworkRunResult): string {
   return result.signal ? `signal ${result.signal}` : `exit code ${String(result.exitCode)}`;
-}
-
-function killProcessGroup(pid: number | undefined): void {
-  if (!pid) return;
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // The process already exited.
-    }
-  }
-}
-
-function killProcess(child: ChildProcess | undefined): void {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    child.kill("SIGKILL");
-  } catch {
-    // The process already exited.
-  }
-}
-
-async function writeToStream(stream: Writable, data: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    stream.write(data, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
 }

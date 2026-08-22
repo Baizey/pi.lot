@@ -1,9 +1,9 @@
-import {spawn} from "node:child_process";
 import {mkdtemp, mkdir, realpath, rm} from "node:fs/promises";
 import path from "node:path";
 import {FuseDecision, FuseFilesystem} from "./FuseFilesystem.js";
 import type {FusePolicyEvent} from "./FuseFilesystem.js";
 import {resolveNativeExecutable} from "../../../runtime/NativeExecutable.js";
+import {ManagedChildProcess} from "../../../runtime/ManagedChildProcess.js";
 
 export const HOST_FILESYSTEM_ROOT = "/";
 
@@ -119,26 +119,32 @@ async function runWorker(
         "--",
         ...options.command,
     ];
-    const child = spawn(resolveNativeExecutable("pi-exec-clean-native"), [
-        "2",
-        "/usr/bin/bwrap",
-        ...bubblewrapArguments,
-    ], {
-        cwd: HOST_FILESYSTEM_ROOT,
-        env: options.env,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
+    const child = ManagedChildProcess.spawn({
+        name: "FUSE sandbox worker",
+        command: resolveNativeExecutable("pi-exec-clean-native"),
+        arguments: [
+            "2",
+            "/usr/bin/bwrap",
+            ...bubblewrapArguments,
+        ],
+        spawnOptions: {
+            cwd: HOST_FILESYSTEM_ROOT,
+            env: options.env,
+            detached: true,
+            stdio: ["ignore", "pipe", "pipe"],
+        },
+        terminateProcessGroup: true,
     });
-
-    child.stdout?.on("data", (data: Buffer) => options.onStdout?.(data));
-    child.stderr?.on("data", (data: Buffer) => options.onStderr?.(data));
 
     let aborted = false;
     let timedOut = false;
     const terminate = () => {
         abortDecisions();
-        killProcessGroup(child.pid);
+        child.terminate();
     };
+    child.stdout?.on("data", (data: Buffer) => options.onStdout?.(data));
+    child.stderr?.on("data", (data: Buffer) => options.onStderr?.(data));
+
     const onAbort = () => {
         aborted = true;
         terminate();
@@ -152,10 +158,7 @@ async function runWorker(
         }, options.timeoutSeconds * 1000);
 
     try {
-        const result = await new Promise<FuseRunResult>((resolve, reject) => {
-            child.once("error", reject);
-            child.once("close", (exitCode, signal) => resolve({exitCode, signal}));
-        });
+        const result = await child.wait();
         if (aborted || options.signal?.aborted) throw new Error("aborted");
         if (timedOut) throw new Error(`timeout:${options.timeoutSeconds}`);
         return result;
@@ -192,17 +195,4 @@ function decideUntilAborted(
         if (signal.aborted) return onAbort();
         void Promise.resolve().then(() => decide(event, signal)).then(finish, fail);
     });
-}
-
-function killProcessGroup(pid: number | undefined): void {
-    if (!pid) return;
-    try {
-        process.kill(-pid, "SIGKILL");
-    } catch {
-        try {
-            process.kill(pid, "SIGKILL");
-        } catch {
-            // The process already exited.
-        }
-    }
 }

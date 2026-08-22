@@ -281,7 +281,9 @@ function stdioTransportParams(config: McpStdioServerConfig): ConstructorParamete
         args: config.args,
         cwd: config.cwd ? path.resolve(config.cwd) : undefined,
         env: {...getDefaultEnvironment(), ...resolveStringRecord(config.env)},
-        stderr: "pipe",
+        // The SDK pipes stderr into an unread PassThrough whose source pipe has no error listener.
+        // Ignoring it preserves the existing quiet behavior without leaving ECONNRESET unhandled.
+        stderr: "ignore",
     };
 }
 

@@ -93,6 +93,7 @@ The tests verify production session-runtime ownership and decision-flow cancella
 
 - `src/pilot-extension.ts` — pi.lot's production Pi extension entry point and session lifecycle composition.
 - `src/runtime/PilotSessionRuntime.ts` — session-owned policy database, policy runtimes, and decision-flow manager.
+- `src/runtime/ManagedChildProcess.ts` — pi.lot's only direct production subprocess creation boundary; owns stdio errors, planned shutdown, process-group termination, and completion.
 - `src/tools/` — one folder per Pi tool, including the Bash/Read/Edit/Write overrides and each subagent tool.
 - `src/mcp/` — MCP configuration, stdio/HTTP clients, dynamic tools, commands, and session lifecycle.
 - `src/subagents/` — in-process child sessions, bounded orchestration, and toolkit ceilings; no Pi tool definitions.

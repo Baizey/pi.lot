@@ -77,7 +77,13 @@ test("MCP manager interoperates with a real stdio SDK server", async () => {
     const fixture = path.resolve("test/fixtures/mcp-stdio-server.mjs");
     const config: McpConfigSnapshot = {
         servers: {
-            stdio: server({command: process.execPath, args: [fixture], cwd: undefined}),
+            stdio: server({
+                command: process.execPath,
+                args: [fixture],
+                cwd: undefined,
+                connectTimeoutMs: 15_000,
+                listToolsTimeoutMs: 15_000,
+            }),
         },
     };
     const manager = new McpManager(config);

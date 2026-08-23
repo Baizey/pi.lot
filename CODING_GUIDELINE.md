@@ -2,6 +2,8 @@
 
 ## General things
 
+All the guidelines below are important. BUT. following the practices seen in the codebase may override them, consistency is also extremely important.
+
 - 4 space indent
 - Do not create barrel `UiDecisionFlowManager.ts` files. Use filenames that describe their responsibility.
 - Keep related behavior together. Prefer locality over extracting small helpers merely to reduce method length.

@@ -5,14 +5,14 @@ import {
     type EditToolInput,
     type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
-import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation.js";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
-import {ThemeColor} from "../../tui/Color.js";
+import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
+import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation";
+import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
+import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
-import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
-import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 
 const EDIT_PRESENTATION = {
     toolName: "edit",

@@ -1,20 +1,21 @@
 import {
     AgentToolResult,
-    createWriteToolDefinition,
+    createReadToolDefinition,
     type ExtensionAPI,
-    type WriteToolInput,
+    ReadToolDetails,
+    type ReadToolInput,
 } from "@earendil-works/pi-coding-agent";
-import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
-import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation.js";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
-import {ThemeColor} from "../../tui/Color.js";
+import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
+import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation";
+import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
+import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
-import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
-import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 
-const WRITE_PRESENTATION = {
-    toolName: "write",
+const READ_PRESENTATION = {
+    toolName: "read",
     arguments: [
         {
             key: "path",
@@ -22,14 +23,24 @@ const WRITE_PRESENTATION = {
             color: ThemeColor.text,
         },
         {
-            key: "content",
-            layout: ToolArgumentLayout.BLOCK,
-            direction: ToolTextDirection.HEAD,
+            key: "offset",
+            placement: ToolArgumentPlacement.TITLE_SECONDARY,
+            color: ThemeColor.warning,
+            format: (_, args) => {
+                const from = args.offset ?? 1;
+                if (args.limit === undefined) return `:${from}`;
+                return `:${from}-${from + args.limit - 1}`;
+            },
+        },
+        {
+            key: "limit",
+            placement: ToolArgumentPlacement.TITLE_SECONDARY,
+            consumedBy: "offset",
         },
     ],
-} satisfies ToolPresentationSpec<WriteToolInput>;
+} satisfies ToolPresentationSpec<ReadToolInput>;
 
-export class WriteTool {
+export class ReadTool {
     private registered = false;
 
     constructor(
@@ -41,20 +52,21 @@ export class WriteTool {
 
     register(): void {
         const runtimeProvider = this.runtimeProvider;
-        if (this.registered) throw new Error("Write tool is already registered");
+        if (this.registered) throw new Error("Read tool is already registered");
         this.registered = true;
 
-        const definition = createWriteToolDefinition(process.cwd());
+        const definition = createReadToolDefinition(process.cwd());
         if (!definition.renderCall || !definition.renderResult) {
-            throw new Error("Pi's Write tool renderers are unavailable");
+            throw new Error("Pi's Read tool renderers are unavailable");
         }
+
         const nativeRenderCall = definition.renderCall;
         const nativeRenderResult = definition.renderResult;
-        const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION);
+        const presentation = new ToolPresentationRenderer(READ_PRESENTATION);
         this.pi.registerTool({
             ...definition,
-            async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<undefined>> {
-                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_WRITE, signal);
+            async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<ReadToolDetails | undefined>> {
+                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_READ, signal);
                 if (result.matchedStatus === PolicyResponse.DENIED) {
                     throw new Error(result.toDenyMessage());
                 }
@@ -62,7 +74,7 @@ export class WriteTool {
             },
 
             renderCall: (args, theme, context) => {
-                this.displayRows.observe("write", args, context);
+                this.displayRows.observe("read", args, context);
                 const mode = resolveToolDisplayMode(context.expanded, context.state);
                 return mode === ToolDisplayMode.FULL
                     ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})

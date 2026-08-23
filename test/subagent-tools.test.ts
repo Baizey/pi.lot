@@ -4,10 +4,10 @@ import type {ExtensionContext, Theme, ToolDefinition} from "@earendil-works/pi-c
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolkitRegistry} from "../src/subagents/SubagentToolkitRegistry.js";
 import type {SubagentChildSessionFactory} from "../src/subagents/types.js";
-import {SubagentMessageTool} from "../src/tools/subagent-message/SubagentMessageTool.js";
-import {SubagentSpawnTool} from "../src/tools/subagent-spawn/SubagentSpawnTool.js";
-import {SubagentStatusTool} from "../src/tools/subagent-status/SubagentStatusTool.js";
-import {SubagentStopTool} from "../src/tools/subagent-stop/SubagentStopTool.js";
+import {SubagentMessageTool} from "../src/tools/subagent/SubagentMessageTool";
+import {SubagentSpawnTool} from "../src/tools/subagent/SubagentSpawnTool";
+import {SubagentStatusTool} from "../src/tools/subagent/SubagentStatusTool";
+import {SubagentStopTool} from "../src/tools/subagent/SubagentStopTool";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 
 const expectedNames = ["subagent_spawn", "subagent_status", "subagent_message", "subagent_stop"];

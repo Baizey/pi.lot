@@ -1,16 +1,16 @@
 import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
-import {SubagentCoordinator} from "../../subagents/SubagentCoordinator.js";
+import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
 import {
     type SubagentToolDetails,
     subagentToolResult,
 } from "../../subagents/SubagentToolResult";
 import {objectSchema, stringSchema} from "../types";
-import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
-import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation.js";
-import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
-import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
-import {ThemeColor} from "../../tui/Color.js";
+import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
+import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
+import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
+import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
+import {ThemeColor} from "../../tui/Color";
 
 type StopToolInput = {jobId: string};
 type CoordinatorProvider = () => SubagentCoordinator;

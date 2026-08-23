@@ -97,7 +97,7 @@ The tests verify production session-runtime ownership and decision-flow cancella
 - `src/tools/` — one folder per Pi tool, including the Bash/Read/Edit/Write overrides and each subagent tool.
 - `src/mcp/` — MCP configuration, stdio/HTTP clients, dynamic tools, commands, and session lifecycle.
 - `src/subagents/` — in-process child sessions, bounded orchestration, and toolkit ceilings; no Pi tool definitions.
-- `src/tools/builtin-bash/BashTool.ts` — built-in Bash override and combined FUSE/network lifecycle adapter.
+- `src/tools/builtin/BashTool.ts` — built-in Bash override and combined FUSE/network lifecycle adapter.
 - `src/policy/path/fuse/FusePathPolicyAuthorizer.ts` — FUSE event-to-path-policy mapping and user decisions.
 - `src/policy/PolicyRuntime.ts` — tool-call, session, and persisted path-policy ownership.
 - `src/tui/UiDecisionFlowManager.ts` — reusable multi-step policy decision UI and TUI shortcuts.

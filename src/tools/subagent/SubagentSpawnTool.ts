@@ -1,10 +1,10 @@
 import path from "node:path";
 import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
-import {SubagentCoordinator} from "../../subagents/SubagentCoordinator.js";
+import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
 import {
     SubagentRunMode,
     SubagentToolkit,
-} from "../../subagents/types.js";
+} from "../../subagents/types";
 import {
     type SubagentToolDetails,
     subagentToolResult,
@@ -16,16 +16,16 @@ import {
     objectSchema,
     stringSchema,
 } from "../types";
-import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation.js";
+import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {
     ToolArgumentLayout,
     ToolArgumentPlacement,
     ToolTextDirection,
-} from "../../tui/tool/ToolPresentation.js";
-import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
-import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
-import {ThemeColor} from "../../tui/Color.js";
+} from "../../tui/tool/ToolPresentation";
+import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
+import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
+import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
+import {ThemeColor} from "../../tui/Color";
 
 const DEFAULT_TIMEOUT_SECONDS = 900;
 

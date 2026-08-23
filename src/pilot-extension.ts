@@ -1,9 +1,9 @@
 import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {PilotSessionRuntime, PilotSessionRuntimeInterface} from "./runtime/PilotSessionRuntime.js";
-import {BashTool} from "./tools/builtin-bash/BashTool.js";
-import {EditTool} from "./tools/builtin-edit/EditTool.js";
-import {ReadTool} from "./tools/builtin-read/ReadTool.js";
-import {WriteTool} from "./tools/builtin-write/WriteTool.js";
+import {BashTool} from "./tools/builtin/BashTool";
+import {EditTool} from "./tools/builtin/EditTool";
+import {ReadTool} from "./tools/builtin/ReadTool";
+import {WriteTool} from "./tools/builtin/WriteTool";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
@@ -12,10 +12,10 @@ import {
     SubagentRuntime,
     type SubagentRuntimeInterface,
 } from "./subagents/SubagentRuntime.js";
-import {SubagentSpawnTool} from "./tools/subagent-spawn/SubagentSpawnTool.js";
-import {SubagentStatusTool} from "./tools/subagent-status/SubagentStatusTool.js";
-import {SubagentMessageTool} from "./tools/subagent-message/SubagentMessageTool.js";
-import {SubagentStopTool} from "./tools/subagent-stop/SubagentStopTool.js";
+import {SubagentSpawnTool} from "./tools/subagent/SubagentSpawnTool";
+import {SubagentStatusTool} from "./tools/subagent/SubagentStatusTool";
+import {SubagentMessageTool} from "./tools/subagent/SubagentMessageTool";
+import {SubagentStopTool} from "./tools/subagent/SubagentStopTool";
 import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
 import {ViewFullToolCommand} from "./commands/ViewFullToolCommand.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";

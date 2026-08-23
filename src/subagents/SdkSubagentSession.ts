@@ -9,6 +9,7 @@ import {
     type ExtensionContext,
     type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type {PolicyRuntime} from "../policy/PolicyRuntime.js";
 import type {
     SubagentChildSession,
     SubagentChildSessionFactory,
@@ -23,7 +24,11 @@ type AgentSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
     private modelRuntime: Promise<ModelRuntime> | undefined;
 
-    constructor(private readonly rootContext: ExtensionContext) {}
+    constructor(
+        private readonly rootContext: ExtensionContext,
+        private readonly policyRuntime: PolicyRuntime,
+    ) {
+    }
 
     async create(
         request: SubagentRequest,
@@ -54,27 +59,52 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         await resourceLoader.reload();
         if (signal.aborted) throw abortError();
 
-        const {session} = await createAgentSession({
-            cwd: request.cwd,
-            model: resolved.model,
-            thinkingLevel: resolved.thinkingLevel ?? request.thinkingLevel ?? this.rootContext.thinkingLevel,
-            modelRuntime,
-            settingsManager,
-            sessionManager: SessionManager.inMemory(request.cwd),
-            resourceLoader,
-            noTools: "builtin",
-            customTools: tools,
-        });
+        const sessionManager = SessionManager.inMemory(request.cwd);
+        const agentIdentifier = sessionManager.getSessionId();
+        this.policyRuntime.registerPolicyLogic(agentIdentifier, request.parentAgentIdentifier);
+        let session: AgentSession;
+        try {
+            const created = await createAgentSession({
+                cwd: request.cwd,
+                model: resolved.model,
+                thinkingLevel: resolved.thinkingLevel ?? request.thinkingLevel ?? this.rootContext.thinkingLevel,
+                modelRuntime,
+                settingsManager,
+                sessionManager,
+                resourceLoader,
+                noTools: "builtin",
+                customTools: tools,
+            });
+            session = created.session;
+        } catch (error) {
+            this.policyRuntime.removePolicyLogic(agentIdentifier);
+            throw error;
+        }
         if (signal.aborted) {
-            session.dispose();
+            try {
+                session.dispose();
+            } finally {
+                this.policyRuntime.removePolicyLogic(agentIdentifier);
+            }
             throw abortError();
         }
-        return new SdkSubagentSession(session);
+        return new SdkSubagentSession(
+            session,
+            agentIdentifier,
+            this.policyRuntime,
+        );
     }
 }
 
 class SdkSubagentSession implements SubagentChildSession {
-    constructor(private readonly session: AgentSession) {}
+    private disposed = false;
+
+    constructor(
+        private readonly session: AgentSession,
+        private readonly agentIdentifier: string,
+        private readonly policyRuntime: PolicyRuntime,
+    ) {
+    }
 
     async prompt(
         task: string,
@@ -122,7 +152,13 @@ class SdkSubagentSession implements SubagentChildSession {
     }
 
     dispose(): void {
-        this.session.dispose();
+        if (this.disposed) return;
+        this.disposed = true;
+        try {
+            this.session.dispose();
+        } finally {
+            this.policyRuntime.removePolicyLogic(this.agentIdentifier);
+        }
     }
 }
 

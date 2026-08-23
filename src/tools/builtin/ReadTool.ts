@@ -66,7 +66,12 @@ export class ReadTool {
         this.pi.registerTool({
             ...definition,
             async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<ReadToolDetails | undefined>> {
-                const result = await runtimeProvider().policyRuntime.once(params.path, PolicyAccessType.FS_READ, signal);
+                const result = await runtimeProvider().policyRuntime.once(
+                    ctx.sessionManager.getSessionId(),
+                    params.path,
+                    PolicyAccessType.FS_READ,
+                    signal,
+                );
                 if (result.matchedStatus === PolicyResponse.DENIED) {
                     throw new Error(result.toDenyMessage());
                 }

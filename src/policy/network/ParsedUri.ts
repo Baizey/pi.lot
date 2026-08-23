@@ -1,5 +1,7 @@
 import {isIP} from "node:net";
 
+export const UNIVERSAL_NETWORK_POLICY_PATTERN = "*";
+
 export class ParsedUri {
     readonly raw: string
     readonly host: string
@@ -113,7 +115,9 @@ export class ParsedUri {
     isSubdomainOf(other: ParsedUri | string): boolean {
         other = typeof other === "string" ? new ParsedUri(other) : other
 
-        if (!this.isValid || !other.isValid) return false
+        if (!this.isValid || this.raw === UNIVERSAL_NETWORK_POLICY_PATTERN) return false
+        if (other.raw === UNIVERSAL_NETWORK_POLICY_PATTERN) return true
+        if (!other.isValid) return false
 
         // Exact match required for localhost & IP
         if (this.port !== other.port) return false

@@ -132,6 +132,7 @@ function createDefinition(
             const mode = input.mode ?? SubagentRunMode.SYNC;
             const cwd = path.resolve(ctx.cwd, input.cwd ?? ".");
             const result = await coordinator().spawn({
+                parentAgentIdentifier: ctx.sessionManager.getSessionId(),
                 task: input.task,
                 role: input.role,
                 mode,
@@ -164,6 +165,6 @@ function createDefinition(
     };
 }
 
-function canonicalModel(model: {provider: string; id: string} | undefined): string | undefined {
+function canonicalModel(model: { provider: string; id: string } | undefined): string | undefined {
     return model ? `${model.provider}/${model.id}` : undefined;
 }

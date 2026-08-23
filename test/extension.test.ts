@@ -30,6 +30,7 @@ const expectedToolNames = [
 
 function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
     return new PolicyRuntime(
+        "extension-test-agent",
         {
             initializeSchema: () => undefined,
             loadPolicies: () => [],
@@ -111,7 +112,6 @@ test("the production extension installs built-in overrides immediately but defer
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
-        createSubagentRuntime: createNoopSubagentRuntime,
     }).register();
 
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
@@ -147,7 +147,10 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {setToolsExpanded() {}},
+        ui: {
+            setToolsExpanded() {
+            }
+        },
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -156,14 +159,15 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
-        createSubagentRuntime: createNoopSubagentRuntime,
         createSessionRuntime(runtimeContext) {
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
-                setFullNetworkInspection() {},
-                close() {},
+                setFullNetworkInspection() {
+                },
+                close() {
+                },
             };
         },
     }).register();
@@ -328,7 +332,6 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
-        createSubagentRuntime: createNoopSubagentRuntime,
         createSessionRuntime(runtimeContext) {
             const queue = new UiDecisionFlowQueue();
             return {
@@ -489,7 +492,6 @@ test("one session runtime owns the production tool overrides until session shutd
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
-        createSubagentRuntime: createNoopSubagentRuntime,
         createSessionRuntime(runtimeContext) {
             runtimeCreations++;
             const policy = createPolicyRuntime(runtimeContext);
@@ -563,18 +565,6 @@ function createNoopMcpExtension() {
         async stopSession() {
         },
         toolDefinitions: () => [],
-    };
-}
-
-function createNoopSubagentRuntime() {
-    return {
-        async startSession() {
-        },
-        async stopSession() {
-        },
-        coordinator(): never {
-            throw new Error("No coordinator in extension tests");
-        },
     };
 }
 

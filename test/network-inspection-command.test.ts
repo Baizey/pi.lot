@@ -10,7 +10,7 @@ import {PilotSessionRuntime} from "../src/runtime/PilotSessionRuntime.js";
 import type {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 
-type Completion = {value: string; label: string};
+type Completion = { value: string; label: string };
 type RegisteredCommand = {
     getArgumentCompletions?: (prefix: string) => Completion[] | null | Promise<Completion[] | null>;
     handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -18,9 +18,15 @@ type RegisteredCommand = {
 
 test("session runtime enables full network inspection by default", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-network-inspection-runtime-"));
-    const runtime = new PilotSessionRuntime({cwd: directory} as ExtensionContext, {
+    const runtime = new PilotSessionRuntime({
+        cwd: directory,
+        sessionManager: {getSessionId: () => "network-inspection-test-agent"},
+    } as ExtensionContext, {
         openDatabase: () => SqliteDatabase.test(false, path.join(directory, "pilot.sqlite")),
-        policyDefaultsStore: {load: () => structuredClone(initialPolicyDefaults), save() {}},
+        policyDefaultsStore: {
+            load: () => structuredClone(initialPolicyDefaults), save() {
+            }
+        },
     });
     try {
         assert.equal(runtime.fullNetworkInspection, true);
@@ -47,7 +53,7 @@ test("network-inspection command reports and changes the session flag", async ()
         runtimeRequests++;
         return runtime;
     });
-    const notifications: Array<{message: string; type: string}> = [];
+    const notifications: Array<{ message: string; type: string }> = [];
     const context = {
         ui: {
             notify(message: string, type: string) {

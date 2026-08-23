@@ -62,7 +62,8 @@ export class WebSearchTool {
         private readonly pi: ExtensionAPI,
         private readonly runtimeProvider: () => PilotSessionRuntimeInterface,
         private readonly displayRows: ToolDisplayRows,
-    ) {}
+    ) {
+    }
 
     register(): void {
         if (this.registered) throw new Error("Web-search tool is already registered");
@@ -87,7 +88,7 @@ export class WebSearchTool {
                 const input = params as WebSearchInput;
                 const response = await webSearch(
                     input,
-                    this.runtimeProvider().policyRuntime.beginToolCall(),
+                    this.runtimeProvider().policyRuntime.beginToolCall(ctx.sessionManager.getSessionId()),
                     ctx,
                     signal,
                 );

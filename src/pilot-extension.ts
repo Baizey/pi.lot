@@ -10,7 +10,6 @@ import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {
     type SubagentCapabilities,
     SubagentRuntime,
-    type SubagentRuntimeInterface,
 } from "./subagents/SubagentRuntime.js";
 import {SubagentSpawnTool} from "./tools/subagent/SubagentSpawnTool";
 import {SubagentStatusTool} from "./tools/subagent/SubagentStatusTool";
@@ -23,7 +22,6 @@ import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     createMcpExtension?: (pi: ExtensionAPI, displayRows: ToolDisplayRows) => McpExtensionInterface;
-    createSubagentRuntime?: (capabilities: SubagentCapabilities) => SubagentRuntimeInterface;
 };
 
 // noinspection JSUnusedGlobalSymbols
@@ -36,7 +34,7 @@ export class PilotExtension {
     private readonly displayRows = new ToolDisplayRows();
     private readonly bashTool: BashTool;
     private readonly mcpExtension: McpExtensionInterface;
-    private readonly subagentRuntime: SubagentRuntimeInterface;
+    private readonly subagentRuntime: SubagentRuntime;
     private readonly subagentSpawnTool: SubagentSpawnTool;
     private readonly subagentStatusTool: SubagentStatusTool;
     private readonly subagentMessageTool: SubagentMessageTool;
@@ -65,10 +63,7 @@ export class PilotExtension {
             mcp: () => this.mcpExtension.toolDefinitions(),
             delegate: () => this.subagentToolDefinitions(),
         };
-        this.subagentRuntime = (
-            options.createSubagentRuntime
-            ?? ((childCapabilities) => new SubagentRuntime(childCapabilities))
-        )(capabilities);
+        this.subagentRuntime = new SubagentRuntime(capabilities);
     }
 
     register(): void {
@@ -121,7 +116,7 @@ export class PilotExtension {
 
     private async startOwnedExtensions(ctx: ExtensionContext): Promise<void> {
         await this.mcpExtension.startSession(ctx);
-        await this.subagentRuntime.startSession(ctx);
+        await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
     }
 
     private async stopOwnedExtensions(): Promise<void> {

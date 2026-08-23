@@ -1,13 +1,12 @@
 import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
-import type {ResponseDefaults} from "../policy/types.js";
-import {ResponseType} from "../policy/types.js";
-import {initialPolicyDefaults} from "../policy/defaults.js";
+import {PolicyFallbackResponse} from "../policy/types.js";
+import {initialPolicyDefaults, ResponseDefaults} from "../policy/defaults.js";
 import type {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime";
 
 const COMMAND_NAME = "policy-defaults";
 const ACTIONS = ["save", "reset"] as const;
 const AREAS = ["all", ...Object.keys(initialPolicyDefaults)];
-const RESPONSES = Object.values(ResponseType);
+const RESPONSES = Object.values(PolicyFallbackResponse);
 const FIRST_ARGUMENTS = [...ACTIONS, ...RESPONSES];
 const USAGE = `Usage: /${COMMAND_NAME} [save|reset|<${RESPONSES.join("|")}> <${AREAS.join("|")}>]` as const;
 
@@ -56,10 +55,10 @@ export class PolicyDefaultsCommand {
                 const [response, key] = args;
                 if (key === "all") {
                     Object.keys(initialPolicyDefaults).forEach(key => {
-                        provider.policyRuntime.setDefaultResponse(key as keyof ResponseDefaults, response as ResponseType);
+                        provider.policyRuntime.setDefaultResponse(key as keyof ResponseDefaults, response as PolicyFallbackResponse);
                     })
                 } else {
-                    provider.policyRuntime.setDefaultResponse(key as keyof ResponseDefaults, response as ResponseType);
+                    provider.policyRuntime.setDefaultResponse(key as keyof ResponseDefaults, response as PolicyFallbackResponse);
                 }
 
                 ctx.ui.notify(`Policy default ${key} = ${response} for this session.`, "info");

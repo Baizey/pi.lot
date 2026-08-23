@@ -64,19 +64,25 @@ export enum PolicyAccessType {
     SMTP_ACCESS = "SMTP",
 }
 
-export enum ResponseType {
+export enum PolicyFallbackResponse {
     allow = "allow",
     deny = "deny",
     ask_user = "ask_user",
     ask_llm = "ask_llm", // not implemented
 }
 
-export type ResponseDefaults = {
-    fs_read: ResponseType;
-    fs_write: ResponseType;
-    web_read: ResponseType;
-    web_write: ResponseType;
-    web_extra: ResponseType;
+export enum PolicyArea {
+    fs_read = "fs_read",
+    fs_write = "fs_write",
+    web_read = "web_read",
+    web_write = "web_write",
+    web_tcp = "web_tcp",
+    web_dns = "web_dns",
+    web_udp = "web_udp",
+    web_ssh = "web_ssh",
+    web_websocket = "web_websocket",
+    web_grpc = "web_grpc",
+    web_smtp = "web_smtp",
 }
 
 export type PolicySnapshot = {

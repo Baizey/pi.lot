@@ -8,68 +8,35 @@ import {
     PolicyResponse,
     PolicyResult,
     PolicyStatus,
-    resolveUri,
-    ResponseDefaults,
-    ResponseType
+    resolveUri
 } from "./types";
 import path from "node:path";
 import {ParsedUri} from "./network/ParsedUri";
 
-export type PathPolicyLogicOptions = {
+export type PathPolicyEngineOptions = {
+    agentIdentifier: string;
+    parentAgentIdentifier?: string;
     policies?: Policy[];
 };
 
-export const defaultPolicyAreas: ResponseDefaults = {
-    fs_read: ResponseType.ask_user,
-    fs_write: ResponseType.ask_user,
-    web_read: ResponseType.ask_user,
-    web_write: ResponseType.ask_user,
-    web_extra: ResponseType.ask_user,
-} as const
-
-export class PolicyLogic {
+export class PolicyEngine {
     private readonly policies: Policy[] = [];
+    private readonly agentIdentifier: string;
+    private readonly parentAgentIdentifier: string | undefined;
 
-    constructor(options: PathPolicyLogicOptions = {}) {
+    constructor(options: PathPolicyEngineOptions) {
+        this.agentIdentifier = options.agentIdentifier;
+        this.parentAgentIdentifier = options.parentAgentIdentifier;
         if (options.policies) this.addPolicies(options.policies);
     }
 
     evaluate(
         inputUri: string,
-        accessType: PolicyAccessType,
-        defaultResponses?: ResponseDefaults
+        accessType: PolicyAccessType
     ): PolicyResult | null {
         const evaluatedUri = resolveUri(accessType, inputUri);
         const policy = this.findPolicy(evaluatedUri, accessType);
-
-        if (!policy) {
-            switch (this.findDefaultAction(accessType, defaultResponses)) {
-                case ResponseType.ask_user:
-                    return null
-                case ResponseType.allow:
-                    return PolicyResult.of({
-                        evaluatedUri: evaluatedUri,
-                        evaluatedAccessType: accessType,
-                        matchedPattern: "(none)",
-                        matchedLifetime: PolicyLifetime.ONCE,
-                        matchedStatus: PolicyResponse.ALLOWED,
-                        matchedReason: "No matching policy found. denied by default, you cannot access this",
-                        resolutionSource: PolicyResolutionSource.SYSTEM,
-                    })
-                case ResponseType.deny:
-                    return PolicyResult.of({
-                        evaluatedUri: evaluatedUri,
-                        evaluatedAccessType: accessType,
-                        matchedPattern: "(none)",
-                        matchedLifetime: PolicyLifetime.ONCE,
-                        matchedStatus: PolicyResponse.DENIED,
-                        matchedReason: "No matching policy found. denied by default, you cannot access this",
-                        resolutionSource: PolicyResolutionSource.SYSTEM,
-                    })
-                case ResponseType.ask_llm:
-                    throw new Error(`ask llm is not supported`)
-            }
-        }
+        if (!policy) return null
 
         const status = policy.info[accessType] as PolicyStatus;
         return PolicyResult.of({
@@ -81,28 +48,6 @@ export class PolicyLogic {
             matchedReason: status.reason,
             resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY,
         });
-    }
-
-    private findDefaultAction(accessType: PolicyAccessType, defaults?: ResponseDefaults) {
-        defaults ??= defaultPolicyAreas;
-        switch (accessType) {
-            case PolicyAccessType.FS_READ:
-                return defaults.fs_read
-            case PolicyAccessType.FS_WRITE:
-                return defaults.fs_write;
-            case PolicyAccessType.HTTP_GET:
-                return defaults.web_read;
-            case PolicyAccessType.HTTP_ACCESS:
-            case PolicyAccessType.HTTP_HEAD:
-            case PolicyAccessType.HTTP_PATCH:
-            case PolicyAccessType.HTTP_DELETE:
-            case PolicyAccessType.HTTP_PUT:
-            case PolicyAccessType.HTTP_OPTIONS:
-            case PolicyAccessType.HTTP_POST:
-                return defaults.web_write;
-            default:
-                return defaults.web_extra;
-        }
     }
 
     addPolicies(policies: Policy[]): void {

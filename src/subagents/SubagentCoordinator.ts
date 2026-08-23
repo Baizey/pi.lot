@@ -207,11 +207,18 @@ export class SubagentCoordinator {
     private validateRequest(request: SubagentRequest): SubagentRequest {
         const mode = Object.values(SubagentRunMode).includes(request.mode)
             ? request.mode
-            : (() => { throw new Error(`Unsupported subagent mode: ${String(request.mode)}`); })();
+            : (() => {
+                throw new Error(`Unsupported subagent mode: ${String(request.mode)}`);
+            })();
         const toolkits = uniqueToolkits(request.toolkits);
         this.toolkits.resolve(toolkits);
         return {
             ...request,
+            parentAgentIdentifier: requiredText(
+                request.parentAgentIdentifier,
+                "parent agent identifier",
+                500,
+            ),
             task: requiredText(request.task, "task", 100_000),
             role: requiredText(request.role, "role", 120),
             mode,

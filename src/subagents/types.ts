@@ -23,6 +23,7 @@ export enum SubagentJobStatus {
 }
 
 export type SubagentRequest = {
+    parentAgentIdentifier: string;
     task: string;
     role: string;
     mode: SubagentRunMode;
@@ -65,7 +66,9 @@ export interface SubagentChildSession {
         signal: AbortSignal,
         onUpdate?: (update: SubagentChildUpdate) => void,
     ): Promise<string>;
+
     abort(): Promise<void>;
+
     dispose(): void;
 }
 

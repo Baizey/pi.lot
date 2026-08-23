@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
 import {PolicyDefaultsCommand} from "../src/commands/PolicyDefaultsCommand.js";
-import type {ResponseDefaults} from "../src/policy/types.js";
-import {ResponseType} from "../src/policy/types.js";
+import {PolicyFallbackResponse} from "../src/policy/types.js";
 import type {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime.js";
 import {initialPolicyDefaults} from "../src/policy/defaults.js";
+import type {ResponseDefaults} from "../src/policy/defaults.js";
 
 type Completion = {
     value: string;
@@ -45,12 +45,28 @@ test("policy-defaults autocompletes responses and full response/key arguments", 
             "allow fs_write",
             "allow web_read",
             "allow web_write",
-            "allow web_extra",
+            "allow web_dns",
+            "allow web_grpc",
+            "allow web_smtp",
+            "allow web_ssh",
+            "allow web_tcp",
+            "allow web_udp",
+            "allow web_websocket",
         ],
     );
     assert.deepEqual(
         (await complete(command, "deny web_"))?.map((item) => item.value),
-        ["deny web_read", "deny web_write", "deny web_extra"],
+        [
+            "deny web_read",
+            "deny web_write",
+            "deny web_dns",
+            "deny web_grpc",
+            "deny web_smtp",
+            "deny web_ssh",
+            "deny web_tcp",
+            "deny web_udp",
+            "deny web_websocket",
+        ],
     );
     assert.equal((await complete(command, "ask_llm "))?.[0]?.value, "ask_llm all");
     assert.deepEqual(await complete(command, "allow fs_read "), []);
@@ -59,7 +75,7 @@ test("policy-defaults autocompletes responses and full response/key arguments", 
 
 test("policy-defaults reports and changes session defaults", async () => {
     const defaults = initialDefaults();
-    const changes: Array<[keyof ResponseDefaults, ResponseType]> = [];
+    const changes: Array<[keyof ResponseDefaults, PolicyFallbackResponse]> = [];
     const command = registeredCommand(() => runtime(defaults, (key, response) => {
         changes.push([key, response]);
     }));
@@ -76,16 +92,16 @@ test("policy-defaults reports and changes session defaults", async () => {
     assert.match(notifications.at(-1)?.message ?? "", /fs_read = allow/);
 
     await command.handler("ALLOW FS_READ", ctx);
-    assert.deepEqual(changes, [["fs_read", ResponseType.allow]]);
-    assert.equal(defaults.fs_read, ResponseType.allow);
+    assert.deepEqual(changes, [["fs_read", PolicyFallbackResponse.allow]]);
+    assert.equal(defaults.fs_read, PolicyFallbackResponse.allow);
     assert.deepEqual(notifications.at(-1), {
         message: "Policy default fs_read = allow for this session.",
         type: "info",
     });
 
     await command.handler("ask_llm fs_read", ctx);
-    assert.deepEqual(changes.at(-1), ["fs_read", ResponseType.ask_llm]);
-    assert.equal(defaults.fs_read, ResponseType.ask_llm);
+    assert.deepEqual(changes.at(-1), ["fs_read", PolicyFallbackResponse.ask_llm]);
+    assert.equal(defaults.fs_read, PolicyFallbackResponse.ask_llm);
     assert.deepEqual(notifications.at(-1), {
         message: "Policy default fs_read = ask_llm for this session.",
         type: "info",
@@ -115,7 +131,7 @@ test("policy-defaults saves and resets active defaults", async () => {
     await command.handler("allow all", ctx);
     await command.handler("reset", ctx);
     assert.deepEqual(defaults, Object.fromEntries(
-        Object.keys(initialPolicyDefaults).map((key) => [key, ResponseType.deny]),
+        Object.keys(initialPolicyDefaults).map((key) => [key, PolicyFallbackResponse.deny]),
     ));
     assert.deepEqual(notifications.at(-1), {
         message: "Reset policy defaults.",
@@ -152,13 +168,13 @@ function initialDefaults(): ResponseDefaults {
 
 function runtime(
     defaultResponses: ResponseDefaults,
-    onChange?: (key: keyof ResponseDefaults, response: ResponseType) => void,
+    onChange?: (key: keyof ResponseDefaults, response: PolicyFallbackResponse) => void,
 ): PilotSessionRuntimeInterface {
     let savedDefaults: ResponseDefaults | null = null;
     return {
         policyRuntime: {
             defaultResponses,
-            setDefaultResponse(key: keyof ResponseDefaults, response: ResponseType) {
+            setDefaultResponse(key: keyof ResponseDefaults, response: PolicyFallbackResponse) {
                 onChange?.(key, response);
                 defaultResponses[key] = response;
             },

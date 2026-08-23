@@ -17,7 +17,9 @@ const bashTool = {
     label: "bash",
     description: "test bash",
     parameters: {type: "object", properties: {}},
-    async execute() { return {content: [{type: "text", text: "ok"}], details: {}}; },
+    async execute() {
+        return {content: [{type: "text", text: "ok"}], details: {}};
+    },
 } as unknown as ToolDefinition<any, any>;
 
 function toolkits(): SubagentToolkitRegistry {
@@ -30,6 +32,7 @@ function toolkits(): SubagentToolkitRegistry {
 
 function request(overrides: Partial<SubagentRequest> = {}): SubagentRequest {
     return {
+        parentAgentIdentifier: "subagent-coordinator-test-root",
         task: "inspect the change",
         role: "reviewer",
         mode: SubagentRunMode.SYNC,
@@ -131,7 +134,8 @@ test("turn deadlines abort the child and report a timed-out job", async () => {
     let session: FakeSession | undefined;
     const factory: SubagentChildSessionFactory = {
         async create() {
-            session = new FakeSession((_task, signal) => abortable(new Promise<string>(() => {}), signal));
+            session = new FakeSession((_task, signal) => abortable(new Promise<string>(() => {
+            }), signal));
             return session;
         },
     };
@@ -152,7 +156,8 @@ test("coordinator shutdown aborts all running children before awaiting them", as
     const sessions: FakeSession[] = [];
     const factory: SubagentChildSessionFactory = {
         async create() {
-            const session = new FakeSession((_task, signal) => abortable(new Promise<string>(() => {}), signal));
+            const session = new FakeSession((_task, signal) => abortable(new Promise<string>(() => {
+            }), signal));
             sessions.push(session);
             return session;
         },
@@ -208,13 +213,15 @@ class FakeSession implements SubagentChildSession {
 
     constructor(
         private readonly respond: (task: string, signal: AbortSignal) => Promise<string>,
-    ) {}
+    ) {
+    }
 
     prompt(task: string, signal: AbortSignal): Promise<string> {
         return this.respond(task, signal);
     }
 
-    async abort() {}
+    async abort() {
+    }
 
     dispose(): void {
         this.disposed = true;
@@ -228,7 +235,9 @@ type Deferred<T> = {
 
 function deferred<T>(): Deferred<T> {
     let resolve!: (value: T) => void;
-    const promise = new Promise<T>((complete) => { resolve = complete; });
+    const promise = new Promise<T>((complete) => {
+        resolve = complete;
+    });
     return {promise, resolve};
 }
 

@@ -47,7 +47,12 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager})
 
             const defaultsStore = options.policyDefaultsStore ?? new PolicyDefaultJsonStorage();
-            this.policyRuntime = new PolicyRuntime(policyDao, pathDecisionFlow, defaultsStore);
+            this.policyRuntime = new PolicyRuntime(
+                ctx.sessionManager.getSessionId(),
+                policyDao,
+                pathDecisionFlow,
+                defaultsStore,
+            );
             this.decisionFlows = uiManager;
             this.hostCredentialIpc = (
                 options.credentialIpcConfigStore ?? new HostCredentialIpcConfigStore()

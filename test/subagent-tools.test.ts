@@ -15,7 +15,9 @@ const expectedNames = ["subagent_spawn", "subagent_status", "subagent_message", 
 test("each subagent tool registers independently and delegates only to the coordinator", async () => {
     const registered: ToolDefinition<any, any>[] = [];
     const pi = {
-        registerTool(tool: ToolDefinition<any, any>) { registered.push(tool); },
+        registerTool(tool: ToolDefinition<any, any>) {
+            registered.push(tool);
+        },
     };
     let coordinator: SubagentCoordinator | undefined;
     const coordinatorProvider = () => {
@@ -83,11 +85,16 @@ test("each subagent tool registers independently and delegates only to the coord
     await assert.rejects(invoke(registered[0]!, {task: "before", role: "reviewer"}), /session is not available/);
 
     const factory: SubagentChildSessionFactory = {
-        async create() {
+        async create(request) {
+            assert.equal(request.parentAgentIdentifier, "subagent-tool-test-agent");
             return {
-                async prompt(task) { return `completed: ${task}`; },
-                async abort() {},
-                dispose() {},
+                async prompt(task) {
+                    return `completed: ${task}`;
+                },
+                async abort() {
+                },
+                dispose() {
+                },
             };
         },
     };
@@ -116,7 +123,8 @@ function renderContext(
         state,
         toolCallId: "test-call",
         cwd: process.cwd(),
-        invalidate() {},
+        invalidate() {
+        },
         executionStarted: true,
         argsComplete: true,
         isPartial: false,
@@ -140,14 +148,17 @@ function invoke(tool: ToolDefinition<any, any>, params: unknown): Promise<unknow
         params,
         undefined,
         undefined,
-        {cwd: process.cwd()} as ExtensionContext,
+        {
+            cwd: process.cwd(),
+            sessionManager: {getSessionId: () => "subagent-tool-test-agent"},
+        } as ExtensionContext,
     );
 }
 
 function textResult(result: unknown): string {
     if (!result || typeof result !== "object" || !("content" in result) || !Array.isArray(result.content)) return "";
     return result.content
-        .filter((part): part is {type: "text"; text: string} => (
+        .filter((part): part is { type: "text"; text: string } => (
             typeof part === "object"
             && part !== null
             && "type" in part

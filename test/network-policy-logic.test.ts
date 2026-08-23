@@ -4,18 +4,27 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {defaultPolicyAreas, PolicyLogic} from "../src/policy/PolicyLogic.js";
+import {PolicyEngine} from "../src/policy/PolicyEngine";
 import {initialPolicyDefaults} from "../src/policy/defaults.js";
 import {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
 import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
-import {ParsedUri} from "../src/policy/network/ParsedUri.js";
+import {ParsedUri, UNIVERSAL_NETWORK_POLICY_PATTERN} from "../src/policy/network/ParsedUri.js";
 import type {Policy} from "../src/policy/types.js";
-import {PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse, ResponseType} from "../src/policy/types.js";
+import {
+    PolicyAccessType,
+    PolicyArea,
+    PolicyLifetime,
+    PolicyResolutionSource,
+    PolicyResponse,
+    PolicyFallbackResponse
+} from "../src/policy/types.js";
 import {PilotSessionRuntime} from "../src/runtime/PilotSessionRuntime.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
+
+const TEST_AGENT_IDENTIFIER = "network-policy-test-agent";
 
 function policy(
     uri: string,
@@ -27,7 +36,7 @@ function policy(
     return {
         pattern: uri,
         info: {
-            [accessType]: PolicyLogic.createStatus(accessType, lifetime, status, reason),
+            [accessType]: PolicyEngine.createStatus(accessType, lifetime, status, reason),
         },
     };
 }
@@ -37,8 +46,10 @@ function networkPolicyDao(
 ): PolicyDao {
     return {
         loadPolicies: () => [],
-        upsertPolicies() {},
-        deletePolicy() {},
+        upsertPolicies() {
+        },
+        deletePolicy() {
+        },
         ...overrides,
     } as unknown as PolicyDao;
 }
@@ -60,7 +71,8 @@ function scriptedDecisionFlow(choices: PolicyChoice[]): {
 }
 
 test("a URI and access type identify one policy whose properties can be replaced", () => {
-    const logic = new PolicyLogic({
+    const logic = new PolicyEngine({
+        agentIdentifier: TEST_AGENT_IDENTIFIER,
         policies: [
             policy(
                 "https://API.Example.com:0443/v1?ignored=true",
@@ -94,7 +106,7 @@ test("a URI and access type identify one policy whose properties can be replaced
 });
 
 test("different access types coexist at one URI", () => {
-    const logic = new PolicyLogic();
+    const logic = new PolicyEngine({agentIdentifier: TEST_AGENT_IDENTIFIER});
     logic.addPolicies([
         policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "read"),
         policy("example.com", PolicyAccessType.HTTP_POST, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "write"),
@@ -107,7 +119,8 @@ test("different access types coexist at one URI", () => {
 });
 
 test("the most-specific hostname or path policy wins", () => {
-    const logic = new PolicyLogic({
+    const logic = new PolicyEngine({
+        agentIdentifier: TEST_AGENT_IDENTIFIER,
         policies: [
             policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "domain"),
             policy("api.example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "host"),
@@ -127,8 +140,36 @@ test("the most-specific hostname or path policy wins", () => {
     assert.equal(logic.evaluate("notexample.com/resource", PolicyAccessType.HTTP_GET), null);
 });
 
+test("the universal network pattern applies only after concrete valid targets", () => {
+    const logic = new PolicyEngine({
+        agentIdentifier: TEST_AGENT_IDENTIFIER,
+        policies: [
+            policy(
+                UNIVERSAL_NETWORK_POLICY_PATTERN,
+                PolicyAccessType.HTTP_GET,
+                PolicyLifetime.SESSION,
+                PolicyResponse.ALLOWED,
+                "fallback",
+            ),
+            policy(
+                "example.com",
+                PolicyAccessType.HTTP_GET,
+                PolicyLifetime.SESSION,
+                PolicyResponse.DENIED,
+                "specific",
+            ),
+        ],
+    });
+
+    assert.equal(logic.evaluate("other.example", PolicyAccessType.HTTP_GET)?.matchedReason, "fallback");
+    assert.equal(logic.evaluate("example.com", PolicyAccessType.HTTP_GET)?.matchedReason, "specific");
+    assert.equal(logic.evaluate("example.com:invalid", PolicyAccessType.HTTP_GET), null);
+    assert.equal(logic.evaluate(UNIVERSAL_NETWORK_POLICY_PATTERN, PolicyAccessType.HTTP_GET), null);
+});
+
 test("ports are exact and path scopes respect segment boundaries", () => {
-    const logic = new PolicyLogic({
+    const logic = new PolicyEngine({
+        agentIdentifier: TEST_AGENT_IDENTIFIER,
         policies: [
             policy("example.com:443", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "port"),
             policy("api.example.com:443/v1", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "path"),
@@ -142,7 +183,8 @@ test("ports are exact and path scopes respect segment boundaries", () => {
 });
 
 test("IPv6 policy targets retain bracketed ports", () => {
-    const logic = new PolicyLogic({
+    const logic = new PolicyEngine({
+        agentIdentifier: TEST_AGENT_IDENTIFIER,
         policies: [policy(
             "[2001:db8::8]:443",
             PolicyAccessType.TCP_ACCESS,
@@ -159,7 +201,8 @@ test("IPv6 policy targets retain bracketed ports", () => {
 });
 
 test("deletion is per access type and persistence includes only local and global policies", () => {
-    const logic = new PolicyLogic({
+    const logic = new PolicyEngine({
+        agentIdentifier: TEST_AGENT_IDENTIFIER,
         policies: [
             policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "get"),
             policy("example.com", PolicyAccessType.HTTP_POST, PolicyLifetime.SESSION, PolicyResponse.DENIED, "post"),
@@ -183,7 +226,8 @@ test("local and global network policies round-trip through SQLite", () => {
     const database = SqliteDatabase.test(false, path.join(directory, "policies.sqlite"));
 
     try {
-        const saved = new PolicyLogic({
+        const saved = new PolicyEngine({
+            agentIdentifier: TEST_AGENT_IDENTIFIER,
             policies: [
                 policy(
                     "api.example.com/v1",
@@ -212,7 +256,10 @@ test("local and global network policies round-trip through SQLite", () => {
         dao.initializeSchema();
         dao.upsertPolicies(saved.persistedPolicies());
 
-        const loaded = new PolicyLogic({policies: dao.loadPolicies()});
+        const loaded = new PolicyEngine({
+            agentIdentifier: TEST_AGENT_IDENTIFIER,
+            policies: dao.loadPolicies(),
+        });
         assert.equal(
             loaded.evaluate("api.example.com/v1/resource", PolicyAccessType.HTTP_GET)?.matchedLifetime,
             PolicyLifetime.LOCAL,
@@ -239,6 +286,7 @@ test("session runtime loads persisted network policies from its database", async
         hasUI: false,
         mode: "print",
         ui: {},
+        sessionManager: {getSessionId: () => TEST_AGENT_IDENTIFIER},
     } as unknown as ExtensionContext;
     let runtime: PilotSessionRuntime | null = null;
 
@@ -259,9 +307,12 @@ test("session runtime loads persisted network policies from its database", async
 
         runtime = new PilotSessionRuntime(ctx, {
             openDatabase: () => SqliteDatabase.test(false, databaseFile),
-            policyDefaultsStore: {load: () => structuredClone(initialPolicyDefaults), save() {}},
+            policyDefaultsStore: {
+                load: () => structuredClone(initialPolicyDefaults), save() {
+                }
+            },
         });
-        const result = await runtime.policyRuntime.beginToolCall()(
+        const result = await runtime.policyRuntime.beginToolCall(TEST_AGENT_IDENTIFIER)(
             "https://persistent.example/api/resource",
             PolicyAccessType.HTTP_GET,
         );
@@ -298,16 +349,6 @@ test("network policy decisions use network-specific prompts", async () => {
     assert.equal(titles.every((title) => title.startsWith("Network policy")), true);
 });
 
-test("deny-by-default results are system decisions", () => {
-    const result = new PolicyLogic().evaluate("example.com", PolicyAccessType.HTTP_GET, {
-        ...defaultPolicyAreas,
-        web_read: ResponseType.deny,
-    });
-    assert.equal(result?.matchedPattern, "(none)");
-    assert.equal(result?.matchedStatus, PolicyResponse.DENIED);
-    assert.equal(result?.resolutionSource, PolicyResolutionSource.SYSTEM);
-});
-
 test("runtime policy ownership follows tool-call, session, and persistent lifetimes", async () => {
     let persisted: Policy[] = [];
     const decisions = scriptedDecisionFlow([
@@ -340,15 +381,15 @@ test("runtime policy ownership follows tool-call, session, and persistent lifeti
             reason: "local",
         },
     ]);
-    const runtime = new PolicyRuntime(networkPolicyDao({
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, networkPolicyDao({
         loadPolicies: () => structuredClone(persisted),
         upsertPolicies: (policies) => {
             persisted = structuredClone(policies);
         },
     }), decisions.flow);
-    runtime.setDefaultResponse("web_read", ResponseType.ask_user);
-    const firstCall = runtime.beginToolCall();
-    const secondCall = runtime.beginToolCall();
+    runtime.setDefaultResponse(PolicyArea.web_read, PolicyFallbackResponse.ask_user);
+    const firstCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);
+    const secondCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);
 
     assert.equal((await firstCall("once.example", PolicyAccessType.HTTP_GET)).matchedLifetime, PolicyLifetime.ONCE);
     assert.equal((await firstCall("once.example", PolicyAccessType.HTTP_GET)).matchedReason, "once");
@@ -375,16 +416,20 @@ test("runtime policy ownership follows tool-call, session, and persistent lifeti
         status: PolicyResponse.ALLOWED,
         reason: "new session",
     }]);
-    const nextSession = new PolicyRuntime(networkPolicyDao({
+    const nextSession = new PolicyRuntime(TEST_AGENT_IDENTIFIER, networkPolicyDao({
         loadPolicies: () => structuredClone(persisted),
     }), nextSessionDecisions.flow);
-    nextSession.setDefaultResponse("web_read", ResponseType.ask_user);
+    nextSession.setDefaultResponse(PolicyArea.web_read, PolicyFallbackResponse.ask_user);
     assert.equal(
-        (await nextSession.beginToolCall()("local.example", PolicyAccessType.HTTP_GET)).matchedLifetime,
+        (
+            await nextSession.beginToolCall(TEST_AGENT_IDENTIFIER)("local.example", PolicyAccessType.HTTP_GET)
+        ).matchedLifetime,
         PolicyLifetime.LOCAL,
     );
     assert.equal(
-        (await nextSession.beginToolCall()("session.example", PolicyAccessType.HTTP_POST)).matchedReason,
+        (
+            await nextSession.beginToolCall(TEST_AGENT_IDENTIFIER)("session.example", PolicyAccessType.HTTP_POST)
+        ).matchedReason,
         "new session",
     );
 });

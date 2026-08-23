@@ -1,4 +1,5 @@
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
+import type {PolicyRuntime} from "../policy/PolicyRuntime.js";
 import {SdkSubagentSessionFactory} from "./SdkSubagentSession.js";
 import {SubagentCoordinator, type SubagentCoordinatorOptions} from "./SubagentCoordinator.js";
 import {SubagentToolkitRegistry} from "./SubagentToolkitRegistry.js";
@@ -10,47 +11,27 @@ export type SubagentCapabilities = {
     delegate: SubagentToolkitProvider;
 };
 
-export type SubagentRuntimeServices = {
-    createCoordinator?: (
-        ctx: ExtensionContext,
-        toolkits: SubagentToolkitRegistry,
-    ) => SubagentCoordinator;
-    coordinatorOptions?: SubagentCoordinatorOptions;
-};
-
-export interface SubagentRuntimeInterface {
-    startSession(ctx: ExtensionContext): Promise<void>;
-    stopSession(): Promise<void>;
-    coordinator(): SubagentCoordinator;
-}
-
-export class SubagentRuntime implements SubagentRuntimeInterface {
+export class SubagentRuntime {
     readonly toolkits = new SubagentToolkitRegistry();
 
-    private readonly createCoordinator: (
-        ctx: ExtensionContext,
-        toolkits: SubagentToolkitRegistry,
-    ) => SubagentCoordinator;
     private activeCoordinator: SubagentCoordinator | undefined;
 
     constructor(
         capabilities: SubagentCapabilities,
-        services: SubagentRuntimeServices = {},
+        private readonly coordinatorOptions: SubagentCoordinatorOptions = {},
     ) {
-        this.createCoordinator = services.createCoordinator
-            ?? ((ctx, toolkits) => new SubagentCoordinator(
-                new SdkSubagentSessionFactory(ctx),
-                toolkits,
-                services.coordinatorOptions,
-            ));
         this.toolkits.register(SubagentToolkit.BASH, capabilities.bash);
         this.toolkits.register(SubagentToolkit.MCP, capabilities.mcp);
         this.toolkits.register(SubagentToolkit.DELEGATE, capabilities.delegate);
     }
 
-    async startSession(ctx: ExtensionContext): Promise<void> {
+    async startSession(ctx: ExtensionContext, policyRuntime: PolicyRuntime): Promise<void> {
         if (this.activeCoordinator) throw new Error("Subagent session is already started");
-        this.activeCoordinator = this.createCoordinator(ctx, this.toolkits);
+        this.activeCoordinator = new SubagentCoordinator(
+            new SdkSubagentSessionFactory(ctx, policyRuntime),
+            this.toolkits,
+            this.coordinatorOptions,
+        );
     }
 
     async stopSession(): Promise<void> {

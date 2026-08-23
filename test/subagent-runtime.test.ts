@@ -1,38 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
+import type {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import {SubagentRuntime} from "../src/subagents/SubagentRuntime.js";
-import type {SubagentChildSessionFactory} from "../src/subagents/types.js";
 
 test("subagent runtime owns one coordinator per root session", async () => {
-    const factory: SubagentChildSessionFactory = {
-        async create() {
-            return {
-                async prompt(task) { return `completed: ${task}`; },
-                async abort() {},
-                dispose() {},
-            };
-        },
-    };
-    let coordinatorCreations = 0;
     const runtime = new SubagentRuntime({
         bash: () => [],
         mcp: () => [],
         delegate: () => [],
-    }, {
-        createCoordinator(_ctx, toolkits) {
-            coordinatorCreations++;
-            return new SubagentCoordinator(factory, toolkits);
-        },
     });
 
     assert.throws(() => runtime.coordinator(), /session is not available/);
     const ctx = {cwd: process.cwd()} as ExtensionContext;
-    await runtime.startSession(ctx);
-    assert.equal(coordinatorCreations, 1);
-    assert.ok(runtime.coordinator());
-    await assert.rejects(runtime.startSession(ctx), /already started/);
+    const policyRuntime = {} as PolicyRuntime;
+    await runtime.startSession(ctx, policyRuntime);
+    const coordinator = runtime.coordinator();
+    assert.ok(coordinator);
+    assert.equal(runtime.coordinator(), coordinator);
+    await assert.rejects(runtime.startSession(ctx, policyRuntime), /already started/);
 
     await runtime.stopSession();
     await runtime.stopSession();

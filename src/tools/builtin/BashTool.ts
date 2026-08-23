@@ -107,7 +107,7 @@ export class BashTool {
             prepareArguments: undefined,
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
-                const policy = runtime.policyRuntime.beginToolCall();
+                const policy = runtime.policyRuntime.beginToolCall(ctx.sessionManager.getSessionId());
                 const sandboxedBash = createBashTool(ctx.cwd, {
                     operations: this.createOperations(
                         policy,

@@ -11,7 +11,13 @@ import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow";
 import type {Policy} from "../src/policy/types";
-import {PolicyAccessType, PolicyArea, PolicyLifetime, PolicyResponse, PolicyFallbackResponse} from "../src/policy/types";
+import {
+    PolicyAccessType,
+    PolicyArea,
+    PolicyLifetime,
+    PolicyResponse,
+    PolicyFallbackResponse
+} from "../src/policy/types";
 import {resolvePhysicalPath} from "../src/policy/path/validation.js";
 import {PolicyDao} from "../src/storage/PolicyDao";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
@@ -66,10 +72,9 @@ function scriptedDecisionFlow(choices: PolicyChoice[]): {
 
 test("a path and access type identify one policy whose properties can be replaced", () => {
     const target = path.join(os.tmpdir(), "pi-policy-replacement");
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [policy(target, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "initial")],
-    });
+    const logic = new PolicyEngine([
+        policy(target, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "initial"),
+    ]);
 
     logic.addPolicies([
         policy(target, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "replacement"),
@@ -87,7 +92,7 @@ test("a path and access type identify one policy whose properties can be replace
 
 test("different access types coexist at one path", () => {
     const target = path.join(os.tmpdir(), "pi-policy-access-types");
-    const logic = new PolicyEngine({agentIdentifier: TEST_AGENT_IDENTIFIER});
+    const logic = new PolicyEngine();
 
     logic.addPolicies([
         policy(target, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "read"),
@@ -102,13 +107,10 @@ test("different access types coexist at one path", () => {
 
 test("deleting an access policy does not depend on its lifetime", () => {
     const target = path.join(os.tmpdir(), "pi-policy-deletion");
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy(target, PolicyAccessType.FS_READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "read"),
-            policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "write"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy(target, PolicyAccessType.FS_READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "read"),
+        policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "write"),
+    ]);
 
     logic.removePolicies([{uri: target, accessTypes: [PolicyAccessType.FS_READ]}]);
 
@@ -118,15 +120,12 @@ test("deleting an access policy does not depend on its lifetime", () => {
 
 test("only local and global policies are included in the persisted snapshot", () => {
     const base = path.join(os.tmpdir(), "pi-policy-persistence");
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy(path.join(base, "once"), PolicyAccessType.FS_READ, PolicyLifetime.ONCE, PolicyResponse.ALLOWED, "once"),
-            policy(path.join(base, "session"), PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "session"),
-            policy(path.join(base, "local"), PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local"),
-            policy(path.join(base, "global"), PolicyAccessType.FS_READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "global"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy(path.join(base, "once"), PolicyAccessType.FS_READ, PolicyLifetime.ONCE, PolicyResponse.ALLOWED, "once"),
+        policy(path.join(base, "session"), PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "session"),
+        policy(path.join(base, "local"), PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local"),
+        policy(path.join(base, "global"), PolicyAccessType.FS_READ, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "global"),
+    ]);
 
     const persisted = logic.persistedPolicies();
     assert.deepEqual(
@@ -136,12 +135,9 @@ test("only local and global policies are included in the persisted snapshot", ()
 });
 
 test("a policy on the filesystem root applies to the root and every descendant", () => {
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy("/", PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "root policy"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy("/", PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.DENIED, "root policy"),
+    ]);
 
     for (const target of ["/", "/tmp", "/var/home/example/nested/file.txt"]) {
         const result = logic.evaluate(target, PolicyAccessType.FS_WRITE);
@@ -178,13 +174,10 @@ test("recording a root policy applies it to later tool calls", async () => {
 test("the most-specific path policy wins", () => {
     const parent = path.join(os.tmpdir(), "pi-policy-specificity");
     const child = path.join(parent, "child");
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy(parent, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "parent"),
-            policy(child, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "child"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy(parent, PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "parent"),
+        policy(child, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "child"),
+    ]);
 
     const result = logic.evaluate(path.join(child, "file.txt"), PolicyAccessType.FS_READ);
     assert.equal(result?.matchedPattern, resolvePhysicalPath(child));
@@ -195,12 +188,9 @@ test("path policy matching preserves Linux case sensitivity", () => {
     const parent = path.join(os.tmpdir(), "pi-policy-case-sensitive");
     const upperCasePath = path.join(parent, "Target");
     const lowerCasePath = path.join(parent, "target");
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy(upperCasePath, PolicyAccessType.FS_WRITE, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "exact case"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy(upperCasePath, PolicyAccessType.FS_WRITE, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "exact case"),
+    ]);
 
     assert.equal(logic.evaluate(upperCasePath, PolicyAccessType.FS_WRITE)?.matchedStatus, PolicyResponse.ALLOWED);
     assert.equal(logic.evaluate(lowerCasePath, PolicyAccessType.FS_WRITE), null);
@@ -213,40 +203,34 @@ test("local and global path policies round-trip through SQLite", () => {
     try {
         const persistedTarget = path.join(directory, "persisted-workspace");
         const sessionTarget = path.join(directory, "session-workspace");
-        const saved = new PolicyEngine({
-            agentIdentifier: TEST_AGENT_IDENTIFIER,
-            policies: [
-                policy(
-                    persistedTarget,
-                    PolicyAccessType.FS_READ,
-                    PolicyLifetime.LOCAL,
-                    PolicyResponse.ALLOWED,
-                    "local read",
-                ),
-                policy(
-                    persistedTarget,
-                    PolicyAccessType.FS_WRITE,
-                    PolicyLifetime.GLOBAL,
-                    PolicyResponse.DENIED,
-                    "global write",
-                ),
-                policy(
-                    sessionTarget,
-                    PolicyAccessType.FS_WRITE,
-                    PolicyLifetime.SESSION,
-                    PolicyResponse.DENIED,
-                    "session write",
-                ),
-            ],
-        });
+        const saved = new PolicyEngine([
+            policy(
+                persistedTarget,
+                PolicyAccessType.FS_READ,
+                PolicyLifetime.LOCAL,
+                PolicyResponse.ALLOWED,
+                "local read",
+            ),
+            policy(
+                persistedTarget,
+                PolicyAccessType.FS_WRITE,
+                PolicyLifetime.GLOBAL,
+                PolicyResponse.DENIED,
+                "global write",
+            ),
+            policy(
+                sessionTarget,
+                PolicyAccessType.FS_WRITE,
+                PolicyLifetime.SESSION,
+                PolicyResponse.DENIED,
+                "session write",
+            ),
+        ]);
         const dao = new PolicyDao(database);
         dao.initializeSchema();
         dao.upsertPolicies(saved.persistedPolicies());
 
-        const loaded = new PolicyEngine({
-            agentIdentifier: TEST_AGENT_IDENTIFIER,
-            policies: dao.loadPolicies(),
-        });
+        const loaded = new PolicyEngine(dao.loadPolicies());
         assert.equal(loaded.evaluate(persistedTarget, PolicyAccessType.FS_READ)?.matchedLifetime, PolicyLifetime.LOCAL);
         assert.equal(loaded.evaluate(persistedTarget, PolicyAccessType.FS_WRITE)?.matchedLifetime, PolicyLifetime.GLOBAL);
         assert.equal(loaded.evaluate(sessionTarget, PolicyAccessType.FS_WRITE), null);
@@ -336,63 +320,182 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
     );
 });
 
-test("subagent policies are preloaded, isolated, and removed explicitly", async () => {
-    const childIdentifier = "path-policy-child-agent";
-    const target = path.join(os.tmpdir(), "pi-policy-agent-isolation");
-    const decisions = scriptedDecisionFlow([{
-        uri: target,
-        accessType: PolicyAccessType.FS_READ,
-        lifetime: PolicyLifetime.SESSION,
-        status: PolicyResponse.ALLOWED,
-        reason: "root session policy",
-    }]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao(), decisions.flow);
-    runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.ask_user);
-    runtime.registerPolicyLogic(childIdentifier, TEST_AGENT_IDENTIFIER, [
-        policy(
-            target,
+test("explicit root policies override defaults at the same broad scope", async () => {
+    const decisions = scriptedDecisionFlow([]);
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
+        loadPolicies: () => [policy(
+            "/",
             PolicyAccessType.FS_READ,
-            PolicyLifetime.SESSION,
+            PolicyLifetime.LOCAL,
             PolicyResponse.DENIED,
-            "preloaded child policy",
-        ),
+            "explicit root denial",
+        )],
+    }), decisions.flow);
+
+    const result = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(
+        path.join(os.tmpdir(), "pi-explicit-over-default"),
+        PolicyAccessType.FS_READ,
+    );
+
+    assert.equal(result.matchedStatus, PolicyResponse.DENIED);
+    assert.equal(result.matchedReason, "explicit root denial");
+    assert.equal(decisions.callCount(), 0);
+});
+
+test("root policy defaults and subagent capability snapshots use the same policy areas", async () => {
+    const childIdentifier = "path-policy-default-snapshot-child";
+    const target = path.join(os.tmpdir(), "pi-policy-default-snapshot");
+    const decisions = scriptedDecisionFlow([]);
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao(), decisions.flow);
+
+    runtime.registerPolicyPrincipal(childIdentifier, TEST_AGENT_IDENTIFIER, [PolicyArea.fs_read]);
+    const result = await runtime.beginToolCall(childIdentifier)(target, PolicyAccessType.FS_READ);
+
+    assert.equal(result.matchedStatus, PolicyResponse.ALLOWED);
+    assert.equal(result.matchedLifetime, PolicyLifetime.SESSION);
+    assert.equal(result.matchedReason, "Automated fallback");
+    assert.equal(decisions.callCount(), 0);
+    runtime.removePolicyPrincipal(childIdentifier);
+});
+
+test("subagent policy capabilities snapshot complete parent areas without becoming hard ceilings", async () => {
+    const inheritedChild = "path-policy-inherited-child";
+    const blankChild = "path-policy-blank-child";
+    const target = path.join(os.tmpdir(), "pi-policy-agent-snapshot");
+    const deniedTarget = path.join(target, "private");
+    const laterTarget = path.join(os.tmpdir(), "pi-policy-later-parent-grant");
+    const decisions = scriptedDecisionFlow([
+        {
+            uri: target,
+            accessType: PolicyAccessType.FS_WRITE,
+            lifetime: PolicyLifetime.ONCE,
+            status: PolicyResponse.ALLOWED,
+            reason: "child acquired write later",
+        },
+        {
+            uri: target,
+            accessType: PolicyAccessType.FS_READ,
+            lifetime: PolicyLifetime.ONCE,
+            status: PolicyResponse.ALLOWED,
+            reason: "blank child requested read",
+        },
+        {
+            uri: laterTarget,
+            accessType: PolicyAccessType.FS_READ,
+            lifetime: PolicyLifetime.SESSION,
+            status: PolicyResponse.ALLOWED,
+            reason: "parent granted after spawn",
+        },
+        {
+            uri: laterTarget,
+            accessType: PolicyAccessType.FS_READ,
+            lifetime: PolicyLifetime.ONCE,
+            status: PolicyResponse.ALLOWED,
+            reason: "snapshot child still requested read",
+        },
     ]);
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
+        loadPolicies: () => [
+            policy(
+                target,
+                PolicyAccessType.FS_READ,
+                PolicyLifetime.LOCAL,
+                PolicyResponse.ALLOWED,
+                "parent read grant",
+            ),
+            policy(
+                deniedTarget,
+                PolicyAccessType.FS_READ,
+                PolicyLifetime.LOCAL,
+                PolicyResponse.DENIED,
+                "parent private-path denial",
+            ),
+        ],
+    }), decisions.flow);
+    runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.ask_user);
+    runtime.registerPolicyPrincipal(inheritedChild, TEST_AGENT_IDENTIFIER, [PolicyArea.fs_read]);
+    runtime.registerPolicyPrincipal(blankChild, TEST_AGENT_IDENTIFIER, []);
+
+    const inheritedRead = await runtime.beginToolCall(inheritedChild)(target, PolicyAccessType.FS_READ);
+    assert.equal(inheritedRead.matchedReason, "parent read grant");
+    assert.equal(inheritedRead.matchedLifetime, PolicyLifetime.SESSION);
+    const inheritedDenial = await runtime.beginToolCall(inheritedChild)(deniedTarget, PolicyAccessType.FS_READ);
+    assert.equal(inheritedDenial.matchedReason, "parent private-path denial");
+    assert.equal(inheritedDenial.matchedStatus, PolicyResponse.DENIED);
 
     assert.equal(
-        (
-            await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.FS_READ)
-        ).matchedReason,
-        "root session policy",
+        (await runtime.beginToolCall(inheritedChild)(target, PolicyAccessType.FS_WRITE)).matchedReason,
+        "child acquired write later",
     );
     assert.equal(
-        (await runtime.beginToolCall(childIdentifier)(target, PolicyAccessType.FS_READ)).matchedReason,
-        "preloaded child policy",
+        (await runtime.beginToolCall(blankChild)(target, PolicyAccessType.FS_READ)).matchedReason,
+        "blank child requested read",
     );
+
+    assert.equal(
+        (await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(laterTarget, PolicyAccessType.FS_READ)).matchedReason,
+        "parent granted after spawn",
+    );
+    assert.equal(
+        (await runtime.beginToolCall(inheritedChild)(laterTarget, PolicyAccessType.FS_READ)).matchedReason,
+        "snapshot child still requested read",
+    );
+    assert.equal(decisions.callCount(), 4);
+
     assert.throws(
-        () => runtime.registerPolicyLogic(childIdentifier, TEST_AGENT_IDENTIFIER),
+        () => runtime.registerPolicyPrincipal(inheritedChild, TEST_AGENT_IDENTIFIER, [PolicyArea.fs_read]),
         /already registered/,
     );
+    runtime.removePolicyPrincipal(blankChild);
+    runtime.removePolicyPrincipal(inheritedChild);
+    assert.throws(() => runtime.beginToolCall(inheritedChild), /No agent registered/);
+});
 
-    runtime.removePolicyLogic(childIdentifier);
-    assert.throws(
-        () => runtime.beginToolCall(childIdentifier),
-        /No agent registered/,
-    );
+test("durable decisions requested by a child remain rooted in the durable root principal", async () => {
+    const childIdentifier = "path-policy-durable-child";
+    const target = path.join(os.tmpdir(), "pi-policy-child-durable-grant");
+    let persisted: Policy[] = [];
+    const decisions = scriptedDecisionFlow([{
+        uri: target,
+        accessType: PolicyAccessType.FS_WRITE,
+        lifetime: PolicyLifetime.LOCAL,
+        status: PolicyResponse.ALLOWED,
+        reason: "durable user grant for descendant work",
+    }]);
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
+        upsertPolicies: (policies) => {
+            persisted = structuredClone(policies);
+        },
+    }), decisions.flow);
+    runtime.registerPolicyPrincipal(childIdentifier, TEST_AGENT_IDENTIFIER, []);
 
-    runtime.registerPolicyLogic(childIdentifier, TEST_AGENT_IDENTIFIER, [
-        policy(
-            target,
-            PolicyAccessType.FS_READ,
-            PolicyLifetime.SESSION,
-            PolicyResponse.ALLOWED,
-            "recreated child policy",
-        ),
-    ]);
-    assert.equal(
-        (await runtime.beginToolCall(childIdentifier)(target, PolicyAccessType.FS_READ)).matchedReason,
-        "recreated child policy",
-    );
+    const firstChildCall = await runtime.beginToolCall(childIdentifier)(target, PolicyAccessType.FS_WRITE);
+    const laterChildCall = await runtime.beginToolCall(childIdentifier)(target, PolicyAccessType.FS_WRITE);
+    const rootCall = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.FS_WRITE);
+
+    assert.equal(firstChildCall.matchedLifetime, PolicyLifetime.LOCAL);
+    assert.equal(laterChildCall.matchedLifetime, PolicyLifetime.SESSION);
+    assert.equal(rootCall.matchedLifetime, PolicyLifetime.LOCAL);
+    assert.equal(persisted[0]?.info[PolicyAccessType.FS_WRITE]?.lifetime, PolicyLifetime.LOCAL);
     assert.equal(decisions.callCount(), 1);
+    runtime.removePolicyPrincipal(childIdentifier);
+});
+
+test("policy principals must be removed from the leaves of the authority tree", () => {
+    const runtime = new PolicyRuntime(
+        TEST_AGENT_IDENTIFIER,
+        pathPolicyDao(),
+        scriptedDecisionFlow([]).flow,
+    );
+    runtime.registerPolicyPrincipal("principal-parent", TEST_AGENT_IDENTIFIER, []);
+    runtime.registerPolicyPrincipal("principal-child", "principal-parent", []);
+
+    assert.throws(
+        () => runtime.removePolicyPrincipal("principal-parent"),
+        /still has registered children/,
+    );
+    runtime.removePolicyPrincipal("principal-child");
+    runtime.removePolicyPrincipal("principal-parent");
 });
 
 test("FUSE path approval uses the decision flow manager and records session policy", async () => {

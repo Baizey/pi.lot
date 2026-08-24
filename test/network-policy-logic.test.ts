@@ -71,18 +71,15 @@ function scriptedDecisionFlow(choices: PolicyChoice[]): {
 }
 
 test("a URI and access type identify one policy whose properties can be replaced", () => {
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy(
-                "https://API.Example.com:0443/v1?ignored=true",
-                PolicyAccessType.HTTP_GET,
-                PolicyLifetime.LOCAL,
-                PolicyResponse.ALLOWED,
-                "initial",
-            ),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy(
+            "https://API.Example.com:0443/v1?ignored=true",
+            PolicyAccessType.HTTP_GET,
+            PolicyLifetime.LOCAL,
+            PolicyResponse.ALLOWED,
+            "initial",
+        ),
+    ]);
 
     logic.addPolicies([
         policy(
@@ -106,7 +103,7 @@ test("a URI and access type identify one policy whose properties can be replaced
 });
 
 test("different access types coexist at one URI", () => {
-    const logic = new PolicyEngine({agentIdentifier: TEST_AGENT_IDENTIFIER});
+    const logic = new PolicyEngine();
     logic.addPolicies([
         policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "read"),
         policy("example.com", PolicyAccessType.HTTP_POST, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "write"),
@@ -119,14 +116,11 @@ test("different access types coexist at one URI", () => {
 });
 
 test("the most-specific hostname or path policy wins", () => {
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "domain"),
-            policy("api.example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "host"),
-            policy("api.example.com/v1", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "path"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "domain"),
+        policy("api.example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "host"),
+        policy("api.example.com/v1", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "path"),
+    ]);
 
     const result = logic.evaluate("https://API.EXAMPLE.COM/v1/users?ignored=true", PolicyAccessType.HTTP_GET);
     assert.equal(result?.evaluatedUri, "api.example.com/v1/users/");
@@ -141,25 +135,22 @@ test("the most-specific hostname or path policy wins", () => {
 });
 
 test("the universal network pattern applies only after concrete valid targets", () => {
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy(
-                UNIVERSAL_NETWORK_POLICY_PATTERN,
-                PolicyAccessType.HTTP_GET,
-                PolicyLifetime.SESSION,
-                PolicyResponse.ALLOWED,
-                "fallback",
-            ),
-            policy(
-                "example.com",
-                PolicyAccessType.HTTP_GET,
-                PolicyLifetime.SESSION,
-                PolicyResponse.DENIED,
-                "specific",
-            ),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy(
+            UNIVERSAL_NETWORK_POLICY_PATTERN,
+            PolicyAccessType.HTTP_GET,
+            PolicyLifetime.SESSION,
+            PolicyResponse.ALLOWED,
+            "fallback",
+        ),
+        policy(
+            "example.com",
+            PolicyAccessType.HTTP_GET,
+            PolicyLifetime.SESSION,
+            PolicyResponse.DENIED,
+            "specific",
+        ),
+    ]);
 
     assert.equal(logic.evaluate("other.example", PolicyAccessType.HTTP_GET)?.matchedReason, "fallback");
     assert.equal(logic.evaluate("example.com", PolicyAccessType.HTTP_GET)?.matchedReason, "specific");
@@ -168,13 +159,10 @@ test("the universal network pattern applies only after concrete valid targets", 
 });
 
 test("ports are exact and path scopes respect segment boundaries", () => {
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy("example.com:443", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "port"),
-            policy("api.example.com:443/v1", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "path"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy("example.com:443", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "port"),
+        policy("api.example.com:443/v1", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "path"),
+    ]);
 
     assert.equal(logic.evaluate("api.example.com:443/other", PolicyAccessType.HTTP_GET)?.matchedReason, "port");
     assert.equal(logic.evaluate("api.example.com:444/other", PolicyAccessType.HTTP_GET), null);
@@ -183,16 +171,15 @@ test("ports are exact and path scopes respect segment boundaries", () => {
 });
 
 test("IPv6 policy targets retain bracketed ports", () => {
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [policy(
+    const logic = new PolicyEngine([
+        policy(
             "[2001:db8::8]:443",
             PolicyAccessType.TCP_ACCESS,
             PolicyLifetime.SESSION,
             PolicyResponse.ALLOWED,
             "IPv6 endpoint",
-        )],
-    });
+        ),
+    ]);
 
     const result = logic.evaluate("[2001:db8::8]:443", PolicyAccessType.TCP_ACCESS);
     assert.equal(result?.evaluatedUri, "[2001:db8::8]:443");
@@ -201,15 +188,12 @@ test("IPv6 policy targets retain bracketed ports", () => {
 });
 
 test("deletion is per access type and persistence includes only local and global policies", () => {
-    const logic = new PolicyEngine({
-        agentIdentifier: TEST_AGENT_IDENTIFIER,
-        policies: [
-            policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "get"),
-            policy("example.com", PolicyAccessType.HTTP_POST, PolicyLifetime.SESSION, PolicyResponse.DENIED, "post"),
-            policy("other.example", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local"),
-            policy("once.example", PolicyAccessType.HTTP_GET, PolicyLifetime.ONCE, PolicyResponse.ALLOWED, "once"),
-        ],
-    });
+    const logic = new PolicyEngine([
+        policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "get"),
+        policy("example.com", PolicyAccessType.HTTP_POST, PolicyLifetime.SESSION, PolicyResponse.DENIED, "post"),
+        policy("other.example", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "local"),
+        policy("once.example", PolicyAccessType.HTTP_GET, PolicyLifetime.ONCE, PolicyResponse.ALLOWED, "once"),
+    ]);
 
     logic.removePolicies([{uri: "HTTPS://EXAMPLE.COM", accessTypes: [PolicyAccessType.HTTP_GET]}]);
     assert.equal(logic.evaluate("example.com", PolicyAccessType.HTTP_GET), null);
@@ -226,40 +210,34 @@ test("local and global network policies round-trip through SQLite", () => {
     const database = SqliteDatabase.test(false, path.join(directory, "policies.sqlite"));
 
     try {
-        const saved = new PolicyEngine({
-            agentIdentifier: TEST_AGENT_IDENTIFIER,
-            policies: [
-                policy(
-                    "api.example.com/v1",
-                    PolicyAccessType.HTTP_GET,
-                    PolicyLifetime.LOCAL,
-                    PolicyResponse.ALLOWED,
-                    "local get",
-                ),
-                policy(
-                    "api.example.com/v1",
-                    PolicyAccessType.HTTP_POST,
-                    PolicyLifetime.GLOBAL,
-                    PolicyResponse.DENIED,
-                    "global post",
-                ),
-                policy(
-                    "api.example.com/v1",
-                    PolicyAccessType.HTTP_DELETE,
-                    PolicyLifetime.SESSION,
-                    PolicyResponse.DENIED,
-                    "session delete",
-                ),
-            ],
-        });
+        const saved = new PolicyEngine([
+            policy(
+                "api.example.com/v1",
+                PolicyAccessType.HTTP_GET,
+                PolicyLifetime.LOCAL,
+                PolicyResponse.ALLOWED,
+                "local get",
+            ),
+            policy(
+                "api.example.com/v1",
+                PolicyAccessType.HTTP_POST,
+                PolicyLifetime.GLOBAL,
+                PolicyResponse.DENIED,
+                "global post",
+            ),
+            policy(
+                "api.example.com/v1",
+                PolicyAccessType.HTTP_DELETE,
+                PolicyLifetime.SESSION,
+                PolicyResponse.DENIED,
+                "session delete",
+            ),
+        ]);
         const dao = new PolicyDao(database);
         dao.initializeSchema();
         dao.upsertPolicies(saved.persistedPolicies());
 
-        const loaded = new PolicyEngine({
-            agentIdentifier: TEST_AGENT_IDENTIFIER,
-            policies: dao.loadPolicies(),
-        });
+        const loaded = new PolicyEngine(dao.loadPolicies());
         assert.equal(
             loaded.evaluate("api.example.com/v1/resource", PolicyAccessType.HTTP_GET)?.matchedLifetime,
             PolicyLifetime.LOCAL,

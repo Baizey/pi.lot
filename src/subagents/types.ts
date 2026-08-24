@@ -1,15 +1,10 @@
 import type {ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import type {AgentCapability} from "./AgentCapability.js";
 
 export enum SubagentRunMode {
     SYNC = "sync",
     ASYNC = "async",
     CONVERSATION = "conversation",
-}
-
-export enum SubagentToolkit {
-    BASH = "bash",
-    MCP = "mcp",
-    DELEGATE = "delegate",
 }
 
 export enum SubagentJobStatus {
@@ -27,13 +22,17 @@ export type SubagentRequest = {
     task: string;
     role: string;
     mode: SubagentRunMode;
-    toolkits: SubagentToolkit[];
+    capabilities: AgentCapability[];
     cwd: string;
     timeoutSeconds: number;
     model?: string;
     thinkingLevel?: ExtensionContext["thinkingLevel"];
     systemPrompt?: string;
     contextPaths?: string[];
+};
+
+export type SubagentSessionRequest = SubagentRequest & {
+    agentIdentifier: string;
 };
 
 export type SubagentJobSnapshot = {
@@ -44,7 +43,7 @@ export type SubagentJobSnapshot = {
     mode: SubagentRunMode;
     role: string;
     task: string;
-    toolkits: SubagentToolkit[];
+    capabilities: AgentCapability[];
     cwd: string;
     model?: string;
     startedAt?: number;
@@ -74,10 +73,10 @@ export interface SubagentChildSession {
 
 export interface SubagentChildSessionFactory {
     create(
-        request: SubagentRequest,
+        request: SubagentSessionRequest,
         tools: ToolDefinition<any, any>[],
         signal: AbortSignal,
     ): Promise<SubagentChildSession>;
 }
 
-export type SubagentToolkitProvider = () => readonly ToolDefinition<any, any>[];
+export type SubagentToolProvider = () => readonly ToolDefinition<any, any>[];

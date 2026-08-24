@@ -96,10 +96,10 @@ The tests verify production session-runtime ownership and decision-flow cancella
 - `src/runtime/ManagedChildProcess.ts` — pi.lot's only direct production subprocess creation boundary; owns stdio errors, planned shutdown, process-group termination, and completion.
 - `src/tools/` — one folder per Pi tool, including the Bash/Read/Edit/Write overrides and each subagent tool.
 - `src/mcp/` — MCP configuration, stdio/HTTP clients, dynamic tools, commands, and session lifecycle.
-- `src/subagents/` — in-process child sessions, bounded orchestration, and toolkit ceilings; no Pi tool definitions.
+- `src/subagents/` — in-process child sessions, bounded orchestration, policy-area capability snapshots, hard mechanism gates, and principal lifecycle; no Pi tool definitions.
 - `src/tools/builtin/BashTool.ts` — built-in Bash override and combined FUSE/network lifecycle adapter.
 - `src/policy/path/fuse/FusePathPolicyAuthorizer.ts` — FUSE event-to-path-policy mapping and user decisions.
-- `src/policy/PolicyRuntime.ts` — tool-call, session, and persisted path-policy ownership.
+- `src/policy/PolicyRuntime.ts` — root and child policy-principal ownership, policy-area snapshots, defaults, and tool-call/session/persisted lifetimes.
 - `src/tui/UiDecisionFlowManager.ts` — reusable multi-step policy decision UI and TUI shortcuts.
 - `src/tui/tool/` — declarative tool presentation, bounded head/tail rendering, and session display controls.
 - `src/policy/network/NetworkPolicyAuthorizer.ts` — network event and HTTP request mapping into the unified policy runtime.

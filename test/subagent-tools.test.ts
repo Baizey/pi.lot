@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {ExtensionContext, Theme, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
-import {SubagentToolkitRegistry} from "../src/subagents/SubagentToolkitRegistry.js";
+import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
+import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
+import {AGENT_CAPABILITIES} from "../src/subagents/AgentCapability.js";
 import type {SubagentChildSessionFactory} from "../src/subagents/types.js";
 import {SubagentMessageTool} from "../src/tools/subagent/SubagentMessageTool";
 import {SubagentSpawnTool} from "../src/tools/subagent/SubagentSpawnTool";
@@ -36,6 +38,9 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.deepEqual(registered.map((tool) => tool.name), expectedNames);
     assert.deepEqual(tools.map((tool) => tool.toolDefinition().name), expectedNames);
     assert.equal(registered.every((tool) => tool.renderCall && tool.renderResult), true);
+    const spawnProperties = (registered[0]!.parameters as any).properties;
+    assert.equal("toolkits" in spawnProperties, false);
+    assert.deepEqual(spawnProperties.capabilities.items.enum, AGENT_CAPABILITIES);
 
     const theme = plainTheme();
     const minimalCalls = [
@@ -98,7 +103,17 @@ test("each subagent tool registers independently and delegates only to the coord
             };
         },
     };
-    coordinator = new SubagentCoordinator(factory, new SubagentToolkitRegistry());
+    const policyPrincipals: PolicyPrincipalRegistry = {
+        registerPolicyPrincipal() {
+        },
+        removePolicyPrincipal() {
+        },
+    };
+    coordinator = new SubagentCoordinator(
+        factory,
+        new SubagentToolCatalog({builtins: () => [], mcp: () => [], delegate: () => []}),
+        policyPrincipals,
+    );
     const result = await invoke(registered[0]!, {task: "work", role: "reviewer"});
     assert.match(textResult(result), /completed: work/);
     assert.match(textResult(result), /Status: completed/);

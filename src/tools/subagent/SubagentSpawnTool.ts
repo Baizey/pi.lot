@@ -1,10 +1,11 @@
 import path from "node:path";
 import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
+import {SubagentRunMode} from "../../subagents/types";
 import {
-    SubagentRunMode,
-    SubagentToolkit,
-} from "../../subagents/types";
+    AGENT_CAPABILITIES,
+    type AgentCapability,
+} from "../../subagents/AgentCapability.js";
 import {
     type SubagentToolDetails,
     subagentToolResult,
@@ -33,7 +34,7 @@ type SpawnToolInput = {
     task: string;
     role: string;
     mode?: SubagentRunMode;
-    toolkits?: SubagentToolkit[];
+    capabilities?: AgentCapability[];
     cwd?: string;
     timeoutSeconds?: number;
     model?: string;
@@ -57,7 +58,7 @@ const SPAWN_PRESENTATION = {
             format: (value) => ` (${String(value)})`,
         },
         {
-            key: "toolkits",
+            key: "capabilities",
             format: (value) => Array.isArray(value) && value.length > 0 ? value.join(", ") : "(none)",
         },
         {key: "cwd"},
@@ -114,13 +115,17 @@ function createDefinition(
     return {
         name: "subagent_spawn",
         label: "Spawn subagent",
-        description: "Start a scoped child agent. Sync waits for its result; async and conversation return a job id immediately.",
-        promptSnippet: "Delegate independent work to an in-process child agent with explicit toolkits.",
+        description: "Start a child agent. Policy-area capabilities snapshot the parent's matching policy state; MCP and delegation are hard capabilities.",
+        promptSnippet: "Delegate independent work to an in-process child agent with explicit capabilities.",
         parameters: objectSchema({
             task: stringSchema("Task to delegate"),
             role: stringSchema("Concise role or title for the child agent", 120),
             mode: enumSchema(Object.values(SubagentRunMode), "Run mode", SubagentRunMode.SYNC),
-            toolkits: arraySchema(enumSchema(Object.values(SubagentToolkit), "Toolkit"), "Explicit capabilities", []),
+            capabilities: arraySchema(
+                enumSchema([...AGENT_CAPABILITIES], "Capability"),
+                "Policy areas to inherit plus optional MCP and delegation capabilities",
+                [],
+            ),
             cwd: stringSchema("Child working directory; relative paths resolve from the current tool context"),
             timeoutSeconds: numberSchema("Timeout for each child turn", 1, 3_600, DEFAULT_TIMEOUT_SECONDS),
             model: stringSchema("Optional provider/model selection"),
@@ -136,7 +141,7 @@ function createDefinition(
                 task: input.task,
                 role: input.role,
                 mode,
-                toolkits: input.toolkits ?? [],
+                capabilities: input.capabilities ?? [],
                 cwd,
                 timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
                 model: input.model ?? canonicalModel(ctx.model),

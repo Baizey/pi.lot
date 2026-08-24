@@ -161,6 +161,6 @@ Unless the architecture is intentionally expanded, the following remain boundari
 - An allowed operation retains the invoking user's ordinary host permissions.
 - A worker can delegate effects to a preserved host service over pathname IPC; those effects originate outside the worker's direct filesystem/network reference monitor.
 - MCP transports and exposed MCP tools are explicit host capabilities outside the filesystem and network policy boundary.
-- Subagents currently run as independent in-memory Pi sessions inside the root process; only their `bash` toolkit enters the shared filesystem/network policy boundary.
+- Subagents currently run as independent in-memory Pi sessions inside the root process; their always-available Bash, Read, Edit, Write, and web-search tools use the root session's shared policy runtime with principal-specific policy state.
 - Revocation cannot undo effects already delivered before its revision barrier.
 - Inbound service publishing, cross-platform support, and protection from host-kernel exploitation are not current policy goals.

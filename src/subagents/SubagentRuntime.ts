@@ -2,34 +2,26 @@ import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import type {PolicyRuntime} from "../policy/PolicyRuntime.js";
 import {SdkSubagentSessionFactory} from "./SdkSubagentSession.js";
 import {SubagentCoordinator, type SubagentCoordinatorOptions} from "./SubagentCoordinator.js";
-import {SubagentToolkitRegistry} from "./SubagentToolkitRegistry.js";
-import {SubagentToolkit, type SubagentToolkitProvider} from "./types.js";
-
-export type SubagentCapabilities = {
-    bash: SubagentToolkitProvider;
-    mcp: SubagentToolkitProvider;
-    delegate: SubagentToolkitProvider;
-};
+import {SubagentToolCatalog, type SubagentToolProviders} from "./SubagentToolCatalog.js";
 
 export class SubagentRuntime {
-    readonly toolkits = new SubagentToolkitRegistry();
+    readonly tools: SubagentToolCatalog;
 
     private activeCoordinator: SubagentCoordinator | undefined;
 
     constructor(
-        capabilities: SubagentCapabilities,
+        providers: SubagentToolProviders,
         private readonly coordinatorOptions: SubagentCoordinatorOptions = {},
     ) {
-        this.toolkits.register(SubagentToolkit.BASH, capabilities.bash);
-        this.toolkits.register(SubagentToolkit.MCP, capabilities.mcp);
-        this.toolkits.register(SubagentToolkit.DELEGATE, capabilities.delegate);
+        this.tools = new SubagentToolCatalog(providers);
     }
 
     async startSession(ctx: ExtensionContext, policyRuntime: PolicyRuntime): Promise<void> {
         if (this.activeCoordinator) throw new Error("Subagent session is already started");
         this.activeCoordinator = new SubagentCoordinator(
-            new SdkSubagentSessionFactory(ctx, policyRuntime),
-            this.toolkits,
+            new SdkSubagentSessionFactory(ctx),
+            this.tools,
+            policyRuntime,
             this.coordinatorOptions,
         );
     }

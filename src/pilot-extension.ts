@@ -7,10 +7,8 @@ import {WriteTool} from "./tools/builtin/WriteTool";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
-import {
-    type SubagentCapabilities,
-    SubagentRuntime,
-} from "./subagents/SubagentRuntime.js";
+import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
+import type {SubagentToolProviders} from "./subagents/SubagentToolCatalog.js";
 import {SubagentSpawnTool} from "./tools/subagent/SubagentSpawnTool";
 import {SubagentStatusTool} from "./tools/subagent/SubagentStatusTool";
 import {SubagentMessageTool} from "./tools/subagent/SubagentMessageTool";
@@ -33,6 +31,10 @@ export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     private readonly displayRows = new ToolDisplayRows();
     private readonly bashTool: BashTool;
+    private readonly webSearchTool: WebSearchTool;
+    private readonly readTool: ReadTool;
+    private readonly editTool: EditTool;
+    private readonly writeTool: WriteTool;
     private readonly mcpExtension: McpExtensionInterface;
     private readonly subagentRuntime: SubagentRuntime;
     private readonly subagentSpawnTool: SubagentSpawnTool;
@@ -49,6 +51,10 @@ export class PilotExtension {
         this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
         const runtimeProvider = () => this.requireSessionRuntime();
         this.bashTool = new BashTool(pi, runtimeProvider, this.displayRows);
+        this.webSearchTool = new WebSearchTool(pi, runtimeProvider, this.displayRows);
+        this.readTool = new ReadTool(pi, runtimeProvider, this.displayRows);
+        this.editTool = new EditTool(pi, runtimeProvider, this.displayRows);
+        this.writeTool = new WriteTool(pi, runtimeProvider, this.displayRows);
         this.mcpExtension = (
             options.createMcpExtension
             ?? ((extensionApi, displayRows) => new McpExtension(extensionApi, {displayRows}))
@@ -58,12 +64,12 @@ export class PilotExtension {
         this.subagentStatusTool = new SubagentStatusTool(pi, coordinator, this.displayRows);
         this.subagentMessageTool = new SubagentMessageTool(pi, coordinator, this.displayRows);
         this.subagentStopTool = new SubagentStopTool(pi, coordinator, this.displayRows);
-        const capabilities: SubagentCapabilities = {
-            bash: () => [this.bashTool.toolDefinition()],
+        const toolProviders: SubagentToolProviders = {
+            builtins: () => this.builtinToolDefinitions(),
             mcp: () => this.mcpExtension.toolDefinitions(),
             delegate: () => this.subagentToolDefinitions(),
         };
-        this.subagentRuntime = new SubagentRuntime(capabilities);
+        this.subagentRuntime = new SubagentRuntime(toolProviders);
     }
 
     register(): void {
@@ -72,10 +78,10 @@ export class PilotExtension {
 
         const runtimeProvider = () => this.requireSessionRuntime();
         this.bashTool.register();
-        new WebSearchTool(this.pi, runtimeProvider, this.displayRows).register();
-        new ReadTool(this.pi, runtimeProvider, this.displayRows).register();
-        new EditTool(this.pi, runtimeProvider, this.displayRows).register();
-        new WriteTool(this.pi, runtimeProvider, this.displayRows).register();
+        this.webSearchTool.register();
+        this.readTool.register();
+        this.editTool.register();
+        this.writeTool.register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
         new ViewFullToolCommand(this.pi, this.displayRows).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
@@ -132,6 +138,16 @@ export class PilotExtension {
             firstError ??= error;
         }
         if (firstError !== undefined) throw firstError;
+    }
+
+    private builtinToolDefinitions() {
+        return [
+            this.bashTool.toolDefinition(),
+            this.webSearchTool.toolDefinition(),
+            this.readTool.toolDefinition(),
+            this.editTool.toolDefinition(),
+            this.writeTool.toolDefinition(),
+        ];
     }
 
     private subagentToolDefinitions() {

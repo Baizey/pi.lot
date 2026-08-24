@@ -6,7 +6,7 @@ import {
 
 const MAX_TOOL_OUTPUT_CHARS = 100_000;
 
-export type SubagentToolDetails = {jobs: SubagentJobSnapshot[]};
+export type SubagentToolDetails = { jobs: SubagentJobSnapshot[] };
 
 export function subagentToolResult(jobs: SubagentJobSnapshot[]): AgentToolResult<SubagentToolDetails> {
     return {
@@ -22,7 +22,7 @@ export function renderJobs(jobs: SubagentJobSnapshot[]): string {
             `## ${job.role} (${job.id})`,
             `Status: ${job.status}`,
             `Mode: ${job.mode}`,
-            `Toolkits: ${job.toolkits.length > 0 ? job.toolkits.join(", ") : "(none)"}`,
+            `Capabilities: ${job.capabilities.length > 0 ? job.capabilities.join(", ") : "(none)"}`,
             `Task: ${job.task}`,
         ];
         if (job.latestLine && (job.status === SubagentJobStatus.QUEUED || job.status === SubagentJobStatus.RUNNING)) {

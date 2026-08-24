@@ -1,31 +1,50 @@
 import {PolicyEngine} from "./PolicyEngine";
 import {
     isPersistedLifetime,
-    Policy,
+    type Policy,
     PolicyAccessType,
     PolicyArea,
     PolicyFallbackResponse,
     PolicyLifetime,
     PolicyResolutionSource,
     PolicyResponse,
-    PolicyResult, PolicyStatus
+    PolicyResult,
+    type PolicyStatus,
+    policyAreaAccessTypes,
 } from "./types";
-import {PolicyDaoInterface} from "../storage/PolicyDao";
+import type {PolicyDaoInterface} from "../storage/PolicyDao";
 import {PolicyDecisionFlow} from "./PolicyDecisionFlow";
-import {initialPolicyDefaults, PolicyDefaultJsonStorageInterface, ResponseDefaults} from "./defaults.js";
+import {initialPolicyDefaults, type PolicyDefaultJsonStorageInterface, type ResponseDefaults} from "./defaults.js";
 import {UNIVERSAL_NETWORK_POLICY_PATTERN} from "./network/ParsedUri.js";
 
 export type ToolCallPathPolicyEvaluator = (
     path: string,
     accessType: PolicyAccessType,
     signal?: AbortSignal,
-) => Promise<PolicyResult>
+) => Promise<PolicyResult>;
 
-export class PolicyRuntime {
-    private readonly parentChildMapping: Map<string, string[]> = new Map();
-    private readonly sessionPolicy: Map<string, PolicyEngine> = new Map();
+export interface PolicyPrincipalRegistry {
+    registerPolicyPrincipal(
+        agentIdentifier: string,
+        parentAgentIdentifier: string,
+        inheritedAreas: readonly PolicyArea[],
+    ): void;
+
+    removePolicyPrincipal(agentIdentifier: string): void;
+}
+
+type PolicyPrincipal = {
+    agentIdentifier: string;
+    parentAgentIdentifier?: string;
+    children: Set<string>;
+    policies: PolicyEngine;
+};
+
+export class PolicyRuntime implements PolicyPrincipalRegistry {
+    private readonly principals = new Map<string, PolicyPrincipal>();
+    private readonly rootFallbackPolicies = new PolicyEngine();
     private readonly rootAgentIdentifier: string;
-    readonly defaultResponses: ResponseDefaults
+    readonly defaultResponses: ResponseDefaults;
 
     constructor(
         agentIdentifier: string,
@@ -34,10 +53,13 @@ export class PolicyRuntime {
         private readonly defaultsStore?: PolicyDefaultJsonStorageInterface,
     ) {
         this.rootAgentIdentifier = agentIdentifier;
-        const rootPolicies = new PolicyEngine({agentIdentifier, policies: database.loadPolicies()})
-        this.sessionPolicy.set(agentIdentifier, rootPolicies);
+        this.principals.set(agentIdentifier, {
+            agentIdentifier,
+            children: new Set(),
+            policies: new PolicyEngine(database.loadPolicies()),
+        });
         this.defaultResponses = {...initialPolicyDefaults, ...defaultsStore?.load()};
-        this.setFallbacks(agentIdentifier);
+        this.setFallbacks();
     }
 
     async once(
@@ -49,24 +71,21 @@ export class PolicyRuntime {
         return this.beginToolCall(agentIdentifier)(path, accessType, signal);
     }
 
-    beginToolCall(
-        agentIdentifier: string
-    ): ToolCallPathPolicyEvaluator {
-        const oncePolicies = new PolicyEngine({agentIdentifier});
-        const sessionPolicies = this.getPolicyLogic(agentIdentifier);
+    beginToolCall(agentIdentifier: string): ToolCallPathPolicyEvaluator {
+        const oncePolicies = new PolicyEngine();
+        const principal = this.requirePrincipal(agentIdentifier);
         return (path, accessType, signal) => this.evaluate(
-            agentIdentifier,
+            principal,
             path,
             accessType,
             oncePolicies,
-            sessionPolicies,
-            signal
-        )
+            signal,
+        );
     }
 
-    setDefaultResponse(key: keyof ResponseDefaults, response: PolicyFallbackResponse): void {
-        this.defaultResponses[key] = response;
-        this.setFallbacks(this.rootAgentIdentifier);
+    setDefaultResponse(area: PolicyArea, response: PolicyFallbackResponse): void {
+        this.defaultResponses[area] = response;
+        this.setFallback(area, response);
     }
 
     saveDefaultResponses(): void {
@@ -76,78 +95,77 @@ export class PolicyRuntime {
 
     resetDefaultResponses(): void {
         Object.assign(this.defaultResponses, this.defaultsStore?.load() ?? initialPolicyDefaults);
-        this.setFallbacks(this.rootAgentIdentifier);
+        this.setFallbacks();
     }
 
-    registerPolicyLogic(
+    registerPolicyPrincipal(
         agentIdentifier: string,
         parentAgentIdentifier: string,
-        policies: Policy[] = [],
+        inheritedAreas: readonly PolicyArea[],
     ): void {
-        if (this.sessionPolicy.has(agentIdentifier)) {
+        if (this.principals.has(agentIdentifier)) {
             throw new Error(`An agent is already registered with this identifier: ${agentIdentifier}`);
         }
-        this.getPolicyLogic(parentAgentIdentifier);
-
-        if (this.parentChildMapping.has(parentAgentIdentifier)) {
-            this.parentChildMapping.get(parentAgentIdentifier)!.push(agentIdentifier);
-        } else {
-            this.parentChildMapping.set(parentAgentIdentifier, [agentIdentifier]);
-        }
-
-        this.sessionPolicy.set(agentIdentifier, new PolicyEngine({
+        const parent = this.requirePrincipal(parentAgentIdentifier);
+        const policies = this.inheritedPolicySnapshot(parent, inheritedAreas);
+        this.principals.set(agentIdentifier, {
             agentIdentifier,
             parentAgentIdentifier,
-            policies,
-        }));
+            children: new Set(),
+            policies: new PolicyEngine(policies),
+        });
+        parent.children.add(agentIdentifier);
     }
 
-    removePolicyLogic(agentIdentifier: string): void {
-        const children = this.parentChildMapping.get(agentIdentifier) ?? []
-        children.forEach(it => this.removePolicyLogic(it));
-        this.parentChildMapping.delete(agentIdentifier);
-        this.sessionPolicy.delete(agentIdentifier)
-    }
-
-    private getPolicyLogic(agentIdentifier: string): PolicyEngine {
-        if (!this.sessionPolicy.has(agentIdentifier)) {
-            throw new Error(`No agent registered with this identifier: ${agentIdentifier}`);
+    removePolicyPrincipal(agentIdentifier: string): void {
+        const principal = this.requirePrincipal(agentIdentifier);
+        if (agentIdentifier === this.rootAgentIdentifier) {
+            throw new Error("The root policy principal cannot be removed");
         }
-        return this.sessionPolicy.get(agentIdentifier)!
+        if (principal.children.size > 0) {
+            throw new Error(`Policy principal still has registered children: ${agentIdentifier}`);
+        }
+        if (principal.parentAgentIdentifier) {
+            this.requirePrincipal(principal.parentAgentIdentifier).children.delete(agentIdentifier);
+        }
+        this.principals.delete(agentIdentifier);
     }
 
     private async evaluate(
-        agentIdentifier: string,
+        principal: PolicyPrincipal,
         path: string,
         accessType: PolicyAccessType,
-        oncePolicy: PolicyEngine,
-        sessionPolicy: PolicyEngine,
+        oncePolicies: PolicyEngine,
         signal?: AbortSignal,
     ): Promise<PolicyResult> {
-        const resultMaybe = sessionPolicy.evaluate(path, accessType) ?? oncePolicy.evaluate(path, accessType)
-        if (resultMaybe) return resultMaybe
+        const local = principal.policies.evaluate(path, accessType);
+        if (local) return local;
 
-        const choice = await this.decisionFlow.askForPolicy(path, accessType, signal)
-        const policy = {
-            pattern: choice.uri,
-            info: {
-                [choice.accessType]: PolicyEngine.createStatus(
-                    choice.accessType,
-                    choice.lifetime,
-                    choice.status,
-                    choice.reason,
-                ),
-            },
-        } satisfies Policy;
+        if (principal.agentIdentifier === this.rootAgentIdentifier) {
+            const fallback = this.rootFallbackPolicies.evaluate(path, accessType);
+            if (fallback) return systemFallbackResult(fallback);
+        }
 
-        if (isPersistedLifetime(choice.lifetime)) {
-            this.database.upsertPolicies([policy])
+        const once = oncePolicies.evaluate(path, accessType);
+        if (once) return once;
+
+        const choice = await this.decisionFlow.askForPolicy(path, accessType, signal);
+        const policy = policyFromChoice(choice);
+
+        const persisted = isPersistedLifetime(choice.lifetime);
+        if (persisted) {
+            this.database.upsertPolicies([policy]);
+            this.requirePrincipal(this.rootAgentIdentifier).policies.addPolicies([policy]);
         }
 
         if (choice.lifetime === PolicyLifetime.ONCE) {
-            oncePolicy.addPolicies([policy])
+            oncePolicies.addPolicies([policy]);
+        } else if (persisted) {
+            if (principal.agentIdentifier !== this.rootAgentIdentifier) {
+                principal.policies.addPolicies([sessionPolicy(policy)]);
+            }
         } else {
-            sessionPolicy.addPolicies([policy])
+            principal.policies.addPolicies([policy]);
         }
 
         return PolicyResult.of({
@@ -158,89 +176,127 @@ export class PolicyRuntime {
             matchedLifetime: choice.lifetime,
             matchedStatus: choice.status,
             matchedReason: choice.reason,
-        })
+        });
     }
 
-    private setFallbacks(agentIdentifier: string) {
-        const engine = this.getPolicyLogic(agentIdentifier);
-        Object.entries(this.defaultResponses).forEach(([name, response]) => {
-            this.setFallback(name as PolicyArea, response, engine)
-        })
+    private inheritedPolicySnapshot(
+        parent: PolicyPrincipal,
+        inheritedAreas: readonly PolicyArea[],
+    ): Policy[] {
+        const accessTypes = new Set(
+            [...new Set(inheritedAreas)].flatMap((area) => policyAreaAccessTypes(area)),
+        );
+        if (accessTypes.size === 0) return [];
+
+        return this.effectivePolicies(parent)
+            .map((policy) => ({
+                pattern: policy.pattern,
+                info: Object.fromEntries(
+                    Object.entries(policy.info)
+                        .filter(([, status]) => status && accessTypes.has(status.accessType))
+                        .map(([accessType, status]) => [
+                            accessType,
+                            status ? {...status, lifetime: PolicyLifetime.SESSION} : status,
+                        ]),
+                ),
+            }))
+            .filter((policy) => Object.keys(policy.info).length > 0);
     }
 
-    private setFallback(
-        area: PolicyArea,
-        response: PolicyFallbackResponse,
-        policyEngine: PolicyEngine
-    ) {
-        const areas = this.getAreaCover(area);
+    private effectivePolicies(principal: PolicyPrincipal): Policy[] {
+        if (principal.agentIdentifier !== this.rootAgentIdentifier) return principal.policies.allPolicies();
+        const effective = new PolicyEngine(this.rootFallbackPolicies.allPolicies());
+        effective.addPolicies(principal.policies.allPolicies());
+        return effective.allPolicies();
+    }
+
+    private requirePrincipal(agentIdentifier: string): PolicyPrincipal {
+        const principal = this.principals.get(agentIdentifier);
+        if (!principal) throw new Error(`No agent registered with this identifier: ${agentIdentifier}`);
+        return principal;
+    }
+
+    private setFallbacks(): void {
+        for (const [area, response] of Object.entries(this.defaultResponses)) {
+            this.setFallback(area as PolicyArea, response);
+        }
+    }
+
+    private setFallback(area: PolicyArea, response: PolicyFallbackResponse): void {
+        const accessTypes = policyAreaAccessTypes(area);
         const pattern = area.startsWith("fs_") ? "/" : UNIVERSAL_NETWORK_POLICY_PATTERN;
-        const status = this.getPolicyStatus(response)
-        if (status) {
-            const policy = {pattern: pattern, info: {}} satisfies Policy as Policy
-            areas.forEach(it => {
-                    policy.info[it] = {
-                        accessType: it,
-                        lifetime: PolicyLifetime.SESSION,
-                        status: status,
-                        reason: 'Automated fallback'
-                    } satisfies PolicyStatus
-                }
-            )
-            policyEngine.addPolicies([policy]);
-        } else {
-            policyEngine.removePolicies([{uri: pattern, accessTypes: areas}]);
+        const status = policyStatus(response);
+        if (!status) {
+            this.rootFallbackPolicies.removePolicies([{uri: pattern, accessTypes: [...accessTypes]}]);
+            return;
         }
-    }
 
-
-    private getPolicyStatus(response: PolicyFallbackResponse): PolicyResponse | null {
-        switch (response) {
-            case PolicyFallbackResponse.allow:
-                return PolicyResponse.ALLOWED
-            case PolicyFallbackResponse.deny:
-                return PolicyResponse.DENIED
-            default:
-                return null
+        const policy: Policy = {pattern, info: {}};
+        for (const accessType of accessTypes) {
+            policy.info[accessType] = {
+                accessType,
+                lifetime: PolicyLifetime.SESSION,
+                status,
+                reason: "Automated fallback",
+            } satisfies PolicyStatus;
         }
-    }
-
-    private getAreaCover(area: PolicyArea): PolicyAccessType[] {
-        switch (area) {
-            case PolicyArea.fs_read:
-                return [PolicyAccessType.FS_READ]
-            case PolicyArea.fs_write:
-                return [PolicyAccessType.FS_WRITE];
-            case PolicyArea.web_read:
-                return [
-                    PolicyAccessType.HTTP_ACCESS,
-                    PolicyAccessType.HTTP_GET
-                ];
-            case PolicyArea.web_write:
-                return [
-                    PolicyAccessType.HTTP_POST,
-                    PolicyAccessType.HTTP_PUT,
-                    PolicyAccessType.HTTP_PATCH,
-                    PolicyAccessType.HTTP_OPTIONS,
-                    PolicyAccessType.HTTP_DELETE,
-                    PolicyAccessType.HTTP_HEAD,
-                ];
-            case PolicyArea.web_dns:
-                return [PolicyAccessType.DNS_ACCESS]
-            case PolicyArea.web_grpc:
-                return [PolicyAccessType.GRPC_ACCESS]
-            case PolicyArea.web_tcp:
-                return [PolicyAccessType.TCP_ACCESS]
-            case PolicyArea.web_ssh:
-                return [PolicyAccessType.SSH_ACCESS]
-            case PolicyArea.web_udp:
-                return [PolicyAccessType.UDP_ACCESS]
-            case PolicyArea.web_smtp:
-                return [PolicyAccessType.SMTP_ACCESS]
-            case PolicyArea.web_websocket:
-                return [PolicyAccessType.WEBSOCKET_ACCESS]
-        }
+        this.rootFallbackPolicies.addPolicies([policy]);
     }
 }
 
-export default PolicyRuntime
+function policyFromChoice(choice: {
+    uri: string;
+    accessType: PolicyAccessType;
+    lifetime: PolicyLifetime;
+    status: PolicyResponse;
+    reason: string;
+}): Policy {
+    return {
+        pattern: choice.uri,
+        info: {
+            [choice.accessType]: PolicyEngine.createStatus(
+                choice.accessType,
+                choice.lifetime,
+                choice.status,
+                choice.reason,
+            ),
+        },
+    };
+}
+
+function sessionPolicy(policy: Policy): Policy {
+    return {
+        pattern: policy.pattern,
+        info: Object.fromEntries(
+            Object.entries(policy.info).map(([accessType, status]) => [
+                accessType,
+                status ? {...status, lifetime: PolicyLifetime.SESSION} : status,
+            ]),
+        ),
+    };
+}
+
+function policyStatus(response: PolicyFallbackResponse): PolicyResponse | null {
+    switch (response) {
+        case PolicyFallbackResponse.allow:
+            return PolicyResponse.ALLOWED;
+        case PolicyFallbackResponse.deny:
+            return PolicyResponse.DENIED;
+        default:
+            return null;
+    }
+}
+
+function systemFallbackResult(result: PolicyResult): PolicyResult {
+    return PolicyResult.of({
+        evaluatedUri: result.evaluatedUri,
+        evaluatedAccessType: result.evaluatedAccessType,
+        matchedPattern: result.matchedPattern,
+        matchedLifetime: result.matchedLifetime,
+        matchedStatus: result.matchedStatus,
+        matchedReason: result.matchedReason,
+        resolutionSource: PolicyResolutionSource.SYSTEM,
+    });
+}
+
+export default PolicyRuntime;

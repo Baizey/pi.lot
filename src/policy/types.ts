@@ -85,6 +85,43 @@ export enum PolicyArea {
     web_smtp = "web_smtp",
 }
 
+export const POLICY_AREAS: readonly PolicyArea[] = Object.freeze(Object.values(PolicyArea));
+
+const POLICY_AREA_ACCESS_TYPES: Readonly<Record<PolicyArea, readonly PolicyAccessType[]>> = Object.freeze({
+    [PolicyArea.fs_read]: Object.freeze([PolicyAccessType.FS_READ]),
+    [PolicyArea.fs_write]: Object.freeze([PolicyAccessType.FS_WRITE]),
+    [PolicyArea.web_read]: Object.freeze([
+        PolicyAccessType.HTTP_ACCESS,
+        PolicyAccessType.HTTP_GET,
+    ]),
+    [PolicyArea.web_write]: Object.freeze([
+        PolicyAccessType.HTTP_POST,
+        PolicyAccessType.HTTP_PUT,
+        PolicyAccessType.HTTP_PATCH,
+        PolicyAccessType.HTTP_OPTIONS,
+        PolicyAccessType.HTTP_DELETE,
+        PolicyAccessType.HTTP_HEAD,
+    ]),
+    [PolicyArea.web_dns]: Object.freeze([PolicyAccessType.DNS_ACCESS]),
+    [PolicyArea.web_grpc]: Object.freeze([PolicyAccessType.GRPC_ACCESS]),
+    [PolicyArea.web_tcp]: Object.freeze([PolicyAccessType.TCP_ACCESS]),
+    [PolicyArea.web_ssh]: Object.freeze([PolicyAccessType.SSH_ACCESS]),
+    [PolicyArea.web_udp]: Object.freeze([PolicyAccessType.UDP_ACCESS]),
+    [PolicyArea.web_smtp]: Object.freeze([PolicyAccessType.SMTP_ACCESS]),
+    [PolicyArea.web_websocket]: Object.freeze([PolicyAccessType.WEBSOCKET_ACCESS]),
+});
+
+export function policyAreaAccessTypes(area: PolicyArea): readonly PolicyAccessType[] {
+    return POLICY_AREA_ACCESS_TYPES[area];
+}
+
+export function policyAreaForAccessType(accessType: PolicyAccessType): PolicyArea {
+    for (const area of POLICY_AREAS) {
+        if (POLICY_AREA_ACCESS_TYPES[area].includes(accessType)) return area;
+    }
+    throw new Error(`Policy access type is not assigned to an area: ${accessType}`);
+}
+
 export type PolicySnapshot = {
     policies: Policy[];
 };

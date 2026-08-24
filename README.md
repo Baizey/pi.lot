@@ -183,13 +183,14 @@ pi.lot provides child agents with separate model context and conversation state 
 - `subagent_message` continues an idle conversation session; and
 - `subagent_stop` stops a job and its descendants.
 
-Capabilities are explicit. A child receives only its requested toolkits:
+Capabilities are explicit. Policy-area capabilities use the same areas as `/policy-defaults`, including `fs_read`, `fs_write`, and the `web_*` areas. Selecting one snapshots the invoking agent's effective policies for that entire area into the child. Omitting one leaves that area blank, but does not prohibit access: the child can still request policies when its work needs them.
 
-- `bash` provides the same policy-mediated Bash implementation owned by the root pi.lot session;
-- `mcp` provides MCP tools that are currently exposed; and
-- `delegate` allows bounded nested delegation.
+Policy-mediated Bash, Read, Edit, Write, and web-search tools are always available to children. Two mechanism capabilities are hard gates:
 
-Children default to no tools and inherit the invoking model, thinking level, and working directory unless the spawn request overrides them. Nested children cannot exceed their parent's toolkit ceiling. The coordinator limits concurrent turns, delegation depth, retained output, and retained jobs; root session shutdown aborts all active children before policy and MCP resources close.
+- `mcp` exposes the MCP tools that are currently exposed; and
+- `delegate` exposes the subagent tools and permits bounded nested delegation.
+
+Children inherit the invoking model, thinking level, and working directory unless the spawn request overrides them. Policy snapshots do not update when the parent's policies later change. Nested agents cannot widen hard mechanism capabilities, while policy-area snapshots can contain only the policies their immediate parent actually holds. The coordinator limits concurrent turns, delegation depth, retained output, and retained jobs; root session shutdown aborts all active children before policy and MCP resources close.
 
 Child agents currently use Pi's in-process SDK with in-memory sessions. They have independent model context, but they are not separate operating-system processes. Async jobs and conversations are not persisted across root session shutdown.
 

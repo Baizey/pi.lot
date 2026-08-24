@@ -19,17 +19,17 @@ The user is the authority apex and may mint any permission. This does not make u
 
 A positive grant held by an agent is inherently delegatable to its descendants. A derived grant may narrow access type, scope, and lifetime, but may never broaden any of them. No agent may grant authority it does not hold.
 
-Resource ceilings and policy grants answer different questions:
+Spawn capabilities have two forms with deliberately different semantics:
 
-- the spawn resource ceiling determines what a child may ever access or request; and
-- the policy grant chain determines whether the child currently holds authority for a concrete operation.
+- policy-area capabilities select which parts of the parent's effective policy state are snapshotted into the child; and
+- hard mechanism capabilities determine whether opaque or recursive mechanisms such as MCP and subagent delegation exist for the child.
 
-An operation is allowed only when both permit it. A policy grant can never override a resource-ceiling denial.
+Policy-area capabilities are the complete `PolicyArea` set used by root policy defaults. Omitting a policy area is not a denial or a resource ceiling. It gives the child a blank local policy state for that area, so later operations may request policy normally. Hard mechanism capabilities are not requestable later and cannot be recovered through policy escalation.
 
 ## Execution model
 
 - Every subagent is an independent in-memory Pi session with separate model context and conversation state.
-- Jobs form one recursive tree. Any agent with delegated subagent authority may organize descendants within its ceiling.
+- Jobs form one recursive tree. Any agent with the hard `delegate` capability may organize descendants within its mechanism ceiling.
 - `sync` waits for completion unless work must return to the parent for a policy decision.
 - `async` returns a job ID immediately.
 - `conversation` retains one child session between messages until stopped.
@@ -45,7 +45,7 @@ A spawn controls the child's instructions, initial task, execution settings, and
 A child's system prompt has ordered, explicit ownership:
 
 1. an immutable platform-owned base prompt;
-2. a generated description of the child's role, resource ceiling, and available mechanisms; and
+2. a generated description of the child's policy snapshot and available hard mechanisms; and
 3. an optional parent-provided system prompt.
 
 The parent-provided prompt may specialize the child's behavior but cannot replace the platform prompt or grant authority. Policy enforcement must never depend on the model following a prompt.
@@ -58,7 +58,7 @@ The delegated task is delivered as the child's initial user message. Relevant co
 - summaries or results from earlier work; and
 - normalized path references with a description of their relevance.
 
-Copied context is information the parent has deliberately passed to the child. A referenced path is only a hint and grants no filesystem authority. Reading it remains subject to the child's resource ceiling and policy grants.
+Copied context is information the parent has deliberately passed to the child. A referenced path is only a hint and grants no filesystem authority. Reading it remains subject to the child's local policy state and any later policy decision.
 
 ### Execution settings
 
@@ -72,28 +72,21 @@ The spawn may select:
 
 A working directory or context path does not itself grant access to that path.
 
-### Resource ceiling
+### Capabilities and initial policy snapshot
 
-The parent must define a finite child resource ceiling covering:
+The public capability set is the union of:
 
-- filesystem read;
-- filesystem write;
-- web read;
-- web write and other mutating network access;
-- subagent delegation; and
-- explicitly selected MCP tools.
+- every `PolicyArea`, including filesystem and all web areas;
+- `mcp`; and
+- `delegate`.
 
-Each enabled resource must have a normalized scope. Anything not enabled or outside the declared scope is denied without escalation. Convenience profiles such as `none`, `read-only`, and `read-write` may be exposed, but they must compile into explicit resource rules.
+Selecting a policy-area capability snapshots the parent's complete effective state for that area, including allows and denials at every scope. Copying denials is required to preserve specific exceptions beneath broader allows. Inherited rules become child-session rules even when their source is durable `LOCAL` or `GLOBAL` policy. Consumable `ONCE` authority is never copied by a broad area selection.
 
-A child ceiling must be a subset of every applicable parent ceiling. An invalid spawn is rejected rather than silently widened or narrowed. Filesystem read authority does not imply write authority, web read does not imply web write, and access to a mechanism such as Bash does not imply authority over resources reachable through it.
+A policy snapshot is taken when spawn is accepted. Later parent policy changes do not mutate existing child snapshots. Omitting an area leaves it blank rather than denied, and the child may request policies in that area when needed. A nested child may select any policy area because the snapshot operation can copy only policy state its immediate parent actually holds.
 
-MCP calls are a separate explicit capability. The runtime may mediate invocation by server and tool name, but it must not claim that opaque MCP effects obey filesystem or web policy unless those effects are independently mediated.
+Policy-mediated Bash, Read, Edit, Write, and web-search mechanisms are always available. Their concrete operations remain governed by the requesting principal's policy state regardless of which areas were selected at spawn.
 
-### Initial delegated grants
-
-At spawn, a parent may derive initial child grants from authority the parent already holds. The requested access type, scope, and lifetime must fit both the parent's grants and the child's resource ceiling.
-
-Initial grants avoid unnecessary policy interruptions for expected work. Resource access that is inside the ceiling but was not initially granted may be requested later. Resource access outside the ceiling is denied and cannot be escalated.
+`mcp` and `delegate` are hard mechanism capabilities. A nested child cannot receive either mechanism unless its parent holds it. MCP exposure covers the currently exposed MCP tools as an opaque capability; the runtime must not claim that MCP effects obey filesystem or web policy unless those effects are independently mediated.
 
 ## Work-tree authority and communication
 
@@ -144,7 +137,7 @@ Policy state is principal-specific. Grants, denials, tool-call state, and agent-
 
 ## Policy request resolution
 
-When an agent lacks a local grant for an otherwise ceiling-permitted operation, the operation is suspended and a request is routed to its immediate parent.
+When an agent has no matching local policy for an operation, the operation is suspended and a request is routed to its immediate parent.
 
 A parent decision is one of:
 
@@ -164,7 +157,7 @@ The available decisions depend on the parent's policy state:
 
 A parent may escalate even when it holds sufficient authority. This lets an agent defer an unusually sensitive or uncertain decision to a higher authority.
 
-An agent-issued `allow` must be rejected unless the runtime can construct a valid grant lineage from authority held by that agent. The derived grant must remain within the pending operation, requested scope, child resource ceiling, source grant, and permitted lifetime.
+An agent-issued `allow` must be rejected unless the runtime can construct a valid grant lineage from authority held by that agent. The derived grant must remain within the pending operation, requested scope, source grant, and permitted lifetime.
 
 When an ancestor allows an escalated request, the runtime derives the narrowed authority down the recorded escalation path. Earlier escalations authorize forwarding that exact request, so the decision need not be presented to the same agents again while returning downward. Every edge remains represented in the grant lineage and audit record.
 
@@ -225,15 +218,15 @@ Filesystem policy distinguishes task resources from the execution substrate so u
 
 ### Host and task resources
 
-Repositories, project dependencies, user files, configuration, credentials, lockfiles, and persistent caches are host or task resources. They obey the child resource ceiling and grant chain.
+Repositories, project dependencies, user files, configuration, credentials, lockfiles, and persistent caches are host or task resources. They obey the requesting principal's policy state and grant chain.
 
-A read-only child cannot modify project lockfiles, generated files, or caches inside the project. If a workflow genuinely requires those writes, the child must receive a broader explicit ceiling through a new spawn or an audited resource amendment.
+A child without an inherited filesystem-write area starts without the parent's write policies, but it is not permanently read-only. A workflow that genuinely requires a write may create a policy request and proceed only after valid authority is derived.
 
 ### Trusted execution substrate
 
 The platform may expose a narrow immutable runtime required to launch approved mechanisms, including interpreters, loaders, libraries, and essential certificates. This is platform-owned execution support, not a child grant over arbitrary host files.
 
-Filesystem `none` therefore means no host or task filesystem access. It cannot mean no filesystem syscalls while still providing Bash, Node, Python, or similar runtimes. A mode requiring literally no filesystem access must expose no filesystem-dependent execution mechanism.
+An empty filesystem policy snapshot means no inherited host or task filesystem policy. It does not mean no filesystem syscalls and does not remove Bash, Node, Python, or similar runtimes. Concrete host or task access still requires a matching policy or a later policy decision.
 
 The execution substrate must be minimal and must not use a broad host path exception as a substitute for a controlled runtime image.
 
@@ -247,9 +240,10 @@ Scratch access does not permit host or project writes, is not shared implicitly 
 
 A mechanism and the authority exercised through it are separate:
 
-- Bash may be exposed while filesystem and network effects remain independently mediated.
-- Subagent delegation requires both the mechanism and sufficient resource ceiling to create the requested child.
-- A nested child cannot receive a ceiling or initial grant broader than its parent can delegate.
+- Bash and the other policy-mediated builtins are always exposed while filesystem and network effects remain independently mediated.
+- Subagent delegation requires the hard `delegate` capability.
+- A nested child cannot receive `mcp` or `delegate` unless its parent holds that hard mechanism capability.
+- Policy-area selection is not a hard ceiling; a nested snapshot is intrinsically limited to the immediate parent's effective policy state.
 - MCP exposure is constrained by explicit server and tool selection and remains opaque unless separately mediated.
 
 Concurrency, depth, retained jobs, pending requests, held workers, and retained output must have configurable finite limits. A synchronous parent waiting for a child must not consume the capacity required for that child or its admitted descendants to run. Policy-waiting jobs do not consume model-turn concurrency, but pending operations and retained resources remain separately bounded.
@@ -270,8 +264,10 @@ Tests must prove that:
 - siblings cannot inspect, message, stop, or exercise one another's grants;
 - a child cannot grant authority it does not hold;
 - every descendant grant has a valid, no-broader lineage to root-agent authority;
-- a spawn resource denial cannot be overridden by an ancestor or user policy allow;
-- read-only children cannot modify host or task resources while approved runtimes can use private scratch;
+- selecting a policy-area capability snapshots both allows and denials from that complete parent area;
+- omitting a policy area creates blank local state without blocking later valid policy requests;
+- snapshots are fixed at spawn and inherited durable rules become child-session rules;
+- policy-mediated builtins remain available independently of policy-area selection;
 - known root-agent allows can resolve descendant requests without opening the user UI;
 - known explicit denials do not bubble to the user;
 - policy misses reach the user only after every required intermediate agent escalates them;

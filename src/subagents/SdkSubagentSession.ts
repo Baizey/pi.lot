@@ -9,12 +9,11 @@ import {
     type ExtensionContext,
     type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type {PolicyRuntime} from "../policy/PolicyRuntime.js";
 import type {
     SubagentChildSession,
     SubagentChildSessionFactory,
     SubagentChildUpdate,
-    SubagentRequest,
+    SubagentSessionRequest,
 } from "./types.js";
 
 const MAX_STREAMED_OUTPUT_CHARS = 50_000;
@@ -24,14 +23,11 @@ type AgentSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
     private modelRuntime: Promise<ModelRuntime> | undefined;
 
-    constructor(
-        private readonly rootContext: ExtensionContext,
-        private readonly policyRuntime: PolicyRuntime,
-    ) {
+    constructor(private readonly rootContext: ExtensionContext) {
     }
 
     async create(
-        request: SubagentRequest,
+        request: SubagentSessionRequest,
         tools: ToolDefinition<any, any>[],
         signal: AbortSignal,
     ): Promise<SubagentChildSession> {
@@ -59,51 +55,30 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         await resourceLoader.reload();
         if (signal.aborted) throw abortError();
 
-        const sessionManager = SessionManager.inMemory(request.cwd);
-        const agentIdentifier = sessionManager.getSessionId();
-        this.policyRuntime.registerPolicyLogic(agentIdentifier, request.parentAgentIdentifier);
-        let session: AgentSession;
-        try {
-            const created = await createAgentSession({
-                cwd: request.cwd,
-                model: resolved.model,
-                thinkingLevel: resolved.thinkingLevel ?? request.thinkingLevel ?? this.rootContext.thinkingLevel,
-                modelRuntime,
-                settingsManager,
-                sessionManager,
-                resourceLoader,
-                noTools: "builtin",
-                customTools: tools,
-            });
-            session = created.session;
-        } catch (error) {
-            this.policyRuntime.removePolicyLogic(agentIdentifier);
-            throw error;
-        }
+        const sessionManager = SessionManager.inMemory(request.cwd, {id: request.agentIdentifier});
+        const {session} = await createAgentSession({
+            cwd: request.cwd,
+            model: resolved.model,
+            thinkingLevel: resolved.thinkingLevel ?? request.thinkingLevel ?? this.rootContext.thinkingLevel,
+            modelRuntime,
+            settingsManager,
+            sessionManager,
+            resourceLoader,
+            noTools: "builtin",
+            customTools: tools,
+        });
         if (signal.aborted) {
-            try {
-                session.dispose();
-            } finally {
-                this.policyRuntime.removePolicyLogic(agentIdentifier);
-            }
+            session.dispose();
             throw abortError();
         }
-        return new SdkSubagentSession(
-            session,
-            agentIdentifier,
-            this.policyRuntime,
-        );
+        return new SdkSubagentSession(session);
     }
 }
 
 class SdkSubagentSession implements SubagentChildSession {
     private disposed = false;
 
-    constructor(
-        private readonly session: AgentSession,
-        private readonly agentIdentifier: string,
-        private readonly policyRuntime: PolicyRuntime,
-    ) {
+    constructor(private readonly session: AgentSession) {
     }
 
     async prompt(
@@ -154,22 +129,19 @@ class SdkSubagentSession implements SubagentChildSession {
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
-        try {
-            this.session.dispose();
-        } finally {
-            this.policyRuntime.removePolicyLogic(this.agentIdentifier);
-        }
+        this.session.dispose();
     }
 }
 
-function subagentSystemPrompt(request: SubagentRequest): string {
+function subagentSystemPrompt(request: SubagentSessionRequest): string {
     return [
         "You are a scoped subagent working for a parent coding agent.",
         `Role: ${request.role}`,
         `Run mode: ${request.mode}`,
-        `Available toolkits: ${request.toolkits.length > 0 ? request.toolkits.join(", ") : "(none)"}`,
+        `Spawn capabilities: ${request.capabilities.length > 0 ? request.capabilities.join(", ") : "(none)"}`,
         "Complete the delegated task independently and return a concise, useful result.",
-        "Do not claim capabilities that were not provided. Policy-mediated tools may require interactive approval from the user.",
+        "Policy-area capabilities describe inherited policy snapshots, not permanent prohibitions. Missing policies may still be requested when needed.",
+        "MCP and delegation are hard capabilities: do not claim or attempt them when they were not provided.",
         request.contextPaths?.length
             ? `Suggested context paths: ${request.contextPaths.join(", ")}`
             : "",

@@ -4,6 +4,7 @@ import {
     truncateHead,
     type AgentToolResult,
     type ExtensionAPI,
+    type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime.js";
 import {
@@ -56,6 +57,7 @@ const WEB_SEARCH_PRESENTATION = {
 } satisfies ToolPresentationSpec<WebSearchInput>;
 
 export class WebSearchTool {
+    private definition: ToolDefinition<any, any> | undefined;
     private registered = false;
 
     constructor(
@@ -68,9 +70,13 @@ export class WebSearchTool {
     register(): void {
         if (this.registered) throw new Error("Web-search tool is already registered");
         this.registered = true;
+        this.pi.registerTool(this.toolDefinition());
+    }
 
+    toolDefinition(): ToolDefinition<any, any> {
+        if (this.definition) return this.definition;
         const presentation = new ToolPresentationRenderer(WEB_SEARCH_PRESENTATION);
-        this.pi.registerTool({
+        this.definition = {
             name: "web_search",
             label: "Web search",
             description: "Search the web and return normalized, citable results. Backend selection and fallback are automatic.",
@@ -118,7 +124,8 @@ export class WebSearchTool {
                 {isError: context.isError},
                 resolveToolDisplayMode(options.expanded, context.state),
             ),
-        });
+        } as ToolDefinition<any, any>;
+        return this.definition;
     }
 }
 

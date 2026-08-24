@@ -1,10 +1,14 @@
 import {AsyncLocalStorage} from "node:async_hooks";
 import crypto from "node:crypto";
-import {SubagentToolkitRegistry, uniqueToolkits} from "./SubagentToolkitRegistry.js";
+import type {PolicyPrincipalRegistry} from "../policy/PolicyRuntime.js";
+import {
+    AgentCapabilitySet,
+    AgentMechanismCapability,
+} from "./AgentCapability.js";
+import {SubagentToolCatalog} from "./SubagentToolCatalog.js";
 import {
     SubagentJobStatus,
     SubagentRunMode,
-    SubagentToolkit,
     type SubagentChildSession,
     type SubagentChildSessionFactory,
     type SubagentJobSnapshot,
@@ -18,15 +22,18 @@ const DEFAULT_MAX_JOBS = 100_000;
 
 type DelegationContext = {
     jobId: string;
+    agentIdentifier: string;
     depth: number;
-    ceiling: ReadonlySet<SubagentToolkit>;
+    mechanisms: ReadonlySet<AgentMechanismCapability>;
 };
 
 type SubagentJob = {
     id: string;
+    agentIdentifier: string;
     parentId?: string;
     depth: number;
     request: SubagentRequest;
+    capabilities: AgentCapabilitySet;
     status: SubagentJobStatus;
     createdAt: number;
     startedAt?: number;
@@ -41,6 +48,7 @@ type SubagentJob = {
     runPromise?: Promise<void>;
     stopRequested: boolean;
     timedOut: boolean;
+    principalReleased: boolean;
 };
 
 export type SubagentCoordinatorOptions = {
@@ -66,7 +74,8 @@ export class SubagentCoordinator {
 
     constructor(
         private readonly sessionFactory: SubagentChildSessionFactory,
-        readonly toolkits: SubagentToolkitRegistry,
+        readonly tools: SubagentToolCatalog,
+        private readonly policyPrincipals: PolicyPrincipalRegistry,
         options: SubagentCoordinatorOptions = {},
     ) {
         this.maxConcurrency = positiveInteger(options.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
@@ -82,34 +91,35 @@ export class SubagentCoordinator {
         this.requireOpen();
         if (signal?.aborted) throw abortError();
         const normalized = this.validateRequest(request);
+        const capabilities = new AgentCapabilitySet(normalized.capabilities);
         const parent = this.delegationContext.getStore();
         const depth = parent ? parent.depth + 1 : 0;
         if (depth > this.maxDepth) {
             throw new Error(`Subagent delegation depth ${depth} exceeds the maximum ${this.maxDepth}`);
         }
-        if (parent) {
-            if (!parent.ceiling.has(SubagentToolkit.DELEGATE)) {
-                throw new Error("This subagent was not granted the delegate toolkit");
-            }
-            for (const toolkit of normalized.toolkits) {
-                if (!parent.ceiling.has(toolkit)) {
-                    throw new Error(`Nested subagent toolkit exceeds the parent ceiling: ${toolkit}`);
-                }
-            }
-        }
+        if (parent) this.validateNestedSpawn(parent, normalized, capabilities);
 
         this.evictCompletedJobs();
+        const id = `subagent-${crypto.randomUUID()}`;
+        this.policyPrincipals.registerPolicyPrincipal(
+            id,
+            normalized.parentAgentIdentifier,
+            capabilities.policyAreas(),
+        );
         const job: SubagentJob = {
-            id: `subagent-${crypto.randomUUID()}`,
+            id,
+            agentIdentifier: id,
             parentId: parent?.jobId,
             depth,
             request: normalized,
+            capabilities,
             status: SubagentJobStatus.QUEUED,
             createdAt: Date.now(),
             turns: 0,
             nextTask: normalized.task,
             stopRequested: false,
             timedOut: false,
+            principalReleased: false,
         };
         this.jobs.set(job.id, job);
         this.queue.push(job);
@@ -124,8 +134,7 @@ export class SubagentCoordinator {
     }
 
     list(jobIds?: string[]): SubagentJobSnapshot[] {
-        const jobs = this.selectJobs(jobIds);
-        return jobs.map(snapshot);
+        return this.selectJobs(jobIds).map(snapshot);
     }
 
     async status(
@@ -163,7 +172,7 @@ export class SubagentCoordinator {
 
     message(jobId: string, task: string): SubagentJobSnapshot {
         this.requireOpen();
-        const job = this.requireJob(jobId);
+        const job = this.requireManageableJob(jobId);
         if (job.request.mode !== SubagentRunMode.CONVERSATION) {
             throw new Error(`Subagent job is not a conversation: ${jobId}`);
         }
@@ -186,12 +195,13 @@ export class SubagentCoordinator {
     }
 
     async stop(jobId: string): Promise<SubagentJobSnapshot> {
-        const root = this.requireJob(jobId);
+        const root = this.requireManageableJob(jobId);
         const descendants = [...this.jobs.values()]
             .filter((job) => isDescendant(job, root.id, this.jobs))
             .sort((left, right) => right.depth - left.depth);
         for (const job of descendants) await this.stopOne(job);
         await this.stopOne(root);
+        this.releaseTerminalPrincipals();
         return snapshot(root);
     }
 
@@ -200,8 +210,27 @@ export class SubagentCoordinator {
         this.closed = true;
         const jobs = [...this.jobs.values()].sort((left, right) => right.depth - left.depth);
         await Promise.all(jobs.map((job) => this.stopOne(job)));
+        this.releaseTerminalPrincipals();
         this.queue.splice(0);
         this.changes.clear();
+    }
+
+    private validateNestedSpawn(
+        parent: DelegationContext,
+        request: SubagentRequest,
+        capabilities: AgentCapabilitySet,
+    ): void {
+        if (request.parentAgentIdentifier !== parent.agentIdentifier) {
+            throw new Error("Nested subagent parent policy principal does not match the invoking agent");
+        }
+        if (!parent.mechanisms.has(AgentMechanismCapability.delegate)) {
+            throw new Error("This subagent was not granted the delegate capability");
+        }
+        for (const capability of capabilities.mechanisms()) {
+            if (!parent.mechanisms.has(capability)) {
+                throw new Error(`Nested subagent mechanism exceeds the parent capabilities: ${capability}`);
+            }
+        }
     }
 
     private validateRequest(request: SubagentRequest): SubagentRequest {
@@ -210,8 +239,7 @@ export class SubagentCoordinator {
             : (() => {
                 throw new Error(`Unsupported subagent mode: ${String(request.mode)}`);
             })();
-        const toolkits = uniqueToolkits(request.toolkits);
-        this.toolkits.resolve(toolkits);
+        const capabilities = new AgentCapabilitySet(request.capabilities).all();
         return {
             ...request,
             parentAgentIdentifier: requiredText(
@@ -222,7 +250,7 @@ export class SubagentCoordinator {
             task: requiredText(request.task, "task", 100_000),
             role: requiredText(request.role, "role", 120),
             mode,
-            toolkits,
+            capabilities,
             cwd: requiredText(request.cwd, "cwd", 10_000),
             timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, 3_600),
             model: optionalText(request.model, "model", 500),
@@ -266,13 +294,17 @@ export class SubagentCoordinator {
         this.notify(job);
 
         try {
-            const tools = this.toolkits.resolve(job.request.toolkits);
-            job.session ??= await this.sessionFactory.create(job.request, tools, controller.signal);
+            const tools = this.tools.resolve(job.capabilities);
+            job.session ??= await this.sessionFactory.create({
+                ...job.request,
+                agentIdentifier: job.agentIdentifier,
+            }, tools, controller.signal);
             if (controller.signal.aborted) throw abortError();
             const output = await this.delegationContext.run({
                 jobId: job.id,
+                agentIdentifier: job.agentIdentifier,
                 depth: job.depth,
-                ceiling: new Set(job.request.toolkits),
+                mechanisms: new Set(job.capabilities.mechanisms()),
             }, () => job.session!.prompt(job.nextTask, controller.signal, (update) => {
                 job.latestLine = update.latestLine;
                 if (update.output !== undefined) job.output = boundedOutput(update.output);
@@ -305,6 +337,7 @@ export class SubagentCoordinator {
                 job.session = undefined;
             }
             this.notify(job);
+            this.releaseTerminalPrincipals();
         }
     }
 
@@ -319,6 +352,7 @@ export class SubagentCoordinator {
             job.session?.dispose();
             job.session = undefined;
             this.notify(job);
+            this.releaseTerminalPrincipals();
             return;
         }
         if (job.status === SubagentJobStatus.RUNNING) {
@@ -337,6 +371,7 @@ export class SubagentCoordinator {
             job.session?.dispose();
             job.session = undefined;
             this.notify(job);
+            this.releaseTerminalPrincipals();
         }
     }
 
@@ -370,10 +405,22 @@ export class SubagentCoordinator {
     }
 
     private selectJobs(jobIds?: string[]): SubagentJob[] {
+        const caller = this.delegationContext.getStore();
         if (!jobIds || jobIds.length === 0) {
-            return [...this.jobs.values()].sort((left, right) => right.createdAt - left.createdAt);
+            return [...this.jobs.values()]
+                .filter((job) => !caller || isDescendant(job, caller.jobId, this.jobs))
+                .sort((left, right) => right.createdAt - left.createdAt);
         }
-        return [...new Set(jobIds)].map((jobId) => this.requireJob(jobId));
+        return [...new Set(jobIds)].map((jobId) => this.requireManageableJob(jobId));
+    }
+
+    private requireManageableJob(jobId: string): SubagentJob {
+        const job = this.requireJob(jobId);
+        const caller = this.delegationContext.getStore();
+        if (caller && !isDescendant(job, caller.jobId, this.jobs)) {
+            throw new Error(`Subagent job is outside the invoking agent's descendants: ${jobId}`);
+        }
+        return job;
     }
 
     private requireJob(jobId: string): SubagentJob {
@@ -386,11 +433,31 @@ export class SubagentCoordinator {
         if (this.closed) throw new Error("Subagent coordinator is closed");
     }
 
+    private releaseTerminalPrincipals(): void {
+        let released: boolean;
+        do {
+            released = false;
+            const candidates = [...this.jobs.values()]
+                .filter((job) => isTerminal(job.status) && !job.principalReleased)
+                .sort((left, right) => right.depth - left.depth);
+            for (const job of candidates) {
+                const hasRetainedChildren = [...this.jobs.values()].some((candidate) => (
+                    candidate.parentId === job.id && !candidate.principalReleased
+                ));
+                if (hasRetainedChildren) continue;
+                this.policyPrincipals.removePolicyPrincipal(job.agentIdentifier);
+                job.principalReleased = true;
+                released = true;
+            }
+        } while (released);
+    }
+
     private evictCompletedJobs(): void {
         if (this.jobs.size < this.maxJobs) return;
         const evictable = [...this.jobs.values()]
             .filter((job) => (
                 isTerminal(job.status)
+                && job.principalReleased
                 && ![...this.jobs.values()].some((candidate) => isDescendant(candidate, job.id, this.jobs))
             ))
             .sort((left, right) => (left.finishedAt ?? left.createdAt) - (right.finishedAt ?? right.createdAt));
@@ -415,7 +482,7 @@ function snapshot(job: SubagentJob): SubagentJobSnapshot {
         mode: job.request.mode,
         role: job.request.role,
         task: job.request.task,
-        toolkits: [...job.request.toolkits],
+        capabilities: job.capabilities.all(),
         cwd: job.request.cwd,
         model: job.request.model,
         startedAt: job.startedAt,

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type {
     ExtensionAPI,
@@ -10,6 +13,7 @@ import type {
 import {initTheme} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
+import {PolicyArea, PolicyFallbackResponse} from "../src/policy/types.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import {PolicyDaoInterface} from "../src/storage/PolicyDao";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
@@ -90,7 +94,7 @@ type RegisteredTool = {
     ) => RenderComponent;
     execute: (
         id: string,
-        params: { command: string; purpose: string; timeout?: number },
+        params: any,
         signal: AbortSignal | undefined,
         onUpdate: undefined,
         ctx: ExtensionContext,
@@ -139,6 +143,69 @@ test("the production extension installs built-in overrides immediately but defer
     assert.equal(harness.hasShortcut("alt+o"), false);
     assert.equal(typeof harness.sessionStart(), "function");
     assert.equal(typeof harness.sessionShutdown(), "function");
+});
+
+test("reusable mediated builtin definitions resolve paths from the invoking child context", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-child-tools-"));
+    const harness = extensionHarness();
+    const ctx = {
+        cwd: directory,
+        hasUI: false,
+        mode: "print",
+        ui: {},
+        sessionManager: {getSessionId: () => "extension-test-agent"},
+    } as unknown as ExtensionContext;
+    writeFileSync(path.join(directory, "target.txt"), "old value", "utf8");
+
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        createSessionRuntime(runtimeContext) {
+            const policyRuntime = createPolicyRuntime(runtimeContext);
+            policyRuntime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.allow);
+            return {
+                policyRuntime,
+                decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                fullNetworkInspection: true,
+                setFullNetworkInspection() {
+                },
+                close() {
+                },
+            };
+        },
+    }).register();
+
+    try {
+        await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+        const read = await registeredTool(harness, "read").execute(
+            "child-read",
+            {path: "target.txt"},
+            undefined,
+            undefined,
+            ctx,
+        ) as { content: Array<{ type: string; text?: string }> };
+        assert.equal(read.content[0]?.text, "old value");
+
+        await registeredTool(harness, "write").execute(
+            "child-write",
+            {path: "created.txt", content: "created in child cwd"},
+            undefined,
+            undefined,
+            ctx,
+        );
+        assert.equal(readFileSync(path.join(directory, "created.txt"), "utf8"), "created in child cwd");
+
+        await registeredTool(harness, "edit").execute(
+            "child-edit",
+            {path: "target.txt", edits: [{oldText: "old value", newText: "new value"}]},
+            undefined,
+            undefined,
+            ctx,
+        );
+        assert.equal(readFileSync(path.join(directory, "target.txt"), "utf8"), "new value");
+    } finally {
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+        rmSync(directory, {recursive: true, force: true});
+    }
 });
 
 test("Pi's expanded state switches Bash between minimal and truncated while row state reserves full", async () => {

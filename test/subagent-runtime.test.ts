@@ -6,7 +6,7 @@ import {SubagentRuntime} from "../src/subagents/SubagentRuntime.js";
 
 test("subagent runtime owns one coordinator per root session", async () => {
     const runtime = new SubagentRuntime({
-        bash: () => [],
+        builtins: () => [],
         mcp: () => [],
         delegate: () => [],
     });

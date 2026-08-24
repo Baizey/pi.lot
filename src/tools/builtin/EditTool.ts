@@ -1,9 +1,8 @@
 import {
-    AgentToolResult,
     createEditToolDefinition,
-    EditToolDetails,
     type EditToolInput,
     type ExtensionAPI,
+    type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation";
@@ -34,6 +33,7 @@ const EDIT_PRESENTATION = {
 } satisfies ToolPresentationSpec<EditToolInput>;
 
 export class EditTool {
+    private definition: ToolDefinition<any, any> | undefined;
     private registered = false;
 
     constructor(
@@ -44,10 +44,13 @@ export class EditTool {
     }
 
     register(): void {
-        const runtimeProvider = this.runtimeProvider;
         if (this.registered) throw new Error("Edit tool is already registered");
         this.registered = true;
+        this.pi.registerTool(this.toolDefinition());
+    }
 
+    toolDefinition(): ToolDefinition<any, any> {
+        if (this.definition) return this.definition;
         const definition = createEditToolDefinition(process.cwd());
         if (!definition.renderCall || !definition.renderResult) {
             throw new Error("Pi's Edit tool renderers are unavailable");
@@ -55,42 +58,42 @@ export class EditTool {
         const nativeRenderCall = definition.renderCall;
         const nativeRenderResult = definition.renderResult;
         const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION);
-
-        this.pi.registerTool({
+        const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
+            const result = await this.runtimeProvider().policyRuntime.once(
+                ctx.sessionManager.getSessionId(),
+                params.path,
+                PolicyAccessType.FS_WRITE,
+                signal,
+            );
+            if (result.matchedStatus === PolicyResponse.DENIED) {
+                throw new Error(result.toDenyMessage());
+            }
+            return createEditToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+        };
+        const renderCall: typeof nativeRenderCall = (args, theme, context) => {
+            this.displayRows.observe("edit", args, context as any);
+            const mode = resolveToolDisplayMode(context.expanded, context.state as any);
+            return mode === ToolDisplayMode.FULL
+                ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})
+                : presentation.renderCall(args, theme, mode);
+        };
+        const renderResult: typeof nativeRenderResult = (result, options, theme, context) => {
+            const mode = resolveToolDisplayMode(options.expanded, context.state as any);
+            return mode === ToolDisplayMode.FULL
+                ? nativeRenderResult(
+                    result,
+                    {...options, expanded: true},
+                    theme,
+                    {...context, expanded: true, lastComponent: undefined},
+                )
+                : presentation.renderResult(result, theme, {isError: context.isError}, mode);
+        };
+        this.definition = {
             ...definition,
-
-            async execute(toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<EditToolDetails | undefined>> {
-                const result = await runtimeProvider().policyRuntime.once(
-                    ctx.sessionManager.getSessionId(),
-                    params.path,
-                    PolicyAccessType.FS_WRITE,
-                    signal,
-                );
-                if (result.matchedStatus === PolicyResponse.DENIED) {
-                    throw new Error(result.toDenyMessage());
-                }
-                return await definition.execute(toolCallId, params, signal, onUpdate, ctx);
-            },
-
-            renderCall: (args, theme, context) => {
-                this.displayRows.observe("edit", args, context);
-                const mode = resolveToolDisplayMode(context.expanded, context.state);
-                return mode === ToolDisplayMode.FULL
-                    ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})
-                    : presentation.renderCall(args, theme, mode);
-            },
-
-            renderResult: (result, options, theme, context) => {
-                const mode = resolveToolDisplayMode(options.expanded, context.state);
-                return mode === ToolDisplayMode.FULL
-                    ? nativeRenderResult(
-                        result,
-                        {...options, expanded: true},
-                        theme,
-                        {...context, expanded: true, lastComponent: undefined},
-                    )
-                    : presentation.renderResult(result, theme, {isError: context.isError}, mode);
-            },
-        });
+            execute,
+            renderCall,
+            renderResult,
+        } as unknown as ToolDefinition<any, any>;
+        return this.definition;
     }
 }

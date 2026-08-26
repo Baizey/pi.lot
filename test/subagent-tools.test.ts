@@ -48,6 +48,7 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.deepEqual(registered.map((tool) => tool.name), expectedNames);
     assert.deepEqual(tools.map((tool) => tool.toolDefinition().name), expectedNames);
     assert.equal(registered.every((tool) => tool.renderCall && tool.renderResult), true);
+    assert.equal(registered.every((tool) => tool.renderShell === "self"), true);
     const spawnProperties = (registered[0]!.parameters as any).properties;
     assert.equal("toolkits" in spawnProperties, false);
     assert.equal("model" in spawnProperties, false);
@@ -70,10 +71,10 @@ test("each subagent tool registers independently and delegates only to the coord
         reasoning_amount: SubagentReasoningAmount.MID,
     };
     const minimalCalls = [
-        [{task: "Delegate work", role: "reviewer", ...reasoning}, "subagent_spawn | reviewer"],
-        [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, "subagent_status | job-1, job-2 (wait 2s)"],
-        [{jobId: "job-1", task: "Continue"}, "subagent_message | job-1"],
-        [{jobId: "job-1"}, "subagent_stop | job-1"],
+        [{task: "Delegate work", role: "reviewer", ...reasoning}, "✓ subagent_spawn | reviewer"],
+        [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, "✓ subagent_status | job-1, job-2 (wait 2s)"],
+        [{jobId: "job-1", task: "Continue"}, "✓ subagent_message | job-1"],
+        [{jobId: "job-1"}, "✓ subagent_stop | job-1"],
     ] as const;
     for (let index = 0; index < registered.length; index++) {
         const tool = registered[index]!;
@@ -94,13 +95,13 @@ test("each subagent tool registers independently and delegates only to the coord
         theme,
         renderContext(spawnArgs, {}, true),
     ).render(120);
-    assert.equal(truncatedCall.at(-1), "        ... (2 more lines)");
+    assert.equal(truncatedCall.at(-1), "... (2 more lines)");
     const fullCall = registered[0]!.renderCall!(
         spawnArgs,
         theme,
         renderContext(spawnArgs, {pilotFullDisplay: true}),
     ).render(120);
-    assert.equal(fullCall.at(-1), "        line 10");
+    assert.equal(fullCall.at(-1), "line 10");
 
     const output = {content: [{type: "text" as const, text: numberedLines(10)}], details: {jobs: []}};
     assert.deepEqual(

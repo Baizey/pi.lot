@@ -119,6 +119,7 @@ test("the production extension installs built-in overrides immediately but defer
     }).register();
 
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
+    assert.equal(harness.registeredTools.every((tool) => tool.renderShell === "self"), true);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
     const commandParameter = bashTool.parameters.properties.command;
@@ -208,7 +209,7 @@ test("reusable mediated builtin definitions resolve paths from the invoking chil
     }
 });
 
-test("Pi's expanded state switches Bash between minimal and truncated while row state reserves full", async () => {
+test("Pilot's expanded state switches Bash between minimal and truncated while row state reserves full", async () => {
     const harness = extensionHarness();
     const ctx = {
         cwd: process.cwd(),
@@ -251,7 +252,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
 
     assert.deepEqual(
         bashTool.renderCall(args, theme, toolRenderContext(args, displayState)).render(120),
-        ["bash | Verify native display controls"],
+        ["✓ bash | Verify native display controls"],
     );
     assert.deepEqual(
         bashTool.renderResult(
@@ -269,7 +270,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
         toolRenderContext(args, displayState, {expanded: true}),
     ).render(120);
     assert.equal(truncatedCall.length, 10);
-    assert.equal(truncatedCall.at(-1), "    ... (2 more lines)");
+    assert.equal(truncatedCall.at(-1), "... (2 more lines)");
     assert.deepEqual(
         bashTool.renderResult(
             output,
@@ -287,7 +288,7 @@ test("Pi's expanded state switches Bash between minimal and truncated while row 
         toolRenderContext(args, fullState),
     ).render(120);
     assert.equal(fullCall.length, 11);
-    assert.equal(fullCall.at(-1), "    echo 10");
+    assert.equal(fullCall.at(-1), "echo 10");
     assert.deepEqual(
         bashTool.renderResult(
             output,
@@ -371,15 +372,15 @@ test("Bash components remain renderable during and after session shutdown", asyn
 
     assert.ifError(renderError);
     const expectedLines = [
-        "bash | Keep rendering during teardown",
-        "    echo complete",
+        "✓ bash | Keep rendering during teardown",
+        "echo complete",
     ];
     assert.deepEqual(renderedLines, expectedLines);
     assert.equal(runtimeCloses, 1);
     assert.deepEqual(call.render(120), expectedLines);
 });
 
-test("read, edit, and write use minimal/truncated presentation and reserve native rendering for full", async () => {
+test("read, edit, and write use copy-safe Pilot rendering in every display mode", async () => {
     initTheme("dark");
     const harness = extensionHarness();
     const ctx = {
@@ -420,7 +421,9 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
     assert.ok(readTool.renderCall && readTool.renderResult);
     assert.ok(editTool.renderCall && editTool.renderResult);
     assert.ok(writeTool.renderCall && writeTool.renderResult);
+    assert.equal(readTool.renderShell, "self");
     assert.equal(editTool.renderShell, "self");
+    assert.equal(writeTool.renderShell, "self");
     assert.equal(typeof editTool.prepareArguments, "function");
 
     const readArgs = {path: "notes.data", offset: 2, limit: 2};
@@ -442,14 +445,14 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
     let writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     let editCall = editTool.renderCall(editArgs, theme, editCallContext);
 
-    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["read | notes.data:2-3"]);
+    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["✓ read | notes.data:2-3"]);
     assert.deepEqual(
         writeCall.render(120).map((line) => line.trimEnd()),
-        ["write | created.data", "    alpha", "    beta"],
+        ["✓ write | created.data", "alpha", "beta"],
     );
     assert.deepEqual(
         editCall.render(120).map((line) => line.trimEnd()),
-        ["edit | changed.data (2 replacements)"],
+        ["✓ edit | changed.data (2 replacements)"],
     );
 
     readCallContext = {...readCallContext, expanded: false, lastComponent: readCall};
@@ -459,8 +462,8 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
     writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     editCall = editTool.renderCall(editArgs, theme, editCallContext);
 
-    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["read | notes.data:2-3"]);
-    assert.deepEqual(writeCall.render(120).map((line) => line.trimEnd()), ["write | created.data"]);
+    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["✓ read | notes.data:2-3"]);
+    assert.deepEqual(writeCall.render(120).map((line) => line.trimEnd()), ["✓ write | created.data"]);
     assert.equal(editCall.render(120).some((line) => line.includes("edit | changed.data")), true);
     assert.equal(editCall.render(120).some((line) => line.includes("2 replacements")), true);
     assert.deepEqual(
@@ -469,7 +472,7 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
             theme,
             toolRenderContext({path: "notes.data", limit: 2}, {}),
         ).render(120).map((line) => line.trimEnd()),
-        ["read | notes.data:1-2"],
+        ["✓ read | notes.data:1-2"],
     );
     assert.deepEqual(
         readTool.renderCall(
@@ -477,7 +480,7 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
             theme,
             toolRenderContext({path: "notes.data", offset: 2}, {}),
         ).render(120).map((line) => line.trimEnd()),
-        ["read | notes.data:2"],
+        ["✓ read | notes.data:2"],
     );
 
     const errorResult = {content: [{type: "text", text: "visible error details"}]};
@@ -522,12 +525,12 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
         theme,
         {...writeCallContext, expanded: false, lastComponent: writeCall},
     );
-    assert.equal(readCall.render(120)[0]?.includes("read |"), false);
-    assert.equal(writeCall.render(120)[0]?.includes("write |"), false);
+    assert.equal(readCall.render(120)[0]?.includes("✓ read |"), true);
+    assert.equal(writeCall.render(120)[0]?.includes("✓ write |"), true);
 
     editCallContext = {...editCallContext, expanded: false, lastComponent: editCall};
     editCall = editTool.renderCall(editArgs, theme, editCallContext);
-    editTool.renderResult(
+    const editResult = editTool.renderResult(
         {
             content: [{type: "text", text: "Successfully replaced 2 blocks"}],
             details: {
@@ -540,8 +543,10 @@ test("read, edit, and write use minimal/truncated presentation and reserve nativ
         theme,
         toolRenderContext(editArgs, editState, {expanded: false}),
     );
-    assert.equal(editCall.render(120).some((line) => line.includes("old value")), true);
-    assert.equal(editCall.render(120).some((line) => line.includes("new value")), true);
+    assert.deepEqual(editCall.render(120), ["✓ edit | changed.data (2 replacements)"]);
+    assert.equal(editResult.render(120).some((line) => line.includes("old value")), true);
+    assert.equal(editResult.render(120).some((line) => line.includes("new value")), true);
+    assert.equal(editResult.render(120).some((line) => /^\s+[+-]/.test(line)), false);
 
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
 });

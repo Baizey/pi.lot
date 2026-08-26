@@ -68,6 +68,7 @@ function createDefinition(
         name: "subagent_message",
         label: "Message subagent",
         description: "Message a subagent. A running job receives steering for its active turn; otherwise the message becomes an ordered follow-up turn.",
+        renderShell: "self",
         parameters: objectSchema({
             jobId: stringSchema("Subagent job id"),
             task: stringSchema("Steering instruction or conversation follow-up"),
@@ -82,6 +83,7 @@ function createDefinition(
                 args as MessageToolInput,
                 theme,
                 resolveToolDisplayMode(context.expanded, context.state),
+                {isPartial: context.isPartial, isError: context.isError},
             );
         },
         renderResult: (result, options, theme, context) => presentation.renderResult(

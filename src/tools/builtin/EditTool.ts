@@ -5,12 +5,12 @@ import {
     type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
-import {ToolArgumentPlacement} from "../../tui/tool/ToolPresentation";
+import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
-import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
+import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 
 const EDIT_PRESENTATION = {
@@ -30,6 +30,15 @@ const EDIT_PRESENTATION = {
             },
         },
     ],
+    result: {
+        direction: ToolTextDirection.HEAD,
+        previewLines: 12,
+        color: (line) => {
+            if (line.startsWith("+")) return ThemeColor.toolDiffAdded;
+            if (line.startsWith("-")) return ThemeColor.toolDiffRemoved;
+            return ThemeColor.toolDiffContext;
+        },
+    },
 } satisfies ToolPresentationSpec<EditToolInput>;
 
 export class EditTool {
@@ -52,11 +61,6 @@ export class EditTool {
     toolDefinition(): ToolDefinition<any, any> {
         if (this.definition) return this.definition;
         const definition = createEditToolDefinition(process.cwd());
-        if (!definition.renderCall || !definition.renderResult) {
-            throw new Error("Pi's Edit tool renderers are unavailable");
-        }
-        const nativeRenderCall = definition.renderCall;
-        const nativeRenderResult = definition.renderResult;
         const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const result = await this.runtimeProvider().policyRuntime.once(
@@ -70,26 +74,29 @@ export class EditTool {
             }
             return createEditToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
         };
-        const renderCall: typeof nativeRenderCall = (args, theme, context) => {
+        const renderCall: NonNullable<typeof definition.renderCall> = (args, theme, context) => {
             this.displayRows.observe("edit", args, context as any);
             const mode = resolveToolDisplayMode(context.expanded, context.state as any);
-            return mode === ToolDisplayMode.FULL
-                ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})
-                : presentation.renderCall(args, theme, mode);
+            return presentation.renderCall(
+                args,
+                theme,
+                mode,
+                {isPartial: context.isPartial, isError: context.isError},
+            );
         };
-        const renderResult: typeof nativeRenderResult = (result, options, theme, context) => {
+        const renderResult: NonNullable<typeof definition.renderResult> = (result, options, theme, context) => {
             const mode = resolveToolDisplayMode(options.expanded, context.state as any);
-            return mode === ToolDisplayMode.FULL
-                ? nativeRenderResult(
-                    result,
-                    {...options, expanded: true},
-                    theme,
-                    {...context, expanded: true, lastComponent: undefined},
-                )
-                : presentation.renderResult(result, theme, {isError: context.isError}, mode);
+            const diff = !context.isError && typeof result.details?.diff === "string"
+                ? result.details.diff
+                : undefined;
+            const displayedResult = diff
+                ? {...result, content: [{type: "text" as const, text: diff}]}
+                : result;
+            return presentation.renderResult(displayedResult, theme, {isError: context.isError}, mode);
         };
         this.definition = {
             ...definition,
+            renderShell: "self",
             execute,
             renderCall,
             renderResult,

@@ -183,6 +183,7 @@ function createMcpPiTool(input: {
         label: input.mcpTool.title ?? input.piToolName,
         description,
         promptSnippet: description,
+        renderShell: "self",
         parameters: normalizeMcpInputSchema(input.mcpTool.inputSchema) as any,
         async execute(_toolCallId, params, signal, onUpdate): Promise<AgentToolResult<McpToolDetails | undefined>> {
             const latestConfig = input.store.load();
@@ -227,6 +228,7 @@ function createMcpPiTool(input: {
                 args as Record<string, unknown>,
                 theme,
                 resolveToolDisplayMode(context.expanded, context.state),
+                {isPartial: context.isPartial, isError: context.isError},
             );
         },
         renderResult: (result, options, theme, context) => presentation.renderResult(

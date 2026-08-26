@@ -150,6 +150,7 @@ test("the public tool has no provider argument and returns provider-neutral cita
 
     const tool = registered[0]!;
     assert.equal(tool.name, "web_search");
+    assert.equal(tool.renderShell, "self");
     assert.equal("provider" in tool.parameters.properties, false);
     const text = formatWebSearchResults("question", [
         {title: "Result", url: "https://example.test/source", snippet: "Evidence"},

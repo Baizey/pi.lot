@@ -105,6 +105,7 @@ export class BashTool {
             description: `${bashDefinition.description} Include a concise, one-line purpose for the command.`,
             parameters,
             prepareArguments: undefined,
+            renderShell: "self",
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
                 const policy = runtime.policyRuntime.beginToolCall(ctx.sessionManager.getSessionId());
@@ -124,6 +125,7 @@ export class BashTool {
                     args,
                     theme,
                     resolveToolDisplayMode(context.expanded, context.state),
+                    {isPartial: context.isPartial, isError: context.isError},
                 );
             },
 

@@ -85,15 +85,16 @@ test("exposed MCP tools register once and re-check exposure when called", async 
         assert.deepEqual(registry.registeredToolDefinitions().map((tool) => tool.name), ["mcp_demo_echo"]);
         const tool = registered[0]!;
         assert.ok(tool.renderCall && tool.renderResult);
+        assert.equal(tool.renderShell, "self");
         const theme = plainTheme();
         const longArgs = {value: numberedLines(10)};
         assert.deepEqual(
             tool.renderCall(longArgs, theme, renderContext(longArgs)).render(120),
-            ["mcp_demo_echo"],
+            ["✓ mcp_demo_echo"],
         );
         assert.equal(
             tool.renderCall(longArgs, theme, renderContext(longArgs, {}, true)).render(120).at(-1),
-            "    ... (2 more lines)",
+            "... (2 more lines)",
         );
         assert.equal(
             tool.renderCall(
@@ -101,7 +102,7 @@ test("exposed MCP tools register once and re-check exposure when called", async 
                 theme,
                 renderContext(longArgs, {pilotFullDisplay: true}),
             ).render(120).at(-1),
-            "    line 10",
+            "line 10",
         );
         const longResult = {
             content: [{type: "text" as const, text: numberedLines(10)}],

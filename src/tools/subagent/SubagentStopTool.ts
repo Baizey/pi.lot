@@ -57,6 +57,7 @@ function createDefinition(
         name: "subagent_stop",
         label: "Stop subagent",
         description: "Stop a queued, running, or idle subagent and all of its descendants.",
+        renderShell: "self",
         parameters: objectSchema({jobId: stringSchema("Subagent job id")}, ["jobId"]),
         async execute(_id, params): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as StopToolInput;
@@ -69,6 +70,7 @@ function createDefinition(
                 args as StopToolInput,
                 theme,
                 resolveToolDisplayMode(context.expanded, context.state),
+                {isPartial: context.isPartial, isError: context.isError},
             );
         },
         renderResult: (result, options, theme, context) => presentation.renderResult(

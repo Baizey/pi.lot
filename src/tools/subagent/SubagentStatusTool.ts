@@ -70,6 +70,7 @@ function createDefinition(
         name: "subagent_status",
         label: "Subagent status",
         description: "Inspect subagent conversation jobs and optionally wait for selected active turns to become idle or terminal.",
+        renderShell: "self",
         parameters: objectSchema({
             jobIds: arraySchema(stringSchema("Subagent job id"), "Jobs to inspect; omit to list all jobs"),
             waitSeconds: numberSchema("Maximum time to wait for selected jobs", 0, 3_600, 0),
@@ -90,6 +91,7 @@ function createDefinition(
                 args as StatusToolInput,
                 theme,
                 resolveToolDisplayMode(context.expanded, context.state),
+                {isPartial: context.isPartial, isError: context.isError},
             );
         },
         renderResult: (result, options, theme, context) => presentation.renderResult(

@@ -10,7 +10,7 @@ import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer"
 import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
-import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
+import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 
 const READ_PRESENTATION = {
@@ -59,12 +59,6 @@ export class ReadTool {
     toolDefinition(): ToolDefinition<any, any> {
         if (this.definition) return this.definition;
         const definition = createReadToolDefinition(process.cwd());
-        if (!definition.renderCall || !definition.renderResult) {
-            throw new Error("Pi's Read tool renderers are unavailable");
-        }
-
-        const nativeRenderCall = definition.renderCall;
-        const nativeRenderResult = definition.renderResult;
         const presentation = new ToolPresentationRenderer(READ_PRESENTATION);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const result = await this.runtimeProvider().policyRuntime.once(
@@ -78,26 +72,23 @@ export class ReadTool {
             }
             return createReadToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
         };
-        const renderCall: typeof nativeRenderCall = (args, theme, context) => {
+        const renderCall: NonNullable<typeof definition.renderCall> = (args, theme, context) => {
             this.displayRows.observe("read", args, context);
             const mode = resolveToolDisplayMode(context.expanded, context.state);
-            return mode === ToolDisplayMode.FULL
-                ? nativeRenderCall(args, theme, {...context, expanded: true, lastComponent: undefined})
-                : presentation.renderCall(args, theme, mode);
+            return presentation.renderCall(
+                args,
+                theme,
+                mode,
+                {isPartial: context.isPartial, isError: context.isError},
+            );
         };
-        const renderResult: typeof nativeRenderResult = (result, options, theme, context) => {
+        const renderResult: NonNullable<typeof definition.renderResult> = (result, options, theme, context) => {
             const mode = resolveToolDisplayMode(options.expanded, context.state);
-            return mode === ToolDisplayMode.FULL
-                ? nativeRenderResult(
-                    result,
-                    {...options, expanded: true},
-                    theme,
-                    {...context, expanded: true, lastComponent: undefined},
-                )
-                : presentation.renderResult(result, theme, {isError: context.isError}, mode);
+            return presentation.renderResult(result, theme, {isError: context.isError}, mode);
         };
         this.definition = {
             ...definition,
+            renderShell: "self",
             execute,
             renderCall,
             renderResult,

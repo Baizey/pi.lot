@@ -120,6 +120,7 @@ function createDefinition(
         label: "Spawn subagent",
         description: "Start a retained child-agent conversation with abstract reasoning capabilities and return its job ID immediately. Policy-area capabilities snapshot the parent's matching policy state; MCP and delegation are hard capabilities.",
         promptSnippet: "Delegate independent work to a retained in-process child-agent conversation with explicit reasoning and mechanism capabilities.",
+        renderShell: "self",
         parameters: objectSchema({
             task: stringSchema("Task to delegate"),
             role: stringSchema("Concise role or title for the child agent", 120),
@@ -172,6 +173,7 @@ function createDefinition(
                 args as SpawnToolInput,
                 theme,
                 resolveToolDisplayMode(context.expanded, context.state),
+                {isPartial: context.isPartial, isError: context.isError},
             );
         },
         renderResult: (result, options, theme, context) => presentation.renderResult(

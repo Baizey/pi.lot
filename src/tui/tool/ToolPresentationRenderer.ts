@@ -24,6 +24,11 @@ const DEFAULT_RESULT_PREVIEW_LINES = 5;
 const DEFAULT_MAX_CALL_LINES = 100;
 const DEFAULT_MAX_ARGUMENT_LINES = 100;
 
+export type ToolCallRenderOptions = {
+    isPartial?: boolean;
+    isError?: boolean;
+};
+
 export type ToolResultRenderOptions = {
     isError?: boolean;
 };
@@ -57,9 +62,14 @@ export class ToolPresentationRenderer<TArgs extends object> {
         }
     }
 
-    renderCall(args: Partial<TArgs> | undefined, theme: Theme, mode: ToolDisplayMode): TextComponent {
+    renderCall(
+        args: Partial<TArgs> | undefined,
+        theme: Theme,
+        mode: ToolDisplayMode,
+        options: ToolCallRenderOptions = {},
+    ): TextComponent {
         const normalizedArgs = (args ?? {}) as Partial<TArgs>;
-        return renderLineFactory(() => this.toolCallLines(normalizedArgs, theme, mode));
+        return renderLineFactory(() => this.toolCallLines(normalizedArgs, theme, mode, options));
     }
 
     renderResult(
@@ -71,11 +81,16 @@ export class ToolPresentationRenderer<TArgs extends object> {
         return renderLineFactory(() => this.toolResultLines(result, theme, options, mode));
     }
 
-    private toolCallLines(args: Partial<TArgs>, theme: Theme, mode: ToolDisplayMode): string[] {
+    private toolCallLines(
+        args: Partial<TArgs>,
+        theme: Theme,
+        mode: ToolDisplayMode,
+        options: ToolCallRenderOptions,
+    ): string[] {
         const resolved = this.resolveArguments(args);
         const lines = mode === ToolDisplayMode.MINIMAL
-            ? this.minimalCallLines(resolved, args, theme)
-            : this.regularCallLines(resolved, args, theme, mode);
+            ? this.minimalCallLines(resolved, args, theme, options)
+            : this.regularCallLines(resolved, args, theme, mode, options);
         return this.boundCallLines(lines, theme);
     }
 
@@ -83,8 +98,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
         resolved: ResolvedArgument<TArgs>[],
         args: Partial<TArgs>,
         theme: Theme,
+        options: ToolCallRenderOptions,
     ): string[] {
-        let title = this.toolTitle(theme);
+        let title = this.toolTitle(theme, options);
         for (const argument of resolved) {
             if (argument.placement === ToolArgumentPlacement.BODY) continue;
             title = this.appendTitleArgument(title, argument, args, theme);
@@ -97,8 +113,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
         args: Partial<TArgs>,
         theme: Theme,
         mode: ToolDisplayMode,
+        options: ToolCallRenderOptions,
     ): string[] {
-        let title = this.toolTitle(theme);
+        let title = this.toolTitle(theme, options);
         for (const argument of resolved) {
             if (argument.placement === ToolArgumentPlacement.BODY) continue;
             title = this.appendTitleArgument(title, argument, args, theme);
@@ -133,11 +150,25 @@ export class ToolPresentationRenderer<TArgs extends object> {
             maxCharacters: resultPresentation.maxCharacters ?? DEFAULT_MAX_BYTES,
             maxFullLines: resultPresentation.maxFullLines ?? DEFAULT_MAX_LINES,
         });
-        const contentColor = options.isError ? ThemeColor.error : ThemeColor.toolOutput;
         return [
             "",
-            ...rows.map((row) => this.textRow(row, theme, contentColor)),
+            ...rows.map((row) => this.textRow(
+                row,
+                theme,
+                this.resultRowColor(row, resultPresentation, options),
+            )),
         ];
+    }
+
+    private resultRowColor(
+        row: TextWindowRow,
+        presentation: ToolResultPresentation,
+        options: ToolResultRenderOptions,
+    ): ThemeColor {
+        if (options.isError) return ThemeColor.error;
+        if (row.kind !== "content") return ThemeColor.warning;
+        if (typeof presentation.color === "function") return presentation.color(row.text);
+        return presentation.color ?? ThemeColor.toolOutput;
     }
 
     private resolveArguments(args: Partial<TArgs>): ResolvedArgument<TArgs>[] {
@@ -203,9 +234,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
         const contentColor = argument.presentation?.color ?? ThemeColor.dim;
         if (argument.layout === ToolArgumentLayout.INLINE) {
             const value = theme.fg(contentColor, this.formattedValue(argument, args, false));
-            if (!showLabel) return [`    ${value}`];
+            if (!showLabel) return [value];
             const label = theme.fg(ThemeColor.dim, `${this.argumentLabel(argument)}:`);
-            return [`    ${label} ${value}`];
+            return [`${label} ${value}`];
         }
 
         const text = this.formattedValue(argument, args, true);
@@ -216,10 +247,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
             maxCharacters: argument.presentation?.maxCharacters ?? DEFAULT_MAX_BYTES,
             maxFullLines: argument.presentation?.maxFullLines ?? DEFAULT_MAX_ARGUMENT_LINES,
         });
-        const valueIndent = showLabel ? "        " : "    ";
-        const lines = rows.map((row) => `${valueIndent}${this.textRow(row, theme, contentColor)}`);
+        const lines = rows.map((row) => this.textRow(row, theme, contentColor));
         if (!showLabel) return lines;
-        return [`    ${theme.fg(ThemeColor.dim, `${this.argumentLabel(argument)}:`)}`, ...lines];
+        return [theme.fg(ThemeColor.dim, `${this.argumentLabel(argument)}:`), ...lines];
     }
 
     private formattedValue(
@@ -236,8 +266,12 @@ export class ToolPresentationRenderer<TArgs extends object> {
         return argument.presentation?.label ?? argument.key;
     }
 
-    private toolTitle(theme: Theme): string {
-        return theme.fg(ThemeColor.toolTitle, theme.bold(this.presentation.toolName));
+    private toolTitle(theme: Theme, options: ToolCallRenderOptions): string {
+        const title = theme.fg(ThemeColor.toolTitle, theme.bold(this.presentation.toolName));
+        if (options.isError) return `${theme.fg(ThemeColor.error, "×")} ${title}`;
+        if (options.isPartial) return `${theme.fg(ThemeColor.accent, "·")} ${title}`;
+        if (options.isPartial === false) return `${theme.fg(ThemeColor.success, "✓")} ${title}`;
+        return title;
     }
 
     private textRow(row: TextWindowRow, theme: Theme, contentColor: ThemeColor): string {

@@ -32,6 +32,7 @@ export type ToolArgumentPresentation<TArgs extends object> = {
 
 export type ToolResultPresentation = {
     direction?: ToolTextDirection;
+    color?: ThemeColor | ((line: string) => ThemeColor);
     previewLines?: number;
     maxCharacters?: number;
     maxFullLines?: number;

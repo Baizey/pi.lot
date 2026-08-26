@@ -132,7 +132,7 @@ Pathname IPC is outside filesystem and network mediation. A preserved host servi
 
 pi.lot uses Pi's native `Ctrl+O` expansion state as a global density toggle for built-in, subagent, and MCP tools. Collapsed tools show a minimal title-only view; expanded tools show bounded argument and result previews. Use `/view-full-tool` to toggle row-local full views. Enter toggles the selected row without closing the bounded list; Escape closes it.
 
-Full Read and Write views retain Pi's native text and syntax highlighting, Read retains native image behavior, and full Edit views retain Pi's native diff preview.
+Every tool uses a pi.lot-owned, foreground-only shell. Pending, successful, and failed calls are marked in the header without whole-line background fills. Commands, file content, diffs, and output start at column zero without display-added horizontal padding so terminal selection remains copy-friendly.
 
 ### MCP servers
 
@@ -258,6 +258,8 @@ To load the extension directly without installing it:
 ```bash
 pi -e "$PWD"
 ```
+
+For development, the checked-in `.pi/settings.json` registers the repository root as a project-local package. After trusting the project, starting Pi inside this checkout loads `src/pilot-extension.ts` and the local themes directly.
 
 After installation, start Pi normally. pi.lot automatically replaces the supported built-in tools and presents permission requests when needed.
 

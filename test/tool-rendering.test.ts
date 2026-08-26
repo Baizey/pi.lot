@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {ExtensionAPI, Theme} from "@earendil-works/pi-coding-agent";
+import {
+    initTheme,
+    ToolExecutionComponent,
+    type ExtensionAPI,
+    type Theme,
+    type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import {
     ToolArgumentLayout,
     ToolArgumentPlacement,
@@ -81,6 +87,63 @@ test("view-full-tool bounds the chronological window and toggles rows without cl
     assert.equal(invalidations.slice(0, -1).every((count) => count === 0), true);
 });
 
+test("self-shell composition keeps symbolic content free of fill-to-width whitespace", () => {
+    initTheme("dark");
+    type Args = {path: string; content: string};
+    const presentation = new ToolPresentationRenderer({
+        toolName: "symbol_test",
+        arguments: [
+            {key: "path", placement: ToolArgumentPlacement.TITLE_PRIMARY},
+            {key: "content", layout: ToolArgumentLayout.BLOCK},
+        ],
+        result: {direction: ToolTextDirection.HEAD},
+    } satisfies ToolPresentationSpec<Args>);
+    const definition = {
+        name: "symbol_test",
+        label: "Symbol test",
+        description: "Exercise copy-safe symbolic rendering",
+        parameters: {type: "object", properties: {}},
+        renderShell: "self",
+        async execute() {
+            return {content: [{type: "text" as const, text: "unused"}], details: undefined};
+        },
+        renderCall: (args, theme, context) => presentation.renderCall(
+            args as Args,
+            theme,
+            ToolDisplayMode.TRUNCATED,
+            {isPartial: context.isPartial, isError: context.isError},
+        ),
+        renderResult: (result, _options, theme, context) => presentation.renderResult(
+            result,
+            theme,
+            {isError: context.isError},
+            ToolDisplayMode.TRUNCATED,
+        ),
+    } as ToolDefinition<any, any>;
+    const args = {path: "symbols-◽.txt", content: "界🙂e\u0301 → value"};
+    const component = new ToolExecutionComponent(
+        definition.name,
+        "symbol-call",
+        args,
+        {},
+        definition,
+        {requestRender() {}} as any,
+        process.cwd(),
+    );
+    component.setArgsComplete();
+    component.markExecutionStarted();
+    component.updateResult({
+        content: [{type: "text", text: "family 👨‍👩‍👧‍👦 · math ∑"}],
+        isError: false,
+    });
+
+    const plainLines = component.render(80).map(stripAnsi);
+    assert.equal(plainLines.includes("界🙂e\u0301 → value"), true);
+    assert.equal(plainLines.includes("family 👨‍👩‍👧‍👦 · math ∑"), true);
+    assert.equal(plainLines.every((line) => !/[ \t]+$/.test(line)), true);
+    assert.equal(plainLines.some((line) => /^\s+界/.test(line)), false);
+});
+
 test("global expansion selects truncated display while the row-local override selects full display", () => {
     assert.equal(resolveToolDisplayMode(false, {}), ToolDisplayMode.MINIMAL);
     assert.equal(resolveToolDisplayMode(true, {}), ToolDisplayMode.TRUNCATED);
@@ -105,8 +168,8 @@ test("full Bash presentation promotes purpose and timeout and shows complete out
         }, plainTheme, ToolDisplayMode.FULL).render(120),
         [
             "bash | Build the native helper (timeout 300s)",
-            "    npm run build",
-            "    npm test",
+            "npm run build",
+            "npm test",
         ],
     );
     assert.deepEqual(
@@ -117,6 +180,24 @@ test("full Bash presentation promotes purpose and timeout and shows complete out
             ToolDisplayMode.FULL,
         ).render(120),
         ["", "build complete"],
+    );
+});
+
+test("tool headers show lifecycle state without adding a padded shell", () => {
+    const renderer = new ToolPresentationRenderer(bashPresentation());
+    const args = {purpose: "Check lifecycle", command: "true"};
+
+    assert.deepEqual(
+        renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {isPartial: true}).render(120),
+        ["· bash | Check lifecycle"],
+    );
+    assert.deepEqual(
+        renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {isPartial: false}).render(120),
+        ["✓ bash | Check lifecycle"],
+    );
+    assert.deepEqual(
+        renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {isPartial: false, isError: true}).render(120),
+        ["× bash | Check lifecycle"],
     );
 });
 
@@ -167,10 +248,10 @@ test("truncated presentation keeps argument heads and output tails", () => {
 
     assert.deepEqual(call.slice(0, 3), [
         "bash | Exercise truncation",
-        "    line 1",
-        "    line 2",
+        "line 1",
+        "line 2",
     ]);
-    assert.equal(call.at(-1), "    ... (2 more lines)");
+    assert.equal(call.at(-1), "... (2 more lines)");
     assert.equal(result[1]?.includes("3 earlier lines"), true);
     assert.deepEqual(result.slice(-5), ["line 4", "line 5", "line 6", "line 7", "line 8"]);
 });
@@ -196,14 +277,14 @@ test("known arguments retain declared order, unknown arguments sort, and blocks 
         } as Args, plainTheme, ToolDisplayMode.FULL).render(120),
         [
             "ordered",
-            "    known: configured inline",
-            "    alpha: 1",
-            "    zeta: 2",
-            "    block:",
-            "        configured block",
-            "    unknownBlock:",
-            "        first",
-            "        second",
+            "known: configured inline",
+            "alpha: 1",
+            "zeta: 2",
+            "block:",
+            "configured block",
+            "unknownBlock:",
+            "first",
+            "second",
         ],
     );
 });
@@ -228,10 +309,40 @@ test("body argument values honor configured colors", () => {
             .render(120),
         [
             "<toolTitle>colored</toolTitle>",
-            "    <dim>inline:</dim> <warning>configured inline</warning>",
-            "    <dim>block:</dim>",
-            "        <text>first</text>",
-            "        <text>second</text>",
+            "<dim>inline:</dim> <warning>configured inline</warning>",
+            "<dim>block:</dim>",
+            "<text>first</text>",
+            "<text>second</text>",
+        ],
+    );
+});
+
+test("result rows can select foreground colors without whole-line backgrounds", () => {
+    type Args = Record<string, never>;
+    const renderer = new ToolPresentationRenderer({
+        toolName: "diff",
+        arguments: [],
+        result: {
+            direction: ToolTextDirection.HEAD,
+            color: (line) => line.startsWith("+") ? ThemeColor.toolDiffAdded : ThemeColor.toolDiffRemoved,
+        },
+    } satisfies ToolPresentationSpec<Args>);
+    const colorTheme = {
+        fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+        bold: (text: string) => text,
+    } as unknown as Theme;
+
+    assert.deepEqual(
+        renderer.renderResult(
+            {content: [{type: "text", text: "+added\n-removed"}]},
+            colorTheme,
+            {},
+            ToolDisplayMode.FULL,
+        ).render(120),
+        [
+            "",
+            "<toolDiffAdded>+added</toolDiffAdded>",
+            "<toolDiffRemoved>-removed</toolDiffRemoved>",
         ],
     );
 });
@@ -303,7 +414,7 @@ test("character safety limits retain the configured head or tail boundary", () =
 
     assert.deepEqual(
         renderer.renderCall({content: "abcdefghij"}, plainTheme, ToolDisplayMode.FULL).render(120),
-        ["character-bounded", "    abcde", "    [display truncated]"],
+        ["character-bounded", "abcde", "[display truncated]"],
     );
     assert.deepEqual(
         renderer.renderResult(
@@ -402,6 +513,10 @@ function bashPresentation(): ToolPresentationSpec<{
         ],
         result: {direction: ToolTextDirection.TAIL},
     };
+}
+
+function stripAnsi(value: string): string {
+    return value.replace(/\x1b\[[0-?]*[ -/]*m/g, "");
 }
 
 function numberedLines(count: number): string {

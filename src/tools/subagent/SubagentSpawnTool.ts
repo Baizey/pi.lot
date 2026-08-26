@@ -1,7 +1,6 @@
 import path from "node:path";
 import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
-import {SubagentRunMode} from "../../subagents/types";
 import type {SubagentDefaultValues} from "../../subagents/SubagentDefaults.js";
 import {
     SubagentReasoningAmount,
@@ -38,7 +37,6 @@ const DEFAULT_TIMEOUT_SECONDS = 900;
 type SpawnToolInput = {
     task: string;
     role: string;
-    mode?: SubagentRunMode;
     capabilities?: AgentCapability[];
     cwd?: string;
     timeoutSeconds?: number;
@@ -58,11 +56,6 @@ const SPAWN_PRESENTATION = {
             key: "role",
             placement: ToolArgumentPlacement.TITLE_PRIMARY,
             color: ThemeColor.text,
-        },
-        {
-            key: "mode",
-            placement: ToolArgumentPlacement.TITLE_SECONDARY,
-            format: (value) => ` (${String(value)})`,
         },
         {
             key: "capabilities",
@@ -125,12 +118,11 @@ function createDefinition(
     return {
         name: "subagent_spawn",
         label: "Spawn subagent",
-        description: "Start a child agent with abstract reasoning capabilities. Policy-area capabilities snapshot the parent's matching policy state; MCP and delegation are hard capabilities.",
-        promptSnippet: "Delegate independent work to an in-process child agent with explicit reasoning and mechanism capabilities.",
+        description: "Start a retained child-agent conversation with abstract reasoning capabilities and return its job ID immediately. Policy-area capabilities snapshot the parent's matching policy state; MCP and delegation are hard capabilities.",
+        promptSnippet: "Delegate independent work to a retained in-process child-agent conversation with explicit reasoning and mechanism capabilities.",
         parameters: objectSchema({
             task: stringSchema("Task to delegate"),
             role: stringSchema("Concise role or title for the child agent", 120),
-            mode: enumSchema(Object.values(SubagentRunMode), "Run mode", SubagentRunMode.SYNC),
             capabilities: arraySchema(
                 enumSchema([...AGENT_CAPABILITIES], "Capability"),
                 "Policy areas to inherit plus optional MCP and delegation capabilities",
@@ -149,9 +141,13 @@ function createDefinition(
             systemPrompt: stringSchema("Optional additional child instructions", 100_000),
             contextPaths: arraySchema(stringSchema("Suggested context path"), "Suggested context paths"),
         }, ["task", "role", "reasoning_skill", "reasoning_amount"]),
-        async execute(_id, params, signal, onUpdate, ctx): Promise<AgentToolResult<SubagentToolDetails>> {
+        prepareArguments(args) {
+            if (!args || typeof args !== "object" || Array.isArray(args) || !("mode" in args)) return args;
+            const {mode: _legacyMode, ...current} = args as Record<string, unknown>;
+            return current;
+        },
+        async execute(_id, params, signal, _onUpdate, ctx): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as SpawnToolInput;
-            const mode = input.mode ?? SubagentRunMode.SYNC;
             const cwd = path.resolve(ctx.cwd, input.cwd ?? ".");
             const activeCoordinator = coordinator();
             const modelPreference = defaults()[input.reasoning_skill];
@@ -159,7 +155,6 @@ function createDefinition(
                 parentAgentIdentifier: ctx.sessionManager.getSessionId(),
                 task: input.task,
                 role: input.role,
-                mode,
                 capabilities: input.capabilities ?? [],
                 cwd,
                 timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
@@ -168,9 +163,7 @@ function createDefinition(
                 modelPreference,
                 systemPrompt: input.systemPrompt,
                 contextPaths: input.contextPaths?.map((entry) => path.resolve(cwd, entry)),
-            }, signal, mode === SubagentRunMode.SYNC && onUpdate
-                ? (job) => onUpdate(subagentToolResult([job]))
-                : undefined);
+            }, signal);
             return subagentToolResult([result.job]);
         },
         renderCall: (args, theme, context) => {

@@ -51,6 +51,11 @@ test("each subagent tool registers independently and delegates only to the coord
     const spawnProperties = (registered[0]!.parameters as any).properties;
     assert.equal("toolkits" in spawnProperties, false);
     assert.equal("model" in spawnProperties, false);
+    assert.equal("mode" in spawnProperties, false);
+    assert.deepEqual(
+        registered[0]!.prepareArguments?.({task: "legacy", role: "worker", mode: "sync"}),
+        {task: "legacy", role: "worker"},
+    );
     assert.deepEqual(spawnProperties.capabilities.items.enum, AGENT_CAPABILITIES);
     assert.deepEqual(spawnProperties.reasoning_skill.enum, Object.values(SubagentReasoningSkill));
     assert.deepEqual(spawnProperties.reasoning_amount.enum, Object.values(SubagentReasoningAmount));
@@ -65,7 +70,7 @@ test("each subagent tool registers independently and delegates only to the coord
         reasoning_amount: SubagentReasoningAmount.MID,
     };
     const minimalCalls = [
-        [{task: "Delegate work", role: "reviewer", mode: "sync", ...reasoning}, "subagent_spawn | reviewer (sync)"],
+        [{task: "Delegate work", role: "reviewer", ...reasoning}, "subagent_spawn | reviewer"],
         [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, "subagent_status | job-1, job-2 (wait 2s)"],
         [{jobId: "job-1", task: "Continue"}, "subagent_message | job-1"],
         [{jobId: "job-1"}, "subagent_stop | job-1"],
@@ -82,7 +87,6 @@ test("each subagent tool registers independently and delegates only to the coord
     const spawnArgs = {
         task: numberedLines(10),
         role: "reviewer",
-        mode: "sync",
         ...reasoning,
     };
     const truncatedCall = registered[0]!.renderCall!(
@@ -124,6 +128,9 @@ test("each subagent tool registers independently and delegates only to the coord
                 async prompt(task) {
                     return `completed: ${task}`;
                 },
+                async steer() {
+                    return true;
+                },
                 async abort() {
                 },
                 dispose() {
@@ -143,8 +150,10 @@ test("each subagent tool registers independently and delegates only to the coord
         policyPrincipals,
     );
     const result = await invoke(registered[0]!, {task: "work", role: "reviewer", ...reasoning});
-    assert.match(textResult(result), /completed: work/);
-    assert.match(textResult(result), /Status: completed/);
+    const jobId = (result as any).details.jobs[0].id as string;
+    const [settled] = await coordinator.status([jobId], 2);
+    assert.equal(settled?.output, "completed: work");
+    assert.equal(settled?.status, "idle");
 
     await coordinator.close();
 });

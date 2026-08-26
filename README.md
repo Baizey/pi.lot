@@ -178,9 +178,9 @@ MCP is an explicit capability boundary, not part of pi.lot's filesystem or netwo
 
 pi.lot provides child agents with separate model context and conversation state through four agent-callable tools:
 
-- `subagent_spawn` starts `sync`, `async`, or `conversation` work;
-- `subagent_status` inspects jobs and can wait for active work;
-- `subagent_message` continues an idle conversation session; and
+- `subagent_spawn` starts a retained conversation job and returns its ID immediately;
+- `subagent_status` inspects jobs and can wait for active turns;
+- `subagent_message` steers a running turn or queues an ordered follow-up turn; and
 - `subagent_stop` stops a job and its descendants.
 
 Capabilities are explicit. Policy-area capabilities use the same areas as `/policy-defaults`, including `fs_read`, `fs_write`, and the `web_*` areas. Selecting one snapshots the invoking agent's effective policies for that entire area into the child. Omitting one leaves that area blank, but does not prohibit access: the child can still request policies when its work needs them.
@@ -201,7 +201,7 @@ Use `/subagent-defaults` to show the active mappings. Automatic entries include 
 
 Changes apply to future spawns in the current session. `/subagent-defaults save` persists them to `~/.pilot/subagent-defaults.json`; `/subagent-defaults reset` reloads the persisted mappings, or the built-in all-`auto` defaults when no file exists. Exact model values are validated against the currently authenticated catalogue when set.
 
-Child agents currently use Pi's in-process SDK with in-memory sessions. They have independent model context, but they are not separate operating-system processes. Async jobs and conversations are not persisted across root session shutdown.
+Child agents currently use Pi's in-process SDK with retained in-memory conversation sessions. They have independent model context, but they are not separate operating-system processes. Jobs are not persisted across root session shutdown.
 
 ## Why not use a workspace sandbox?
 

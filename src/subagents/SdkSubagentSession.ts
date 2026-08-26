@@ -112,6 +112,7 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
 
 class SdkSubagentSession implements SubagentChildSession {
     private disposed = false;
+    private promptStarting = false;
 
     constructor(
         private readonly session: AgentSession,
@@ -124,9 +125,15 @@ class SdkSubagentSession implements SubagentChildSession {
         signal: AbortSignal,
         onUpdate?: (update: SubagentChildUpdate) => void,
     ): Promise<string> {
+        if (this.disposed) throw new Error("Subagent session is disposed");
+        this.promptStarting = true;
         let streamedOutput = "";
         let lastOutputUpdate = 0;
         const unsubscribe = this.session.subscribe((event) => {
+            if (event.type === "agent_start") {
+                this.promptStarting = false;
+                return;
+            }
             if (event.type === "tool_execution_start") {
                 onUpdate?.({latestLine: `Using ${event.toolName}`});
                 return;
@@ -155,9 +162,17 @@ class SdkSubagentSession implements SubagentChildSession {
             onUpdate?.({latestLine: lastMeaningfulLine(output), output});
             return output;
         } finally {
+            this.promptStarting = false;
             signal.removeEventListener("abort", abort);
             unsubscribe();
         }
+    }
+
+    async steer(task: string): Promise<boolean> {
+        if (this.disposed) return false;
+        if (!this.promptStarting && !this.session.isStreaming) return false;
+        await this.session.steer(task);
+        return true;
     }
 
     abort(): Promise<void> {
@@ -175,7 +190,6 @@ function subagentSystemPrompt(request: SubagentSessionRequest): string {
     return [
         "You are a scoped subagent working for a parent coding agent.",
         `Role: ${request.role}`,
-        `Run mode: ${request.mode}`,
         `Spawn capabilities: ${request.capabilities.length > 0 ? request.capabilities.join(", ") : "(none)"}`,
         `Requested reasoning: ${request.reasoningSkill} skill, ${request.reasoningAmount} amount`,
         "Complete the delegated task independently and return a concise, useful result.",

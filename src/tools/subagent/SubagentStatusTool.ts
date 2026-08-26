@@ -69,7 +69,7 @@ function createDefinition(
     return {
         name: "subagent_status",
         label: "Subagent status",
-        description: "Inspect subagent jobs and optionally wait for selected running jobs to settle.",
+        description: "Inspect subagent conversation jobs and optionally wait for selected active turns to become idle or terminal.",
         parameters: objectSchema({
             jobIds: arraySchema(stringSchema("Subagent job id"), "Jobs to inspect; omit to list all jobs"),
             waitSeconds: numberSchema("Maximum time to wait for selected jobs", 0, 3_600, 0),

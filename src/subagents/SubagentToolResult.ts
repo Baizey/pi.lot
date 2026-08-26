@@ -21,7 +21,6 @@ export function renderJobs(jobs: SubagentJobSnapshot[]): string {
         const lines = [
             `## ${job.role} (${job.id})`,
             `Status: ${job.status}`,
-            `Mode: ${job.mode}`,
             `Reasoning: ${job.reasoningSkill} skill, ${job.reasoningAmount} amount`,
             `Capabilities: ${job.capabilities.length > 0 ? job.capabilities.join(", ") : "(none)"}`,
             `Task: ${job.task}`,
@@ -36,8 +35,11 @@ export function renderJobs(jobs: SubagentJobSnapshot[]): string {
         }
         if (job.output) lines.push("", job.output);
         if (job.error) lines.push("", `Error: ${job.error}`);
+        if (job.status === SubagentJobStatus.RUNNING) {
+            lines.push("", "Use subagent_message to steer this active job.");
+        }
         if (job.status === SubagentJobStatus.IDLE) {
-            lines.push("", "This conversation is idle and can receive subagent_message.");
+            lines.push("", "This conversation is idle and can receive a follow-up turn through subagent_message.");
         }
         return lines.join("\n");
     }).join("\n\n");

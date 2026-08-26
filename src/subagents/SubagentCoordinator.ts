@@ -13,7 +13,6 @@ import {
 } from "./SubagentReasoning.js";
 import {
     SubagentJobStatus,
-    SubagentRunMode,
     type SubagentChildSession,
     type SubagentChildSessionFactory,
     type SubagentJobSnapshot,
@@ -48,6 +47,8 @@ type SubagentJob = {
     error?: string;
     turns: number;
     nextTask: string;
+    queuedTasks: string[];
+    pendingSteering: string[];
     session?: SubagentChildSession;
     resolvedModel?: string;
     resolvedThinkingLevel?: SubagentJobSnapshot["resolvedThinkingLevel"];
@@ -94,7 +95,6 @@ export class SubagentCoordinator {
     async spawn(
         request: SubagentRequest,
         signal?: AbortSignal,
-        onUpdate?: (job: SubagentJobSnapshot) => void,
     ): Promise<SpawnedSubagent> {
         this.requireOpen();
         if (signal?.aborted) throw abortError();
@@ -107,7 +107,7 @@ export class SubagentCoordinator {
         }
         if (parent) this.validateNestedSpawn(parent, normalized, capabilities);
 
-        this.evictCompletedJobs();
+        this.evictTerminalJobs();
         const id = `subagent-${crypto.randomUUID()}`;
         this.policyPrincipals.registerPolicyPrincipal(
             id,
@@ -125,19 +125,16 @@ export class SubagentCoordinator {
             createdAt: Date.now(),
             turns: 0,
             nextTask: normalized.task,
+            queuedTasks: [],
+            pendingSteering: [],
             stopRequested: false,
             timedOut: false,
             principalReleased: false,
         };
         this.jobs.set(job.id, job);
         this.queue.push(job);
-        this.notify(job, onUpdate);
+        this.notify(job);
         this.pump();
-
-        if (normalized.mode === SubagentRunMode.SYNC) {
-            await this.waitForJob(job, signal, onUpdate);
-            if (job.status !== SubagentJobStatus.COMPLETED) throw jobError(job);
-        }
         return {job: snapshot(job)};
     }
 
@@ -178,28 +175,46 @@ export class SubagentCoordinator {
         return jobs.map(snapshot);
     }
 
-    message(jobId: string, task: string): SubagentJobSnapshot {
+    async message(jobId: string, task: string): Promise<SubagentJobSnapshot> {
         this.requireOpen();
         const job = this.requireManageableJob(jobId);
-        if (job.request.mode !== SubagentRunMode.CONVERSATION) {
-            throw new Error(`Subagent job is not a conversation: ${jobId}`);
-        }
-        if (job.status !== SubagentJobStatus.IDLE) {
-            throw new Error(`Subagent conversation is not idle: ${jobId} (${job.status})`);
-        }
         const normalizedTask = requiredText(task, "task", 100_000);
-        job.request = {...job.request, task: normalizedTask};
-        job.nextTask = normalizedTask;
-        job.status = SubagentJobStatus.QUEUED;
-        job.latestLine = "Queued follow-up";
-        job.finishedAt = undefined;
-        job.error = undefined;
-        job.stopRequested = false;
-        job.timedOut = false;
-        this.queue.push(job);
-        this.notify(job);
-        this.pump();
-        return snapshot(job);
+
+        if (job.status === SubagentJobStatus.RUNNING) {
+            if (!job.session) {
+                job.pendingSteering.push(normalizedTask);
+                job.latestLine = "Steering message queued";
+                this.notify(job);
+                return snapshot(job);
+            }
+            if (await job.session.steer(normalizedTask)) {
+                job.latestLine = "Steering message queued";
+                this.notify(job);
+                return snapshot(job);
+            }
+        }
+
+        if (job.status === SubagentJobStatus.IDLE) {
+            job.request = {...job.request, task: normalizedTask};
+            job.nextTask = normalizedTask;
+            job.status = SubagentJobStatus.QUEUED;
+            job.latestLine = "Queued follow-up";
+            job.finishedAt = undefined;
+            job.error = undefined;
+            job.stopRequested = false;
+            job.timedOut = false;
+            this.queue.push(job);
+            this.notify(job);
+            this.pump();
+            return snapshot(job);
+        }
+        if (job.status === SubagentJobStatus.QUEUED || job.status === SubagentJobStatus.RUNNING) {
+            job.queuedTasks.push(normalizedTask);
+            job.latestLine = "Queued follow-up";
+            this.notify(job);
+            return snapshot(job);
+        }
+        throw new Error(`Subagent conversation cannot receive a message: ${jobId} (${job.status})`);
     }
 
     async stop(jobId: string): Promise<SubagentJobSnapshot> {
@@ -242,11 +257,6 @@ export class SubagentCoordinator {
     }
 
     private validateRequest(request: SubagentRequest): SubagentRequest {
-        const mode = Object.values(SubagentRunMode).includes(request.mode)
-            ? request.mode
-            : (() => {
-                throw new Error(`Unsupported subagent mode: ${String(request.mode)}`);
-            })();
         const capabilities = new AgentCapabilitySet(request.capabilities).all();
         return {
             ...request,
@@ -257,7 +267,6 @@ export class SubagentCoordinator {
             ),
             task: requiredText(request.task, "task", 100_000),
             role: requiredText(request.role, "role", 120),
-            mode,
             capabilities,
             cwd: requiredText(request.cwd, "cwd", 10_000),
             timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, 3_600),
@@ -328,22 +337,39 @@ export class SubagentCoordinator {
                 agentIdentifier: job.agentIdentifier,
                 depth: job.depth,
                 mechanisms: new Set(job.capabilities.mechanisms()),
-            }, () => job.session!.prompt(job.nextTask, controller.signal, (update) => {
-                job.latestLine = update.latestLine;
-                if (update.output !== undefined) job.output = boundedOutput(update.output);
-                this.notify(job);
-            }));
+            }, async () => {
+                const prompting = job.session!.prompt(job.nextTask, controller.signal, (update) => {
+                    job.latestLine = update.latestLine;
+                    if (update.output !== undefined) job.output = boundedOutput(update.output);
+                    this.notify(job);
+                });
+                const steering = job.pendingSteering.splice(0);
+                const accepted = await Promise.all(steering.map((task) => job.session!.steer(task)));
+                for (let index = 0; index < steering.length; index++) {
+                    if (!accepted[index]) job.queuedTasks.push(steering[index]!);
+                }
+                return prompting;
+            });
             if (controller.signal.aborted) throw abortError();
             job.output = boundedOutput(output);
             job.latestLine = lastMeaningfulLine(output);
             job.turns++;
-            if (job.request.mode === SubagentRunMode.CONVERSATION) {
-                job.status = SubagentJobStatus.IDLE;
+            const nextTask = job.queuedTasks.shift();
+            if (nextTask) {
+                job.request = {...job.request, task: nextTask};
+                job.nextTask = nextTask;
+                job.status = SubagentJobStatus.QUEUED;
+                job.latestLine = "Queued follow-up";
+                job.error = undefined;
+                job.stopRequested = false;
+                job.timedOut = false;
+                this.queue.push(job);
             } else {
-                job.status = SubagentJobStatus.COMPLETED;
-                job.finishedAt = Date.now();
+                job.status = SubagentJobStatus.IDLE;
             }
         } catch (error) {
+            job.pendingSteering.splice(0);
+            job.queuedTasks.splice(0);
             job.error = errorMessage(error);
             job.finishedAt = Date.now();
             job.status = job.timedOut
@@ -355,7 +381,9 @@ export class SubagentCoordinator {
         } finally {
             clearTimeout(timeout);
             job.controller = undefined;
-            if (job.status !== SubagentJobStatus.IDLE) {
+            const retainedConversation = job.status === SubagentJobStatus.IDLE
+                || job.status === SubagentJobStatus.QUEUED;
+            if (!retainedConversation) {
                 job.session?.dispose();
                 job.session = undefined;
             }
@@ -369,6 +397,8 @@ export class SubagentCoordinator {
             const index = this.queue.indexOf(job);
             if (index >= 0) this.queue.splice(index, 1);
             job.stopRequested = true;
+            job.pendingSteering.splice(0);
+            job.queuedTasks.splice(0);
             job.status = SubagentJobStatus.CANCELLED;
             job.finishedAt = Date.now();
             job.latestLine = "Cancelled before starting";
@@ -388,6 +418,8 @@ export class SubagentCoordinator {
         }
         if (job.status === SubagentJobStatus.IDLE) {
             job.stopRequested = true;
+            job.pendingSteering.splice(0);
+            job.queuedTasks.splice(0);
             job.status = SubagentJobStatus.CANCELLED;
             job.finishedAt = Date.now();
             job.latestLine = "Stopped";
@@ -396,35 +428,6 @@ export class SubagentCoordinator {
             this.notify(job);
             this.releaseTerminalPrincipals();
         }
-    }
-
-    private waitForJob(
-        job: SubagentJob,
-        signal?: AbortSignal,
-        onUpdate?: (job: SubagentJobSnapshot) => void,
-    ): Promise<void> {
-        if (!isActive(job.status)) return Promise.resolve();
-        return new Promise<void>((resolve, reject) => {
-            let settled = false;
-            const finish = (error?: Error) => {
-                if (settled) return;
-                settled = true;
-                this.changes.delete(changed);
-                signal?.removeEventListener("abort", aborted);
-                error ? reject(error) : resolve();
-            };
-            const changed = () => {
-                onUpdate?.(snapshot(job));
-                if (!isActive(job.status)) finish();
-            };
-            const aborted = () => {
-                void this.stop(job.id);
-                finish(abortError());
-            };
-            this.changes.add(changed);
-            signal?.addEventListener("abort", aborted, {once: true});
-            if (!isActive(job.status)) finish();
-        });
     }
 
     private selectJobs(jobIds?: string[]): SubagentJob[] {
@@ -475,7 +478,7 @@ export class SubagentCoordinator {
         } while (released);
     }
 
-    private evictCompletedJobs(): void {
+    private evictTerminalJobs(): void {
         if (this.jobs.size < this.maxJobs) return;
         const evictable = [...this.jobs.values()]
             .filter((job) => (
@@ -490,8 +493,7 @@ export class SubagentCoordinator {
         if (this.jobs.size >= this.maxJobs) throw new Error(`Subagent job limit reached (${this.maxJobs})`);
     }
 
-    private notify(job: SubagentJob, direct?: (job: SubagentJobSnapshot) => void): void {
-        direct?.(snapshot(job));
+    private notify(_job: SubagentJob): void {
         for (const listener of [...this.changes]) listener();
     }
 }
@@ -502,7 +504,6 @@ function snapshot(job: SubagentJob): SubagentJobSnapshot {
         parentId: job.parentId,
         depth: job.depth,
         status: job.status,
-        mode: job.request.mode,
         role: job.request.role,
         task: job.request.task,
         capabilities: job.capabilities.all(),
@@ -526,8 +527,7 @@ function isActive(status: SubagentJobStatus): boolean {
 }
 
 function isTerminal(status: SubagentJobStatus): boolean {
-    return status === SubagentJobStatus.COMPLETED
-        || status === SubagentJobStatus.FAILED
+    return status === SubagentJobStatus.FAILED
         || status === SubagentJobStatus.CANCELLED
         || status === SubagentJobStatus.TIMED_OUT;
 }
@@ -539,10 +539,6 @@ function isDescendant(job: SubagentJob, ancestorId: string, jobs: Map<string, Su
         parentId = jobs.get(parentId)?.parentId;
     }
     return false;
-}
-
-function jobError(job: SubagentJob): Error {
-    return new Error(`Subagent ${job.id} ${job.status}: ${job.error ?? job.latestLine ?? "unknown error"}`);
 }
 
 function requiredText(value: unknown, name: string, maxLength: number): string {

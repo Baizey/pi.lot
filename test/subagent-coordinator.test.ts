@@ -13,7 +13,6 @@ import {
 import {AUTO_SUBAGENT_MODEL} from "../src/subagents/SubagentDefaults.js";
 import {
     SubagentJobStatus,
-    SubagentRunMode,
     type SubagentChildSession,
     type SubagentChildSessionFactory,
     type SubagentRequest,
@@ -48,7 +47,6 @@ function request(overrides: Partial<SubagentRequest> = {}): SubagentRequest {
         parentAgentIdentifier: "subagent-coordinator-test-root",
         task: "inspect the change",
         role: "reviewer",
-        mode: SubagentRunMode.SYNC,
         capabilities: [],
         cwd: process.cwd(),
         timeoutSeconds: 30,
@@ -78,7 +76,7 @@ test("coordinator rejects unsupported reasoning capabilities before creating a j
     await coordinator.close();
 });
 
-test("sync subagents always receive mediated builtins and snapshot selected policy areas", async () => {
+test("subagents receive mediated builtins and retain snapshotted policy areas", async () => {
     const sessions: FakeSession[] = [];
     const principals = new FakePolicyPrincipals();
     const factory: SubagentChildSessionFactory = {
@@ -98,21 +96,24 @@ test("sync subagents always receive mediated builtins and snapshot selected poli
     };
     const coordinator = new SubagentCoordinator(factory, tools(), principals);
 
-    const result = await coordinator.spawn(request({capabilities: [PolicyArea.fs_read]}));
+    const spawned = await coordinator.spawn(request({capabilities: [PolicyArea.fs_read]}));
+    const [result] = await coordinator.status([spawned.job.id], 2);
 
-    assert.equal(result.job.status, SubagentJobStatus.COMPLETED);
-    assert.equal(result.job.output, "inspect the change: bash");
-    assert.deepEqual(result.job.capabilities, [PolicyArea.fs_read]);
+    assert.equal(result?.status, SubagentJobStatus.IDLE);
+    assert.equal(result?.output, "inspect the change: bash");
+    assert.deepEqual(result?.capabilities, [PolicyArea.fs_read]);
     assert.deepEqual(principals.registrations[0]?.areas, [PolicyArea.fs_read]);
-    assert.equal(result.job.reasoningSkill, SubagentReasoningSkill.MID);
-    assert.equal(result.job.reasoningAmount, SubagentReasoningAmount.MID);
-    assert.equal(result.job.resolvedModel, "provider/resolved-model");
-    assert.equal(result.job.resolvedThinkingLevel, "medium");
-    assert.equal(result.job.modelSelectionSource, "test-ranker");
-    assert.equal(result.job.turns, 1);
+    assert.equal(result?.reasoningSkill, SubagentReasoningSkill.MID);
+    assert.equal(result?.reasoningAmount, SubagentReasoningAmount.MID);
+    assert.equal(result?.resolvedModel, "provider/resolved-model");
+    assert.equal(result?.resolvedThinkingLevel, "medium");
+    assert.equal(result?.modelSelectionSource, "test-ranker");
+    assert.equal(result?.turns, 1);
+    assert.equal(sessions[0]?.disposed, false);
+    assert.equal(principals.active.size, 1);
+    await coordinator.close();
     assert.equal(sessions[0]?.disposed, true);
     assert.equal(principals.active.size, 0);
-    await coordinator.close();
 });
 
 test("MCP tools are exposed only by the hard MCP capability", async () => {
@@ -137,7 +138,7 @@ test("MCP tools are exposed only by the hard MCP capability", async () => {
     await coordinator.close();
 });
 
-test("async jobs obey the concurrency bound and status waits on state changes", async () => {
+test("jobs obey the concurrency bound and status waits on state changes", async () => {
     const gates: Array<Deferred<string>> = [];
     let active = 0;
     let maximumActive = 0;
@@ -162,18 +163,18 @@ test("async jobs obey the concurrency bound and status waits on state changes", 
         new FakePolicyPrincipals(),
         {maxConcurrency: 1},
     );
-    const first = await coordinator.spawn(request({mode: SubagentRunMode.ASYNC, role: "first"}));
-    const second = await coordinator.spawn(request({mode: SubagentRunMode.ASYNC, role: "second"}));
+    const first = await coordinator.spawn(request({role: "first"}));
+    const second = await coordinator.spawn(request({role: "second"}));
 
     assert.equal(coordinator.list([first.job.id])[0]?.status, SubagentJobStatus.RUNNING);
     assert.equal(coordinator.list([second.job.id])[0]?.status, SubagentJobStatus.QUEUED);
     gates[0]?.resolve("first done");
     const settledFirst = await coordinator.status([first.job.id], 2);
-    assert.equal(settledFirst[0]?.status, SubagentJobStatus.COMPLETED);
+    assert.equal(settledFirst[0]?.status, SubagentJobStatus.IDLE);
     await waitUntil(() => gates.length === 2);
     gates[1]?.resolve("second done");
     const settledSecond = await coordinator.status([second.job.id], 2);
-    assert.equal(settledSecond[0]?.status, SubagentJobStatus.COMPLETED);
+    assert.equal(settledSecond[0]?.status, SubagentJobStatus.IDLE);
     assert.equal(maximumActive, 1);
     await coordinator.close();
 });
@@ -192,13 +193,13 @@ test("conversation jobs retain one real child session and policy principal acros
         },
     };
     const coordinator = new SubagentCoordinator(factory, tools(), principals);
-    const spawned = await coordinator.spawn(request({mode: SubagentRunMode.CONVERSATION}));
+    const spawned = await coordinator.spawn(request());
     let [job] = await coordinator.status([spawned.job.id], 2);
     assert.equal(job?.status, SubagentJobStatus.IDLE);
     assert.equal(job?.output, "answer 1");
     assert.equal(principals.active.size, 1);
 
-    coordinator.message(spawned.job.id, "check one more thing");
+    await coordinator.message(spawned.job.id, "check one more thing");
     [job] = await coordinator.status([spawned.job.id], 2);
     assert.equal(job?.status, SubagentJobStatus.IDLE);
     assert.equal(job?.output, "answer 2");
@@ -212,6 +213,110 @@ test("conversation jobs retain one real child session and policy principal acros
     await coordinator.close();
 });
 
+test("messages sent to a queued job remain ordered conversation turns", async () => {
+    const blocker = deferred<string>();
+    const prompts: string[] = [];
+    const factory: SubagentChildSessionFactory = {
+        async create(childRequest) {
+            if (childRequest.role === "blocker") {
+                return new FakeSession((_task, signal) => abortable(blocker.promise, signal));
+            }
+            return new FakeSession(async (task) => {
+                prompts.push(task);
+                return `answered ${task}`;
+            });
+        },
+    };
+    const coordinator = new SubagentCoordinator(
+        factory,
+        tools(),
+        new FakePolicyPrincipals(),
+        {maxConcurrency: 1},
+    );
+    const blocking = await coordinator.spawn(request({role: "blocker"}));
+    const queued = await coordinator.spawn(request({role: "worker"}));
+    assert.equal(queued.job.status, SubagentJobStatus.QUEUED);
+
+    await coordinator.message(queued.job.id, "second turn");
+    await coordinator.message(queued.job.id, "third turn");
+    blocker.resolve("unblocked");
+    await coordinator.status([blocking.job.id], 2);
+    const [settled] = await coordinator.status([queued.job.id], 2);
+
+    assert.equal(settled?.status, SubagentJobStatus.IDLE);
+    assert.equal(settled?.turns, 3);
+    assert.deepEqual(prompts, ["inspect the change", "second turn", "third turn"]);
+    await coordinator.close();
+});
+
+test("messages steer an actively running conversation without starting another turn", async () => {
+    const gate = deferred<string>();
+    const prompts: string[] = [];
+    const steering: string[] = [];
+    const factory: SubagentChildSessionFactory = {
+        async create() {
+            return new FakeSession(
+                async (task, signal) => {
+                    prompts.push(task);
+                    return abortable(gate.promise, signal);
+                },
+                undefined,
+                async (task) => {
+                    steering.push(task);
+                    return true;
+                },
+            );
+        },
+    };
+    const coordinator = new SubagentCoordinator(factory, tools(), new FakePolicyPrincipals());
+    const spawned = await coordinator.spawn(request());
+    await waitUntil(() => prompts.length === 1);
+
+    const steered = await coordinator.message(spawned.job.id, "focus on the failing test");
+    assert.equal(steered.status, SubagentJobStatus.RUNNING);
+    assert.equal(steered.latestLine, "Steering message queued");
+    assert.deepEqual(steering, ["focus on the failing test"]);
+
+    gate.resolve("steered answer");
+    const [settled] = await coordinator.status([spawned.job.id], 2);
+    assert.equal(settled?.status, SubagentJobStatus.IDLE);
+    assert.equal(settled?.turns, 1);
+    assert.deepEqual(prompts, ["inspect the change"]);
+    await coordinator.close();
+});
+
+test("a conversation message becomes a follow-up turn when active steering has already settled", async () => {
+    const first = deferred<string>();
+    const prompts: string[] = [];
+    const factory: SubagentChildSessionFactory = {
+        async create() {
+            return new FakeSession(
+                async (task, signal) => {
+                    prompts.push(task);
+                    return prompts.length === 1 ? abortable(first.promise, signal) : "follow-up answer";
+                },
+                undefined,
+                async () => false,
+            );
+        },
+    };
+    const coordinator = new SubagentCoordinator(factory, tools(), new FakePolicyPrincipals());
+    const spawned = await coordinator.spawn(request());
+    await waitUntil(() => prompts.length === 1);
+
+    const queued = await coordinator.message(spawned.job.id, "take another turn");
+    assert.equal(queued.status, SubagentJobStatus.RUNNING);
+    assert.equal(queued.latestLine, "Queued follow-up");
+
+    first.resolve("first answer");
+    const [settled] = await coordinator.status([spawned.job.id], 2);
+    assert.equal(settled?.status, SubagentJobStatus.IDLE);
+    assert.equal(settled?.output, "follow-up answer");
+    assert.equal(settled?.turns, 2);
+    assert.deepEqual(prompts, ["inspect the change", "take another turn"]);
+    await coordinator.close();
+});
+
 test("turn deadlines abort the child and report a timed-out job", async () => {
     let session: FakeSession | undefined;
     const factory: SubagentChildSessionFactory = {
@@ -222,10 +327,7 @@ test("turn deadlines abort the child and report a timed-out job", async () => {
         },
     };
     const coordinator = new SubagentCoordinator(factory, tools(), new FakePolicyPrincipals());
-    const spawned = await coordinator.spawn(request({
-        mode: SubagentRunMode.ASYNC,
-        timeoutSeconds: 1,
-    }));
+    const spawned = await coordinator.spawn(request({timeoutSeconds: 1}));
 
     const [job] = await coordinator.status([spawned.job.id], 2);
 
@@ -246,8 +348,8 @@ test("coordinator shutdown aborts all running children and releases their princi
         },
     };
     const coordinator = new SubagentCoordinator(factory, tools(), principals, {maxConcurrency: 2});
-    const first = await coordinator.spawn(request({mode: SubagentRunMode.ASYNC, role: "first"}));
-    const second = await coordinator.spawn(request({mode: SubagentRunMode.ASYNC, role: "second"}));
+    const first = await coordinator.spawn(request({role: "first"}));
+    const second = await coordinator.spawn(request({role: "second"}));
     await waitUntil(() => sessions.length === 2);
 
     await coordinator.close();
@@ -280,14 +382,14 @@ test("delegating agents can manage only their own descendants", async () => {
                 const sibling = await coordinator.spawn(request({
                     parentAgentIdentifier: childRequest.agentIdentifier,
                     role: "sibling",
-                    mode: SubagentRunMode.ASYNC,
                 }));
                 siblingJobId = sibling.job.id;
                 await waitUntil(() => coordinator.list([siblingJobId])[0]?.status === SubagentJobStatus.RUNNING);
-                await coordinator.spawn(request({
+                const inspector = await coordinator.spawn(request({
                     parentAgentIdentifier: childRequest.agentIdentifier,
                     role: "inspector",
                 }));
+                await coordinator.status([inspector.job.id], 2);
                 await coordinator.stop(siblingJobId);
                 return "parent managed descendants";
             });
@@ -299,8 +401,9 @@ test("delegating agents can manage only their own descendants", async () => {
         capabilities: [AgentMechanismCapability.delegate],
     }));
     parentJobId = parent.job.id;
+    const [settledParent] = await coordinator.status([parent.job.id], 2);
 
-    assert.equal(parent.job.status, SubagentJobStatus.COMPLETED);
+    assert.equal(settledParent?.status, SubagentJobStatus.IDLE);
     assert.equal(coordinator.list([siblingJobId])[0]?.status, SubagentJobStatus.CANCELLED);
     await coordinator.close();
 });
@@ -336,12 +439,13 @@ test("nested delegation gates mechanisms but may snapshot any policy area the pa
         role: "parent",
         capabilities: [AgentMechanismCapability.delegate],
     }));
-    const nested = coordinator.list([nestedId])[0];
+    const [settledParent] = await coordinator.status([parent.job.id], 2);
+    const [nested] = await coordinator.status([nestedId], 2);
 
-    assert.equal(parent.job.status, SubagentJobStatus.COMPLETED);
+    assert.equal(settledParent?.status, SubagentJobStatus.IDLE);
     assert.equal(nested?.parentId, parent.job.id);
     assert.equal(nested?.depth, 1);
-    assert.equal(nested?.status, SubagentJobStatus.COMPLETED);
+    assert.equal(nested?.status, SubagentJobStatus.IDLE);
     assert.deepEqual(
         principals.registrations.find((registration) => registration.id === nestedId)?.areas,
         [PolicyArea.fs_read],
@@ -374,11 +478,16 @@ class FakeSession implements SubagentChildSession {
     constructor(
         private readonly respond: (task: string, signal: AbortSignal) => Promise<string>,
         readonly modelSelection?: SubagentChildSession["modelSelection"],
+        private readonly steerTask: (task: string) => Promise<boolean> = async () => true,
     ) {
     }
 
     prompt(task: string, signal: AbortSignal): Promise<string> {
         return this.respond(task, signal);
+    }
+
+    steer(task: string): Promise<boolean> {
+        return this.steerTask(task);
     }
 
     async abort() {

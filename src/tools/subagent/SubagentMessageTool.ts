@@ -67,14 +67,14 @@ function createDefinition(
     return {
         name: "subagent_message",
         label: "Message subagent",
-        description: "Send the next task to an idle conversation subagent while preserving its real child session.",
+        description: "Message a subagent. A running job receives steering for its active turn; otherwise the message becomes an ordered follow-up turn.",
         parameters: objectSchema({
-            jobId: stringSchema("Conversation job id"),
-            task: stringSchema("Next task or follow-up message"),
+            jobId: stringSchema("Subagent job id"),
+            task: stringSchema("Steering instruction or conversation follow-up"),
         }, ["jobId", "task"]),
         async execute(_id, params): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as MessageToolInput;
-            return subagentToolResult([coordinator().message(input.jobId, input.task)]);
+            return subagentToolResult([await coordinator().message(input.jobId, input.task)]);
         },
         renderCall: (args, theme, context) => {
             displayRows.observe("subagent_message", args, context);

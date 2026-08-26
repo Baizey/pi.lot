@@ -30,12 +30,12 @@ Policy-area capabilities are the complete `PolicyArea` set used by root policy d
 
 - Every subagent is an independent in-memory Pi session with separate model context and conversation state.
 - Jobs form one recursive tree. Any agent with the hard `delegate` capability may organize descendants within its mechanism ceiling.
-- `sync` waits for completion unless work must return to the parent for a policy decision.
-- `async` returns a job ID immediately.
-- `conversation` retains one child session between messages until stopped.
+- Every spawn returns a job ID immediately and schedules the initial conversation turn.
+- Every job retains one child session between turns until stopped or terminal failure.
+- Messages steer an active turn; otherwise they queue ordered conversation turns.
 - Children inherit the invoking working directory unless explicitly overridden. They do not inherit or accept a caller-selected model.
 - Each child requests an abstract reasoning skill and amount. The runtime resolves those capabilities against Pi's currently authenticated model catalogue.
-- Jobs, conversations, and ephemeral grants are not persisted across root-session shutdown.
+- Jobs and ephemeral grants are not persisted across root-session shutdown.
 
 ## Spawn contract
 
@@ -65,7 +65,6 @@ Copied context is information the parent has deliberately passed to the child. A
 
 The spawn may select:
 
-- run mode;
 - abstract reasoning skill and amount;
 - working directory;
 - per-turn timeout; and
@@ -113,9 +112,11 @@ Work communication and policy communication are separate planes.
 
 ### Work plane
 
-- The parent sends the initial task and conversation follow-ups.
+- The parent sends the initial task and later messages.
+- A message sent during an active turn becomes Pi steering: it is delivered after the current assistant turn and its tool calls, before the next model turn.
+- A message sent while the job is idle or queued becomes an ordered conversation turn.
 - The child returns bounded progress, output, and errors.
-- Only conversation jobs retain a model session while idle.
+- Every job retains its model session while idle until explicitly stopped or terminal failure.
 - A child cannot send unsolicited work messages outside its ancestry.
 
 ### Policy control plane
@@ -123,7 +124,7 @@ Work communication and policy communication are separate planes.
 - A held operation creates a structured policy request rather than an ordinary work message.
 - Policy requests move only through the authority ancestry.
 - Policy decisions use a structured decision operation and cannot be encoded as unvalidated conversation text.
-- A synchronous parent waiting for a child must be released to consider a pending request; the system must not perform re-entrant parent model execution.
+- A parent waiting through status must be released to consider a pending request; the system must not perform re-entrant parent model execution.
 
 ## Policy state
 
@@ -258,7 +259,7 @@ A mechanism and the authority exercised through it are separate:
 - Policy-area selection is not a hard ceiling; a nested snapshot is intrinsically limited to the immediate parent's effective policy state.
 - MCP exposure is constrained by explicit server and tool selection and remains opaque unless separately mediated.
 
-Concurrency, depth, retained jobs, pending requests, held workers, and retained output must have configurable finite limits. A synchronous parent waiting for a child must not consume the capacity required for that child or its admitted descendants to run. Policy-waiting jobs do not consume model-turn concurrency, but pending operations and retained resources remain separately bounded.
+Concurrency, depth, retained jobs, pending requests, held workers, and retained output must have configurable finite limits. A status waiter must not consume the turn capacity required for a child or its admitted descendants to run. Policy-waiting jobs do not consume model-turn concurrency, but pending operations and retained resources remain separately bounded.
 
 ## Lifecycle and failure behavior
 
@@ -292,6 +293,6 @@ Tests must prove that:
 - `ONCE` grants cannot be duplicated, reused, or exercised by a sibling;
 - session grants and derived grants expire at the correct principal and root-session boundaries;
 - persistent `LOCAL` and `GLOBAL` policy remains rooted in a durable principal rather than anonymous jobs;
-- nested synchronous delegation makes progress at the configured concurrency limit;
+- nested delegation makes progress while ancestors wait through status at the configured concurrency limit;
 - pending operations resume only after a valid decision and deny on every cancellation path; and
 - repeated nested implementation and review workflows leave no sessions, workers, scratch storage, or policy requests after shutdown.

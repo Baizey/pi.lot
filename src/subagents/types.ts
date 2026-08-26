@@ -6,17 +6,10 @@ import type {
 } from "./SubagentReasoning.js";
 import type {SubagentModelPreference} from "./SubagentDefaults.js";
 
-export enum SubagentRunMode {
-    SYNC = "sync",
-    ASYNC = "async",
-    CONVERSATION = "conversation",
-}
-
 export enum SubagentJobStatus {
     QUEUED = "queued",
     RUNNING = "running",
     IDLE = "idle",
-    COMPLETED = "completed",
     FAILED = "failed",
     CANCELLED = "cancelled",
     TIMED_OUT = "timed_out",
@@ -26,7 +19,6 @@ export type SubagentRequest = {
     parentAgentIdentifier: string;
     task: string;
     role: string;
-    mode: SubagentRunMode;
     capabilities: AgentCapability[];
     cwd: string;
     timeoutSeconds: number;
@@ -46,7 +38,6 @@ export type SubagentJobSnapshot = {
     parentId?: string;
     depth: number;
     status: SubagentJobStatus;
-    mode: SubagentRunMode;
     role: string;
     task: string;
     capabilities: AgentCapability[];
@@ -81,6 +72,9 @@ export interface SubagentChildSession {
         signal: AbortSignal,
         onUpdate?: (update: SubagentChildUpdate) => void,
     ): Promise<string>;
+
+    /** Queue steering for the active prompt; false means the prompt has already settled. */
+    steer(task: string): Promise<boolean>;
 
     abort(): Promise<void>;
 

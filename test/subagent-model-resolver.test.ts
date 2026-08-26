@@ -9,7 +9,7 @@ import {
 } from "../src/subagents/SubagentModelResolver.js";
 import {
     SubagentReasoningAmount,
-    SubagentReasoningLevel,
+    SubagentReasoningSkill,
 } from "../src/subagents/SubagentReasoning.js";
 
 class FixedPerformanceRanker implements SubagentModelPerformanceRanker {
@@ -23,7 +23,7 @@ class FixedPerformanceRanker implements SubagentModelPerformanceRanker {
     }
 }
 
-test("reasoning levels select five positions across the available performance-cost frontier", async () => {
+test("reasoning skills select five positions across the available performance-cost frontier", async () => {
     const models = [
         model("economy", 1),
         model("small", 2),
@@ -35,11 +35,11 @@ test("reasoning levels select five positions across the available performance-co
     const resolver = new SubagentModelResolver(runtime(models), ranker);
 
     const expected = new Map([
-        [SubagentReasoningLevel.MIN, "economy"],
-        [SubagentReasoningLevel.LOW, "small"],
-        [SubagentReasoningLevel.MID, "balanced"],
-        [SubagentReasoningLevel.HIGH, "strong"],
-        [SubagentReasoningLevel.MAX, "maximum"],
+        [SubagentReasoningSkill.MIN, "economy"],
+        [SubagentReasoningSkill.LOW, "small"],
+        [SubagentReasoningSkill.MID, "balanced"],
+        [SubagentReasoningSkill.HIGH, "strong"],
+        [SubagentReasoningSkill.MAX, "maximum"],
     ]);
     for (const [level, modelId] of expected) {
         const resolved = await resolver.resolve(level, SubagentReasoningAmount.MID);
@@ -57,33 +57,70 @@ test("min optimizes cost while max uses replaceable performance evidence", async
     );
 
     assert.equal(
-        (await resolver.resolve(SubagentReasoningLevel.MIN, SubagentReasoningAmount.LOW)).model.id,
+        (await resolver.resolve(SubagentReasoningSkill.MIN, SubagentReasoningAmount.LOW)).model.id,
         "cheap",
     );
     assert.equal(
-        (await resolver.resolve(SubagentReasoningLevel.MAX, SubagentReasoningAmount.HIGH)).model.id,
+        (await resolver.resolve(SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH)).model.id,
         "benchmark-winner",
     );
 });
 
-test("resolution filters by exact thinking support and prefers the active provider on ties", async () => {
+test("an exact skill default bypasses auto ranking and clamps amount after model selection", async () => {
+    const models = [
+        model("automatic-winner", 8, {provider: "provider"}),
+        model("configured", 1, {provider: "other"}),
+        model("low-only", 2, {provider: "provider", thinkingLevelMap: {high: null}}),
+    ];
+    const resolver = new SubagentModelResolver(
+        runtime(models),
+        new FixedPerformanceRanker({"automatic-winner": 100, configured: 1, "low-only": 2}),
+    );
+
+    const configured = await resolver.resolve(
+        SubagentReasoningSkill.MAX,
+        SubagentReasoningAmount.HIGH,
+        "other/configured",
+    );
+    assert.equal(configured.model.id, "configured");
+    assert.equal(configured.performanceSource, "configured-exact-model");
+    await assert.rejects(
+        resolver.resolve(SubagentReasoningSkill.LOW, SubagentReasoningAmount.LOW, "missing/model"),
+        /not authenticated or available/,
+    );
+    const clamped = await resolver.resolve(
+        SubagentReasoningSkill.HIGH,
+        SubagentReasoningAmount.HIGH,
+        "provider/low-only",
+    );
+    assert.equal(clamped.model.id, "low-only");
+    assert.equal(clamped.thinkingLevel, "medium");
+});
+
+test("reasoning amount does not affect model selection and unsupported amounts clamp normally", async () => {
     const unavailableAtMedium = model("same-model", 1, {
         provider: "preferred",
         thinkingLevelMap: {medium: null},
     });
     const alternative = model("same-model", 1, {provider: "alternative"});
-    const preferred = model("other-model", 1, {provider: "preferred"});
     const resolver = new SubagentModelResolver(
-        runtime([unavailableAtMedium, alternative, preferred]),
-        new FixedPerformanceRanker({"same-model": 5, "other-model": 5}),
+        runtime([unavailableAtMedium, alternative]),
+        new FixedPerformanceRanker({"same-model": 5}),
         "preferred",
     );
 
-    const resolved = await resolver.resolve(SubagentReasoningLevel.MAX, SubagentReasoningAmount.MID);
+    const low = await resolver.resolve(SubagentReasoningSkill.MAX, SubagentReasoningAmount.LOW);
+    const mid = await resolver.resolve(SubagentReasoningSkill.MAX, SubagentReasoningAmount.MID);
+    const high = await resolver.resolve(SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH);
 
-    assert.equal(resolved.model.provider, "preferred");
-    assert.equal(resolved.model.id, "other-model");
-    assert.equal(resolved.thinkingLevel, "medium");
+    assert.equal(low.model.provider, "preferred");
+    assert.equal(mid.model.provider, "preferred");
+    assert.equal(high.model.provider, "preferred");
+    assert.equal(low.model.id, mid.model.id);
+    assert.equal(mid.model.id, high.model.id);
+    assert.equal(low.thinkingLevel, "low");
+    assert.equal(mid.thinkingLevel, "high");
+    assert.equal(high.thinkingLevel, "high");
 });
 
 test("resolution reads the authenticated catalogue again when availability changes", async () => {
@@ -99,25 +136,25 @@ test("resolution reads the authenticated catalogue again when availability chang
     );
 
     assert.equal(
-        (await resolver.resolve(SubagentReasoningLevel.MAX, SubagentReasoningAmount.HIGH)).model.id,
+        (await resolver.resolve(SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH)).model.id,
         "initial",
     );
     models = [model("replacement", 2)];
     assert.equal(
-        (await resolver.resolve(SubagentReasoningLevel.MAX, SubagentReasoningAmount.HIGH)).model.id,
+        (await resolver.resolve(SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH)).model.id,
         "replacement",
     );
 });
 
-test("resolution fails clearly when no authenticated model supports the requested amount", async () => {
+test("resolution fails clearly when no authenticated model supports normal reasoning amounts", async () => {
     const resolver = new SubagentModelResolver(runtime([
         model("non-reasoning", 0, {reasoning: false}),
-        model("low-only", 1, {thinkingLevelMap: {high: null}}),
+        model("extended-only", 1, {thinkingLevelMap: {low: null, medium: null, high: null, max: "max"}}),
     ]));
 
     await assert.rejects(
-        resolver.resolve(SubagentReasoningLevel.HIGH, SubagentReasoningAmount.HIGH),
-        /No authenticated model supports subagent reasoning amount high/,
+        resolver.resolve(SubagentReasoningSkill.HIGH, SubagentReasoningAmount.HIGH),
+        /No authenticated model supports normal subagent reasoning amounts/,
     );
 });
 

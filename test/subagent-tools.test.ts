@@ -6,8 +6,11 @@ import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
 import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
 import {
     SubagentReasoningAmount,
-    SubagentReasoningLevel,
+    SubagentReasoningSkill,
 } from "../src/subagents/SubagentReasoning.js";
+import {
+    initialSubagentDefaults,
+} from "../src/subagents/SubagentDefaults.js";
 import {AGENT_CAPABILITIES} from "../src/subagents/AgentCapability.js";
 import type {SubagentChildSessionFactory} from "../src/subagents/types.js";
 import {SubagentMessageTool} from "../src/tools/subagent/SubagentMessageTool";
@@ -32,7 +35,10 @@ test("each subagent tool registers independently and delegates only to the coord
     };
     const displayRows = new ToolDisplayRows();
     const tools = [
-        new SubagentSpawnTool(pi, coordinatorProvider, displayRows),
+        new SubagentSpawnTool(pi, coordinatorProvider, () => ({
+            ...initialSubagentDefaults,
+            mid: "provider/default-mid",
+        }), displayRows),
         new SubagentStatusTool(pi, coordinatorProvider, displayRows),
         new SubagentMessageTool(pi, coordinatorProvider, displayRows),
         new SubagentStopTool(pi, coordinatorProvider, displayRows),
@@ -46,16 +52,16 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.equal("toolkits" in spawnProperties, false);
     assert.equal("model" in spawnProperties, false);
     assert.deepEqual(spawnProperties.capabilities.items.enum, AGENT_CAPABILITIES);
-    assert.deepEqual(spawnProperties.reasoning_level.enum, Object.values(SubagentReasoningLevel));
+    assert.deepEqual(spawnProperties.reasoning_skill.enum, Object.values(SubagentReasoningSkill));
     assert.deepEqual(spawnProperties.reasoning_amount.enum, Object.values(SubagentReasoningAmount));
     assert.deepEqual(
         (registered[0]!.parameters as any).required,
-        ["task", "role", "reasoning_level", "reasoning_amount"],
+        ["task", "role", "reasoning_skill", "reasoning_amount"],
     );
 
     const theme = plainTheme();
     const reasoning = {
-        reasoning_level: SubagentReasoningLevel.MID,
+        reasoning_skill: SubagentReasoningSkill.MID,
         reasoning_amount: SubagentReasoningAmount.MID,
     };
     const minimalCalls = [
@@ -111,8 +117,9 @@ test("each subagent tool registers independently and delegates only to the coord
     const factory: SubagentChildSessionFactory = {
         async create(request) {
             assert.equal(request.parentAgentIdentifier, "subagent-tool-test-agent");
-            assert.equal(request.reasoningLevel, SubagentReasoningLevel.MID);
+            assert.equal(request.reasoningSkill, SubagentReasoningSkill.MID);
             assert.equal(request.reasoningAmount, SubagentReasoningAmount.MID);
+            assert.equal(request.modelPreference, "provider/default-mid");
             return {
                 async prompt(task) {
                     return `completed: ${task}`;

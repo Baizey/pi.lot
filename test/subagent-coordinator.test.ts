@@ -8,8 +8,9 @@ import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
 import {
     SubagentReasoningAmount,
-    SubagentReasoningLevel,
+    SubagentReasoningSkill,
 } from "../src/subagents/SubagentReasoning.js";
+import {AUTO_SUBAGENT_MODEL} from "../src/subagents/SubagentDefaults.js";
 import {
     SubagentJobStatus,
     SubagentRunMode,
@@ -51,8 +52,9 @@ function request(overrides: Partial<SubagentRequest> = {}): SubagentRequest {
         capabilities: [],
         cwd: process.cwd(),
         timeoutSeconds: 30,
-        reasoningLevel: SubagentReasoningLevel.MID,
+        reasoningSkill: SubagentReasoningSkill.MID,
         reasoningAmount: SubagentReasoningAmount.MID,
+        modelPreference: AUTO_SUBAGENT_MODEL,
         ...overrides,
     };
 }
@@ -69,8 +71,8 @@ test("coordinator rejects unsupported reasoning capabilities before creating a j
     );
 
     await assert.rejects(
-        coordinator.spawn(request({reasoningLevel: "ultra" as SubagentReasoningLevel})),
-        /Unsupported subagent reasoning level: ultra/,
+        coordinator.spawn(request({reasoningSkill: "ultra" as SubagentReasoningSkill})),
+        /Unsupported subagent reasoning skill: ultra/,
     );
     assert.deepEqual(coordinator.list(), []);
     await coordinator.close();
@@ -102,7 +104,7 @@ test("sync subagents always receive mediated builtins and snapshot selected poli
     assert.equal(result.job.output, "inspect the change: bash");
     assert.deepEqual(result.job.capabilities, [PolicyArea.fs_read]);
     assert.deepEqual(principals.registrations[0]?.areas, [PolicyArea.fs_read]);
-    assert.equal(result.job.reasoningLevel, SubagentReasoningLevel.MID);
+    assert.equal(result.job.reasoningSkill, SubagentReasoningSkill.MID);
     assert.equal(result.job.reasoningAmount, SubagentReasoningAmount.MID);
     assert.equal(result.job.resolvedModel, "provider/resolved-model");
     assert.equal(result.job.resolvedThinkingLevel, "medium");

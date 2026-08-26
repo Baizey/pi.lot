@@ -1,4 +1,4 @@
-export enum SubagentReasoningLevel {
+export enum SubagentReasoningSkill {
     MIN = "min",
     LOW = "low",
     MID = "mid",

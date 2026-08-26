@@ -22,7 +22,7 @@ export function renderJobs(jobs: SubagentJobSnapshot[]): string {
             `## ${job.role} (${job.id})`,
             `Status: ${job.status}`,
             `Mode: ${job.mode}`,
-            `Reasoning: ${job.reasoningLevel} level, ${job.reasoningAmount} amount`,
+            `Reasoning: ${job.reasoningSkill} skill, ${job.reasoningAmount} amount`,
             `Capabilities: ${job.capabilities.length > 0 ? job.capabilities.join(", ") : "(none)"}`,
             `Task: ${job.task}`,
         ];

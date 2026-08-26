@@ -2,8 +2,9 @@ import type {ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-a
 import type {AgentCapability} from "./AgentCapability.js";
 import type {
     SubagentReasoningAmount,
-    SubagentReasoningLevel,
+    SubagentReasoningSkill,
 } from "./SubagentReasoning.js";
+import type {SubagentModelPreference} from "./SubagentDefaults.js";
 
 export enum SubagentRunMode {
     SYNC = "sync",
@@ -29,8 +30,9 @@ export type SubagentRequest = {
     capabilities: AgentCapability[];
     cwd: string;
     timeoutSeconds: number;
-    reasoningLevel: SubagentReasoningLevel;
+    reasoningSkill: SubagentReasoningSkill;
     reasoningAmount: SubagentReasoningAmount;
+    modelPreference: SubagentModelPreference;
     systemPrompt?: string;
     contextPaths?: string[];
 };
@@ -49,7 +51,7 @@ export type SubagentJobSnapshot = {
     task: string;
     capabilities: AgentCapability[];
     cwd: string;
-    reasoningLevel: SubagentReasoningLevel;
+    reasoningSkill: SubagentReasoningSkill;
     reasoningAmount: SubagentReasoningAmount;
     resolvedModel?: string;
     resolvedThinkingLevel?: ExtensionContext["thinkingLevel"];

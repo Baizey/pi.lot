@@ -4,13 +4,18 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
     SubagentReasoningAmount,
-    SubagentReasoningLevel,
+    SubagentReasoningSkill,
 } from "./SubagentReasoning.js";
+import {
+    AUTO_SUBAGENT_MODEL,
+    type SubagentModelPreference,
+} from "./SubagentDefaults.js";
 
 const ESTIMATED_INPUT_TOKENS = 100_000;
 const ESTIMATED_OUTPUT_TOKENS = 20_000;
 const TOKENS_PER_MILLION = 1_000_000;
 const NORMAL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"] as const;
+const SUBAGENT_THINKING_LEVELS = ["low", "medium", "high"] as const;
 const EXTENDED_THINKING_LEVELS = ["xhigh", "max"] as const;
 
 export type SubagentModel = Awaited<ReturnType<ModelRuntime["getAvailable"]>>[number];
@@ -74,28 +79,43 @@ export class SubagentModelResolver {
     }
 
     async resolve(
-        reasoningLevel: SubagentReasoningLevel,
+        reasoningSkill: SubagentReasoningSkill,
         reasoningAmount: SubagentReasoningAmount,
+        modelPreference: SubagentModelPreference = AUTO_SUBAGENT_MODEL,
         signal?: AbortSignal,
     ): Promise<ResolvedSubagentModel> {
         if (signal?.aborted) throw abortError();
-        const thinkingLevel = thinkingLevelFor(reasoningAmount);
+        const requestedThinkingLevel = thinkingLevelFor(reasoningAmount);
         const available = await this.modelRuntime.getAvailable(undefined, {signal});
         if (signal?.aborted) throw abortError();
-        const eligible = available.filter((model) => supportsThinkingLevel(model, thinkingLevel));
+        const eligible = available.filter(supportsSubagentReasoning);
+        if (modelPreference !== AUTO_SUBAGENT_MODEL) {
+            const model = availableModel(modelPreference, available);
+            if (!model) {
+                throw new Error(`Configured subagent model is not authenticated or available: ${modelPreference}`);
+            }
+            if (!supportsSubagentReasoning(model)) {
+                throw new Error(`Configured subagent model does not support normal reasoning amounts: ${modelPreference}`);
+            }
+            return {
+                model,
+                thinkingLevel: clampSubagentThinkingLevel(model, requestedThinkingLevel),
+                estimatedCost: effectiveModelCost(model),
+                performanceScore: 0,
+                performanceSource: "configured-exact-model",
+            };
+        }
         if (eligible.length === 0) {
-            throw new Error(
-                `No authenticated model supports subagent reasoning amount ${reasoningAmount}`,
-            );
+            throw new Error("No authenticated model supports normal subagent reasoning amounts");
         }
 
         const ranked = await this.performanceRanker.rank(eligible, signal);
         if (signal?.aborted) throw abortError();
         const candidates = this.candidates(eligible, ranked);
-        const selected = this.select(candidates, reasoningLevel);
+        const selected = this.select(candidates, reasoningSkill);
         return {
             model: selected.model,
-            thinkingLevel,
+            thinkingLevel: clampSubagentThinkingLevel(selected.model, requestedThinkingLevel),
             estimatedCost: selected.cost,
             performanceScore: selected.score,
             performanceSource: this.performanceRanker.source,
@@ -132,16 +152,16 @@ export class SubagentModelResolver {
 
     private select(
         candidates: readonly ModelCandidate[],
-        reasoningLevel: SubagentReasoningLevel,
+        reasoningSkill: SubagentReasoningSkill,
     ): ModelCandidate {
-        if (reasoningLevel === SubagentReasoningLevel.MIN) {
+        if (reasoningSkill === SubagentReasoningSkill.MIN) {
             return [...candidates].sort((left, right) => (
                 left.cost - right.cost
                 || right.score - left.score
                 || this.compareRoute(left, right)
             ))[0]!;
         }
-        if (reasoningLevel === SubagentReasoningLevel.MAX) {
+        if (reasoningSkill === SubagentReasoningSkill.MAX) {
             return [...candidates].sort((left, right) => (
                 right.score - left.score
                 || left.cost - right.cost
@@ -150,9 +170,9 @@ export class SubagentModelResolver {
         }
 
         const frontier = this.performanceCostFrontier(candidates);
-        const percentile = reasoningLevel === SubagentReasoningLevel.LOW
+        const percentile = reasoningSkill === SubagentReasoningSkill.LOW
             ? 0.25
-            : reasoningLevel === SubagentReasoningLevel.MID
+            : reasoningSkill === SubagentReasoningSkill.MID
                 ? 0.5
                 : 0.75;
         return frontier[Math.round((frontier.length - 1) * percentile)]!;
@@ -223,8 +243,26 @@ function supportedThinkingLevelCount(model: SubagentModel): number {
     return normal.length + extended.length;
 }
 
+function supportsSubagentReasoning(model: SubagentModel): boolean {
+    return model.reasoning && SUBAGENT_THINKING_LEVELS.some((level) => supportsThinkingLevel(model, level));
+}
+
 function supportsThinkingLevel(model: SubagentModel, level: ThinkingLevel): boolean {
     return model.reasoning && model.thinkingLevelMap?.[level] !== null;
+}
+
+function clampSubagentThinkingLevel(model: SubagentModel, requested: ThinkingLevel): ThinkingLevel {
+    if (supportsThinkingLevel(model, requested)) return requested;
+    const requestedIndex = SUBAGENT_THINKING_LEVELS.indexOf(requested as typeof SUBAGENT_THINKING_LEVELS[number]);
+    for (let index = requestedIndex + 1; index < SUBAGENT_THINKING_LEVELS.length; index++) {
+        const level = SUBAGENT_THINKING_LEVELS[index]!;
+        if (supportsThinkingLevel(model, level)) return level;
+    }
+    for (let index = requestedIndex - 1; index >= 0; index--) {
+        const level = SUBAGENT_THINKING_LEVELS[index]!;
+        if (supportsThinkingLevel(model, level)) return level;
+    }
+    throw new Error(`Selected subagent model does not support normal reasoning amounts: ${canonicalModel(model)}`);
 }
 
 function thinkingLevelFor(amount: SubagentReasoningAmount): ThinkingLevel {
@@ -236,6 +274,10 @@ function thinkingLevelFor(amount: SubagentReasoningAmount): ThinkingLevel {
         case SubagentReasoningAmount.HIGH:
             return "high";
     }
+}
+
+function availableModel(modelPreference: string, models: readonly SubagentModel[]): SubagentModel | undefined {
+    return models.find((model) => canonicalModel(model) === modelPreference);
 }
 
 function canonicalModel(model: SubagentModel): string {

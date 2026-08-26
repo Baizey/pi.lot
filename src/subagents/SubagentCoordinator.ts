@@ -6,9 +6,10 @@ import {
     AgentMechanismCapability,
 } from "./AgentCapability.js";
 import {SubagentToolCatalog} from "./SubagentToolCatalog.js";
+import {AUTO_SUBAGENT_MODEL} from "./SubagentDefaults.js";
 import {
     SubagentReasoningAmount,
-    SubagentReasoningLevel,
+    SubagentReasoningSkill,
 } from "./SubagentReasoning.js";
 import {
     SubagentJobStatus,
@@ -260,16 +261,17 @@ export class SubagentCoordinator {
             capabilities,
             cwd: requiredText(request.cwd, "cwd", 10_000),
             timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, 3_600),
-            reasoningLevel: enumValue(
-                request.reasoningLevel,
-                SubagentReasoningLevel,
-                "reasoning level",
+            reasoningSkill: enumValue(
+                request.reasoningSkill,
+                SubagentReasoningSkill,
+                "reasoning skill",
             ),
             reasoningAmount: enumValue(
                 request.reasoningAmount,
                 SubagentReasoningAmount,
                 "reasoning amount",
             ),
+            modelPreference: modelPreference(request.modelPreference),
             systemPrompt: optionalText(request.systemPrompt, "systemPrompt", 100_000),
             contextPaths: request.contextPaths?.map((entry) => requiredText(entry, "context path", 10_000)),
         };
@@ -505,7 +507,7 @@ function snapshot(job: SubagentJob): SubagentJobSnapshot {
         task: job.request.task,
         capabilities: job.capabilities.all(),
         cwd: job.request.cwd,
-        reasoningLevel: job.request.reasoningLevel,
+        reasoningSkill: job.request.reasoningSkill,
         reasoningAmount: job.request.reasoningAmount,
         resolvedModel: job.resolvedModel,
         resolvedThinkingLevel: job.resolvedThinkingLevel,
@@ -552,6 +554,14 @@ function requiredText(value: unknown, name: string, maxLength: number): string {
 function optionalText(value: unknown, name: string, maxLength: number): string | undefined {
     if (value === undefined) return undefined;
     return requiredText(value, name, maxLength);
+}
+
+function modelPreference(value: unknown): string {
+    const preference = requiredText(value, "model preference", 500);
+    if (preference !== AUTO_SUBAGENT_MODEL && !preference.includes("/")) {
+        throw new Error("Subagent model preference must be auto or a canonical provider/model");
+    }
+    return preference;
 }
 
 function enumValue<T extends string>(

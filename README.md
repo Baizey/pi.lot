@@ -190,7 +190,16 @@ Policy-mediated Bash, Read, Edit, Write, and web-search tools are always availab
 - `mcp` exposes the MCP tools that are currently exposed; and
 - `delegate` exposes the subagent tools and permits bounded nested delegation.
 
-Children request a reasoning level (`min`, `low`, `mid`, `high`, or `max`) and reasoning amount (`low`, `mid`, or `high`) rather than a provider or model. The runtime resolves those capabilities from Pi's authenticated model catalogue using a provider- and model-name-agnostic performance/cost frontier. The initial performance ranker uses catalogue cost and objective capacity metadata and can later be replaced by benchmark-backed ranking. Job status reports the resolved model for debugging, but callers cannot select it. Children inherit the invoking working directory unless the spawn request overrides it. Policy snapshots do not update when the parent's policies later change. Nested agents cannot widen hard mechanism capabilities, while policy-area snapshots can contain only the policies their immediate parent actually holds. The coordinator limits concurrent turns, delegation depth, retained output, and retained jobs; root session shutdown aborts all active children before policy and MCP resources close.
+Children request a reasoning skill (`min`, `low`, `mid`, `high`, or `max`) and reasoning amount (`low`, `mid`, or `high`) rather than a provider or model. Model selection depends only on reasoning skill; reasoning amount is applied afterward as thinking effort and clamps to the nearest normal level when necessary. Each reasoning skill has a user-controlled model default: `auto` resolves from Pi's authenticated model catalogue using a provider- and model-name-agnostic performance/cost frontier, while an exact `provider/model` mapping always selects that authenticated model. The initial automatic performance ranker uses catalogue cost and objective capacity metadata and can later be replaced by benchmark-backed ranking. Job status reports the resolved model for debugging, but agent callers cannot select it. Children inherit the invoking working directory unless the spawn request overrides it. Policy snapshots do not update when the parent's policies later change. Nested agents cannot widen hard mechanism capabilities, while policy-area snapshots can contain only the policies their immediate parent actually holds. The coordinator limits concurrent turns, delegation depth, retained output, and retained jobs; root session shutdown aborts all active children before policy and MCP resources close.
+
+Use `/subagent-defaults` to show the active mappings. Automatic entries include their current resolved model, for example `mid = provider/model (auto)`. Set a level to automatic or exact selection with value-first syntax:
+
+```text
+/subagent-defaults auto all
+/subagent-defaults openai-codex/gpt-5.6-sol max
+```
+
+Changes apply to future spawns in the current session. `/subagent-defaults save` persists them to `~/.pilot/subagent-defaults.json`; `/subagent-defaults reset` reloads the persisted mappings, or the built-in all-`auto` defaults when no file exists. Exact model values are validated against the currently authenticated catalogue when set.
 
 Child agents currently use Pi's in-process SDK with in-memory sessions. They have independent model context, but they are not separate operating-system processes. Async jobs and conversations are not persisted across root session shutdown.
 

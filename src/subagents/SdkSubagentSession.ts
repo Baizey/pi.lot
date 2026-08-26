@@ -16,9 +16,15 @@ import type {
 } from "./types.js";
 import {
     CatalogueSubagentModelPerformanceRanker,
+    type ResolvedSubagentModel,
     SubagentModelResolver,
     type SubagentModelPerformanceRanker,
 } from "./SubagentModelResolver.js";
+import type {SubagentModelPreference} from "./SubagentDefaults.js";
+import type {
+    SubagentReasoningAmount,
+    SubagentReasoningSkill,
+} from "./SubagentReasoning.js";
 
 const MAX_STREAMED_OUTPUT_CHARS = 50_000;
 
@@ -41,14 +47,14 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         signal: AbortSignal,
     ): Promise<SubagentChildSession> {
         if (signal.aborted) throw abortError();
+        const resolved = await this.resolveModel(
+            request.reasoningSkill,
+            request.reasoningAmount,
+            request.modelPreference,
+            signal,
+        );
         const modelRuntime = await (this.modelRuntime ??= ModelRuntime.create());
         if (signal.aborted) throw abortError();
-
-        const resolved = await new SubagentModelResolver(
-            modelRuntime,
-            this.modelRanker,
-            this.rootContext.model?.provider,
-        ).resolve(request.reasoningLevel, request.reasoningAmount, signal);
 
         const settingsManager = SettingsManager.inMemory();
         const resourceLoader = new DefaultResourceLoader({
@@ -85,6 +91,22 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
             thinkingLevel: resolved.thinkingLevel,
             source: resolved.performanceSource,
         });
+    }
+
+    async resolveModel(
+        reasoningSkill: SubagentReasoningSkill,
+        reasoningAmount: SubagentReasoningAmount,
+        modelPreference: SubagentModelPreference,
+        signal?: AbortSignal,
+    ): Promise<ResolvedSubagentModel> {
+        if (signal?.aborted) throw abortError();
+        const modelRuntime = await (this.modelRuntime ??= ModelRuntime.create());
+        if (signal?.aborted) throw abortError();
+        return new SubagentModelResolver(
+            modelRuntime,
+            this.modelRanker,
+            this.rootContext.model?.provider,
+        ).resolve(reasoningSkill, reasoningAmount, modelPreference, signal);
     }
 }
 
@@ -155,7 +177,7 @@ function subagentSystemPrompt(request: SubagentSessionRequest): string {
         `Role: ${request.role}`,
         `Run mode: ${request.mode}`,
         `Spawn capabilities: ${request.capabilities.length > 0 ? request.capabilities.join(", ") : "(none)"}`,
-        `Requested reasoning: ${request.reasoningLevel} level, ${request.reasoningAmount} amount`,
+        `Requested reasoning: ${request.reasoningSkill} skill, ${request.reasoningAmount} amount`,
         "Complete the delegated task independently and return a concise, useful result.",
         "Policy-area capabilities describe inherited policy snapshots, not permanent prohibitions. Missing policies may still be requested when needed.",
         "MCP and delegation are hard capabilities: do not claim or attempt them when they were not provided.",

@@ -5,11 +5,13 @@ import {EditTool} from "./tools/builtin/EditTool";
 import {ReadTool} from "./tools/builtin/ReadTool";
 import {WriteTool} from "./tools/builtin/WriteTool";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
+import {SubagentDefaultsCommand} from "./commands/SubagentDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
 import type {SubagentToolProviders} from "./subagents/SubagentToolCatalog.js";
 import type {SubagentModelPerformanceRanker} from "./subagents/SubagentModelResolver.js";
+import type {SubagentDefaultsStore} from "./subagents/SubagentDefaults.js";
 import {SubagentSpawnTool} from "./tools/subagent/SubagentSpawnTool";
 import {SubagentStatusTool} from "./tools/subagent/SubagentStatusTool";
 import {SubagentMessageTool} from "./tools/subagent/SubagentMessageTool";
@@ -22,6 +24,7 @@ export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     createMcpExtension?: (pi: ExtensionAPI, displayRows: ToolDisplayRows) => McpExtensionInterface;
     subagentModelRanker?: SubagentModelPerformanceRanker;
+    subagentDefaultsStore?: SubagentDefaultsStore;
 };
 
 // noinspection JSUnusedGlobalSymbols
@@ -62,7 +65,8 @@ export class PilotExtension {
             ?? ((extensionApi, displayRows) => new McpExtension(extensionApi, {displayRows}))
         )(pi, this.displayRows);
         const coordinator = () => this.subagentRuntime.coordinator();
-        this.subagentSpawnTool = new SubagentSpawnTool(pi, coordinator, this.displayRows);
+        const subagentDefaults = () => this.subagentRuntime.defaults().values;
+        this.subagentSpawnTool = new SubagentSpawnTool(pi, coordinator, subagentDefaults, this.displayRows);
         this.subagentStatusTool = new SubagentStatusTool(pi, coordinator, this.displayRows);
         this.subagentMessageTool = new SubagentMessageTool(pi, coordinator, this.displayRows);
         this.subagentStopTool = new SubagentStopTool(pi, coordinator, this.displayRows);
@@ -73,6 +77,7 @@ export class PilotExtension {
         };
         this.subagentRuntime = new SubagentRuntime(toolProviders, {
             modelRanker: options.subagentModelRanker,
+            defaultsStore: options.subagentDefaultsStore,
         });
     }
 
@@ -87,6 +92,12 @@ export class PilotExtension {
         this.editTool.register();
         this.writeTool.register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
+        new SubagentDefaultsCommand(
+            this.pi,
+            () => this.subagentRuntime.defaults(),
+            () => this.subagentRuntime.availableModels(),
+            (level) => this.subagentRuntime.resolveAutomaticModel(level),
+        ).register();
         new ViewFullToolCommand(this.pi, this.displayRows).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         this.mcpExtension.register();

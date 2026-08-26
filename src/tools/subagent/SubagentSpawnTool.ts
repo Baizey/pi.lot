@@ -2,9 +2,10 @@ import path from "node:path";
 import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
 import {SubagentRunMode} from "../../subagents/types";
+import type {SubagentDefaultValues} from "../../subagents/SubagentDefaults.js";
 import {
     SubagentReasoningAmount,
-    SubagentReasoningLevel,
+    SubagentReasoningSkill,
 } from "../../subagents/SubagentReasoning.js";
 import {
     AGENT_CAPABILITIES,
@@ -41,13 +42,14 @@ type SpawnToolInput = {
     capabilities?: AgentCapability[];
     cwd?: string;
     timeoutSeconds?: number;
-    reasoning_level: SubagentReasoningLevel;
+    reasoning_skill: SubagentReasoningSkill;
     reasoning_amount: SubagentReasoningAmount;
     systemPrompt?: string;
     contextPaths?: string[];
 };
 
 type CoordinatorProvider = () => SubagentCoordinator;
+type DefaultsProvider = () => Readonly<SubagentDefaultValues>;
 
 const SPAWN_PRESENTATION = {
     toolName: "subagent_spawn",
@@ -66,7 +68,7 @@ const SPAWN_PRESENTATION = {
             key: "capabilities",
             format: (value) => Array.isArray(value) && value.length > 0 ? value.join(", ") : "(none)",
         },
-        {key: "reasoning_level", label: "reasoning level"},
+        {key: "reasoning_skill", label: "reasoning skill"},
         {key: "reasoning_amount", label: "reasoning amount"},
         {key: "cwd"},
         {key: "timeoutSeconds", label: "timeout", format: (value) => `${String(value)}s`},
@@ -97,9 +99,10 @@ export class SubagentSpawnTool {
     constructor(
         private readonly pi: Pick<ExtensionAPI, "registerTool">,
         coordinator: CoordinatorProvider,
+        defaults: DefaultsProvider,
         displayRows: ToolDisplayRows,
     ) {
-        this.definition = createDefinition(coordinator, displayRows) as unknown as ToolDefinition<any, any>;
+        this.definition = createDefinition(coordinator, defaults, displayRows) as unknown as ToolDefinition<any, any>;
     }
 
     register(): void {
@@ -115,6 +118,7 @@ export class SubagentSpawnTool {
 
 function createDefinition(
     coordinator: CoordinatorProvider,
+    defaults: DefaultsProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
     const presentation = new ToolPresentationRenderer(SPAWN_PRESENTATION);
@@ -134,9 +138,9 @@ function createDefinition(
             ),
             cwd: stringSchema("Child working directory; relative paths resolve from the current tool context"),
             timeoutSeconds: numberSchema("Timeout for each child turn", 1, 3_600, DEFAULT_TIMEOUT_SECONDS),
-            reasoning_level: enumSchema(
-                Object.values(SubagentReasoningLevel),
-                "Model capability level; min favors cost and max favors estimated performance",
+            reasoning_skill: enumSchema(
+                Object.values(SubagentReasoningSkill),
+                "Model reasoning skill; min favors cost and max favors estimated performance",
             ),
             reasoning_amount: enumSchema(
                 Object.values(SubagentReasoningAmount),
@@ -144,12 +148,14 @@ function createDefinition(
             ),
             systemPrompt: stringSchema("Optional additional child instructions", 100_000),
             contextPaths: arraySchema(stringSchema("Suggested context path"), "Suggested context paths"),
-        }, ["task", "role", "reasoning_level", "reasoning_amount"]),
+        }, ["task", "role", "reasoning_skill", "reasoning_amount"]),
         async execute(_id, params, signal, onUpdate, ctx): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as SpawnToolInput;
             const mode = input.mode ?? SubagentRunMode.SYNC;
             const cwd = path.resolve(ctx.cwd, input.cwd ?? ".");
-            const result = await coordinator().spawn({
+            const activeCoordinator = coordinator();
+            const modelPreference = defaults()[input.reasoning_skill];
+            const result = await activeCoordinator.spawn({
                 parentAgentIdentifier: ctx.sessionManager.getSessionId(),
                 task: input.task,
                 role: input.role,
@@ -157,8 +163,9 @@ function createDefinition(
                 capabilities: input.capabilities ?? [],
                 cwd,
                 timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
-                reasoningLevel: input.reasoning_level,
+                reasoningSkill: input.reasoning_skill,
                 reasoningAmount: input.reasoning_amount,
+                modelPreference,
                 systemPrompt: input.systemPrompt,
                 contextPaths: input.contextPaths?.map((entry) => path.resolve(cwd, entry)),
             }, signal, mode === SubagentRunMode.SYNC && onUpdate

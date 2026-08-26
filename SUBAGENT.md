@@ -34,7 +34,7 @@ Policy-area capabilities are the complete `PolicyArea` set used by root policy d
 - `async` returns a job ID immediately.
 - `conversation` retains one child session between messages until stopped.
 - Children inherit the invoking working directory unless explicitly overridden. They do not inherit or accept a caller-selected model.
-- Each child requests an abstract reasoning level and amount. The runtime resolves those capabilities against Pi's currently authenticated model catalogue.
+- Each child requests an abstract reasoning skill and amount. The runtime resolves those capabilities against Pi's currently authenticated model catalogue.
 - Jobs, conversations, and ephemeral grants are not persisted across root-session shutdown.
 
 ## Spawn contract
@@ -66,7 +66,7 @@ Copied context is information the parent has deliberately passed to the child. A
 The spawn may select:
 
 - run mode;
-- abstract reasoning level and amount;
+- abstract reasoning skill and amount;
 - working directory;
 - per-turn timeout; and
 - bounded additional instructions and context.
@@ -75,12 +75,14 @@ A working directory or context path does not itself grant access to that path.
 
 The public reasoning contract is:
 
-- `reasoning_level`: `min`, `low`, `mid`, `high`, or `max`;
+- `reasoning_skill`: `min`, `low`, `mid`, `high`, or `max`;
 - `reasoning_amount`: `low`, `mid`, or `high`.
 
-The runtime considers only models returned by Pi's authenticated `ModelRuntime.getAvailable()` catalogue which support the requested reasoning amount. `min` minimizes estimated catalogue cost and uses estimated performance as a tie-breaker. `max` maximizes estimated performance and uses cost only as a tie-breaker. `low`, `mid`, and `high` choose progressively across the non-dominated performance/cost frontier. Sparse catalogues may resolve adjacent levels to the same model.
+Each reasoning skill has a session-owned model default. `auto` runs automatic selection; an exact canonical `provider/model` value selects that model. Built-in defaults are `auto` for all five skills. `/subagent-defaults` changes one skill or `all` for future spawns in the active session, `save` persists them to `~/.pilot/subagent-defaults.json`, and `reset` reloads persisted or built-in mappings. Exact values must be in the authenticated catalogue when set. Command output renders automatic entries as `<resolved provider/model> (auto)`. A spawn snapshots the active mapping for its requested skill, so later default changes do not mutate accepted jobs or retained conversations.
 
-The initial performance ranker uses catalogue price as a deliberately weak market-tier proxy, followed by supported reasoning range, context window, and maximum output. It contains no provider or model-name mappings. The ranker is a replaceable boundary so later benchmark evidence can improve prioritization without changing the spawn contract. The resolved provider, model, thinking level, and ranking source are status metadata, not caller-controlled inputs.
+Both automatic and exact selection consider only reasoning models returned by Pi's authenticated `ModelRuntime.getAvailable()` catalogue which support at least one normal reasoning amount. Model selection depends only on reasoning skill. The requested reasoning amount is applied afterward and clamps to the nearest supported `low`, `medium`, or `high` thinking level without changing the model. An unavailable exact mapping, or one with no normal reasoning support, fails rather than silently falling back. In automatic mode, `min` minimizes estimated catalogue cost and uses estimated performance as a tie-breaker. `max` maximizes estimated performance and uses cost only as a tie-breaker. `low`, `mid`, and `high` choose progressively across the non-dominated performance/cost frontier. Sparse catalogues may resolve adjacent skills to the same model.
+
+The initial automatic performance ranker uses catalogue price as a deliberately weak market-tier proxy, followed by supported reasoning range, context window, and maximum output. It contains no provider or model-name mappings. The ranker is a replaceable boundary so later benchmark evidence can improve prioritization without changing the spawn contract. The resolved provider, model, thinking level, and ranking source are status metadata, not agent-controlled inputs.
 
 ### Capabilities and initial policy snapshot
 
@@ -271,6 +273,10 @@ Concurrency, depth, retained jobs, pending requests, held workers, and retained 
 
 Tests must prove that:
 
+- automatic model selection considers only authenticated compatible models and contains no provider/model-name mappings;
+- changing reasoning amount does not change the selected model and unsupported amounts clamp within the three normal levels;
+- exact per-skill defaults bypass automatic ranking, fail when unavailable or incompatible, and are snapshotted at spawn;
+- saved and reset subagent defaults round-trip all five skill mappings;
 - siblings cannot inspect, message, stop, or exercise one another's grants;
 - a child cannot grant authority it does not hold;
 - every descendant grant has a valid, no-broader lineage to root-agent authority;

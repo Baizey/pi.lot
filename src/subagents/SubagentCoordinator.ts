@@ -7,6 +7,10 @@ import {
 } from "./AgentCapability.js";
 import {SubagentToolCatalog} from "./SubagentToolCatalog.js";
 import {
+    SubagentReasoningAmount,
+    SubagentReasoningLevel,
+} from "./SubagentReasoning.js";
+import {
     SubagentJobStatus,
     SubagentRunMode,
     type SubagentChildSession,
@@ -44,6 +48,9 @@ type SubagentJob = {
     turns: number;
     nextTask: string;
     session?: SubagentChildSession;
+    resolvedModel?: string;
+    resolvedThinkingLevel?: SubagentJobSnapshot["resolvedThinkingLevel"];
+    modelSelectionSource?: string;
     controller?: AbortController;
     runPromise?: Promise<void>;
     stopRequested: boolean;
@@ -253,7 +260,16 @@ export class SubagentCoordinator {
             capabilities,
             cwd: requiredText(request.cwd, "cwd", 10_000),
             timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, 3_600),
-            model: optionalText(request.model, "model", 500),
+            reasoningLevel: enumValue(
+                request.reasoningLevel,
+                SubagentReasoningLevel,
+                "reasoning level",
+            ),
+            reasoningAmount: enumValue(
+                request.reasoningAmount,
+                SubagentReasoningAmount,
+                "reasoning amount",
+            ),
             systemPrompt: optionalText(request.systemPrompt, "systemPrompt", 100_000),
             contextPaths: request.contextPaths?.map((entry) => requiredText(entry, "context path", 10_000)),
         };
@@ -295,10 +311,15 @@ export class SubagentCoordinator {
 
         try {
             const tools = this.tools.resolve(job.capabilities);
-            job.session ??= await this.sessionFactory.create({
-                ...job.request,
-                agentIdentifier: job.agentIdentifier,
-            }, tools, controller.signal);
+            if (!job.session) {
+                job.session = await this.sessionFactory.create({
+                    ...job.request,
+                    agentIdentifier: job.agentIdentifier,
+                }, tools, controller.signal);
+                job.resolvedModel = job.session.modelSelection?.model;
+                job.resolvedThinkingLevel = job.session.modelSelection?.thinkingLevel;
+                job.modelSelectionSource = job.session.modelSelection?.source;
+            }
             if (controller.signal.aborted) throw abortError();
             const output = await this.delegationContext.run({
                 jobId: job.id,
@@ -484,7 +505,11 @@ function snapshot(job: SubagentJob): SubagentJobSnapshot {
         task: job.request.task,
         capabilities: job.capabilities.all(),
         cwd: job.request.cwd,
-        model: job.request.model,
+        reasoningLevel: job.request.reasoningLevel,
+        reasoningAmount: job.request.reasoningAmount,
+        resolvedModel: job.resolvedModel,
+        resolvedThinkingLevel: job.resolvedThinkingLevel,
+        modelSelectionSource: job.modelSelectionSource,
         startedAt: job.startedAt,
         finishedAt: job.finishedAt,
         latestLine: job.latestLine,
@@ -527,6 +552,15 @@ function requiredText(value: unknown, name: string, maxLength: number): string {
 function optionalText(value: unknown, name: string, maxLength: number): string | undefined {
     if (value === undefined) return undefined;
     return requiredText(value, name, maxLength);
+}
+
+function enumValue<T extends string>(
+    value: unknown,
+    values: Record<string, T>,
+    name: string,
+): T {
+    if (typeof value === "string" && Object.values(values).includes(value as T)) return value as T;
+    throw new Error(`Unsupported subagent ${name}: ${String(value)}`);
 }
 
 function boundedNumber(value: unknown, name: string, minimum: number, maximum: number): number {

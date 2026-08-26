@@ -22,9 +22,15 @@ export function renderJobs(jobs: SubagentJobSnapshot[]): string {
             `## ${job.role} (${job.id})`,
             `Status: ${job.status}`,
             `Mode: ${job.mode}`,
+            `Reasoning: ${job.reasoningLevel} level, ${job.reasoningAmount} amount`,
             `Capabilities: ${job.capabilities.length > 0 ? job.capabilities.join(", ") : "(none)"}`,
             `Task: ${job.task}`,
         ];
+        if (job.resolvedModel) {
+            const thinking = job.resolvedThinkingLevel ? `; thinking ${job.resolvedThinkingLevel}` : "";
+            const source = job.modelSelectionSource ? `; selected by ${job.modelSelectionSource}` : "";
+            lines.push(`Resolved model: ${job.resolvedModel}${thinking}${source}`);
+        }
         if (job.latestLine && (job.status === SubagentJobStatus.QUEUED || job.status === SubagentJobStatus.RUNNING)) {
             lines.push(`Latest: ${job.latestLine}`);
         }

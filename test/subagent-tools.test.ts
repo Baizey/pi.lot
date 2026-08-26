@@ -4,6 +4,10 @@ import type {ExtensionContext, Theme, ToolDefinition} from "@earendil-works/pi-c
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
 import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
+import {
+    SubagentReasoningAmount,
+    SubagentReasoningLevel,
+} from "../src/subagents/SubagentReasoning.js";
 import {AGENT_CAPABILITIES} from "../src/subagents/AgentCapability.js";
 import type {SubagentChildSessionFactory} from "../src/subagents/types.js";
 import {SubagentMessageTool} from "../src/tools/subagent/SubagentMessageTool";
@@ -40,11 +44,22 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.equal(registered.every((tool) => tool.renderCall && tool.renderResult), true);
     const spawnProperties = (registered[0]!.parameters as any).properties;
     assert.equal("toolkits" in spawnProperties, false);
+    assert.equal("model" in spawnProperties, false);
     assert.deepEqual(spawnProperties.capabilities.items.enum, AGENT_CAPABILITIES);
+    assert.deepEqual(spawnProperties.reasoning_level.enum, Object.values(SubagentReasoningLevel));
+    assert.deepEqual(spawnProperties.reasoning_amount.enum, Object.values(SubagentReasoningAmount));
+    assert.deepEqual(
+        (registered[0]!.parameters as any).required,
+        ["task", "role", "reasoning_level", "reasoning_amount"],
+    );
 
     const theme = plainTheme();
+    const reasoning = {
+        reasoning_level: SubagentReasoningLevel.MID,
+        reasoning_amount: SubagentReasoningAmount.MID,
+    };
     const minimalCalls = [
-        [{task: "Delegate work", role: "reviewer", mode: "sync"}, "subagent_spawn | reviewer (sync)"],
+        [{task: "Delegate work", role: "reviewer", mode: "sync", ...reasoning}, "subagent_spawn | reviewer (sync)"],
         [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, "subagent_status | job-1, job-2 (wait 2s)"],
         [{jobId: "job-1", task: "Continue"}, "subagent_message | job-1"],
         [{jobId: "job-1"}, "subagent_stop | job-1"],
@@ -62,19 +77,20 @@ test("each subagent tool registers independently and delegates only to the coord
         task: numberedLines(10),
         role: "reviewer",
         mode: "sync",
+        ...reasoning,
     };
     const truncatedCall = registered[0]!.renderCall!(
         spawnArgs,
         theme,
         renderContext(spawnArgs, {}, true),
     ).render(120);
-    assert.equal(truncatedCall.at(-1), "    ... (2 more lines)");
+    assert.equal(truncatedCall.at(-1), "        ... (2 more lines)");
     const fullCall = registered[0]!.renderCall!(
         spawnArgs,
         theme,
         renderContext(spawnArgs, {pilotFullDisplay: true}),
     ).render(120);
-    assert.equal(fullCall.at(-1), "    line 10");
+    assert.equal(fullCall.at(-1), "        line 10");
 
     const output = {content: [{type: "text" as const, text: numberedLines(10)}], details: {jobs: []}};
     assert.deepEqual(
@@ -87,11 +103,16 @@ test("each subagent tool registers independently and delegates only to the coord
         ["", "... (2 earlier lines)", ...numberedLineArray(8, 3)],
     );
 
-    await assert.rejects(invoke(registered[0]!, {task: "before", role: "reviewer"}), /session is not available/);
+    await assert.rejects(
+        invoke(registered[0]!, {task: "before", role: "reviewer", ...reasoning}),
+        /session is not available/,
+    );
 
     const factory: SubagentChildSessionFactory = {
         async create(request) {
             assert.equal(request.parentAgentIdentifier, "subagent-tool-test-agent");
+            assert.equal(request.reasoningLevel, SubagentReasoningLevel.MID);
+            assert.equal(request.reasoningAmount, SubagentReasoningAmount.MID);
             return {
                 async prompt(task) {
                     return `completed: ${task}`;
@@ -114,7 +135,7 @@ test("each subagent tool registers independently and delegates only to the coord
         new SubagentToolCatalog({builtins: () => [], mcp: () => [], delegate: () => []}),
         policyPrincipals,
     );
-    const result = await invoke(registered[0]!, {task: "work", role: "reviewer"});
+    const result = await invoke(registered[0]!, {task: "work", role: "reviewer", ...reasoning});
     assert.match(textResult(result), /completed: work/);
     assert.match(textResult(result), /Status: completed/);
 

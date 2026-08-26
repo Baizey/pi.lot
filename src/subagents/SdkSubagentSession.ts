@@ -3,7 +3,6 @@ import {
     DefaultResourceLoader,
     getAgentDir,
     ModelRuntime,
-    resolveCliModel,
     SessionManager,
     SettingsManager,
     type ExtensionContext,
@@ -15,6 +14,11 @@ import type {
     SubagentChildUpdate,
     SubagentSessionRequest,
 } from "./types.js";
+import {
+    CatalogueSubagentModelPerformanceRanker,
+    SubagentModelResolver,
+    type SubagentModelPerformanceRanker,
+} from "./SubagentModelResolver.js";
 
 const MAX_STREAMED_OUTPUT_CHARS = 50_000;
 
@@ -23,7 +27,12 @@ type AgentSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
     private modelRuntime: Promise<ModelRuntime> | undefined;
 
-    constructor(private readonly rootContext: ExtensionContext) {
+    constructor(
+        private readonly rootContext: ExtensionContext,
+        private readonly modelRanker: SubagentModelPerformanceRanker = (
+            new CatalogueSubagentModelPerformanceRanker()
+        ),
+    ) {
     }
 
     async create(
@@ -35,11 +44,11 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         const modelRuntime = await (this.modelRuntime ??= ModelRuntime.create());
         if (signal.aborted) throw abortError();
 
-        const resolved = request.model
-            ? resolveCliModel({cliModel: request.model, modelRuntime})
-            : {model: this.rootContext.model, thinkingLevel: this.rootContext.thinkingLevel, error: undefined};
-        if (resolved.error) throw new Error(resolved.error);
-        if (!resolved.model) throw new Error("No model is available for the subagent");
+        const resolved = await new SubagentModelResolver(
+            modelRuntime,
+            this.modelRanker,
+            this.rootContext.model?.provider,
+        ).resolve(request.reasoningLevel, request.reasoningAmount, signal);
 
         const settingsManager = SettingsManager.inMemory();
         const resourceLoader = new DefaultResourceLoader({
@@ -59,7 +68,7 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         const {session} = await createAgentSession({
             cwd: request.cwd,
             model: resolved.model,
-            thinkingLevel: resolved.thinkingLevel ?? request.thinkingLevel ?? this.rootContext.thinkingLevel,
+            thinkingLevel: resolved.thinkingLevel,
             modelRuntime,
             settingsManager,
             sessionManager,
@@ -71,14 +80,21 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
             session.dispose();
             throw abortError();
         }
-        return new SdkSubagentSession(session);
+        return new SdkSubagentSession(session, {
+            model: `${resolved.model.provider}/${resolved.model.id}`,
+            thinkingLevel: resolved.thinkingLevel,
+            source: resolved.performanceSource,
+        });
     }
 }
 
 class SdkSubagentSession implements SubagentChildSession {
     private disposed = false;
 
-    constructor(private readonly session: AgentSession) {
+    constructor(
+        private readonly session: AgentSession,
+        readonly modelSelection: NonNullable<SubagentChildSession["modelSelection"]>,
+    ) {
     }
 
     async prompt(
@@ -139,6 +155,7 @@ function subagentSystemPrompt(request: SubagentSessionRequest): string {
         `Role: ${request.role}`,
         `Run mode: ${request.mode}`,
         `Spawn capabilities: ${request.capabilities.length > 0 ? request.capabilities.join(", ") : "(none)"}`,
+        `Requested reasoning: ${request.reasoningLevel} level, ${request.reasoningAmount} amount`,
         "Complete the delegated task independently and return a concise, useful result.",
         "Policy-area capabilities describe inherited policy snapshots, not permanent prohibitions. Missing policies may still be requested when needed.",
         "MCP and delegation are hard capabilities: do not claim or attempt them when they were not provided.",

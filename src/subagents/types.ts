@@ -1,5 +1,9 @@
 import type {ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {AgentCapability} from "./AgentCapability.js";
+import type {
+    SubagentReasoningAmount,
+    SubagentReasoningLevel,
+} from "./SubagentReasoning.js";
 
 export enum SubagentRunMode {
     SYNC = "sync",
@@ -25,8 +29,8 @@ export type SubagentRequest = {
     capabilities: AgentCapability[];
     cwd: string;
     timeoutSeconds: number;
-    model?: string;
-    thinkingLevel?: ExtensionContext["thinkingLevel"];
+    reasoningLevel: SubagentReasoningLevel;
+    reasoningAmount: SubagentReasoningAmount;
     systemPrompt?: string;
     contextPaths?: string[];
 };
@@ -45,7 +49,11 @@ export type SubagentJobSnapshot = {
     task: string;
     capabilities: AgentCapability[];
     cwd: string;
-    model?: string;
+    reasoningLevel: SubagentReasoningLevel;
+    reasoningAmount: SubagentReasoningAmount;
+    resolvedModel?: string;
+    resolvedThinkingLevel?: ExtensionContext["thinkingLevel"];
+    modelSelectionSource?: string;
     startedAt?: number;
     finishedAt?: number;
     latestLine?: string;
@@ -60,6 +68,12 @@ export type SubagentChildUpdate = {
 };
 
 export interface SubagentChildSession {
+    readonly modelSelection?: {
+        model: string;
+        thinkingLevel: ExtensionContext["thinkingLevel"];
+        source: string;
+    };
+
     prompt(
         task: string,
         signal: AbortSignal,

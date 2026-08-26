@@ -7,6 +7,10 @@ import {AgentMechanismCapability} from "../src/subagents/AgentCapability.js";
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
 import {
+    SubagentReasoningAmount,
+    SubagentReasoningLevel,
+} from "../src/subagents/SubagentReasoning.js";
+import {
     SubagentJobStatus,
     SubagentRunMode,
     type SubagentChildSession,
@@ -47,9 +51,30 @@ function request(overrides: Partial<SubagentRequest> = {}): SubagentRequest {
         capabilities: [],
         cwd: process.cwd(),
         timeoutSeconds: 30,
+        reasoningLevel: SubagentReasoningLevel.MID,
+        reasoningAmount: SubagentReasoningAmount.MID,
         ...overrides,
     };
 }
+
+test("coordinator rejects unsupported reasoning capabilities before creating a job", async () => {
+    const coordinator = new SubagentCoordinator(
+        {
+            async create() {
+                return new FakeSession(async () => "unused");
+            },
+        },
+        tools(),
+        new FakePolicyPrincipals(),
+    );
+
+    await assert.rejects(
+        coordinator.spawn(request({reasoningLevel: "ultra" as SubagentReasoningLevel})),
+        /Unsupported subagent reasoning level: ultra/,
+    );
+    assert.deepEqual(coordinator.list(), []);
+    await coordinator.close();
+});
 
 test("sync subagents always receive mediated builtins and snapshot selected policy areas", async () => {
     const sessions: FakeSession[] = [];
@@ -57,7 +82,14 @@ test("sync subagents always receive mediated builtins and snapshot selected poli
     const factory: SubagentChildSessionFactory = {
         async create(childRequest, definitions) {
             assert.equal(principals.active.has(childRequest.agentIdentifier), true);
-            const session = new FakeSession(async (task) => `${task}: ${definitions.map((item) => item.name).join(",")}`);
+            const session = new FakeSession(
+                async (task) => `${task}: ${definitions.map((item) => item.name).join(",")}`,
+                {
+                    model: "provider/resolved-model",
+                    thinkingLevel: "medium",
+                    source: "test-ranker",
+                },
+            );
             sessions.push(session);
             return session;
         },
@@ -70,6 +102,11 @@ test("sync subagents always receive mediated builtins and snapshot selected poli
     assert.equal(result.job.output, "inspect the change: bash");
     assert.deepEqual(result.job.capabilities, [PolicyArea.fs_read]);
     assert.deepEqual(principals.registrations[0]?.areas, [PolicyArea.fs_read]);
+    assert.equal(result.job.reasoningLevel, SubagentReasoningLevel.MID);
+    assert.equal(result.job.reasoningAmount, SubagentReasoningAmount.MID);
+    assert.equal(result.job.resolvedModel, "provider/resolved-model");
+    assert.equal(result.job.resolvedThinkingLevel, "medium");
+    assert.equal(result.job.modelSelectionSource, "test-ranker");
     assert.equal(result.job.turns, 1);
     assert.equal(sessions[0]?.disposed, true);
     assert.equal(principals.active.size, 0);
@@ -334,6 +371,7 @@ class FakeSession implements SubagentChildSession {
 
     constructor(
         private readonly respond: (task: string, signal: AbortSignal) => Promise<string>,
+        readonly modelSelection?: SubagentChildSession["modelSelection"],
     ) {
     }
 

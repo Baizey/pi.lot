@@ -3,6 +3,10 @@ import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-work
 import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
 import {SubagentRunMode} from "../../subagents/types";
 import {
+    SubagentReasoningAmount,
+    SubagentReasoningLevel,
+} from "../../subagents/SubagentReasoning.js";
+import {
     AGENT_CAPABILITIES,
     type AgentCapability,
 } from "../../subagents/AgentCapability.js";
@@ -37,7 +41,8 @@ type SpawnToolInput = {
     capabilities?: AgentCapability[];
     cwd?: string;
     timeoutSeconds?: number;
-    model?: string;
+    reasoning_level: SubagentReasoningLevel;
+    reasoning_amount: SubagentReasoningAmount;
     systemPrompt?: string;
     contextPaths?: string[];
 };
@@ -61,9 +66,10 @@ const SPAWN_PRESENTATION = {
             key: "capabilities",
             format: (value) => Array.isArray(value) && value.length > 0 ? value.join(", ") : "(none)",
         },
+        {key: "reasoning_level", label: "reasoning level"},
+        {key: "reasoning_amount", label: "reasoning amount"},
         {key: "cwd"},
         {key: "timeoutSeconds", label: "timeout", format: (value) => `${String(value)}s`},
-        {key: "model"},
         {
             key: "task",
             layout: ToolArgumentLayout.BLOCK,
@@ -115,8 +121,8 @@ function createDefinition(
     return {
         name: "subagent_spawn",
         label: "Spawn subagent",
-        description: "Start a child agent. Policy-area capabilities snapshot the parent's matching policy state; MCP and delegation are hard capabilities.",
-        promptSnippet: "Delegate independent work to an in-process child agent with explicit capabilities.",
+        description: "Start a child agent with abstract reasoning capabilities. Policy-area capabilities snapshot the parent's matching policy state; MCP and delegation are hard capabilities.",
+        promptSnippet: "Delegate independent work to an in-process child agent with explicit reasoning and mechanism capabilities.",
         parameters: objectSchema({
             task: stringSchema("Task to delegate"),
             role: stringSchema("Concise role or title for the child agent", 120),
@@ -128,10 +134,17 @@ function createDefinition(
             ),
             cwd: stringSchema("Child working directory; relative paths resolve from the current tool context"),
             timeoutSeconds: numberSchema("Timeout for each child turn", 1, 3_600, DEFAULT_TIMEOUT_SECONDS),
-            model: stringSchema("Optional provider/model selection"),
+            reasoning_level: enumSchema(
+                Object.values(SubagentReasoningLevel),
+                "Model capability level; min favors cost and max favors estimated performance",
+            ),
+            reasoning_amount: enumSchema(
+                Object.values(SubagentReasoningAmount),
+                "Reasoning effort for the selected model",
+            ),
             systemPrompt: stringSchema("Optional additional child instructions", 100_000),
             contextPaths: arraySchema(stringSchema("Suggested context path"), "Suggested context paths"),
-        }, ["task", "role"]),
+        }, ["task", "role", "reasoning_level", "reasoning_amount"]),
         async execute(_id, params, signal, onUpdate, ctx): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as SpawnToolInput;
             const mode = input.mode ?? SubagentRunMode.SYNC;
@@ -144,8 +157,8 @@ function createDefinition(
                 capabilities: input.capabilities ?? [],
                 cwd,
                 timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
-                model: input.model ?? canonicalModel(ctx.model),
-                thinkingLevel: ctx.thinkingLevel,
+                reasoningLevel: input.reasoning_level,
+                reasoningAmount: input.reasoning_amount,
                 systemPrompt: input.systemPrompt,
                 contextPaths: input.contextPaths?.map((entry) => path.resolve(cwd, entry)),
             }, signal, mode === SubagentRunMode.SYNC && onUpdate
@@ -168,8 +181,4 @@ function createDefinition(
             resolveToolDisplayMode(options.expanded, context.state),
         ),
     };
-}
-
-function canonicalModel(model: { provider: string; id: string } | undefined): string | undefined {
-    return model ? `${model.provider}/${model.id}` : undefined;
 }

@@ -9,6 +9,7 @@ import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
 import type {SubagentToolProviders} from "./subagents/SubagentToolCatalog.js";
+import type {SubagentModelPerformanceRanker} from "./subagents/SubagentModelResolver.js";
 import {SubagentSpawnTool} from "./tools/subagent/SubagentSpawnTool";
 import {SubagentStatusTool} from "./tools/subagent/SubagentStatusTool";
 import {SubagentMessageTool} from "./tools/subagent/SubagentMessageTool";
@@ -20,6 +21,7 @@ import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     createMcpExtension?: (pi: ExtensionAPI, displayRows: ToolDisplayRows) => McpExtensionInterface;
+    subagentModelRanker?: SubagentModelPerformanceRanker;
 };
 
 // noinspection JSUnusedGlobalSymbols
@@ -69,7 +71,9 @@ export class PilotExtension {
             mcp: () => this.mcpExtension.toolDefinitions(),
             delegate: () => this.subagentToolDefinitions(),
         };
-        this.subagentRuntime = new SubagentRuntime(toolProviders);
+        this.subagentRuntime = new SubagentRuntime(toolProviders, {
+            modelRanker: options.subagentModelRanker,
+        });
     }
 
     register(): void {

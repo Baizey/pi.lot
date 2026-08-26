@@ -33,7 +33,8 @@ Policy-area capabilities are the complete `PolicyArea` set used by root policy d
 - `sync` waits for completion unless work must return to the parent for a policy decision.
 - `async` returns a job ID immediately.
 - `conversation` retains one child session between messages until stopped.
-- Children inherit the invoking model, provider and authentication context, thinking level, and working directory unless explicitly overridden.
+- Children inherit the invoking working directory unless explicitly overridden. They do not inherit or accept a caller-selected model.
+- Each child requests an abstract reasoning level and amount. The runtime resolves those capabilities against Pi's currently authenticated model catalogue.
 - Jobs, conversations, and ephemeral grants are not persisted across root-session shutdown.
 
 ## Spawn contract
@@ -65,12 +66,21 @@ Copied context is information the parent has deliberately passed to the child. A
 The spawn may select:
 
 - run mode;
-- model and thinking level;
+- abstract reasoning level and amount;
 - working directory;
 - per-turn timeout; and
 - bounded additional instructions and context.
 
 A working directory or context path does not itself grant access to that path.
+
+The public reasoning contract is:
+
+- `reasoning_level`: `min`, `low`, `mid`, `high`, or `max`;
+- `reasoning_amount`: `low`, `mid`, or `high`.
+
+The runtime considers only models returned by Pi's authenticated `ModelRuntime.getAvailable()` catalogue which support the requested reasoning amount. `min` minimizes estimated catalogue cost and uses estimated performance as a tie-breaker. `max` maximizes estimated performance and uses cost only as a tie-breaker. `low`, `mid`, and `high` choose progressively across the non-dominated performance/cost frontier. Sparse catalogues may resolve adjacent levels to the same model.
+
+The initial performance ranker uses catalogue price as a deliberately weak market-tier proxy, followed by supported reasoning range, context window, and maximum output. It contains no provider or model-name mappings. The ranker is a replaceable boundary so later benchmark evidence can improve prioritization without changing the spawn contract. The resolved provider, model, thinking level, and ranking source are status metadata, not caller-controlled inputs.
 
 ### Capabilities and initial policy snapshot
 

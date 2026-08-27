@@ -11,6 +11,7 @@ import {
     type SubagentJobSnapshot,
 } from "../src/subagents/types.js";
 import {
+    activeSubagentJobs,
     SubagentActivityWidget,
     subagentStatusCounts,
 } from "../src/tui/subagent/SubagentActivityWidget.js";
@@ -25,7 +26,14 @@ const plainTheme = {
 test("subagent activity widget shows bounded active work and omits retained idle jobs", () => {
     const jobs = [
         job({id: "running", role: "policy auditor", status: SubagentJobStatus.RUNNING, latestLine: "Using read"}),
-        job({id: "queued", role: "test reviewer", status: SubagentJobStatus.QUEUED, depth: 1, createdAt: 2}),
+        job({
+            id: "queued",
+            parentId: "running",
+            role: "test reviewer",
+            status: SubagentJobStatus.QUEUED,
+            depth: 1,
+            createdAt: 2,
+        }),
         job({id: "idle", role: "finished reviewer", status: SubagentJobStatus.IDLE, createdAt: 3}),
     ];
     const widget = new SubagentActivityWidget(() => jobs, plainTheme);
@@ -38,6 +46,45 @@ test("subagent activity widget shows bounded active work and omits retained idle
     assert.equal(lines.some((line) => line.includes("finished reviewer")), false);
     assert.equal(lines.every((line) => displayWidth(line) <= 70), true);
     assert.deepEqual(subagentStatusCounts(jobs), {running: 1, queued: 1, idle: 1, attention: 0});
+});
+
+test("subagent activity widget renders active jobs in depth-first parent order", () => {
+    const jobs = [
+        job({id: "parent-a", role: "parent A", status: SubagentJobStatus.RUNNING, createdAt: 1}),
+        job({id: "parent-b", role: "parent B", status: SubagentJobStatus.RUNNING, createdAt: 2}),
+        job({
+            id: "child-b",
+            parentId: "parent-b",
+            role: "child B",
+            status: SubagentJobStatus.RUNNING,
+            depth: 1,
+            createdAt: 3,
+        }),
+        job({
+            id: "child-a",
+            parentId: "parent-a",
+            role: "child A",
+            status: SubagentJobStatus.RUNNING,
+            depth: 1,
+            createdAt: 4,
+        }),
+    ];
+
+    assert.deepEqual(
+        activeSubagentJobs(jobs).map((value) => value.id),
+        ["parent-a", "child-a", "parent-b", "child-b"],
+    );
+    assert.deepEqual(
+        new SubagentActivityWidget(() => jobs, plainTheme).render(120).slice(1).map((line) => (
+            line.replace(/ —.*$/, "")
+        )),
+        [
+            "● parent A",
+            "  └─ ● child A",
+            "● parent B",
+            "  └─ ● child B",
+        ],
+    );
 });
 
 test("subagent UI runtime keeps the above-editor widget and footer synchronized", () => {

@@ -1,4 +1,5 @@
 import type {AgentToolResult} from "@earendil-works/pi-coding-agent";
+import {subagentJobTree} from "./SubagentJobTree.js";
 import {
     SubagentJobStatus,
     type SubagentJobSnapshot,
@@ -7,16 +8,24 @@ import {
 const MAX_TOOL_OUTPUT_CHARS = 100_000;
 
 export type SubagentToolDetails = { jobs: SubagentJobSnapshot[] };
+export type SubagentToolResultOptions = {tree?: boolean};
 
-export function subagentToolResult(jobs: SubagentJobSnapshot[]): AgentToolResult<SubagentToolDetails> {
+export function subagentToolResult(
+    jobs: SubagentJobSnapshot[],
+    options: SubagentToolResultOptions = {},
+): AgentToolResult<SubagentToolDetails> {
     return {
-        content: [{type: "text", text: boundedToolOutput(renderJobs(jobs))}],
+        content: [{type: "text", text: boundedToolOutput(renderJobs(jobs, options))}],
         details: {jobs},
     };
 }
 
-export function renderJobs(jobs: SubagentJobSnapshot[]): string {
+export function renderJobs(
+    jobs: SubagentJobSnapshot[],
+    options: SubagentToolResultOptions = {},
+): string {
     if (jobs.length === 0) return "No subagent jobs.";
+    if (options.tree) return renderTree(jobs);
     return jobs.map((job) => {
         const lines = [
             `## ${job.role} (${job.id})`,
@@ -43,6 +52,34 @@ export function renderJobs(jobs: SubagentJobSnapshot[]): string {
         }
         return lines.join("\n");
     }).join("\n\n");
+}
+
+function renderTree(jobs: readonly SubagentJobSnapshot[]): string {
+    const lines = subagentJobTree(jobs).map(({job, prefix}) => {
+        const latest = job.latestLine ? ` · ${oneLine(job.latestLine)}` : "";
+        return `${prefix}${statusMarker(job.status)} ${oneLine(job.role)} (${job.id}) — ${job.status}: ${oneLine(job.task)}${latest}`;
+    });
+    return ["Subagent tree:", ...lines].join("\n");
+}
+
+function statusMarker(status: SubagentJobStatus): string {
+    switch (status) {
+        case SubagentJobStatus.RUNNING:
+            return "●";
+        case SubagentJobStatus.QUEUED:
+            return "◌";
+        case SubagentJobStatus.IDLE:
+            return "○";
+        case SubagentJobStatus.FAILED:
+        case SubagentJobStatus.TIMED_OUT:
+            return "!";
+        case SubagentJobStatus.CANCELLED:
+            return "×";
+    }
+}
+
+function oneLine(value: string): string {
+    return value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function boundedToolOutput(text: string): string {

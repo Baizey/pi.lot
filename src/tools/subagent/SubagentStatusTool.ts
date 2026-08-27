@@ -69,21 +69,25 @@ function createDefinition(
     return {
         name: "subagent_status",
         label: "Subagent status",
-        description: "Inspect subagent conversation jobs and optionally wait for selected active turns to become idle or terminal.",
+        description: "Inspect subagent conversation jobs and optionally wait for selected active turns to become idle or terminal. Omit jobIds to render the invoking agent's scoped descendant tree.",
         renderShell: "self",
         parameters: objectSchema({
-            jobIds: arraySchema(stringSchema("Subagent job id"), "Jobs to inspect; omit to list all jobs"),
+            jobIds: arraySchema(
+                stringSchema("Subagent job id"),
+                "Jobs to inspect; omit for the invoking agent's scoped descendant tree",
+            ),
             waitSeconds: numberSchema("Maximum time to wait for selected jobs", 0, 3_600, 0),
         }),
         async execute(_id, params, signal, onUpdate): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as StatusToolInput;
+            const tree = !input.jobIds || input.jobIds.length === 0;
             const jobs = await coordinator().status(
                 input.jobIds,
                 input.waitSeconds ?? 0,
                 signal,
-                onUpdate ? (updates) => onUpdate(subagentToolResult(updates)) : undefined,
+                onUpdate ? (updates) => onUpdate(subagentToolResult(updates, {tree})) : undefined,
             );
-            return subagentToolResult(jobs);
+            return subagentToolResult(jobs, {tree});
         },
         renderCall: (args, theme, context) => {
             displayRows.observe("subagent_status", args, context);

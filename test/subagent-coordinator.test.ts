@@ -647,6 +647,7 @@ test("nested delegation gates mechanisms but may snapshot any policy area the pa
                     capabilities: [PolicyArea.fs_read],
                 }));
                 nestedId = nested.job.id;
+                assert.deepEqual(coordinator.list().map((job) => job.id), [nestedId]);
                 return "parent result";
             });
         },

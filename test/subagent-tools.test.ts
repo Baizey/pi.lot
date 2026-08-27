@@ -156,6 +156,12 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.equal(settled?.output, "completed: work");
     assert.equal(settled?.status, "idle");
 
+    const allStatus = textResult(await invoke(registered[1]!, {}));
+    assert.match(allStatus, /Subagent tree:\n○ reviewer \(subagent-/);
+    assert.match(allStatus, / — idle: work/);
+    const selectedStatus = textResult(await invoke(registered[1]!, {jobIds: [jobId]}));
+    assert.doesNotMatch(selectedStatus, /Subagent tree:/);
+
     await coordinator.close();
 });
 

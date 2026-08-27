@@ -1,5 +1,6 @@
 import type {Theme} from "@earendil-works/pi-coding-agent";
 import type {Component} from "@earendil-works/pi-tui";
+import {subagentJobTree} from "../../subagents/SubagentJobTree.js";
 import {
     SubagentJobStatus,
     type SubagentJobSnapshot,
@@ -17,17 +18,17 @@ export class SubagentActivityWidget implements Component {
     }
 
     render(width: number): string[] {
-        const active = activeSubagentJobs(this.jobs());
+        const active = activeSubagentTree(this.jobs());
         if (active.length === 0) return [];
 
-        const running = active.filter((job) => job.status === SubagentJobStatus.RUNNING).length;
+        const running = active.filter(({job}) => job.status === SubagentJobStatus.RUNNING).length;
         const queued = active.length - running;
         const counts = [
             running > 0 ? `${running} running` : "",
             queued > 0 ? `${queued} queued` : "",
         ].filter(Boolean).join(" · ");
         const visible = active.slice(0, MAX_VISIBLE_JOBS);
-        const rows = visible.map((job) => this.jobLine(job));
+        const rows = visible.map(({job, prefix}) => this.jobLine(job, prefix));
         if (active.length > visible.length) {
             rows.push(this.theme.fg("dim", `… ${active.length - visible.length} more`));
         }
@@ -41,8 +42,7 @@ export class SubagentActivityWidget implements Component {
     invalidate(): void {
     }
 
-    private jobLine(job: SubagentJobSnapshot): string {
-        const indent = job.depth > 0 ? `${"  ".repeat(Math.min(job.depth, 5))}└─ ` : "";
+    private jobLine(job: SubagentJobSnapshot, prefix: string): string {
         const running = job.status === SubagentJobStatus.RUNNING;
         const marker = running
             ? this.theme.fg("accent", "●")
@@ -52,17 +52,19 @@ export class SubagentActivityWidget implements Component {
         const latest = job.latestLine && compact(job.latestLine, MAX_SUMMARY_CHARS) !== compact(job.task, MAX_SUMMARY_CHARS)
             ? this.theme.fg("dim", ` · ${compact(job.latestLine, MAX_SUMMARY_CHARS)}`)
             : "";
-        return `${indent}${marker} ${role} — ${task}${latest}`;
+        return `${prefix}${marker} ${role} — ${task}${latest}`;
     }
 }
 
 export function activeSubagentJobs(jobs: readonly SubagentJobSnapshot[]): SubagentJobSnapshot[] {
-    return jobs
-        .filter((job) => (
-            job.status === SubagentJobStatus.QUEUED
-            || job.status === SubagentJobStatus.RUNNING
-        ))
-        .sort((left, right) => left.createdAt - right.createdAt);
+    return activeSubagentTree(jobs).map(({job}) => job);
+}
+
+function activeSubagentTree(jobs: readonly SubagentJobSnapshot[]) {
+    return subagentJobTree(jobs.filter((job) => (
+        job.status === SubagentJobStatus.QUEUED
+        || job.status === SubagentJobStatus.RUNNING
+    )));
 }
 
 export function subagentStatusCounts(jobs: readonly SubagentJobSnapshot[]): {

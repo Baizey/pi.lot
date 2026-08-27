@@ -12,6 +12,7 @@ import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
+import {resolveBuiltinToolPath} from "./resolveBuiltinToolPath.js";
 
 const WRITE_PRESENTATION = {
     toolName: "write",
@@ -53,7 +54,7 @@ export class WriteTool {
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const result = await this.runtimeProvider().policyRuntime.once(
                 ctx.sessionManager.getSessionId(),
-                params.path,
+                resolveBuiltinToolPath(params.path, ctx.cwd),
                 PolicyAccessType.FS_WRITE,
                 signal,
             );

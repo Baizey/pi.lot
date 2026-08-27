@@ -57,6 +57,8 @@ type SubagentJob = {
     modelSelectionSource?: string;
     controller?: AbortController;
     runPromise?: Promise<void>;
+    abortPromise?: Promise<void>;
+    abortFailure?: string;
     stopRequested: boolean;
     timedOut: boolean;
     principalReleased: boolean;
@@ -205,6 +207,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         if (job.status === SubagentJobStatus.IDLE) {
             job.request = {...job.request, task: normalizedTask};
             job.nextTask = normalizedTask;
+            job.output = undefined;
             job.status = SubagentJobStatus.QUEUED;
             job.latestLine = "Queued follow-up";
             job.finishedAt = undefined;
@@ -300,13 +303,14 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             if (!job) break;
             if (job.status !== SubagentJobStatus.QUEUED) continue;
             this.activeCount++;
-            const running = this.executeTurn(job).finally(() => {
-                this.activeCount--;
-                if (job.runPromise === running) job.runPromise = undefined;
-                this.pump();
-            });
+            const running = this.executeTurn(job)
+                .catch((error) => this.handleUnexpectedTurnFailure(job, error))
+                .finally(() => {
+                    this.activeCount--;
+                    if (job.runPromise === running) job.runPromise = undefined;
+                    this.pump();
+                });
             job.runPromise = running;
-            void running;
         }
     }
 
@@ -316,13 +320,14 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         job.latestLine = "Starting";
         job.stopRequested = false;
         job.timedOut = false;
+        job.abortPromise = undefined;
+        job.abortFailure = undefined;
         const controller = new AbortController();
         job.controller = controller;
         const timeout = setTimeout(() => {
             job.timedOut = true;
             job.latestLine = "Timed out; stopping";
-            controller.abort();
-            void job.session?.abort();
+            this.requestAbort(job);
             this.notify(job);
         }, job.request.timeoutSeconds * 1000);
         timeout.unref();
@@ -340,7 +345,10 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                 job.modelSelectionSource = job.session.modelSelection?.source;
                 this.notify(job);
             }
-            if (controller.signal.aborted) throw abortError();
+            if (controller.signal.aborted) {
+                this.requestAbort(job);
+                throw abortError();
+            }
             const output = await this.delegationContext.run({
                 jobId: job.id,
                 agentIdentifier: job.agentIdentifier,
@@ -367,6 +375,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             if (nextTask) {
                 job.request = {...job.request, task: nextTask};
                 job.nextTask = nextTask;
+                job.output = undefined;
                 job.status = SubagentJobStatus.QUEUED;
                 job.latestLine = "Queued follow-up";
                 job.error = undefined;
@@ -377,9 +386,11 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                 job.status = SubagentJobStatus.IDLE;
             }
         } catch (error) {
+            await job.abortPromise;
             job.pendingSteering.splice(0);
             job.queuedTasks.splice(0);
             job.error = errorMessage(error);
+            if (job.abortFailure) this.appendJobError(job, job.abortFailure);
             job.finishedAt = Date.now();
             job.status = job.timedOut
                 ? SubagentJobStatus.TIMED_OUT
@@ -392,10 +403,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             job.controller = undefined;
             const retainedConversation = job.status === SubagentJobStatus.IDLE
                 || job.status === SubagentJobStatus.QUEUED;
-            if (!retainedConversation) {
-                job.session?.dispose();
-                job.session = undefined;
-            }
+            if (!retainedConversation) this.disposeSession(job);
             this.notify(job);
             this.releaseTerminalPrincipals();
         }
@@ -411,8 +419,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             job.status = SubagentJobStatus.CANCELLED;
             job.finishedAt = Date.now();
             job.latestLine = "Cancelled before starting";
-            job.session?.dispose();
-            job.session = undefined;
+            this.disposeSession(job);
             this.notify(job);
             this.releaseTerminalPrincipals();
             return;
@@ -420,8 +427,8 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         if (job.status === SubagentJobStatus.RUNNING) {
             job.stopRequested = true;
             job.latestLine = "Stopping";
-            job.controller?.abort();
-            await job.session?.abort().catch(() => undefined);
+            this.requestAbort(job);
+            await job.abortPromise;
             await job.runPromise;
             return;
         }
@@ -432,8 +439,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             job.status = SubagentJobStatus.CANCELLED;
             job.finishedAt = Date.now();
             job.latestLine = "Stopped";
-            job.session?.dispose();
-            job.session = undefined;
+            this.disposeSession(job);
             this.notify(job);
             this.releaseTerminalPrincipals();
         }
@@ -469,22 +475,74 @@ export class SubagentCoordinator implements SubagentJobMonitor {
     }
 
     private releaseTerminalPrincipals(): void {
+        const attempted = new Set<string>();
         let released: boolean;
         do {
             released = false;
             const candidates = [...this.jobs.values()]
-                .filter((job) => isTerminal(job.status) && !job.principalReleased)
+                .filter((job) => (
+                    isTerminal(job.status)
+                    && !job.principalReleased
+                    && !attempted.has(job.id)
+                ))
                 .sort((left, right) => right.depth - left.depth);
             for (const job of candidates) {
                 const hasRetainedChildren = [...this.jobs.values()].some((candidate) => (
                     candidate.parentId === job.id && !candidate.principalReleased
                 ));
                 if (hasRetainedChildren) continue;
-                this.policyPrincipals.removePolicyPrincipal(job.agentIdentifier);
-                job.principalReleased = true;
-                released = true;
+                attempted.add(job.id);
+                try {
+                    this.policyPrincipals.removePolicyPrincipal(job.agentIdentifier);
+                    job.principalReleased = true;
+                    released = true;
+                } catch (error) {
+                    this.appendJobError(
+                        job,
+                        lifecycleFailure(job, "policy-principal release", error),
+                    );
+                    this.notify(job);
+                }
             }
         } while (released);
+    }
+
+    private requestAbort(job: SubagentJob): void {
+        job.controller?.abort();
+        const session = job.session;
+        if (!session || job.abortPromise) return;
+        job.abortPromise = Promise.resolve()
+            .then(() => session.abort())
+            .catch((error) => {
+                job.abortFailure = lifecycleFailure(job, "session abort", error);
+            });
+    }
+
+    private disposeSession(job: SubagentJob): void {
+        const session = job.session;
+        job.session = undefined;
+        if (!session) return;
+        try {
+            session.dispose();
+        } catch (error) {
+            this.appendJobError(job, lifecycleFailure(job, "session dispose", error));
+        }
+    }
+
+    private handleUnexpectedTurnFailure(job: SubagentJob, error: unknown): void {
+        if (isActive(job.status)) {
+            job.status = SubagentJobStatus.FAILED;
+            job.finishedAt = Date.now();
+        }
+        this.appendJobError(job, lifecycleFailure(job, "turn finalization", error));
+        this.disposeSession(job);
+        this.notify(job);
+        this.releaseTerminalPrincipals();
+    }
+
+    private appendJobError(job: SubagentJob, message: string): void {
+        if (!job.error?.includes(message)) job.error = job.error ? `${job.error}; ${message}` : message;
+        job.latestLine = message;
     }
 
     private evictTerminalJobs(): void {
@@ -619,6 +677,10 @@ function lastMeaningfulLine(text: string): string {
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+function lifecycleFailure(job: SubagentJob, phase: string, error: unknown): string {
+    return `Subagent job ${job.id} (session ${job.agentIdentifier}) ${phase} failed: ${errorMessage(error)}`;
 }
 
 function abortError(): Error {

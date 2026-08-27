@@ -12,6 +12,7 @@ import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
+import {resolveBuiltinToolPath} from "./resolveBuiltinToolPath.js";
 
 const READ_PRESENTATION = {
     toolName: "read",
@@ -63,7 +64,7 @@ export class ReadTool {
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const result = await this.runtimeProvider().policyRuntime.once(
                 ctx.sessionManager.getSessionId(),
-                params.path,
+                resolveBuiltinToolPath(params.path, ctx.cwd),
                 PolicyAccessType.FS_READ,
                 signal,
             );

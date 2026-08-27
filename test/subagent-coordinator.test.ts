@@ -248,6 +248,92 @@ test("conversation jobs retain one real child session and policy principal acros
     await coordinator.close();
 });
 
+test("idle follow-ups clear output from the previous task before the next answer", async () => {
+    const second = deferred<string>();
+    let prompts = 0;
+    const coordinator = new SubagentCoordinator(
+        {
+            async create() {
+                return new FakeSession(async (_task, signal) => {
+                    prompts++;
+                    return prompts === 1 ? "first answer" : abortable(second.promise, signal);
+                });
+            },
+        },
+        tools(),
+        new FakePolicyPrincipals(),
+    );
+    const spawned = await coordinator.spawn(request());
+    const [first] = await coordinator.status([spawned.job.id], 2);
+    assert.equal(first?.status, SubagentJobStatus.IDLE);
+    assert.equal(first?.output, "first answer");
+
+    const active = await coordinator.message(spawned.job.id, "second task");
+    assert.equal(active.status, SubagentJobStatus.RUNNING);
+    assert.equal(active.task, "second task");
+    assert.equal(active.output, undefined);
+    assert.equal(coordinator.list([spawned.job.id])[0]?.output, undefined);
+
+    second.resolve("second answer");
+    const [settled] = await coordinator.status([spawned.job.id], 2);
+    assert.equal(settled?.status, SubagentJobStatus.IDLE);
+    assert.equal(settled?.output, "second answer");
+    await coordinator.close();
+});
+
+test("queued follow-ups clear completed output when promoted to the displayed task", async () => {
+    const first = deferred<string>();
+    const second = deferred<string>();
+    let prompts = 0;
+    const coordinator = new SubagentCoordinator(
+        {
+            async create() {
+                return new FakeSession(
+                    async (_task, signal) => {
+                        prompts++;
+                        return abortable(prompts === 1 ? first.promise : second.promise, signal);
+                    },
+                    undefined,
+                    async () => false,
+                );
+            },
+        },
+        tools(),
+        new FakePolicyPrincipals(),
+    );
+    const spawned = await coordinator.spawn(request());
+    await waitUntil(() => prompts === 1);
+    const promoted: Array<{status: SubagentJobStatus; task: string; output?: string}> = [];
+    const unsubscribe = coordinator.subscribe((change) => {
+        if (change.kind === "upsert" && change.job.task === "second task") {
+            promoted.push({
+                status: change.job.status,
+                task: change.job.task,
+                output: change.job.output,
+            });
+        }
+    });
+
+    await coordinator.message(spawned.job.id, "second task");
+    first.resolve("first answer");
+    await waitUntil(() => prompts === 2);
+
+    assert.equal(promoted.some((job) => (
+        job.status === SubagentJobStatus.QUEUED && job.output === undefined
+    )), true);
+    const active = coordinator.list([spawned.job.id])[0];
+    assert.equal(active?.status, SubagentJobStatus.RUNNING);
+    assert.equal(active?.task, "second task");
+    assert.equal(active?.output, undefined);
+
+    second.resolve("second answer");
+    const [settled] = await coordinator.status([spawned.job.id], 2);
+    assert.equal(settled?.output, "second answer");
+    assert.equal(settled?.turns, 2);
+    unsubscribe();
+    await coordinator.close();
+});
+
 test("messages sent to a queued job remain ordered conversation turns", async () => {
     const blocker = deferred<string>();
     const prompts: string[] = [];
@@ -368,6 +454,102 @@ test("turn deadlines abort the child and report a timed-out job", async () => {
 
     assert.equal(job?.status, SubagentJobStatus.TIMED_OUT);
     assert.equal(session?.disposed, true);
+    await coordinator.close();
+});
+
+test("timeout abort rejection is contained and reported with job context", async () => {
+    const coordinator = new SubagentCoordinator(
+        {
+            async create() {
+                return new FakeSession(
+                    (_task, signal) => abortable(new Promise<string>(() => {
+                    }), signal),
+                    undefined,
+                    undefined,
+                    async () => {
+                        throw new Error("timeout abort failed");
+                    },
+                );
+            },
+        },
+        tools(),
+        new FakePolicyPrincipals(),
+    );
+    const spawned = await coordinator.spawn(request({timeoutSeconds: 1}));
+
+    const [timedOut] = await coordinator.status([spawned.job.id], 2);
+
+    assert.equal(timedOut?.status, SubagentJobStatus.TIMED_OUT);
+    assert.match(timedOut?.error ?? "", /session abort failed: timeout abort failed/);
+    assert.match(timedOut?.latestLine ?? "", /session abort failed: timeout abort failed/);
+    await coordinator.close();
+});
+
+test("abort rejection is contained and reported with job context", async () => {
+    const factory: SubagentChildSessionFactory = {
+        async create() {
+            return new FakeSession(
+                (_task, signal) => abortable(new Promise<string>(() => {
+                }), signal),
+                undefined,
+                undefined,
+                async () => {
+                    throw new Error("transport abort failed");
+                },
+            );
+        },
+    };
+    const coordinator = new SubagentCoordinator(factory, tools(), new FakePolicyPrincipals());
+    const spawned = await coordinator.spawn(request());
+    await waitUntil(() => coordinator.list([spawned.job.id])[0]?.status === SubagentJobStatus.RUNNING);
+
+    const stopped = await coordinator.stop(spawned.job.id);
+
+    assert.equal(stopped.status, SubagentJobStatus.CANCELLED);
+    assert.match(stopped.error ?? "", new RegExp(`Subagent job ${spawned.job.id}`));
+    assert.match(stopped.error ?? "", /session abort failed: transport abort failed/);
+    assert.match(stopped.latestLine ?? "", /session abort failed: transport abort failed/);
+    await coordinator.close();
+});
+
+test("synchronous cleanup failures are contained and retained on the terminal snapshot", async () => {
+    let releaseAttempts = 0;
+    const principals: PolicyPrincipalRegistry = {
+        registerPolicyPrincipal() {
+        },
+        removePolicyPrincipal() {
+            releaseAttempts++;
+            throw new Error("principal registry unavailable");
+        },
+    };
+    const coordinator = new SubagentCoordinator(
+        {
+            async create() {
+                return new FakeSession(
+                    async () => {
+                        throw new Error("model failed");
+                    },
+                    undefined,
+                    undefined,
+                    undefined,
+                    () => {
+                        throw new Error("dispose failed");
+                    },
+                );
+            },
+        },
+        tools(),
+        principals,
+    );
+    const spawned = await coordinator.spawn(request());
+
+    const [failed] = await coordinator.status([spawned.job.id], 2);
+
+    assert.equal(failed?.status, SubagentJobStatus.FAILED);
+    assert.match(failed?.error ?? "", /model failed/);
+    assert.match(failed?.error ?? "", /session dispose failed: dispose failed/);
+    assert.match(failed?.error ?? "", /policy-principal release failed: principal registry unavailable/);
+    assert.equal(releaseAttempts >= 1, true);
     await coordinator.close();
 });
 
@@ -514,6 +696,8 @@ class FakeSession implements SubagentChildSession {
         private readonly respond: (task: string, signal: AbortSignal) => Promise<string>,
         readonly modelSelection?: SubagentChildSession["modelSelection"],
         private readonly steerTask: (task: string) => Promise<boolean> = async () => true,
+        private readonly abortSession: () => Promise<void> = async () => undefined,
+        private readonly disposeSession: () => void = () => undefined,
     ) {
     }
 
@@ -525,11 +709,13 @@ class FakeSession implements SubagentChildSession {
         return this.steerTask(task);
     }
 
-    async abort() {
+    abort(): Promise<void> {
+        return this.abortSession();
     }
 
     dispose(): void {
         this.disposed = true;
+        this.disposeSession();
     }
 }
 

@@ -57,17 +57,7 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         if (signal.aborted) throw abortError();
 
         const settingsManager = SettingsManager.inMemory();
-        const resourceLoader = new DefaultResourceLoader({
-            cwd: request.cwd,
-            agentDir: getAgentDir(),
-            settingsManager,
-            noExtensions: true,
-            noSkills: true,
-            noPromptTemplates: true,
-            noThemes: true,
-            appendSystemPrompt: [subagentSystemPrompt(request)],
-        });
-        await resourceLoader.reload();
+        const resourceLoader = await createSubagentResourceLoader(request, getAgentDir(), settingsManager);
         if (signal.aborted) throw abortError();
 
         const sessionManager = SessionManager.inMemory(request.cwd, {id: request.agentIdentifier});
@@ -83,7 +73,14 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
             customTools: tools,
         });
         if (signal.aborted) {
-            session.dispose();
+            try {
+                session.dispose();
+            } catch (error) {
+                throw new Error(
+                    `Failed to dispose aborted subagent session ${request.agentIdentifier}: ${errorMessage(error)}`,
+                    {cause: error},
+                );
+            }
             throw abortError();
         }
         return new SdkSubagentSession(session, {
@@ -110,9 +107,38 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
     }
 }
 
-class SdkSubagentSession implements SubagentChildSession {
+/**
+ * Creates the deliberately isolated resource loader used by SDK child sessions.
+ *
+ * Child instructions are supplied solely by `subagentSystemPrompt`; project and
+ * agent-dir context/system files must never affect delegated work.
+ */
+export async function createSubagentResourceLoader(
+    request: SubagentSessionRequest,
+    agentDir = getAgentDir(),
+    settingsManager = SettingsManager.inMemory(),
+): Promise<DefaultResourceLoader> {
+    const resourceLoader = new DefaultResourceLoader({
+        cwd: request.cwd,
+        agentDir,
+        settingsManager,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        // An explicit empty source prevents DefaultResourceLoader from discovering SYSTEM.md.
+        systemPrompt: "",
+        appendSystemPrompt: [subagentSystemPrompt(request)],
+    });
+    await resourceLoader.reload();
+    return resourceLoader;
+}
+
+export class SdkSubagentSession implements SubagentChildSession {
     private disposed = false;
     private promptStarting = false;
+    private abortPromise: Promise<void> | undefined;
 
     constructor(
         private readonly session: AgentSession,
@@ -126,6 +152,7 @@ class SdkSubagentSession implements SubagentChildSession {
         onUpdate?: (update: SubagentChildUpdate) => void,
     ): Promise<string> {
         if (this.disposed) throw new Error("Subagent session is disposed");
+        if (signal.aborted) throw abortError();
         this.promptStarting = true;
         let streamedOutput = "";
         let lastOutputUpdate = 0;
@@ -146,7 +173,9 @@ class SdkSubagentSession implements SubagentChildSession {
                 onUpdate?.({latestLine: lastMeaningfulLine(streamedOutput), output: streamedOutput});
             }
         });
-        const abort = () => void this.session.abort();
+        const abort = () => {
+            void this.abort().catch(() => undefined);
+        };
         if (signal.aborted) abort();
         else signal.addEventListener("abort", abort, {once: true});
 
@@ -176,7 +205,7 @@ class SdkSubagentSession implements SubagentChildSession {
     }
 
     abort(): Promise<void> {
-        return this.session.abort();
+        return this.abortPromise ??= Promise.resolve().then(() => this.session.abort());
     }
 
     dispose(): void {
@@ -239,6 +268,10 @@ function stringProperty(record: Record<string, unknown>, key: string): string | 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 function abortError(message = "Subagent operation was aborted"): Error {

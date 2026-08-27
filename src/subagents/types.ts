@@ -37,6 +37,7 @@ export type SubagentJobSnapshot = {
     id: string;
     parentId?: string;
     depth: number;
+    createdAt: number;
     status: SubagentJobStatus;
     role: string;
     task: string;
@@ -54,6 +55,15 @@ export type SubagentJobSnapshot = {
     error?: string;
     turns: number;
 };
+
+export type SubagentJobChange =
+    | {kind: "upsert"; job: SubagentJobSnapshot}
+    | {kind: "remove"; jobId: string};
+
+export interface SubagentJobMonitor {
+    list(jobIds?: string[]): SubagentJobSnapshot[];
+    subscribe(listener: (change: SubagentJobChange) => void): () => void;
+}
 
 export type SubagentChildUpdate = {
     latestLine: string;

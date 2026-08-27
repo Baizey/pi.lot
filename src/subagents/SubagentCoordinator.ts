@@ -15,6 +15,8 @@ import {
     SubagentJobStatus,
     type SubagentChildSession,
     type SubagentChildSessionFactory,
+    type SubagentJobChange,
+    type SubagentJobMonitor,
     type SubagentJobSnapshot,
     type SubagentRequest,
 } from "./types.js";
@@ -70,10 +72,10 @@ export type SpawnedSubagent = {
     job: SubagentJobSnapshot;
 };
 
-export class SubagentCoordinator {
+export class SubagentCoordinator implements SubagentJobMonitor {
     private readonly jobs = new Map<string, SubagentJob>();
     private readonly queue: SubagentJob[] = [];
-    private readonly changes = new Set<() => void>();
+    private readonly changes = new Set<(change: SubagentJobChange) => void>();
     private readonly delegationContext = new AsyncLocalStorage<DelegationContext>();
     private readonly maxConcurrency: number;
     private readonly maxDepth: number;
@@ -140,6 +142,12 @@ export class SubagentCoordinator {
 
     list(jobIds?: string[]): SubagentJobSnapshot[] {
         return this.selectJobs(jobIds).map(snapshot);
+    }
+
+    subscribe(listener: (change: SubagentJobChange) => void): () => void {
+        this.requireOpen();
+        this.changes.add(listener);
+        return () => this.changes.delete(listener);
     }
 
     async status(
@@ -330,6 +338,7 @@ export class SubagentCoordinator {
                 job.resolvedModel = job.session.modelSelection?.model;
                 job.resolvedThinkingLevel = job.session.modelSelection?.thinkingLevel;
                 job.modelSelectionSource = job.session.modelSelection?.source;
+                this.notify(job);
             }
             if (controller.signal.aborted) throw abortError();
             const output = await this.delegationContext.run({
@@ -488,13 +497,25 @@ export class SubagentCoordinator {
             ))
             .sort((left, right) => (left.finishedAt ?? left.createdAt) - (right.finishedAt ?? right.createdAt));
         while (this.jobs.size >= this.maxJobs && evictable.length > 0) {
-            this.jobs.delete(evictable.shift()!.id);
+            const evicted = evictable.shift()!;
+            this.jobs.delete(evicted.id);
+            this.publish({kind: "remove", jobId: evicted.id});
         }
         if (this.jobs.size >= this.maxJobs) throw new Error(`Subagent job limit reached (${this.maxJobs})`);
     }
 
-    private notify(_job: SubagentJob): void {
-        for (const listener of [...this.changes]) listener();
+    private notify(job: SubagentJob): void {
+        this.publish({kind: "upsert", job: snapshot(job)});
+    }
+
+    private publish(change: SubagentJobChange): void {
+        for (const listener of [...this.changes]) {
+            try {
+                listener(change);
+            } catch {
+                // Observers are diagnostic frontends and must not disrupt child execution.
+            }
+        }
     }
 }
 
@@ -503,6 +524,7 @@ function snapshot(job: SubagentJob): SubagentJobSnapshot {
         id: job.id,
         parentId: job.parentId,
         depth: job.depth,
+        createdAt: job.createdAt,
         status: job.status,
         role: job.request.role,
         task: job.request.task,

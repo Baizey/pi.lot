@@ -19,6 +19,7 @@ import {SubagentStopTool} from "./tools/subagent/SubagentStopTool";
 import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
 import {ViewFullToolCommand} from "./commands/ViewFullToolCommand.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
+import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -42,6 +43,7 @@ export class PilotExtension {
     private readonly writeTool: WriteTool;
     private readonly mcpExtension: McpExtensionInterface;
     private readonly subagentRuntime: SubagentRuntime;
+    private readonly subagentUiRuntime: SubagentUiRuntime;
     private readonly subagentSpawnTool: SubagentSpawnTool;
     private readonly subagentStatusTool: SubagentStatusTool;
     private readonly subagentMessageTool: SubagentMessageTool;
@@ -79,6 +81,7 @@ export class PilotExtension {
             modelRanker: options.subagentModelRanker,
             defaultsStore: options.subagentDefaultsStore,
         });
+        this.subagentUiRuntime = new SubagentUiRuntime();
     }
 
     register(): void {
@@ -138,14 +141,20 @@ export class PilotExtension {
     private async startOwnedExtensions(ctx: ExtensionContext): Promise<void> {
         await this.mcpExtension.startSession(ctx);
         await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
+        await this.subagentUiRuntime.startSession(ctx, this.subagentRuntime.coordinator());
     }
 
     private async stopOwnedExtensions(): Promise<void> {
         let firstError: unknown;
         try {
-            await this.subagentRuntime.stopSession();
+            await this.subagentUiRuntime.stopSession();
         } catch (error) {
             firstError = error;
+        }
+        try {
+            await this.subagentRuntime.stopSession();
+        } catch (error) {
+            firstError ??= error;
         }
         try {
             await this.mcpExtension.stopSession();

@@ -201,7 +201,7 @@ Use `/subagent-defaults` to show the active mappings. Automatic entries include 
 
 Changes apply to future spawns in the current session. `/subagent-defaults save` persists them to `~/.pilot/subagent-defaults.json`; `/subagent-defaults reset` reloads the persisted mappings, or the built-in all-`auto` defaults when no file exists. Exact model values are validated against the currently authenticated catalogue when set.
 
-Child agents currently use Pi's in-process SDK with retained in-memory conversation sessions. They have independent model context, but they are not separate operating-system processes. Jobs are not persisted across root session shutdown.
+Child agents currently use Pi's in-process SDK with retained in-memory conversation sessions. They have independent model context, but they are not separate operating-system processes. Jobs are not persisted across root session shutdown. Interactive sessions show active child work above the input editor and summarize subagent statuses in the footer.
 
 ## Why not use a workspace sandbox?
 

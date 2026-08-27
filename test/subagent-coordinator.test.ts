@@ -76,6 +76,41 @@ test("coordinator rejects unsupported reasoning capabilities before creating a j
     await coordinator.close();
 });
 
+test("coordinator publishes immutable job changes for activity frontends", async () => {
+    const coordinator = new SubagentCoordinator(
+        {
+            async create() {
+                return new FakeSession(async () => "observed output");
+            },
+        },
+        tools(),
+        new FakePolicyPrincipals(),
+    );
+    const changes: Array<{kind: string; status?: SubagentJobStatus}> = [];
+    const unsubscribe = coordinator.subscribe((change) => {
+        changes.push({
+            kind: change.kind,
+            status: change.kind === "upsert" ? change.job.status : undefined,
+        });
+    });
+
+    const spawned = await coordinator.spawn(request());
+    const [settled] = await coordinator.status([spawned.job.id], 2);
+
+    assert.equal(typeof spawned.job.createdAt, "number");
+    assert.equal(settled?.status, SubagentJobStatus.IDLE);
+    assert.equal(changes.some((change) => change.status === SubagentJobStatus.QUEUED), true);
+    assert.equal(changes.some((change) => change.status === SubagentJobStatus.RUNNING), true);
+    assert.equal(changes.some((change) => change.status === SubagentJobStatus.IDLE), true);
+
+    unsubscribe();
+    const countAfterUnsubscribe = changes.length;
+    await coordinator.message(spawned.job.id, "one more turn");
+    await coordinator.status([spawned.job.id], 2);
+    assert.equal(changes.length, countAfterUnsubscribe);
+    await coordinator.close();
+});
+
 test("subagents receive mediated builtins and retain snapshotted policy areas", async () => {
     const sessions: FakeSession[] = [];
     const principals = new FakePolicyPrincipals();

@@ -52,11 +52,18 @@ export class WriteTool {
         const definition = createWriteToolDefinition(process.cwd());
         const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
+            const resolvedPath = resolveBuiltinToolPath(params.path, ctx.cwd);
             const result = await this.runtimeProvider().policyRuntime.once(
                 ctx.sessionManager.getSessionId(),
-                resolveBuiltinToolPath(params.path, ctx.cwd),
+                resolvedPath,
                 PolicyAccessType.FS_WRITE,
                 signal,
+                {
+                    toolCallId,
+                    toolName: "write",
+                    command: `write ${resolvedPath} (${Buffer.byteLength(params.content, "utf8")} bytes)`,
+                    purpose: "Create or replace a file",
+                },
             );
             if (result.matchedStatus === PolicyResponse.DENIED) {
                 throw new Error(result.toDenyMessage());

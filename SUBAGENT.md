@@ -144,39 +144,32 @@ The root agent's initial authority is the current user policy state:
 
 - default or stored `allow` policies are grants held by the root agent;
 - default or stored `deny` policies are explicit denials; and
-- `ask_user` or an unmatched scope represents a policy miss.
+- `ask_user`, `ask_llm`, or an unmatched scope represents a policy miss; `ask_llm` changes only the final fallback route and is not itself a grant.
 
 Policy state is principal-specific. Grants, denials, tool-call state, and agent-session state are never implicitly shared between siblings or copied to descendants.
 
 ## Policy request resolution
 
-When an agent has no matching local policy for an operation, the operation is suspended and a request is routed to its immediate parent.
+When an agent has no matching local policy for an operation, the operation is suspended and the runtime walks its immutable super-agent ancestry toward the root.
 
-A parent decision is one of:
+- A matching explicit denial is terminal and rejects the operation.
+- The first super-agent with a matching positive grant is the decision authority.
+- Super-agents with no matching policy are skipped because they hold no authority for the operation.
+- If no super-agent has a covering grant or denial, the area's current policy default chooses the final route: `ask_user` presents the request to the user, while `ask_llm` sends it to a separate ephemeral structured reviewer.
 
-- `deny`: reject the pending operation;
-- `allow`: derive authority from a covering grant held by the parent; or
-- `escalate`: forward the unchanged request to the parent's parent.
+For a request with an authorized super-agent, the runtime creates a dedicated ephemeral policy-review subagent. That reviewer receives bounded structured context containing the requesting ancestry's roles and current tasks, the normalized operation, and the originating tool command and purpose. It has only a structured policy-decision tool and may return `allow` or `deny`; unstructured, malformed, cancelled, timed-out, or stale responses fail closed.
 
-`escalate` is the policy term for leaving the decision to a higher authority.
+For subprocess-backed tools, reviewers must account for indirect execution dependencies and side effects that are not named literally in the command. These can include executables, dynamic loaders, shared libraries, runtime data, and tightly scoped package/tool caches. A target mismatch alone is not a denial reason; the reviewer evaluates whether the path, access type, tool, command, and purpose make the access plausible, while continuing to deny unrelated user data, credentials, configuration, or writable locations.
 
-The available decisions depend on the parent's policy state:
+The reviewer's available scopes are the normal policy scope options filtered through the most-specific covering grant held by the decision authority. Its available lifetime is `ONCE`, plus `SESSION` when the source grant permits it. The runtime revalidates the selected access type, canonical scope, lifetime, active ancestry, and current source authority after review. A derived decision may never broaden the pending operation or its source grant.
 
-| Parent state | Valid decisions |
-| --- | --- |
-| Matching positive grant | `deny`, `allow`, `escalate` |
-| No matching policy | `deny`, `escalate` |
-| Matching explicit denial | `deny` only |
+A super-agent `ONCE` decision applies only to the exact pending descendant tool call. A `SESSION` decision is installed on every requesting principal along the recorded path below the approving super-agent; it is not installed on the approving principal or unrelated branches.
 
-A parent may escalate even when it holds sufficient authority. This lets an agent defer an unusually sensitive or uncertain decision to a higher authority.
+An `ask_llm` default is exercised only after the ancestor walk finds no authority. Its reviewer uses the same bounded request context and structured decision tool, with the root as routing owner. It may choose only canonical normal scopes and `ONCE` or `SESSION`; it may never create `LOCAL` or `GLOBAL` policy. A session decision is installed across the recorded root-to-requester path, not unrelated existing branches. Missing, malformed, stale, cancelled, or timed-out review fails closed and does not fall through to the user.
 
-An agent-issued `allow` must be rejected unless the runtime can construct a valid grant lineage from authority held by that agent. The derived grant must remain within the pending operation, requested scope, source grant, and permitted lifetime.
+Only a request with no matching super-agent authority and an `ask_user` default is presented to the user. The user's selected rule belongs to the root-agent policy domain at the selected lifetime. Principals below root on the requesting path receive `ONCE` for a one-call decision and otherwise receive at most `SESSION`, including when the user selects `LOCAL` or `GLOBAL`. Durable policy never belongs to an anonymous subagent.
 
-When an ancestor allows an escalated request, the runtime derives the narrowed authority down the recorded escalation path. Earlier escalations authorize forwarding that exact request, so the decision need not be presented to the same agents again while returning downward. Every edge remains represented in the grant lineage and audit record.
-
-Only a request that reaches the root agent without a covering allow or deny policy is presented to the user. A user allow creates or updates root-agent authority according to the chosen scope and lifetime, then derives the narrower grant required by the pending descendant operation. Known in-policy descendant work can therefore be resolved by an authorized ancestor without repeatedly prompting the user.
-
-Denial, expiry, cancellation, malformed input, unavailable required decision owner, job stop, or root-session shutdown releases the held operation with a denial. A required parent must not be silently skipped. A standing grant created at spawn may resolve work after its issuing parent's model turn has ended, but it must still have a valid authority lineage.
+Denial, expiry, cancellation, malformed input, stale or unavailable authority, job stop, or root-session shutdown releases the held operation with a denial. Every decision must remain attached to the original requester, authority path, normalized operation, and tool call.
 
 ## Policy requests and audit data
 
@@ -196,7 +189,7 @@ A pending request is bounded and contains at least:
 
 No agent may widen the operation or proposed scope while escalating it. Human prompts must identify the requesting job, role, ancestry, concrete operation, scope, lifetime, command purpose, and collected rationales.
 
-Audit records include the grant lineage, requester, ancestry, each decision authority, normalized operation and scope, lifetime, reasons, and terminal outcome.
+Audit records include the grant lineage, requester, ancestry, each decision authority, normalized operation and scope, lifetime, reasons, and terminal outcome. Terminal user, super-agent-reviewer, and `ask_llm` decisions are appended as JSON lines to `~/.pilot/logs/<root-session-id>.log` with user-only directory and file permissions.
 
 ## Grant lifetimes
 
@@ -287,9 +280,9 @@ Tests must prove that:
 - policy-mediated builtins remain available independently of policy-area selection;
 - known root-agent allows can resolve descendant requests without opening the user UI;
 - known explicit denials do not bubble to the user;
-- policy misses reach the user only after every required intermediate agent escalates them;
-- agents without covering authority are not offered or accepted as `allow` decision authorities;
-- an ancestor allow returns down the exact recorded escalation path without widening scope;
+- policy misses reach the user only when no super-agent has matching authority;
+- agents without covering authority are never selected as decision authorities;
+- an authorized super-agent decision reaches only the exact recorded request path without widening scope;
 - `ONCE` grants cannot be duplicated, reused, or exercised by a sibling;
 - session grants and derived grants expire at the correct principal and root-session boundaries;
 - persistent `LOCAL` and `GLOBAL` policy remains rooted in a durable principal rather than anonymous jobs;

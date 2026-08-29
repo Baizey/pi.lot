@@ -91,11 +91,16 @@ export class WebSearchTool {
                     "Optional domain filters",
                 ),
             }, ["query"]),
-            execute: async (_id, params, signal, _onUpdate, ctx): Promise<AgentToolResult<WebSearchToolDetails>> => {
+            execute: async (id, params, signal, _onUpdate, ctx): Promise<AgentToolResult<WebSearchToolDetails>> => {
                 const input = params as WebSearchInput;
                 const response = await webSearch(
                     input,
-                    this.runtimeProvider().policyRuntime.beginToolCall(ctx.sessionManager.getSessionId()),
+                    this.runtimeProvider().policyRuntime.beginToolCall(ctx.sessionManager.getSessionId(), {
+                        toolCallId: id,
+                        toolName: "web_search",
+                        command: `web_search ${input.query}`,
+                        purpose: "Search the web",
+                    }),
                     ctx,
                     signal,
                 );

@@ -71,22 +71,27 @@ export class ParsedUri {
         this.isValid = isValid
     }
 
-    scopeHierarchy(): string[] {
+    scopeHierarchy(maximumScopes = Number.MAX_SAFE_INTEGER): string[] {
         if (!this.isValid) return [this.raw]
 
+        const limit = Math.max(1, Math.floor(maximumScopes));
         const result: string[] = []
+        const addScope = (scope: string) => {
+            result.push(scope);
+            if (result.length > limit) result.splice(1, 1);
+        };
         let acc = ""
         if (this.port) {
             acc = this.authority()
-            result.push(acc);
+            addScope(acc);
         } else if (isIP(this.host)) {
             acc = this.host
-            result.push(acc);
+            addScope(acc);
         } else {
             const host = this.host.split(".")
             for (let i = host.length - 1; i >= 0; i--) {
                 acc = host[i] + (acc ? "." : "") + acc
-                result.push(acc)
+                addScope(acc);
             }
         }
 
@@ -94,7 +99,7 @@ export class ParsedUri {
             const path = this.path.split("/").filter(it => it)
             for (let i = 0; i < path.length; i++) {
                 acc += "/" + path[i]
-                result.push(acc)
+                addScope(acc);
             }
         }
         return result

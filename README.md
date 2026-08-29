@@ -285,11 +285,16 @@ Use `/policy-defaults` to show the current values. Change one with response-firs
 /policy-defaults allow fs_read
 /policy-defaults deny web_extra
 /policy-defaults ask_user fs_write
+/policy-defaults ask_llm web_write
 ```
 
-The response is one of `allow`, `deny`, or `ask_user`. The policy category is one of `fs_read`, `fs_write`, `web_read`, `web_write`, or `web_extra`. Pi autocompletes both arguments. Changes initially apply only to the current session.
+The response is one of `allow`, `deny`, `ask_user`, or `ask_llm`. `ask_llm` sends policy misses that would otherwise reach the user to a separate ephemeral policy-review model with only a structured decision tool. Model decisions are limited to `ONCE` or `SESSION`; they cannot create durable `LOCAL` or `GLOBAL` policy. If model review is unavailable, malformed, stale, cancelled, or timed out, the request is denied rather than falling through to the user.
+
+The policy category is one of `fs_read`, `fs_write`, `web_read`, `web_write`, `web_dns`, `web_grpc`, `web_smtp`, `web_ssh`, `web_tcp`, `web_udp`, or `web_websocket`. Pi autocompletes both arguments. Changes initially apply only to the current session.
 
 Use `/policy-defaults save` to persist the active values to `~/.pilot/policy-defaults.json`. New sessions load that file automatically. Use `/policy-defaults reset` to restore the active values from the file, or from the built-in defaults when no file exists.
+
+User, delegated-super-agent, and `ask_llm` approval outcomes are appended as JSON lines to `~/.pilot/logs/<session-id>.log`. The logs include policy targets, tool commands and purposes, ancestry, authority, selected scope/lifetime, reason, and final result. The logs directory and files are created with user-only permissions.
 
 ## Current limitations
 

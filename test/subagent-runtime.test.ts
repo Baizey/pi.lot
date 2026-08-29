@@ -136,7 +136,12 @@ test("subagent runtime owns one coordinator per root session", async () => {
             getAvailable: () => [{provider: "provider", id: "model"}],
         },
     } as unknown as ExtensionContext;
-    const policyRuntime = {} as PolicyRuntime;
+    const policyRuntime = {
+        setAgentDecisionFlow() {
+        },
+        beginShutdown() {
+        },
+    } as unknown as PolicyRuntime;
     await runtime.startSession(ctx, policyRuntime);
     const coordinator = runtime.coordinator();
     assert.ok(coordinator);

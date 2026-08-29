@@ -373,6 +373,15 @@ test("subagent policy capabilities snapshot complete parent areas without becomi
             reason: "child acquired write later",
         },
         {
+            uri: laterTarget,
+            accessType: PolicyAccessType.FS_READ,
+            lifetime: PolicyLifetime.SESSION,
+            status: PolicyResponse.ALLOWED,
+            reason: "parent granted after spawn",
+        },
+    ]);
+    const agentChoices: PolicyChoice[] = [
+        {
             uri: target,
             accessType: PolicyAccessType.FS_READ,
             lifetime: PolicyLifetime.ONCE,
@@ -382,18 +391,12 @@ test("subagent policy capabilities snapshot complete parent areas without becomi
         {
             uri: laterTarget,
             accessType: PolicyAccessType.FS_READ,
-            lifetime: PolicyLifetime.SESSION,
-            status: PolicyResponse.ALLOWED,
-            reason: "parent granted after spawn",
-        },
-        {
-            uri: laterTarget,
-            accessType: PolicyAccessType.FS_READ,
             lifetime: PolicyLifetime.ONCE,
             status: PolicyResponse.ALLOWED,
             reason: "snapshot child still requested read",
         },
-    ]);
+    ];
+    let agentCalls = 0;
     const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
         loadPolicies: () => [
             policy(
@@ -413,6 +416,14 @@ test("subagent policy capabilities snapshot complete parent areas without becomi
         ],
     }), decisions.flow);
     runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.ask_user);
+    runtime.setAgentDecisionFlow({
+        async askForPolicy(request) {
+            const choice = agentChoices[agentCalls++];
+            assert.ok(choice, "Unexpected agent policy decision request");
+            assert.equal(choice.accessType, request.accessType);
+            return choice;
+        },
+    });
     runtime.registerPolicyPrincipal(inheritedChild, TEST_AGENT_IDENTIFIER, [PolicyArea.fs_read]);
     runtime.registerPolicyPrincipal(blankChild, TEST_AGENT_IDENTIFIER, []);
 
@@ -440,7 +451,8 @@ test("subagent policy capabilities snapshot complete parent areas without becomi
         (await runtime.beginToolCall(inheritedChild)(laterTarget, PolicyAccessType.FS_READ)).matchedReason,
         "snapshot child still requested read",
     );
-    assert.equal(decisions.callCount(), 4);
+    assert.equal(decisions.callCount(), 2);
+    assert.equal(agentCalls, 2);
 
     assert.throws(
         () => runtime.registerPolicyPrincipal(inheritedChild, TEST_AGENT_IDENTIFIER, [PolicyArea.fs_read]),
@@ -473,7 +485,7 @@ test("durable decisions requested by a child remain rooted in the durable root p
     const laterChildCall = await runtime.beginToolCall(childIdentifier)(target, PolicyAccessType.FS_WRITE);
     const rootCall = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.FS_WRITE);
 
-    assert.equal(firstChildCall.matchedLifetime, PolicyLifetime.LOCAL);
+    assert.equal(firstChildCall.matchedLifetime, PolicyLifetime.SESSION);
     assert.equal(laterChildCall.matchedLifetime, PolicyLifetime.SESSION);
     assert.equal(rootCall.matchedLifetime, PolicyLifetime.LOCAL);
     assert.equal(persisted[0]?.info[PolicyAccessType.FS_WRITE]?.lifetime, PolicyLifetime.LOCAL);

@@ -169,6 +169,8 @@ test("reusable mediated builtin definitions resolve paths from the invoking chil
                 fullNetworkInspection: true,
                 setFullNetworkInspection() {
                 },
+                beginShutdown() {
+                },
                 close() {
                 },
             };
@@ -233,6 +235,8 @@ test("Pilot's expanded state switches Bash between minimal and truncated while r
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
                 setFullNetworkInspection() {
+                },
+                beginShutdown() {
                 },
                 close() {
                 },
@@ -339,6 +343,8 @@ test("Bash components remain renderable during and after session shutdown", asyn
                 fullNetworkInspection: true,
                 setFullNetworkInspection() {
                 },
+                beginShutdown() {
+                },
                 close() {
                     runtimeCloses++;
                 },
@@ -407,6 +413,8 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
                 decisionFlows: new UiDecisionFlowManager(runtimeContext, queue),
                 fullNetworkInspection: true,
                 setFullNetworkInspection() {
+                },
+                beginShutdown() {
                 },
                 close() {
                 },
@@ -572,6 +580,8 @@ test("one session runtime owns the production tool overrides until session shutd
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
                 setFullNetworkInspection() {
+                },
+                beginShutdown() {
                 },
                 close() {
                     runtimeCloses++;

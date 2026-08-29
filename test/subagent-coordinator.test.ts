@@ -389,7 +389,8 @@ test("messages steer an actively running conversation without starting another t
             );
         },
     };
-    const coordinator = new SubagentCoordinator(factory, tools(), new FakePolicyPrincipals());
+    const principals = new FakePolicyPrincipals();
+    const coordinator = new SubagentCoordinator(factory, tools(), principals);
     const spawned = await coordinator.spawn(request());
     await waitUntil(() => prompts.length === 1);
 
@@ -397,6 +398,10 @@ test("messages steer an actively running conversation without starting another t
     assert.equal(steered.status, SubagentJobStatus.RUNNING);
     assert.equal(steered.latestLine, "Steering message queued");
     assert.deepEqual(steering, ["focus on the failing test"]);
+    assert.match(
+        principals.contextUpdates.at(-1)?.task ?? "",
+        /Current steering: focus on the failing test/,
+    );
 
     gate.resolve("steered answer");
     const [settled] = await coordinator.status([spawned.job.id], 2);
@@ -673,6 +678,7 @@ test("nested delegation gates mechanisms but may snapshot any policy area the pa
 
 class FakePolicyPrincipals implements PolicyPrincipalRegistry {
     readonly active = new Set<string>();
+    readonly contextUpdates: Array<{id: string; task?: string}> = [];
     readonly registrations: Array<{
         id: string;
         parentId: string;
@@ -683,6 +689,10 @@ class FakePolicyPrincipals implements PolicyPrincipalRegistry {
         if (this.active.has(id)) throw new Error(`duplicate principal: ${id}`);
         this.active.add(id);
         this.registrations.push({id, parentId, areas: [...areas]});
+    }
+
+    updatePolicyPrincipalContext(id: string, context: {task?: string}): void {
+        this.contextUpdates.push({id, ...context});
     }
 
     removePolicyPrincipal(id: string): void {

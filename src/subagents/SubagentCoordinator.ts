@@ -117,6 +117,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             id,
             normalized.parentAgentIdentifier,
             capabilities.policyAreas(),
+            {role: normalized.role, task: normalized.task},
         );
         const job: SubagentJob = {
             id,
@@ -193,10 +194,12 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         if (job.status === SubagentJobStatus.RUNNING) {
             if (!job.session) {
                 job.pendingSteering.push(normalizedTask);
+                this.updateSteeringPolicyContext(job, normalizedTask);
                 job.latestLine = "Steering message queued";
                 this.notify(job);
                 return snapshot(job);
             }
+            this.updateSteeringPolicyContext(job, normalizedTask);
             if (await job.session.steer(normalizedTask)) {
                 job.latestLine = "Steering message queued";
                 this.notify(job);
@@ -206,6 +209,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
 
         if (job.status === SubagentJobStatus.IDLE) {
             job.request = {...job.request, task: normalizedTask};
+            this.policyPrincipals.updatePolicyPrincipalContext?.(job.agentIdentifier, {task: normalizedTask});
             job.nextTask = normalizedTask;
             job.output = undefined;
             job.status = SubagentJobStatus.QUEUED;
@@ -247,6 +251,12 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         this.releaseTerminalPrincipals();
         this.queue.splice(0);
         this.changes.clear();
+    }
+
+    private updateSteeringPolicyContext(job: SubagentJob, steering: string): void {
+        this.policyPrincipals.updatePolicyPrincipalContext?.(job.agentIdentifier, {
+            task: `${job.request.task}\nCurrent steering: ${steering}`,
+        });
     }
 
     private validateNestedSpawn(
@@ -374,6 +384,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             const nextTask = job.queuedTasks.shift();
             if (nextTask) {
                 job.request = {...job.request, task: nextTask};
+                this.policyPrincipals.updatePolicyPrincipalContext?.(job.agentIdentifier, {task: nextTask});
                 job.nextTask = nextTask;
                 job.output = undefined;
                 job.status = SubagentJobStatus.QUEUED;

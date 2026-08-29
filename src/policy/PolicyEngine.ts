@@ -1,5 +1,4 @@
-import path from "node:path";
-import {ParsedUri} from "./network/ParsedUri";
+import {policyScopeCovers} from "./PolicyScope.js";
 import {
     isPersistedLifetime,
     type Policy,
@@ -93,13 +92,7 @@ export class PolicyEngine {
         evaluatedUri: string,
         pattern: string,
     ): boolean {
-        switch (accessType) {
-            case PolicyAccessType.FS_READ:
-            case PolicyAccessType.FS_WRITE:
-                return this.isSameOrChildPath(evaluatedUri, pattern);
-            default:
-                return new ParsedUri(evaluatedUri).isSubdomainOf(pattern);
-        }
+        return policyScopeCovers(accessType, pattern, evaluatedUri);
     }
 
     private standardizePolicy(policy: Policy): Policy {
@@ -116,11 +109,6 @@ export class PolicyEngine {
             uri: accessType ? resolveUri(accessType, request.uri) : request.uri,
             accessTypes: [...request.accessTypes],
         };
-    }
-
-    private isSameOrChildPath(candidate: string, parent: string): boolean {
-        const relative = path.relative(parent, candidate);
-        return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
     }
 
     static createStatus(

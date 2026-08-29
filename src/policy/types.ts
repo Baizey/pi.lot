@@ -68,7 +68,7 @@ export enum PolicyFallbackResponse {
     allow = "allow",
     deny = "deny",
     ask_user = "ask_user",
-    ask_llm = "ask_llm", // not implemented
+    ask_llm = "ask_llm",
 }
 
 export enum PolicyArea {
@@ -188,6 +188,8 @@ export enum PolicyResolutionSource {
     SYSTEM = "SYSTEM",
     EXISTING_USER_POLICY = "EXISTING_USER_POLICY",
     NEW_USER_DECISION = "NEW_USER_DECISION",
+    NEW_AGENT_DECISION = "NEW_AGENT_DECISION",
+    NEW_DEFAULT_LLM_DECISION = "NEW_DEFAULT_LLM_DECISION",
 }
 
 export const isModifyingAccess = (accessType: PolicyAccessType): boolean =>

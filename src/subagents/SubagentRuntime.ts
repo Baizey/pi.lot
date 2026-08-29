@@ -14,6 +14,7 @@ import {
     SubagentReasoningAmount,
     type SubagentReasoningSkill,
 } from "./SubagentReasoning.js";
+import {SubagentPolicyDecisionFlow} from "./SubagentPolicyDecisionFlow.js";
 
 export type SubagentRuntimeOptions = {
     coordinator?: SubagentCoordinatorOptions;
@@ -26,6 +27,8 @@ export class SubagentRuntime {
 
     private activeCoordinator: SubagentCoordinator | undefined;
     private activeSessionFactory: SdkSubagentSessionFactory | undefined;
+    private activePolicyApprovals: SubagentPolicyDecisionFlow | undefined;
+    private activePolicyRuntime: PolicyRuntime | undefined;
     private activeDefaults: SubagentDefaultsRuntime | undefined;
     private activeContext: ExtensionContext | undefined;
 
@@ -53,19 +56,39 @@ export class SubagentRuntime {
             policyRuntime,
             this.coordinatorOptions,
         );
+        const policyApprovals = new SubagentPolicyDecisionFlow(sessionFactory, () => defaults.values);
+        policyRuntime.setAgentDecisionFlow(policyApprovals);
         this.activeDefaults = defaults;
         this.activeContext = ctx;
         this.activeSessionFactory = sessionFactory;
+        this.activePolicyApprovals = policyApprovals;
+        this.activePolicyRuntime = policyRuntime;
         this.activeCoordinator = coordinator;
     }
 
     async stopSession(): Promise<void> {
         const coordinator = this.activeCoordinator;
+        const policyApprovals = this.activePolicyApprovals;
+        const policyRuntime = this.activePolicyRuntime;
         this.activeCoordinator = undefined;
         this.activeSessionFactory = undefined;
+        this.activePolicyApprovals = undefined;
+        this.activePolicyRuntime = undefined;
         this.activeDefaults = undefined;
         this.activeContext = undefined;
-        await coordinator?.close();
+        policyRuntime?.beginShutdown();
+        let firstError: unknown;
+        try {
+            await policyApprovals?.close();
+        } catch (error) {
+            firstError = error;
+        }
+        try {
+            await coordinator?.close();
+        } catch (error) {
+            firstError ??= error;
+        }
+        if (firstError !== undefined) throw firstError;
     }
 
     coordinator(): SubagentCoordinator {

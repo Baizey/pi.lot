@@ -64,11 +64,18 @@ export class EditTool {
         const definition = createEditToolDefinition(process.cwd());
         const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
+            const resolvedPath = resolveBuiltinToolPath(params.path, ctx.cwd);
             const result = await this.runtimeProvider().policyRuntime.once(
                 ctx.sessionManager.getSessionId(),
-                resolveBuiltinToolPath(params.path, ctx.cwd),
+                resolvedPath,
                 PolicyAccessType.FS_WRITE,
                 signal,
+                {
+                    toolCallId,
+                    toolName: "edit",
+                    command: `edit ${resolvedPath} (${params.edits.length} replacements)`,
+                    purpose: "Apply exact text replacements",
+                },
             );
             if (result.matchedStatus === PolicyResponse.DENIED) {
                 throw new Error(result.toDenyMessage());

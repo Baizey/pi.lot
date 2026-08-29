@@ -110,6 +110,12 @@ export class PilotExtension {
         this.subagentStopTool.register();
 
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
+        this.pi.on("before_agent_start", (event, ctx) => {
+            this.sessionRuntime?.policyRuntime.updatePolicyPrincipalContext(
+                ctx.sessionManager.getSessionId(),
+                {task: event.prompt},
+            );
+        });
         this.pi.on("session_compact", () => this.displayRows.clear());
         this.pi.on("session_tree", () => this.displayRows.clear());
         this.pi.on("session_shutdown", () => this.stopSession());
@@ -131,6 +137,7 @@ export class PilotExtension {
 
     private stopSession(): Promise<void> {
         const runtime = this.sessionRuntime;
+        runtime?.beginShutdown();
         return this.stopOwnedExtensions().finally(() => {
             if (this.sessionRuntime === runtime) this.sessionRuntime = undefined;
             this.displayRows.clear();

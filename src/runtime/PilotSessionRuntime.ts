@@ -8,6 +8,10 @@ import {PolicyDecisionFlow} from "../policy/PolicyDecisionFlow";
 import {PolicyDefaultJsonStorage, PolicyDefaultJsonStorageInterface} from "../policy/defaults";
 import type {HostCredentialIpcOptions} from "../policy/network/ipc/HostCredentialIpc.js";
 import {
+    PolicyApprovalAuditLog,
+    type PolicyApprovalAuditLogInterface,
+} from "../policy/PolicyApprovalAuditLog.js";
+import {
     HostCredentialIpcConfigStore,
     type HostCredentialIpcConfigStoreInterface,
 } from "../policy/network/ipc/HostCredentialIpcConfig.js";
@@ -16,6 +20,8 @@ export type PilotSessionRuntimeOptions = {
     openDatabase?: () => SqliteDatabase;
     policyDefaultsStore?: PolicyDefaultJsonStorageInterface;
     credentialIpcConfigStore?: HostCredentialIpcConfigStoreInterface;
+    approvalAuditLog?: PolicyApprovalAuditLogInterface;
+    approvalAuditDirectory?: string;
 };
 
 export type PilotSessionRuntimeInterface = {
@@ -24,6 +30,7 @@ export type PilotSessionRuntimeInterface = {
     readonly fullNetworkInspection: boolean;
     readonly hostCredentialIpc?: HostCredentialIpcOptions;
     setFullNetworkInspection(enabled: boolean): void;
+    beginShutdown(): void;
     close(): void
 }
 
@@ -47,11 +54,16 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager})
 
             const defaultsStore = options.policyDefaultsStore ?? new PolicyDefaultJsonStorage();
+            const sessionIdentifier = ctx.sessionManager.getSessionId();
+            const approvalAudit = options.approvalAuditLog
+                ?? new PolicyApprovalAuditLog(sessionIdentifier, options.approvalAuditDirectory);
             this.policyRuntime = new PolicyRuntime(
-                ctx.sessionManager.getSessionId(),
+                sessionIdentifier,
                 policyDao,
                 pathDecisionFlow,
                 defaultsStore,
+                undefined,
+                approvalAudit,
             );
             this.decisionFlows = uiManager;
             this.hostCredentialIpc = (
@@ -72,8 +84,13 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
         this.fullNetworkInspectionEnabled = enabled;
     }
 
-    close(): void {
+    beginShutdown(): void {
+        this.policyRuntime.beginShutdown();
         this.decisionFlowQueue.close();
+    }
+
+    close(): void {
+        this.beginShutdown();
         const database = this.database;
         this.database = null;
         database?.close();

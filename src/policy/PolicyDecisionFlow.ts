@@ -1,8 +1,8 @@
-import path from "node:path";
 import {PolicyAccessType, PolicyLifetime, PolicyResponse, resolveUri} from "./types";
 import type {UiDecision, UiDecisionFlowManager, UiSelectDecisionOption} from "../tui/UiDecisionFlowManager";
 import {UiFlowShortcut} from "../tui/UiDecisionFlowManager";
-import {ParsedUri} from "./network/ParsedUri";
+import {policyScopeHierarchy} from "./PolicyScope.js";
+import type {PolicyApprovalRequestContext} from "./AgentPolicyDecisionFlow.js";
 
 export type PolicyChoice = {
     uri: string;
@@ -31,10 +31,11 @@ export class PolicyDecisionFlow {
         inputUri: string,
         accessType: PolicyAccessType,
         signal?: AbortSignal,
+        requestContext?: PolicyApprovalRequestContext,
     ): Promise<PolicyChoice> {
         const uri = resolveUri(accessType, inputUri);
-        const scopes = this.policyScopes(accessType, uri);
-        const decisions = this.policyDecisions(uri, accessType, scopes);
+        const scopes = policyScopeHierarchy(uri, accessType);
+        const decisions = this.policyDecisions(uri, accessType, scopes, requestContext);
 
         const approval = await this.options.decisionFlows.runFlow(
             decisions.scope,
@@ -57,8 +58,9 @@ export class PolicyDecisionFlow {
         evaluatedPath: string,
         accessType: PolicyAccessType,
         scopes: string[],
+        requestContext?: PolicyApprovalRequestContext,
     ): Record<keyof PolicyApproval, UiDecision<PolicyApproval>> {
-        const target = `${accessType} ${evaluatedPath}`;
+        const target = `${accessType} ${evaluatedPath}${this.requestContextDetails(requestContext)}`;
         const policyKind = this.isFilesystemAccess(accessType) ? "Path" : "Network";
 
         return {
@@ -175,29 +177,40 @@ export class PolicyDecisionFlow {
         return `User selected ${status} for ${accessType}.`;
     }
 
-    private policyScopes(accessType: PolicyAccessType, uri: string): string[] {
-        return this.isFilesystemAccess(accessType)
-            ? this.filesystemScopes(uri)
-            : this.networkScopes(uri);
+    private requestContextDetails(context?: PolicyApprovalRequestContext): string {
+        if (!context) return "";
+        const lines = [
+            "",
+            `Policy request: ${boundedText(context.requestId, 200)}`,
+            `Requesting agent: ${boundedText(context.requestingAgentIdentifier, 200)}`,
+            "Authority ancestry:",
+            ...context.ancestry.map((agent) => (
+                `- ${boundedText(agent.role, 120)} [${boundedText(agent.agentIdentifier, 200)}]: ${boundedText(agent.task, 500)}`
+            )),
+        ];
+        if (context.toolCall.toolName || context.toolCall.toolCallId) {
+            lines.push(
+                `Tool: ${boundedText(context.toolCall.toolName ?? "unknown", 120)}`
+                + (context.toolCall.toolCallId
+                    ? ` [${boundedText(context.toolCall.toolCallId, 200)}]`
+                    : ""),
+            );
+        }
+        if (context.toolCall.purpose) {
+            lines.push(`Purpose: ${boundedText(context.toolCall.purpose, 500)}`);
+        }
+        if (context.toolCall.command) {
+            lines.push("Command:", boundedText(context.toolCall.command, 8_000));
+        }
+        return `\n${lines.join("\n")}`;
     }
 
     private isFilesystemAccess(accessType: PolicyAccessType): boolean {
         return accessType === PolicyAccessType.FS_READ
             || accessType === PolicyAccessType.FS_WRITE
     }
+}
 
-    private networkScopes(uri: string) {
-        return new ParsedUri(uri).scopeHierarchy().reverse()
-    }
-
-    private filesystemScopes(uri: string) {
-        const scopes: string[] = [];
-        let current = uri;
-        while (true) {
-            scopes.push(current);
-            const parent = path.dirname(current);
-            if (parent === current) return scopes;
-            current = parent;
-        }
-    }
+function boundedText(value: string, maximum: number): string {
+    return value.length <= maximum ? value : `${value.slice(0, maximum - 1)}…`;
 }

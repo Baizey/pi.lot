@@ -6,7 +6,7 @@ All the guidelines below are important. BUT. following the practices seen in the
 
 - 4 space indent
 - Do not create barrel `UiDecisionFlowManager.ts` files. Use filenames that describe their responsibility.
-- Keep related behavior together. Prefer locality over extracting small helpers merely to reduce method length.
+- Keep related behaviour together. Prefer locality over extracting small helpers merely to reduce method length.
 - Default to class methods. Use module-level functions only when an operation is fully self-contained and has no  meaningful state, lifecycle, invariant, or ownership that would justify binding it to a class.
 - Any class or file should have a general structure as such:
   - API (public methods) should be at the top
@@ -27,7 +27,7 @@ All the guidelines below are important. BUT. following the practices seen in the
 
 - Design for:
   - testability & debuggability, these should be self-explanatory
-  - compartmentalizing, also sometimes called single-purpose, encapsulation or otherwise having the capacity to 'black-box' parts of the implementations and have things modularized for easy refactor or replacement
+  - compartmentalising, also sometimes called single-purpose, encapsulation or otherwise having the capacity to 'black-box' parts of the implementations and have things modularized for easy refactor or replacement
   - locality, things that work together, stay together, group by folder structures at the outer layers and inside files things that interact should naturally be closer to each other
 
 ## Final words

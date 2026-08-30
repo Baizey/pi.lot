@@ -1,106 +1,321 @@
 # pi.lot
 
-**Interactive permissions for [Pi](https://pi.dev) on Linux.**
+**Policy-controlled tools, subagents, MCP, and web search for [Pi](https://pi.dev) on Linux.**
 
-pi.lot lets Pi work across repositories and absolute paths without treating one directory as its entire world. Instead of placing the agent inside a fixed workspace, it asks for permission when a shell command tries to perform a policy-sensitive filesystem or network operation.
-
-The goal is to let Pi work alongside you across the machine while keeping important effects visible and controllable.
+pi.lot lets Pi work across repositories and absolute paths while mediating the filesystem and network effects produced by its tools. When an operation is not covered by an existing policy, pi.lot can ask the user, ask a bounded policy-review model, allow it, or deny it.
 
 > [!WARNING]
-> pi.lot is experimental, under active development, and has not been security audited. Do not yet treat it as a hardened sandbox for hostile code.
+> pi.lot is experimental, has not been security audited, and is not a hardened sandbox for hostile code. An allowed operation still runs with your normal user permissions. Review the [security boundaries](#security-boundaries) before using it with sensitive data or systems.
 
-pi.lot is the successor to [`Baizey/pi-agent-tools`](https://github.com/Baizey/pi-agent-tools).
+## What pi.lot adds
 
-## What it does
+- **Policy-controlled built-ins** — replacements for Pi's `bash`, `read`, `edit`, and `write` tools.
+- **Filesystem mediation** — Bash commands see the host filesystem through a FUSE policy layer rather than a fixed workspace boundary.
+- **Network mediation** — DNS, TCP, UDP, and supported HTTP/HTTPS requests are evaluated from the effects a command actually produces.
+- **Subagents** — retained child-agent conversations with explicit reasoning levels, policy snapshots, MCP access, and nested-delegation controls.
+- **MCP** — stdio and Streamable HTTP servers with per-tool exposure.
+- **Web search** — a Pilot-provided `web_search` tool with automatic provider fallback and policy-checked requests.
+- **Approval audit logs** — structured records for user, ancestor-agent, and model-reviewed policy decisions.
 
-### Filesystem permissions
+## Requirements
 
-pi.lot replaces Pi's built-in Bash execution with a Linux-mediated worker. When a command attempts a filesystem operation that is not already covered by policy, pi.lot asks whether to allow or deny it.
+pi.lot currently supports **Linux x86-64 only**. This checkout targets Pi `0.84.2`.
 
-Filesystem operations are grouped into:
+Required software and host features:
 
-- **Read**
-- **Write**
-- **Delete**
+- Node.js and npm;
+- [Pi](https://pi.dev);
+- FUSE 2, including `/dev/fuse` and `fusermount`;
+- Bubblewrap;
+- nftables and iproute2;
+- `unshare` and `nsenter` from util-linux;
+- `slirp4netns`;
+- `xdg-dbus-proxy`;
+- unprivileged user and network namespaces;
+- a C compiler and `pkg-config`; and
+- `libnetfilter_queue` development files.
 
-Permissions can apply to:
+Typical Fedora/Bazzite packages:
 
-- the current Bash call;
-- the current Pi session; or
-- future sessions on this computer.
+```bash
+sudo dnf install \
+  gcc make pkgconf-pkg-config \
+  fuse fuse-devel bubblewrap nftables iproute util-linux \
+  slirp4netns xdg-dbus-proxy libnetfilter_queue-devel
+```
 
-Policies can cover one path or a wider directory scope. More-specific path policies take precedence over broader ones, including policies covering the filesystem root.
+Typical Debian/Ubuntu packages:
 
-Bash calls also include a short purpose explaining what the command is intended to achieve. That purpose is shown alongside permission requests.
+```bash
+sudo apt install \
+  build-essential pkg-config \
+  fuse libfuse-dev bubblewrap nftables iproute2 util-linux \
+  slirp4netns xdg-dbus-proxy libnetfilter-queue-dev
+```
 
-### Network permissions
+Package names vary by distribution. Before building, these checks should succeed:
 
-The normal Bash worker also catches actual network activity from a command and its descendants rather than trying to recognize commands such as `curl`, Git, npm, or SSH. It covers:
+```bash
+command -v cc pkg-config bwrap fusermount nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+pkg-config --exists libnetfilter_queue
+test -r /dev/fuse && test -w /dev/fuse
+```
 
-- hostname resolution;
-- IPv4 and IPv6;
-- outbound TCP connections;
-- outbound UDP flows;
-- literal IP addresses;
-- normal hostname aliases;
-- `localhost` traffic inside the command's private network; and
-- a mandatory transparent TCP gateway with HTTP/HTTPS request mediation.
+## Install and set up
 
-The worker mediates the actual method and canonical URL produced by arbitrary clients—including Git smart HTTP—without parsing the shell command. After coarse flow approval, each new method-and-URL scope is evaluated through the same one-call, session, and persistent policy runtime as filesystem access. The request remains held until policy allows it, before the gateway opens the target-side connection.
+### 1. Install and authenticate Pi
 
-When the gateway host has no global IPv6 address and default route, public AAAA answers are returned as DNS NODATA so dual-stack clients fall back to IPv4 before connecting. Local and ULA IPv6 traffic remains available and policy-visible.
+If Pi is not already installed:
 
-Filesystem and network mediation run in one sandbox. The command sees the complete host filesystem through the FUSE policy mount while its private network namespace routes outbound traffic through the network gate.
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.2
+```
 
-Full HTTPS method/path inspection is enabled at the start of every session. If a client uses an unsupported private trust store or certificate pinning, disable interception for later Bash calls with:
+Start Pi and use `/login` to authenticate a subscription or API-key provider:
+
+```bash
+pi
+```
+
+Subagents require at least one authenticated model with normal reasoning support. The `native` web-search backend also uses Pi's authenticated model catalogue when the active model supports provider-native search.
+
+### 2. Build pi.lot
+
+From a local checkout:
+
+```bash
+git clone https://github.com/Baizey/pi-sandbox.git pilot
+cd pilot
+npm install
+npm run build
+```
+
+The build compiles four small native helpers and type-checks the TypeScript extension.
+
+### 3. Install the Pi package
+
+Install it for your user:
+
+```bash
+pi install "$PWD"
+```
+
+To install it only for the current project, use:
+
+```bash
+pi install -l "$PWD"
+```
+
+To try the checkout for one invocation without installing it:
+
+```bash
+pi -e "$PWD"
+```
+
+The checked-in `.pi/settings.json` also loads the repository root as a project-local package when Pi is started inside this checkout and the project is trusted.
+
+### 4. Start Pi and verify the extension
+
+Start Pi in the project where you want to work:
+
+```bash
+cd /path/to/project
+pi
+```
+
+These commands should now be available:
 
 ```text
+/policy-defaults
+/subagent-defaults
+/mcp
+/network-inspection
+/view-full-tool
+```
+
+A useful first-run check is:
+
+```text
+/policy-defaults
+/subagent-defaults
+/mcp show
+/network-inspection
+```
+
+### Updating a local installation
+
+A local Pi package points at the checkout rather than copying it. Update and rebuild it, then restart Pi:
+
+```bash
+cd /path/to/pilot
+git pull
+npm install
+npm run build
+```
+
+### Development and tests
+
+Load the working tree directly with `pi -e "$PWD"`, or start Pi inside the checkout and use its project-local package setting.
+
+Run the test suite only on a suitable host environment:
+
+```bash
+npm test
+```
+
+Do **not** run the sandbox integration suite from inside pi.lot or another restrictive sandbox. The tests create FUSE mounts, Bubblewrap workers, network namespaces, and nftables/NFQUEUE state; nesting those mechanisms produces misleading failures.
+
+## Policy system
+
+### What is mediated
+
+All policy-aware tools share one session-owned policy runtime:
+
+| Surface         | Enforcement                                                                     |
+|-----------------|---------------------------------------------------------------------------------|
+| `read`          | Checks filesystem-read policy before reading a path.                            |
+| `edit`, `write` | Check filesystem-write policy before changing a path.                           |
+| `bash`          | Runs with a FUSE-backed view of the host filesystem and a private network gate. |
+| `web_search`    | Uses trusted extension-side HTTP with method/URL policy checks.                  |
+| Subagents       | Use principal-specific policy state and the same mediated built-ins.            |
+
+Every Bash call must include a short purpose. Filesystem operations are evaluated as reads or mutations; deletes are governed by filesystem-write policy. Multi-path operations such as rename can require approval for more than one path.
+
+Network policy is based on actual activity rather than command-name matching. A command and its descendants are mediated across:
+
+- DNS resolution;
+- IPv4 and IPv6 TCP/UDP flows;
+- literal IP and hostname targets;
+- HTTP methods and canonical paths for supported HTTP/1 traffic; and
+- HTTPS methods and paths when full network inspection is enabled.
+
+The current per-command network projector deliberately reuses an approved hostname decision across DNS, TCP, UDP, IPv4, IPv6, and destination ports for the remainder of that Bash call. Literal-IP decisions begin at an exact address and port. For request-level policy, pi.lot observes the canonical URL but currently normalises policy identity without the scheme, query string, or fragment.
+
+Bash commands start in Pi's current working directory, but the working directory is not a security boundary. Access elsewhere on the host is handled by the same policy runtime.
+
+### Policy areas and defaults
+
+Unmatched operations first use the active default for their policy area:
+
+| Policy area     | Covers                                      | Built-in default |
+|-----------------|---------------------------------------------|------------------|
+| `fs_read`       | Filesystem reads                            | `allow`          |
+| `fs_write`      | Filesystem writes and deletes               | `ask_user`       |
+| `web_read`      | HTTP access and GET                         | `allow`          |
+| `web_write`     | POST, PUT, PATCH, DELETE, HEAD, and OPTIONS | `ask_user`       |
+| `web_dns`       | DNS                                         | `ask_user`       |
+| `web_tcp`       | Generic TCP                                 | `ask_user`       |
+| `web_udp`       | Generic UDP                                 | `ask_user`       |
+| `web_ssh`       | Reserved SSH-specific policy                | `ask_user`       |
+| `web_websocket` | Reserved WebSocket-specific policy          | `ask_user`       |
+| `web_grpc`      | Reserved gRPC-specific policy               | `ask_user`       |
+| `web_smtp`      | Reserved SMTP-specific policy               | `ask_user`       |
+
+These reserved areas exist in the policy and delegation model but are not currently emitted by the Bash mediator. SSH and SMTP are opaque generic TCP. Request-aware WebSocket upgrades and HTTP/2-based gRPC are not currently supported.
+
+Each area can use one of four fallback responses:
+
+- `allow` — permit unmatched operations in that area;
+- `deny` — reject them;
+- `ask_user` — open the interactive policy flow; or
+- `ask_llm` — ask a separate, ephemeral policy-review model.
+
+The `ask_llm` reviewer receives bounded operation and task context and has only one structured decision tool. It can create `ONCE` or `SESSION` decisions, never durable policy. Missing, malformed, cancelled, stale, or timed-out reviews fail closed.
+
+### Configure policy defaults
+
+Show the current session defaults:
+
+```text
+/policy-defaults
+```
+
+Change one area or all areas:
+
+```text
+/policy-defaults allow fs_read
+/policy-defaults ask_user fs_write
+/policy-defaults ask_llm web_read
+/policy-defaults deny web_tcp
+/policy-defaults ask_user all
+```
+
+Pi provides argument completion for valid responses and policy areas.
+
+Persist the active defaults or reload the persisted values:
+
+```text
+/policy-defaults save
+/policy-defaults reset
+```
+
+Saved defaults are stored in `~/.pilot/policy-defaults.json`. Without that file, reset restores the built-in defaults shown above.
+
+### Interactive approvals
+
+When `ask_user` is selected, the policy flow asks for:
+
+1. the path or network scope;
+2. allow or deny;
+3. the lifetime; and
+4. an optional reason when denying.
+
+Available lifetimes are:
+
+- **Once** — only the current tool call;
+- **This session** — the active Pi session; and
+- **Always on this computer** — persisted locally.
+
+Network prompts currently also offer **Always synchronised**, but synchronised policy is not implemented; `GLOBAL` currently uses the same local database as `LOCAL`.
+
+More-specific scopes take precedence over broader scopes. Persisted policy is stored in:
+
+```text
+~/.pilot/pilot.sqlite
+```
+
+### Agent and subagent approvals
+
+Each agent is a separate policy principal. When a subagent requests an operation it does not already hold:
+
+- a matching explicit denial is terminal;
+- a covering allow held by an ancestor can authorize a bounded policy-review agent;
+- otherwise the root policy fallback selects user review, model review, allow, or deny.
+
+An approval derived from ancestor authority cannot exceed the ancestor's scope or lifetime. Session grants are installed only along the requesting ancestry, not on sibling agents.
+
+Approval outcomes are appended as JSON lines under:
+
+```text
+~/.pilot/logs/<session-id>.log
+```
+
+The directory and files are created with user-only permissions.
+
+### HTTPS inspection
+
+Every session starts with full network inspection enabled. For supported clients, pi.lot creates a per-run CA, makes read-only trust artifacts available to the worker, terminates client TLS in the trusted gateway, verifies the upstream certificate, and evaluates each supported HTTP request before opening the upstream connection.
+
+Show or change the session setting:
+
+```text
+/network-inspection
 /network-inspection off
+/network-inspection on
 ```
 
-In this compatibility mode, HTTP and TLS bytes are relayed unmodified and HTTPS remains end-to-end. DNS and TCP hostname/port policy still applies, but method/path policy is unavailable. Use `/network-inspection on` to restore full inspection, or `/network-inspection` to show the active session value.
-
-### Web search
-
-pi.lot exposes one provider-agnostic `web_search` tool. Backend selection and ordered fallback are internal; the agent cannot select a provider. Supported backends are SearXNG, Brave Search, Tavily, Serper, keyless DuckDuckGo HTML search, and the active Pi model's native search for Gemini, OpenAI Responses, Codex, GitHub Copilot Responses, and Claude.
-
-The tool is a trusted extension operation, like the built-in Read, Edit, and Write wrappers. It does not launch the Bash sandbox. Each provider request and redirect is checked against the policy runtime using its actual HTTP method and URL before `fetch` runs. Responses have configurable time and size limits, and credentials are removed from cross-origin redirects.
-
-Provider order and limits can be set in `~/.pilot/web-search.json`:
-
-```json
-{
-  "version": 1,
-  "providers": ["searxng", "brave", "tavily", "serper", "native", "duckduckgo"],
-  "requestTimeoutMs": 30000,
-  "maxResponseBytes": 2097152,
-  "searxng": {
-    "baseUrl": "https://search.example.com"
-  },
-  "brave": {
-    "apiKey": "..."
-  },
-  "tavily": {
-    "apiKey": "..."
-  },
-  "serper": {
-    "apiKey": "..."
-  }
-}
-```
-
-The configuration file is optional. Unconfigured providers are skipped, and DuckDuckGo remains available without credentials. The `native` backend is available when the active conversation model supports provider-native search and appears in Pi's authenticated model registry; it reuses Pi's `/login`, `auth.json`, custom model, OAuth, Codex, or Copilot authentication instead of duplicating credentials in this file. It never silently switches to a different logged-in model. Because the file can contain hosted-search API keys, restrict it to your user account with `chmod 600 ~/.pilot/web-search.json`.
+With inspection off, HTTPS remains end-to-end. DNS and TCP hostname/port policy still applies, but method/path policy is unavailable. This compatibility mode is useful for certificate-pinned clients, private trust stores, and unsupported TLS stacks.
 
 ### Host credential IPC
 
-The worker inherits the Pi process environment and sees ordinary credential files through the mediated filesystem. pi.lot also preserves selected host credential protocols whose live Unix-socket inodes cannot pass through FUSE:
+The Bash worker inherits the Pi environment and sees ordinary credential files through filesystem policy. pi.lot additionally preserves selected live host credential protocols that cannot pass through FUSE by pathname alone.
 
-- Secret Service clients receive a per-command D-Bus proxy filtered to `org.freedesktop.secrets`; and
-- the live socket named by `SSH_AUTH_SOCK` is imported read-only, covering OpenSSH agents and compatible providers such as 1Password.
+The defaults are:
 
-These are protocol capabilities rather than tool-specific integrations. GitHub CLI, libsecret, `go-keyring`, Git credential helpers, SSH, and other compatible clients keep their normal authentication behavior. The proxy and socket mounts exist only for the Bash call and are removed during cleanup.
+- filtered session D-Bus access to `org.freedesktop.secrets`; and
+- a read-only import of the socket named by `SSH_AUTH_SOCK`, when present.
 
-Missing configuration uses the built-in Secret Service and SSH-agent defaults. Create `~/.pilot/credential-ipc.json` to replace them or add other real-world protocols:
+Replace the defaults with an explicit configuration in `~/.pilot/credential-ipc.json`. Repeat the default entries if you want to keep them while adding another protocol:
 
 ```json
 {
@@ -124,45 +339,143 @@ Missing configuration uses the built-in Secret Service and SSH-agent defaults. C
 }
 ```
 
-Each socket declares exactly one source: an environment variable containing its pathname, or an absolute pathname. Paths support only explicit `${VARIABLE}` expansion—no shell syntax. `optional` defaults to `true`; missing required sockets are reported as IPC errors. Set an entry's `enabled` field to `false` to keep it documented but inactive. Configuration is strictly validated and loaded once when the Pi session starts.
+Path templates support only explicit `${VARIABLE}` expansion. A read-only socket import describes how the socket inode is mounted; clients can still ask the imported SSH agent or other service to exercise its normal protocol authority, such as signing.
 
-Pathname IPC is outside filesystem and network mediation. A preserved host service may perform effects on the worker's behalf using the user's normal authority; those delegated effects are an explicit boundary of the current model.
+## Subagents
 
-### Cleaner tool output
+pi.lot exposes four tools to the root agent:
 
-pi.lot uses Pi's native `Ctrl+O` expansion state as a global density toggle for built-in, subagent, and MCP tools. Collapsed tools show a minimal title-only view; expanded tools show bounded argument and result previews. Use `/view-full-tool` to toggle row-local full views. Enter toggles the selected row without closing the bounded list; Escape closes it.
+| Tool               | Purpose                                                                |
+|--------------------|------------------------------------------------------------------------|
+| `subagent_spawn`   | Start a retained child conversation and return its job ID immediately. |
+| `subagent_status`  | Inspect jobs or wait for selected active turns.                        |
+| `subagent_message` | Steer active work or queue a follow-up turn.                           |
+| `subagent_stop`    | Stop a job and all of its descendants.                                 |
 
-Every tool uses a pi.lot-owned, foreground-only shell. Pending, successful, and failed calls are marked in the header without whole-line background fills. Commands, file content, diffs, and output start at column zero without display-added horizontal padding so terminal selection remains copy-friendly.
+Subagents have separate model context and conversation state. Jobs can remain idle between turns, receive follow-up work, form nested trees, and appear in the TUI activity widget and footer.
 
-### MCP servers
+Ambient `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `SYSTEM.md`, skills, prompt templates, and other extensions are not injected into child sessions. Children receive Pilot's owned prompt plus the delegated task and optional additional prompt. `contextPaths` are suggestions in that prompt, not automatically loaded file contents; children must read them through policy-mediated tools.
 
-pi.lot supports MCP servers over stdio and Streamable HTTP. Configuration is stored in:
+### Capability model
+
+Spawn capabilities have two different meanings:
+
+1. **Policy-area capabilities** — `fs_read`, `fs_write`, and every `web_*` area. Selecting one snapshots the parent's effective allows and denials for that complete area into the child at spawn time.
+2. **Hard mechanism capabilities** — `mcp` and `delegate`. These determine whether MCP tools or nested-subagent tools exist for the child.
+
+Important behavior:
+
+- Policy snapshots are fixed at spawn; later parent changes do not update the child.
+- Omitting a policy area leaves that area blank. It is not a permanent denial: the child can still request policy when needed.
+- Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` remain available to every child.
+- A nested child cannot receive `mcp` or `delegate` unless its parent already has that hard capability.
+- MCP effects remain outside filesystem and network policy even when MCP is granted to a child.
+
+### Reasoning and model selection
+
+A spawn requests two abstract settings instead of naming a model:
+
+- `reasoning_skill`: `min`, `low`, `mid`, `high`, or `max`;
+- `reasoning_amount`: `low`, `mid`, or `high`.
+
+Skill selects a model from Pi's authenticated reasoning-model catalogue. Amount selects the thinking level after the model has been chosen. In automatic mode, `min` favors estimated cost, `max` favors estimated performance, and the intermediate skills move across the estimated cost/performance frontier.
+
+Show the current mappings:
+
+```text
+/subagent-defaults
+```
+
+Use automatic selection for one skill or all skills:
+
+```text
+/subagent-defaults auto mid
+/subagent-defaults auto all
+```
+
+Pin an authenticated canonical model:
+
+```text
+/subagent-defaults <provider>/<model> high
+```
+
+Persist or reload the mappings:
+
+```text
+/subagent-defaults save
+/subagent-defaults reset
+```
+
+Saved mappings live in `~/.pilot/subagent-defaults.json`. Exact model mappings are validated against Pi's currently authenticated catalogue.
+
+### Current process boundary
+
+Subagents are independent in-memory Pi sessions, not separate operating-system processes. They share the trusted root Pi process and policy runtime while retaining principal-specific policy state and model context. Jobs are not persisted across root-session shutdown.
+
+## MCP
+
+pi.lot supports MCP servers over **stdio** and **Streamable HTTP**. Configuration lives in:
 
 ```text
 ~/.pilot/mcp.json
 ```
 
-Tools default to unexposed. Expose only the tools you want Pi to call:
+Tools are unexposed by default. A server can connect and advertise tools without making those tools callable by the model.
+
+### Configuration
+
+Example with one stdio server and one HTTP server:
 
 ```json
 {
   "servers": {
-    "example": {
+    "local": {
       "transport": "stdio",
-      "command": "example-mcp-server",
+      "command": "my-mcp-server",
       "args": [],
+      "env": {},
+      "enabled": true,
+      "autoConnect": true,
       "tools": {
         "expose": ["read_resource"],
         "hide": []
+      }
+    },
+    "remote": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer replace-me"
+      },
+      "enabled": true,
+      "autoConnect": true,
+      "tools": {
+        "expose": []
       }
     }
   }
 }
 ```
 
-Manage connections and exposure with:
+Optional server settings include:
+
+- `cwd` and `env` for stdio servers;
+- `headers` for HTTP servers;
+- `connectTimeoutMs`;
+- `listToolsTimeoutMs`;
+- `toolTimeoutMs`; and
+- `toolMaxTotalTimeoutMs`.
+
+Because this file can contain credentials, protect it:
+
+```bash
+chmod 600 ~/.pilot/mcp.json
+```
+
+### Manage MCP at runtime
 
 ```text
+/mcp
 /mcp show [all|server]
 /mcp connect [all|server]
 /mcp disconnect [all|server]
@@ -172,163 +485,113 @@ Manage connections and exposure with:
 /mcp reset <server> [tool...|*]
 ```
 
-MCP is an explicit capability boundary, not part of pi.lot's filesystem or network mediation. Stdio servers run as ordinary host processes, HTTP transports use the host network, and exposed MCP tools may perform effects outside Bash policy.
+Exposed tools are registered in Pi with names derived from their server and tool, such as `mcp_local_read_resource`.
 
-### Subagents
+Hiding a previously registered tool blocks calls immediately. The tool can remain visible in the current model tool list until `/reload` or a new session.
 
-pi.lot provides child agents with separate model context and conversation state through four agent-callable tools:
+### MCP security boundary
 
-- `subagent_spawn` starts a retained conversation job and returns its ID immediately;
-- `subagent_status` inspects jobs and can wait for active turns;
-- `subagent_message` steers a running turn or queues an ordered follow-up turn; and
-- `subagent_stop` stops a job and its descendants.
+MCP is an explicit capability boundary, not part of pi.lot's filesystem or network mediation:
 
-Capabilities are explicit. Policy-area capabilities use the same areas as `/policy-defaults`, including `fs_read`, `fs_write`, and the `web_*` areas. Selecting one snapshots the invoking agent's effective policies for that entire area into the child. Omitting one leaves that area blank, but does not prohibit access: the child can still request policies when its work needs them.
+- stdio servers run as normal host processes;
+- HTTP transports use the host network; and
+- an MCP tool can perform effects that pi.lot cannot observe or authorize.
 
-Policy-mediated Bash, Read, Edit, Write, and web-search tools are always available to children. Two mechanism capabilities are hard gates:
+Expose only trusted servers and the minimum tools required. A subagent receives MCP tools only when spawned with the hard `mcp` capability.
 
-- `mcp` exposes the MCP tools that are currently exposed; and
-- `delegate` exposes the subagent tools and permits bounded nested delegation.
+## Web search
 
-Children request a reasoning skill (`min`, `low`, `mid`, `high`, or `max`) and reasoning amount (`low`, `mid`, or `high`) rather than a provider or model. Model selection depends only on reasoning skill; reasoning amount is applied afterward as thinking effort and clamps to the nearest normal level when necessary. Each reasoning skill has a user-controlled model default: `auto` resolves from Pi's authenticated model catalogue using a provider- and model-name-agnostic performance/cost frontier, while an exact `provider/model` mapping always selects that authenticated model. The initial automatic performance ranker uses catalogue cost and objective capacity metadata and can later be replaced by benchmark-backed ranking. Job status reports the resolved model for debugging, but agent callers cannot select it. Children inherit the invoking working directory unless the spawn request overrides it. Policy snapshots do not update when the parent's policies later change. Nested agents cannot widen hard mechanism capabilities, while policy-area snapshots can contain only the policies their immediate parent actually holds. The coordinator limits concurrent turns, delegation depth, retained output, and retained jobs; root session shutdown aborts all active children before policy and MCP resources close.
+`web_search` is provided by pi.lot; it is not one of Pi's native built-in tools. It returns normalized, citable results and supports:
 
-Use `/subagent-defaults` to show the active mappings. Automatic entries include their current resolved model, for example `mid = provider/model (auto)`. Set a level to automatic or exact selection with value-first syntax:
+- one to twenty results;
+- day, week, month, or year freshness filters;
+- domain inclusion and exclusion filters; and
+- ordered provider fallback selected internally rather than by the agent.
 
-```text
-/subagent-defaults auto all
-/subagent-defaults openai-codex/gpt-5.6-sol max
+Fallback continues when a backend is unavailable, empty, or fails normally. A policy-denied request stops the search rather than trying another provider.
+
+Supported backends are:
+
+- SearXNG;
+- Brave Search;
+- Tavily;
+- Serper;
+- provider-native search for supported authenticated Pi models; and
+- keyless DuckDuckGo HTML search.
+
+No configuration is required for the DuckDuckGo fallback. Configure provider order, limits, and credentials in `~/.pilot/web-search.json`:
+
+```json
+{
+  "version": 1,
+  "providers": ["searxng", "brave", "tavily", "serper", "native", "duckduckgo"],
+  "requestTimeoutMs": 30000,
+  "maxResponseBytes": 2097152,
+  "searxng": {
+    "baseUrl": "https://search.example.com"
+  },
+  "brave": {
+    "apiKey": "replace-me"
+  },
+  "tavily": {
+    "apiKey": "replace-me"
+  },
+  "serper": {
+    "apiKey": "replace-me"
+  }
+}
 ```
 
-Changes apply to future spawns in the current session. `/subagent-defaults save` persists them to `~/.pilot/subagent-defaults.json`; `/subagent-defaults reset` reloads the persisted mappings, or the built-in all-`auto` defaults when no file exists. Exact model values are validated against the currently authenticated catalogue when set.
+Unconfigured providers are skipped. The `native` backend never silently switches to another logged-in model. It is available only when the active model supports native search and is present in Pi's authenticated model registry.
 
-Child agents currently use Pi's in-process SDK with retained in-memory conversation sessions. They have independent model context, but they are not separate operating-system processes. Ambient `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, and `SYSTEM.md` files are not injected into child context; children must read project files through policy-mediated tools. Jobs are not persisted across root session shutdown. Interactive sessions show active child work above the input editor and summarize subagent statuses in the footer.
+Provider HTTP requests and redirects are checked through the shared policy runtime before they are sent. `web_search` is a trusted extension operation using host-side HTTP; it does not traverse Bash's FUSE/network worker or its DNS/TCP/UDP gate. Search snippets and provider answers are marked as untrusted external content.
 
-## Why not use a workspace sandbox?
-
-A workspace sandbox is useful when an agent should only see one directory. That is not always how Pi is used.
-
-You may want Pi to:
-
-- inspect several repositories;
-- work with files elsewhere in your home directory;
-- use system tools and configuration;
-- run normal development commands; or
-- stay with you while you move between projects.
-
-pi.lot is designed around that workflow. It preserves broad host visibility while placing interactive policy checks around selected effects.
-
-This is mediation, not complete isolation: an allowed operation still runs with your normal user permissions.
-
-## Requirements
-
-pi.lot currently supports **Linux x86-64 only**.
-
-You will need:
-
-- [Pi](https://pi.dev)
-- Node.js and npm
-- FUSE 2
-- Bubblewrap
-- nftables
-- iproute2
-- `slirp4netns`
-- `xdg-dbus-proxy`
-- a C compiler and `pkg-config`
-- `libnetfilter_queue` development files
-
-The NFQUEUE development package is commonly named:
-
-- `libnetfilter_queue-devel` on Fedora/Bazzite;
-- `libnetfilter-queue-dev` on Debian/Ubuntu.
-
-Other package names vary by distribution.
-
-## Installation
-
-From a local checkout:
+Protect API keys in the configuration file:
 
 ```bash
-npm install
-npm run build
-pi install "$PWD"
+chmod 600 ~/.pilot/web-search.json
 ```
 
-To load the extension directly without installing it:
+## Tool display
 
-```bash
-pi -e "$PWD"
-```
+pi.lot uses Pi's tool-expansion state as a global output-density control:
 
-For development, the checked-in `.pi/settings.json` registers the repository root as a project-local package. After trusting the project, starting Pi inside this checkout loads `src/pilot-extension.ts` and the local themes directly.
+- `Ctrl+O` toggles compact and expanded tool views;
+- compact rows show a minimal title;
+- expanded rows show bounded arguments and results; and
+- `/view-full-tool` toggles a full view for one selected tool call.
 
-After installation, start Pi normally. pi.lot automatically replaces the supported built-in tools and presents permission requests when needed.
+Active subagent work is shown above the editor and summarized in the footer.
 
-## Policy storage
+## Configuration reference
 
-One-call and session permissions live only for their selected lifetime.
+| Path                              | Purpose                                    |
+|-----------------------------------|--------------------------------------------|
+| `~/.pilot/pilot.sqlite`           | Locally persisted policy rules.            |
+| `~/.pilot/policy-defaults.json`   | Saved policy-area fallbacks.               |
+| `~/.pilot/subagent-defaults.json` | Saved reasoning-skill model mappings.      |
+| `~/.pilot/mcp.json`               | MCP servers and tool exposure.             |
+| `~/.pilot/web-search.json`        | Web-search provider order and credentials. |
+| `~/.pilot/credential-ipc.json`    | Host D-Bus and Unix-socket passthrough.    |
+| `~/.pilot/logs/<session-id>.log`  | Structured policy approval audit records.  |
 
-Permissions remembered on this computer are stored in:
+## Security boundaries
 
-```text
-~/.pilot/pilot.sqlite
-```
+Keep these limitations in mind:
 
-Synchronized or account-wide policy is not implemented. All remembered policy currently remains local to this computer.
-
-## Policy defaults
-
-Unmatched operations use session defaults before an interactive policy is requested. The initial defaults allow filesystem and web reads, while filesystem writes and other web access ask the user.
-
-Use `/policy-defaults` to show the current values. Change one with response-first syntax:
-
-```text
-/policy-defaults allow fs_read
-/policy-defaults deny web_extra
-/policy-defaults ask_user fs_write
-/policy-defaults ask_llm web_write
-```
-
-The response is one of `allow`, `deny`, `ask_user`, or `ask_llm`. `ask_llm` sends policy misses that would otherwise reach the user to a separate ephemeral policy-review model with only a structured decision tool. Model decisions are limited to `ONCE` or `SESSION`; they cannot create durable `LOCAL` or `GLOBAL` policy. If model review is unavailable, malformed, stale, cancelled, or timed out, the request is denied rather than falling through to the user.
-
-The policy category is one of `fs_read`, `fs_write`, `web_read`, `web_write`, `web_dns`, `web_grpc`, `web_smtp`, `web_ssh`, `web_tcp`, `web_udp`, or `web_websocket`. Pi autocompletes both arguments. Changes initially apply only to the current session.
-
-Use `/policy-defaults save` to persist the active values to `~/.pilot/policy-defaults.json`. New sessions load that file automatically. Use `/policy-defaults reset` to restore the active values from the file, or from the built-in defaults when no file exists.
-
-User, delegated-super-agent, and `ask_llm` approval outcomes are appended as JSON lines to `~/.pilot/logs/<session-id>.log`. The logs include policy targets, tool commands and purposes, ancestry, authority, selected scope/lifetime, reason, and final result. The logs directory and files are created with user-only permissions.
-
-## Current limitations
-
-- Linux only.
-- The project has not been security audited.
+- pi.lot is experimental and unaudited.
+- An allowed operation retains the invoking user's ordinary host permissions.
 - Host-side FUSE path resolution still has pathname race windows.
-- Versioned live policy replacement and active network-flow revocation are not implemented.
-- The combined worker's `/proc`, `/dev`, pseudo-filesystem, and pathname-socket contract needs further hardening and compatibility work.
-- Some DNS, HTTP/TLS, UDP-lifecycle, and IPv6 behavior is not yet supported.
-- Preserved local IPC can ask another host process to perform network activity outside the network gate.
-- The keyless DuckDuckGo search fallback depends on its public HTML format and may require maintenance when that format changes.
-- Unprivileged Linux namespaces may not preserve every supplementary group.
-- An allowed operation retains your ordinary host-user permissions.
-- MCP servers and MCP tool effects are intentionally outside filesystem and network policy mediation.
-- Subagents have separate model sessions but currently share the root Pi process.
+- Versioned live policy replacement and active filesystem/network revocation are not implemented.
+- The combined worker's `/dev`, pseudo-filesystem, pathname-socket, and supplementary-group compatibility is incomplete.
+- Some DNS, UDP lifecycle, IPv6, HTTP/2, HTTP/3/QUIC, WebSocket, `CONNECT`, private-trust-store, and certificate-pinning behavior is unsupported or fails closed.
+- Preserved local credential IPC can ask host services to perform effects outside direct filesystem and network mediation.
+- MCP transports and tools are intentionally outside filesystem and network mediation.
+- Subagents share the trusted Pi process.
+- `GLOBAL` network-policy lifetime is not synchronised and currently persists only in the local policy database.
+- The keyless DuckDuckGo backend depends on a public HTML format that may change.
 
-Unsupported, malformed, cancelled, or incomplete mediated operations are intended to fail closed.
-
-## Project status
-
-The filesystem and network policy systems, combined Bash sandbox, session runtime, and tool display controls are implemented as an integrated experimental system. The completed MVP specifications have been retired; remaining correctness, compatibility, and hardening work is tracked in [`POLICY_FUTURE_WORK.md`](./POLICY_FUTURE_WORK.md).
-
-Features from `pi-agent-tools` that have not yet been ported include:
-
-- subagent personas, model profiles, persistence, and tree UI;
-- web search and reading;
-- agent-visible session search; and
-- shell-command policy.
-
-## Technical details
-
-- [`EXPERIMENT_README.md`](./EXPERIMENT_README.md) describes the current implementation.
-- [`CLIENT_TRUST_SUPPORT.md`](./CLIENT_TRUST_SUPPORT.md) lists HTTPS interception trust adapters and limitations.
-- [`POLICY_FUTURE_WORK.md`](./POLICY_FUTURE_WORK.md) records the remaining filesystem and network policy work.
+Unsupported, malformed, cancelled, or incomplete mediated operations are intended to fail closed, but that is not a substitute for a security audit or independent threat-model review.
 
 ## License
 

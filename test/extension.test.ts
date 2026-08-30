@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {fileURLToPath} from "node:url";
 import test from "node:test";
 import type {
+    BeforeAgentStartEvent,
+    BeforeAgentStartEventResult,
     ExtensionAPI,
     ExtensionContext,
     SessionShutdownEvent,
@@ -49,6 +52,10 @@ function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
 
 type SessionStartHandler = (event: SessionStartEvent, ctx: ExtensionContext) => void | Promise<void>;
 type SessionShutdownHandler = (event: SessionShutdownEvent, ctx: ExtensionContext) => void | Promise<void>;
+type BeforeAgentStartHandler = (
+    event: BeforeAgentStartEvent,
+    ctx: ExtensionContext,
+) => BeforeAgentStartEventResult | void | Promise<BeforeAgentStartEventResult | void>;
 type ShortcutHandler = (ctx: ExtensionContext) => unknown;
 
 type RegisteredToolParameter = {
@@ -108,6 +115,7 @@ type ExtensionHarness = {
     hasShortcut: (key: string) => boolean;
     sessionStart: () => SessionStartHandler;
     sessionShutdown: () => SessionShutdownHandler;
+    beforeAgentStart: () => BeforeAgentStartHandler;
 };
 
 test("the production extension installs built-in overrides immediately but defers session resources", async () => {
@@ -144,6 +152,35 @@ test("the production extension installs built-in overrides immediately but defer
     assert.equal(harness.hasShortcut("alt+o"), false);
     assert.equal(typeof harness.sessionStart(), "function");
     assert.equal(typeof harness.sessionShutdown(), "function");
+});
+
+test("the production extension appends topic-routed pi.lot documentation to the system prompt", async () => {
+    const harness = extensionHarness();
+    const ctx = {} as ExtensionContext;
+
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+    }).register();
+
+    const result = await harness.beforeAgentStart()({
+        type: "before_agent_start",
+        prompt: "Help me configure MCP",
+        systemPrompt: "BASE_SYSTEM_PROMPT",
+        systemPromptOptions: {},
+    } as BeforeAgentStartEvent, ctx);
+    const systemPrompt = result?.systemPrompt;
+    assert.ok(systemPrompt);
+    assert.equal(systemPrompt.startsWith("BASE_SYSTEM_PROMPT\n\n"), true);
+    assert.equal(systemPrompt.match(/pi\.lot documentation/g)?.length, 1);
+
+    const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+    const documentationDirectory = path.join(packageRoot, "docs");
+    assert.match(systemPrompt, new RegExp(escapeRegex(path.join(packageRoot, "README.md"))));
+    assert.match(systemPrompt, new RegExp(escapeRegex(documentationDirectory)));
+    for (const filename of ["installation.md", "policy.md", "subagents.md", "mcp.md", "web-search.md", "security.md"]) {
+        assert.match(systemPrompt, new RegExp(escapeRegex(`docs/${filename}`)));
+        assert.doesNotThrow(() => readFileSync(path.join(documentationDirectory, filename), "utf8"));
+    }
 });
 
 test("reusable mediated builtin definitions resolve paths from the invoking child context", async () => {
@@ -656,6 +693,7 @@ function extensionHarness(): ExtensionHarness {
     const shortcuts = new Map<string, ShortcutHandler>();
     let startHandler: SessionStartHandler | undefined;
     let shutdownHandler: SessionShutdownHandler | undefined;
+    let beforeAgentStartHandler: BeforeAgentStartHandler | undefined;
     const pi = {
         registerTool(tool: RegisteredTool) {
             registeredTools.push(tool);
@@ -669,6 +707,7 @@ function extensionHarness(): ExtensionHarness {
         on(event: string, handler: unknown) {
             if (event === "session_start") startHandler = handler as SessionStartHandler;
             if (event === "session_shutdown") shutdownHandler = handler as SessionShutdownHandler;
+            if (event === "before_agent_start") beforeAgentStartHandler = handler as BeforeAgentStartHandler;
         },
     } as unknown as ExtensionAPI;
 
@@ -687,5 +726,13 @@ function extensionHarness(): ExtensionHarness {
             assert.ok(shutdownHandler);
             return shutdownHandler;
         },
+        beforeAgentStart() {
+            assert.ok(beforeAgentStartHandler);
+            return beforeAgentStartHandler;
+        },
     };
+}
+
+function escapeRegex(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

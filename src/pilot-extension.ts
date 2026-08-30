@@ -20,6 +20,7 @@ import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
 import {ViewFullToolCommand} from "./commands/ViewFullToolCommand.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
+import {PilotDocumentation} from "./runtime/PilotDocumentation.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -36,6 +37,7 @@ export default function pilotExtension(pi: ExtensionAPI): void {
 export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     private readonly displayRows = new ToolDisplayRows();
+    private readonly documentation = new PilotDocumentation();
     private readonly bashTool: BashTool;
     private readonly webSearchTool: WebSearchTool;
     private readonly readTool: ReadTool;
@@ -115,6 +117,7 @@ export class PilotExtension {
                 ctx.sessionManager.getSessionId(),
                 {task: event.prompt},
             );
+            return {systemPrompt: this.documentation.appendToSystemPrompt(event.systemPrompt)};
         });
         this.pi.on("session_compact", () => this.displayRows.clear());
         this.pi.on("session_tree", () => this.displayRows.clear());

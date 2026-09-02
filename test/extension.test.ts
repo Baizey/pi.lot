@@ -154,6 +154,77 @@ test("the production extension installs built-in overrides immediately but defer
     assert.equal(typeof harness.sessionShutdown(), "function");
 });
 
+test("Bash always routes through a native filesystem policy view", async () => {
+    const harness = extensionHarness();
+    const ctx = {
+        cwd: process.cwd(),
+        hasUI: false,
+        mode: "print",
+        ui: {},
+        sessionManager: {getSessionId: () => "extension-test-agent"},
+    } as unknown as ExtensionContext;
+    const sentinel = new Error("native broker routing sentinel");
+    let brokerCalls = 0;
+    let viewClosed = false;
+    let capturedToolCall: unknown;
+
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        createSessionRuntime(runtimeContext) {
+            const policyRuntime = createPolicyRuntime(runtimeContext);
+            const beginNativeFilesystemToolCall = policyRuntime.beginNativeFilesystemToolCall.bind(policyRuntime);
+            policyRuntime.beginNativeFilesystemToolCall = (agentIdentifier, toolCall) => {
+                capturedToolCall = toolCall;
+                return beginNativeFilesystemToolCall(agentIdentifier, toolCall);
+            };
+            return {
+                policyRuntime,
+                decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                fullNetworkInspection: true,
+                nativeFuseSessionBroker: {
+                    async withFilesystem(options: any): Promise<never> {
+                        brokerCalls++;
+                        options.policyView.onClosed(() => {
+                            viewClosed = true;
+                        });
+                        throw sentinel;
+                    },
+                },
+                setFullNetworkInspection() {
+                },
+                beginShutdown() {
+                },
+                close() {
+                },
+            } as unknown as PilotSessionRuntimeInterface;
+        },
+    }).register();
+
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+    try {
+        await assert.rejects(
+            registeredTool(harness, "bash").execute(
+                "native-route",
+                {command: "true", purpose: "Verify unconditional native FUSE routing"},
+                undefined,
+                undefined,
+                ctx,
+            ),
+            sentinel,
+        );
+        assert.deepEqual(capturedToolCall, {
+            toolCallId: "native-route",
+            toolName: "bash",
+            command: "true",
+            purpose: "Verify unconditional native FUSE routing",
+        });
+        assert.equal(brokerCalls, 1);
+        assert.equal(viewClosed, true);
+    } finally {
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    }
+});
+
 test("the production extension appends topic-routed pi.lot documentation to the system prompt", async () => {
     const harness = extensionHarness();
     const ctx = {} as ExtensionContext;
@@ -605,6 +676,7 @@ test("one session runtime owns the production tool overrides until session shutd
         ui: {},
     } as unknown as ExtensionContext;
     let runtimeCreations = 0;
+    let runtimeStarts = 0;
     let runtimeCloses = 0;
 
     new PilotExtension(harness.pi, {
@@ -616,6 +688,9 @@ test("one session runtime owns the production tool overrides until session shutd
                 policyRuntime: policy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
+                async start() {
+                    runtimeStarts++;
+                },
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -630,11 +705,13 @@ test("one session runtime owns the production tool overrides until session shutd
     await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
 
     assert.equal(runtimeCreations, 1);
+    assert.equal(runtimeStarts, 1);
     assert.throws(
         () => harness.sessionStart()({type: "session_start", reason: "reload"}, ctx),
         /session runtime is already started/,
     );
     assert.equal(runtimeCreations, 1);
+    assert.equal(runtimeStarts, 1);
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
     assert.equal(harness.registeredToolNames.includes("bash-fuse"), false);
 

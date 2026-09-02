@@ -242,7 +242,7 @@ test("PilotSessionRuntime wires approvals to the default file logger", async () 
         assert.equal(records[0]?.route, "USER");
         assert.equal(records[0]?.operation.toolCall.purpose, "Prove production audit wiring");
     } finally {
-        runtime?.close();
+        await runtime?.close();
         rmSync(directory, {recursive: true, force: true});
     }
 });

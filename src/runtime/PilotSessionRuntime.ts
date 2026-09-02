@@ -11,6 +11,7 @@ import {
     PolicyApprovalAuditLog,
     type PolicyApprovalAuditLogInterface,
 } from "../policy/PolicyApprovalAuditLog.js";
+import {NativeFuseSessionBroker} from "../policy/path/native/NativeFuseSessionBroker.js";
 import {
     HostCredentialIpcConfigStore,
     type HostCredentialIpcConfigStoreInterface,
@@ -29,15 +30,18 @@ export type PilotSessionRuntimeInterface = {
     readonly decisionFlows: UiDecisionFlowManager;
     readonly fullNetworkInspection: boolean;
     readonly hostCredentialIpc?: HostCredentialIpcOptions;
+    readonly nativeFuseSessionBroker?: NativeFuseSessionBroker;
+    start?(): void | Promise<void>;
     setFullNetworkInspection(enabled: boolean): void;
     beginShutdown(): void;
-    close(): void
+    close(): void | Promise<void>
 }
 
 export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
     readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
     readonly hostCredentialIpc: HostCredentialIpcOptions;
+    readonly nativeFuseSessionBroker: NativeFuseSessionBroker;
 
     private readonly decisionFlowQueue: UiDecisionFlowQueue;
     private database: SqliteDatabase | null;
@@ -45,6 +49,7 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
 
     constructor(ctx: ExtensionContext, options: PilotSessionRuntimeOptions = {}) {
         this.decisionFlowQueue = new UiDecisionFlowQueue();
+        this.nativeFuseSessionBroker = new NativeFuseSessionBroker();
         const database = (options.openDatabase ?? (() => SqliteDatabase.readwrite("pilot")))();
         try {
             const policyDao = new PolicyDao(database);
@@ -76,6 +81,10 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
         }
     }
 
+    async start(): Promise<void> {
+        await this.nativeFuseSessionBroker.start();
+    }
+
     get fullNetworkInspection(): boolean {
         return this.fullNetworkInspectionEnabled;
     }
@@ -87,12 +96,16 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
     beginShutdown(): void {
         this.policyRuntime.beginShutdown();
         this.decisionFlowQueue.close();
+        this.nativeFuseSessionBroker.beginShutdown();
     }
 
-    close(): void {
+    close(): Promise<void> {
         this.beginShutdown();
-        const database = this.database;
-        this.database = null;
-        database?.close();
+        const closeDatabase = () => {
+            const database = this.database;
+            this.database = null;
+            database?.close();
+        };
+        return this.nativeFuseSessionBroker.close().finally(closeDatabase);
     }
 }

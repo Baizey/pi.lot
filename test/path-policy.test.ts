@@ -4,8 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {FusePathPolicyAuthorizer} from "../src/policy/path/fuse/FusePathPolicyAuthorizer.js";
-import {FuseAccessType, FuseDecision, FuseOperation,} from "../src/policy/path/fuse/FuseFilesystem.js";
 import {PolicyEngine} from "../src/policy/PolicyEngine";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
@@ -15,6 +13,7 @@ import {
     PolicyAccessType,
     PolicyArea,
     PolicyLifetime,
+    PolicyResolutionSource,
     PolicyResponse,
     PolicyFallbackResponse
 } from "../src/policy/types";
@@ -510,8 +509,8 @@ test("policy principals must be removed from the leaves of the authority tree", 
     runtime.removePolicyPrincipal("principal-parent");
 });
 
-test("FUSE path approval uses the decision flow manager and records session policy", async () => {
-    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-fuse-policy-flow-"));
+test("path approval uses the decision flow manager and records session policy", async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-path-policy-flow-"));
     const target = path.join(workspace, "allowed.txt");
     const promptTitles: string[] = [];
     const ctx = {
@@ -539,24 +538,16 @@ test("FUSE path approval uses the decision flow manager and records session poli
         pathPolicyDao(),
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
-    const reports: string[] = [];
-    const authorizer = new FusePathPolicyAuthorizer({
-        backingRoot: "/",
-        policyEvaluator: runtime.beginToolCall(TEST_AGENT_IDENTIFIER),
-        report: (message) => reports.push(message),
-    });
 
     try {
-        const decision = await authorizer.decide({
-            sequence: 1,
-            operation: FuseOperation.CREATE,
-            pathAccesses: [{access: FuseAccessType.WRITE, path: target}],
-        });
+        const result = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(
+            target,
+            PolicyAccessType.FS_WRITE,
+        );
 
-        assert.equal(decision, FuseDecision.ALLOW);
+        assert.equal(result.matchedStatus, PolicyResponse.ALLOWED);
         assert.equal(promptTitles.length, 3);
         assert.equal(promptTitles.every((title) => title.includes(target)), true);
-        assert.equal(reports.length, 0);
         assert.equal(
             (
                 await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.FS_WRITE)
@@ -568,8 +559,115 @@ test("FUSE path approval uses the decision flow manager and records session poli
     }
 });
 
-test("FUSE path denial records the optional reason collected by the decision flow", async () => {
-    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-fuse-policy-denial-"));
+test("queued approvals recheck policies after the preceding decision is installed", async () => {
+    const scenarios = [
+        {
+            name: "an ONCE approval covers only another request in the same tool call",
+            lifetime: PolicyLifetime.ONCE,
+            sharedToolCall: true,
+            expectedPrompts: 1,
+        },
+        {
+            name: "an ONCE approval does not cover a different tool call",
+            lifetime: PolicyLifetime.ONCE,
+            sharedToolCall: false,
+            expectedPrompts: 2,
+        },
+        {
+            name: "a SESSION approval covers a request from a different tool call",
+            lifetime: PolicyLifetime.SESSION,
+            sharedToolCall: false,
+            expectedPrompts: 1,
+        },
+        {
+            name: "a LOCAL approval covers a request from a different tool call",
+            lifetime: PolicyLifetime.LOCAL,
+            sharedToolCall: false,
+            expectedPrompts: 1,
+        },
+    ] as const;
+
+    for (const scenario of scenarios) {
+        const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-queued-policy-flow-"));
+        const firstTarget = path.join(workspace, "a.txt");
+        const secondTarget = path.join(workspace, "b.txt");
+        const approvalRecords: unknown[] = [];
+        let scopePrompts = 0;
+        let releaseFirstScope!: () => void;
+        let markFirstScopeStarted!: () => void;
+        const firstScopeStarted = new Promise<void>((resolve) => {
+            markFirstScopeStarted = resolve;
+        });
+        const firstScopeRelease = new Promise<void>((resolve) => {
+            releaseFirstScope = resolve;
+        });
+        const ctx = {
+            cwd: workspace,
+            hasUI: true,
+            mode: "rpc",
+            ui: {
+                async select(title: string, options: string[]): Promise<string | undefined> {
+                    if (title.startsWith("Path policy scope")) {
+                        scopePrompts++;
+                        if (scopePrompts === 1) {
+                            markFirstScopeStarted();
+                            await firstScopeRelease;
+                        }
+                        return options.find((option) => option === workspace);
+                    }
+                    if (title.startsWith("Path policy decision")) return "Allow";
+                    if (title.startsWith("Path policy lifetime")) {
+                        if (scenario.lifetime === PolicyLifetime.ONCE) return "Once";
+                        if (scenario.lifetime === PolicyLifetime.SESSION) return "This session";
+                        return "Always on this computer";
+                    }
+                    return undefined;
+                },
+                async input(): Promise<never> {
+                    assert.fail("allowing a queued path must not ask for a denial reason");
+                },
+            },
+        } as unknown as ExtensionContext;
+        const runtime = new PolicyRuntime(
+            TEST_AGENT_IDENTIFIER,
+            pathPolicyDao(),
+            new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
+            undefined,
+            undefined,
+            {append: (record) => approvalRecords.push(structuredClone(record))},
+        );
+        const firstToolCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER, {toolCallId: "first"});
+        const secondToolCall = scenario.sharedToolCall
+            ? firstToolCall
+            : runtime.beginToolCall(TEST_AGENT_IDENTIFIER, {toolCallId: "second"});
+
+        try {
+            const first = firstToolCall(firstTarget, PolicyAccessType.FS_WRITE);
+            await firstScopeStarted;
+            const second = secondToolCall(secondTarget, PolicyAccessType.FS_WRITE);
+            await new Promise((resolve) => setImmediate(resolve));
+            releaseFirstScope();
+
+            const [firstResult, secondResult] = await Promise.all([first, second]);
+            assert.equal(firstResult.matchedStatus, PolicyResponse.ALLOWED, scenario.name);
+            assert.equal(secondResult.matchedStatus, PolicyResponse.ALLOWED, scenario.name);
+            assert.equal(scopePrompts, scenario.expectedPrompts, scenario.name);
+            assert.equal(approvalRecords.length, scenario.expectedPrompts, scenario.name);
+            assert.equal(
+                secondResult.resolutionSource,
+                scenario.expectedPrompts === 1
+                    ? PolicyResolutionSource.EXISTING_USER_POLICY
+                    : PolicyResolutionSource.NEW_USER_DECISION,
+                scenario.name,
+            );
+        } finally {
+            rmSync(workspace, {recursive: true, force: true});
+        }
+    }
+});
+
+test("path denial records the optional reason collected by the decision flow", async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-path-policy-denial-"));
     const target = path.join(workspace, "denied.txt");
     const denialReason = "Generated files must not be overwritten.";
     let reasonPrompts = 0;
@@ -596,23 +694,13 @@ test("FUSE path denial records the optional reason collected by the decision flo
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
     const toolCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);
-    const reports: string[] = [];
-    const authorizer = new FusePathPolicyAuthorizer({
-        backingRoot: "/",
-        policyEvaluator: toolCall,
-        report: (message) => reports.push(message),
-    });
 
     try {
-        const decision = await authorizer.decide({
-            sequence: 1,
-            operation: FuseOperation.WRITE,
-            pathAccesses: [{access: FuseAccessType.WRITE, path: target}],
-        });
+        const result = await toolCall(target, PolicyAccessType.FS_WRITE);
 
-        assert.equal(decision, FuseDecision.DENY);
+        assert.equal(result.matchedStatus, PolicyResponse.DENIED);
         assert.equal(reasonPrompts, 1);
-        assert.equal(reports[0]?.includes(denialReason), true);
+        assert.match(result.toDenyMessage(), new RegExp(denialReason));
         assert.equal((await toolCall(target, PolicyAccessType.FS_WRITE)).matchedReason, denialReason);
     } finally {
         rmSync(workspace, {recursive: true, force: true});
@@ -676,7 +764,7 @@ test("the decision flow manager supports TUI allow-once and deny-once shortcuts"
 });
 
 test("a non-interactive path decision fails closed without opening a prompt", async () => {
-    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-fuse-policy-no-ui-"));
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-path-policy-no-ui-"));
     const target = path.join(workspace, "denied.txt");
     let prompts = 0;
     const ctx = {
@@ -696,23 +784,13 @@ test("a non-interactive path decision fails closed without opening a prompt", as
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
     const toolCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);
-    const reports: string[] = [];
-    const authorizer = new FusePathPolicyAuthorizer({
-        backingRoot: "/",
-        policyEvaluator: toolCall,
-        report: (message) => reports.push(message),
-    });
 
     try {
-        const decision = await authorizer.decide({
-            sequence: 1,
-            operation: FuseOperation.CREATE,
-            pathAccesses: [{access: FuseAccessType.WRITE, path: target}],
-        });
+        const result = await toolCall(target, PolicyAccessType.FS_WRITE);
 
-        assert.equal(decision, FuseDecision.DENY);
+        assert.equal(result.matchedStatus, PolicyResponse.DENIED);
         assert.equal(prompts, 0);
-        assert.match(reports[0] ?? "", /No uri policy scope selected/);
+        assert.match(result.toDenyMessage(), /No uri policy scope selected/);
         assert.equal((await toolCall(target, PolicyAccessType.FS_WRITE)).matchedLifetime, PolicyLifetime.ONCE);
         assert.equal(
             (

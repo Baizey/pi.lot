@@ -129,11 +129,11 @@ export class PilotExtension {
 
         const runtime = this.createSessionRuntime(ctx);
         this.sessionRuntime = runtime;
-        return this.startOwnedExtensions(ctx).catch(async (error) => {
+        return Promise.resolve(runtime.start?.()).then(() => this.startOwnedExtensions(ctx)).catch(async (error) => {
             this.sessionRuntime = undefined;
             await this.stopOwnedExtensions().catch(() => undefined);
             this.displayRows.clear();
-            runtime.close();
+            await runtime.close();
             throw error;
         });
     }
@@ -141,10 +141,10 @@ export class PilotExtension {
     private stopSession(): Promise<void> {
         const runtime = this.sessionRuntime;
         runtime?.beginShutdown();
-        return this.stopOwnedExtensions().finally(() => {
+        return this.stopOwnedExtensions().finally(async () => {
             if (this.sessionRuntime === runtime) this.sessionRuntime = undefined;
             this.displayRows.clear();
-            runtime?.close();
+            await runtime?.close();
         });
     }
 

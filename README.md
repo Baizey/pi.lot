@@ -84,7 +84,7 @@ For updating, development, and common failures, see [Installation and setup](doc
 pi.lot replaces Pi's `bash`, `read`, `edit`, and `write` tools with policy-aware versions. It also applies the same policy runtime to `web_search` and to child-agent principals.
 
 - Direct file tools check read or write policy before acting.
-- Bash sees the host filesystem through a FUSE policy layer.
+- Bash sees the host filesystem through a native FUSE policy layer.
 - Bash network activity passes through private namespaces and DNS/TCP/UDP mediation.
 - Supported HTTP/HTTPS requests can be checked by method and path.
 - Decisions can apply once, for the session, or persist locally.

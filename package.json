@@ -1,6 +1,6 @@
 {
   "name": "pilot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "pi.lot: kernel-mediated filesystem and network policy for Pi's Bash tool.",
   "type": "module",
   "pi": {
@@ -18,7 +18,7 @@
     "build": "npm run clean && npm run build:native && npm run typecheck",
     "install": "npm run build:native",
     "test:network": "npm run build:native && node --import jiti/register --test ./test/bash-sandbox.test.ts ./test/client-trust.test.ts ./test/host-credential-ipc-config.test.ts ./test/host-credential-ipc.test.ts ./test/network-inspection-command.test.ts ./test/network-policy-authorizer.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network.test.ts",
-    "test:runtime": "node --import jiti/register --test ./test/bash-sandbox.test.ts ./test/builtin-path-authorization.test.ts ./test/managed-child-process.test.ts ./test/client-trust.test.ts ./test/extension.test.ts ./test/fuse.test.ts ./test/host-credential-ipc-config.test.ts ./test/host-credential-ipc.test.ts ./test/mcp-client.test.ts ./test/mcp-commands.test.ts ./test/mcp-config.test.ts ./test/mcp-extension.test.ts ./test/mcp-tools.test.ts ./test/network-inspection-command.test.ts ./test/network-policy-authorizer.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network.test.ts ./test/path-policy.test.ts ./test/policy-defaults-command.test.ts ./test/policy-defaults-store.test.ts ./test/agent-policy-approval.test.ts ./test/policy-approval-audit.test.ts ./test/agent-capability.test.ts ./test/subagent-defaults-command.test.ts ./test/subagent-defaults-store.test.ts ./test/subagent-model-resolver.test.ts ./test/subagent-coordinator.test.ts ./test/subagent-ui.test.ts ./test/subagent-runtime.test.ts ./test/subagent-tools.test.ts ./test/terminal-text.test.ts ./test/tool-rendering.test.ts ./test/ui-decision-flow.test.ts ./test/native-web-search.test.ts ./test/web-search-config.test.ts ./test/web-search-http.test.ts ./test/web-search.test.ts",
+    "test:runtime": "node --import jiti/register --test ./test/bash-sandbox.test.ts ./test/builtin-path-authorization.test.ts ./test/managed-child-process.test.ts ./test/client-trust.test.ts ./test/extension.test.ts ./test/native-fuse.test.ts ./test/native-fuse-protocol.test.ts ./test/native-fuse-session-broker.test.ts ./test/host-credential-ipc-config.test.ts ./test/host-credential-ipc.test.ts ./test/mcp-client.test.ts ./test/mcp-commands.test.ts ./test/mcp-config.test.ts ./test/mcp-extension.test.ts ./test/mcp-tools.test.ts ./test/network-inspection-command.test.ts ./test/network-policy-authorizer.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network.test.ts ./test/path-policy.test.ts ./test/native-filesystem-policy-view.test.ts ./test/policy-defaults-command.test.ts ./test/policy-defaults-store.test.ts ./test/agent-policy-approval.test.ts ./test/policy-approval-audit.test.ts ./test/agent-capability.test.ts ./test/subagent-defaults-command.test.ts ./test/subagent-defaults-store.test.ts ./test/subagent-model-resolver.test.ts ./test/subagent-coordinator.test.ts ./test/subagent-ui.test.ts ./test/subagent-runtime.test.ts ./test/subagent-tools.test.ts ./test/terminal-text.test.ts ./test/tool-rendering.test.ts ./test/ui-decision-flow.test.ts ./test/native-web-search.test.ts ./test/web-search-config.test.ts ./test/web-search-http.test.ts ./test/web-search.test.ts",
     "test": "npm run build && npm run test:runtime"
   },
   "keywords": [],
@@ -41,8 +41,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "better-sqlite3": "13.0.3",
-    "fs-xattr": "0.4.0",
-    "fuse-native": "2.2.6",
+    "fuse-shared-library": "1.1.1",
     "node-forge": "1.4.0",
     "zod": "4.4.3"
   }

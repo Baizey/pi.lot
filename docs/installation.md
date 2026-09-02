@@ -22,7 +22,7 @@ Typical Fedora/Bazzite packages:
 ```bash
 sudo dnf install \
   gcc make pkgconf-pkg-config \
-  fuse fuse-devel bubblewrap nftables iproute util-linux \
+  fuse bubblewrap nftables iproute util-linux \
   slirp4netns xdg-dbus-proxy libnetfilter_queue-devel
 ```
 
@@ -31,7 +31,7 @@ Typical Debian/Ubuntu packages:
 ```bash
 sudo apt install \
   build-essential pkg-config \
-  fuse libfuse-dev bubblewrap nftables iproute2 util-linux \
+  fuse bubblewrap nftables iproute2 util-linux \
   slirp4netns xdg-dbus-proxy libnetfilter-queue-dev
 ```
 

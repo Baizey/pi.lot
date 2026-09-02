@@ -1,8 +1,5 @@
 import type {BashOperations, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {createBashTool, createBashToolDefinition} from "@earendil-works/pi-coding-agent";
-import {HOST_FILESYSTEM_ROOT, withFuseFilesystem} from "../../policy/path/fuse/fuse-runner";
-import {FuseDecision} from "../../policy/path/fuse/FuseFilesystem";
-import {FusePathPolicyAuthorizer} from "../../policy/path/fuse/FusePathPolicyAuthorizer";
 import type {ToolCallPathPolicyEvaluator} from "../../policy/PolicyRuntime";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
@@ -16,6 +13,9 @@ import {NetworkDecision} from "../../policy/network/network-queue-protocol";
 import type {HostCredentialIpcOptions} from "../../policy/network/ipc/HostCredentialIpc";
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
+import type {NativeFilesystemPolicyView} from "../../policy/path/native/NativeFilesystemPolicyView.js";
+import {withNativeFuseFilesystem} from "../../policy/path/native/native-fuse-runner.js";
+import type {NativeFuseSessionBroker} from "../../policy/path/native/NativeFuseSessionBroker.js";
 
 const MAX_PURPOSE_LENGTH = 160;
 const PURPOSE_DESCRIPTION = "A short, one-line explanation of what the command will achieve";
@@ -109,20 +109,34 @@ export class BashTool {
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
                 const input = params as BashToolInput;
-                const policy = runtime.policyRuntime.beginToolCall(ctx.sessionManager.getSessionId(), {
+                const agentIdentifier = ctx.sessionManager.getSessionId();
+                const toolCall = {
                     toolCallId: id,
                     toolName: "bash",
                     command: input.command,
                     purpose: input.purpose,
-                });
+                };
+                const nativePolicyView = runtime.policyRuntime.beginNativeFilesystemToolCall(
+                    agentIdentifier,
+                    toolCall,
+                );
+                const policy = async (...args: Parameters<ToolCallPathPolicyEvaluator>) => (
+                    await nativePolicyView.evaluate(...args)
+                ).result;
                 const sandboxedBash = createBashTool(ctx.cwd, {
                     operations: this.createOperations(
                         policy,
                         runtime.fullNetworkInspection,
                         runtime.hostCredentialIpc,
+                        nativePolicyView,
+                        runtime.nativeFuseSessionBroker,
                     ),
                 });
-                return sandboxedBash.execute(id, params, signal, onUpdate);
+                try {
+                    return await sandboxedBash.execute(id, params, signal, onUpdate);
+                } finally {
+                    nativePolicyView.close();
+                }
             },
 
             renderCall: (args, theme, context) => {
@@ -153,37 +167,34 @@ export class BashTool {
     private createOperations(
         policy: ToolCallPathPolicyEvaluator,
         fullNetworkInspection: boolean,
-        hostCredentialIpc?: HostCredentialIpcOptions,
+        hostCredentialIpc: HostCredentialIpcOptions | undefined,
+        nativePolicyView: NativeFilesystemPolicyView,
+        nativeFuseSessionBroker?: NativeFuseSessionBroker,
     ): BashOperations {
         return {
             exec: async (command, cwd, {onData, signal, timeout, env}) => {
                 const report = (message: string) => onData(Buffer.from(`${message}\n`));
-                const pathAuthorizer = new FusePathPolicyAuthorizer({
-                    backingRoot: HOST_FILESYSTEM_ROOT,
-                    policyEvaluator: policy,
-                    report,
-                });
                 const networkAuthorizer = new NetworkPolicyAuthorizer({policyEvaluator: policy, report});
                 const decisions = new NetworkDecisionCoordinator({
                     granularity: DEFAULT_NETWORK_POLICY_GRANULARITY,
                     decide: networkAuthorizer.decide,
                 });
-                const result = await withFuseFilesystem({
-                    cwd,
-                    signal,
-                    onDecisionError: (error) => {
-                        onData(Buffer.from(
-                            `[pi.lot:fuse] decision=${FuseDecision.DENY} error=${JSON.stringify(this.errorMessage(error))}\n`,
-                        ));
-                    },
-                    decide: (event, decisionSignal) => pathAuthorizer.decide(event, decisionSignal),
-                }, ({mediatedHostRoot, cwd: resolvedCwd}) => runNetworkSandboxedCommand({
+                const reportFuseDecisionError = (error: unknown) => {
+                    onData(Buffer.from(
+                        `[pi.lot:fuse] decision=DENY error=${JSON.stringify(this.errorMessage(error))}\n`,
+                    ));
+                };
+                const runNetworkSandbox = ({
+                    mediatedHostRoot,
+                    cwd: resolvedCwd,
+                    signal: filesystemSignal,
+                }: {mediatedHostRoot: string; cwd: string; signal?: AbortSignal}) => runNetworkSandboxedCommand({
                     command: ["/bin/bash", "-c", command],
                     cwd: resolvedCwd,
                     mediatedHostRoot,
                     env,
                     hostCredentialIpc,
-                    signal,
+                    signal: filesystemSignal ?? signal,
                     timeoutSeconds: timeout,
                     onStdout: onData,
                     onStderr: onData,
@@ -206,7 +217,15 @@ export class BashTool {
                     authorizeHttpRequest: fullNetworkInspection
                         ? networkAuthorizer.authorizeHttpRequest
                         : undefined,
-                }));
+                });
+                const result = await withNativeFuseFilesystem({
+                    cwd,
+                    signal,
+                    policyView: nativePolicyView,
+                    onDecisionError: reportFuseDecisionError,
+                    onPolicyDeny: report,
+                    sessionBroker: nativeFuseSessionBroker,
+                }, runNetworkSandbox);
 
                 if (result.signal) throw new Error(`network worker terminated by ${result.signal}`);
                 return {exitCode: result.exitCode};

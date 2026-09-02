@@ -16,7 +16,7 @@ type RegisteredCommand = {
     handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 };
 
-test("session runtime enables full network inspection by default", () => {
+test("session runtime owns native FUSE and enables full network inspection by default", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-network-inspection-runtime-"));
     const runtime = new PilotSessionRuntime({
         cwd: directory,
@@ -29,11 +29,12 @@ test("session runtime enables full network inspection by default", () => {
         },
     });
     try {
+        assert.ok(runtime.nativeFuseSessionBroker);
         assert.equal(runtime.fullNetworkInspection, true);
         runtime.setFullNetworkInspection(false);
         assert.equal(runtime.fullNetworkInspection, false);
     } finally {
-        runtime.close();
+        await runtime.close();
         rmSync(directory, {recursive: true, force: true});
     }
 });

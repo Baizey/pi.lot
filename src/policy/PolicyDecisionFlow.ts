@@ -1,4 +1,10 @@
-import {PolicyAccessType, PolicyLifetime, PolicyResponse, resolveUri} from "./types";
+import {
+    PolicyAccessType,
+    PolicyLifetime,
+    type PolicyResult,
+    PolicyResponse,
+    resolveUri,
+} from "./types";
 import type {UiDecision, UiDecisionFlowManager, UiSelectDecisionOption} from "../tui/UiDecisionFlowManager";
 import {UiFlowShortcut} from "../tui/UiDecisionFlowManager";
 import {policyScopeHierarchy} from "./PolicyScope.js";
@@ -14,6 +20,11 @@ export type PolicyChoice = {
 
 export type PolicyDecisionFlowOptions = {
     decisionFlows: UiDecisionFlowManager;
+};
+
+export type QueuedPolicyResolution = {
+    beforePrompt: () => PolicyResult | undefined;
+    complete: (choice: PolicyChoice) => PolicyResult | Promise<PolicyResult>;
 };
 
 type PolicyApproval = {
@@ -44,14 +55,48 @@ export class PolicyDecisionFlow {
             {shortcuts: {enabled: true}, signal},
         );
 
-        const resolved = this.resolveShortcut(approval, uri, accessType);
-        return {
-            uri: resolved.scope,
-            accessType,
-            lifetime: resolved.lifetime,
-            status: resolved.status,
-            reason: resolved.reason || this.defaultReason(resolved.status, accessType),
+        return this.policyChoice(approval, uri, accessType);
+    }
+
+    async resolveQueuedPolicy(
+        inputUri: string,
+        accessType: PolicyAccessType,
+        resolution: QueuedPolicyResolution,
+        signal?: AbortSignal,
+        requestContext?: PolicyApprovalRequestContext,
+    ): Promise<PolicyResult> {
+        const uri = resolveUri(accessType, inputUri);
+        const scopes = policyScopeHierarchy(uri, accessType);
+        const decisions = this.policyDecisions(uri, accessType, scopes, requestContext);
+        let resolvedBeforePrompt: PolicyResult | undefined;
+        let completion: Promise<PolicyResult> | undefined;
+        const complete = (approval: PolicyApproval | UiFlowShortcut): Promise<PolicyResult> => {
+            completion ??= Promise.resolve().then(() => resolution.complete(
+                this.policyChoice(approval, uri, accessType),
+            ));
+            return completion;
         };
+
+        const approval = await this.options.decisionFlows.runFlow(
+            decisions.scope,
+            decisions,
+            (state) => this.cancelledApproval(state, uri),
+            {
+                shortcuts: {enabled: true},
+                signal,
+                beforeStart: () => {
+                    resolvedBeforePrompt = resolution.beforePrompt();
+                    return resolvedBeforePrompt
+                        ? this.approvalFromResult(resolvedBeforePrompt)
+                        : undefined;
+                },
+                afterFinish: async (result) => {
+                    if (!resolvedBeforePrompt) await complete(result);
+                },
+            },
+        );
+
+        return resolvedBeforePrompt ?? await complete(approval);
     }
 
     private policyDecisions(
@@ -124,6 +169,30 @@ export class PolicyDecisionFlow {
                     },
                 ]
         }
+    }
+
+    private policyChoice(
+        approval: PolicyApproval | UiFlowShortcut,
+        evaluatedPath: string,
+        accessType: PolicyAccessType,
+    ): PolicyChoice {
+        const resolved = this.resolveShortcut(approval, evaluatedPath, accessType);
+        return {
+            uri: resolved.scope,
+            accessType,
+            lifetime: resolved.lifetime,
+            status: resolved.status,
+            reason: resolved.reason || this.defaultReason(resolved.status, accessType),
+        };
+    }
+
+    private approvalFromResult(result: PolicyResult): PolicyApproval {
+        return {
+            scope: result.matchedPattern,
+            status: result.matchedStatus,
+            lifetime: result.matchedLifetime,
+            reason: result.matchedReason,
+        };
     }
 
     private resolveShortcut(

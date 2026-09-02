@@ -297,7 +297,7 @@ test("session runtime loads persisted network policies from its database", async
         assert.equal(result.matchedLifetime, PolicyLifetime.LOCAL);
         assert.equal(result.matchedReason, "remembered");
     } finally {
-        runtime?.close();
+        await runtime?.close();
         rmSync(directory, {recursive: true, force: true});
     }
 });

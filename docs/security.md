@@ -41,7 +41,7 @@ Subagents have separate model sessions and policy principals but share the trust
 
 - Linux x86-64 only.
 - Host-side FUSE path resolution has pathname time-of-check/time-of-use race windows.
-- Versioned live policy replacement and active filesystem/network-flow revocation are not implemented.
+- Filesystem mediation uses versioned live policy checkpoints and `direct_io` so reads and writes return to native FUSE policy callbacks; file-backed `mmap` through that mount is intentionally unsupported and fails closed. Active network-flow revocation is not implemented.
 - The combined worker's `/dev`, pseudo-filesystem, pathname-socket, and supplementary-group compatibility is incomplete.
 - Some DNS, UDP lifecycle, IPv6, HTTP/2, HTTP/3/QUIC, WebSocket, `CONNECT`, private-trust-store, and certificate-pinning behaviour is unsupported or fails closed.
 - Request policy cannot currently distinguish HTTP from HTTPS, query strings, or fragments.

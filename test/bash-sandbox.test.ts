@@ -7,9 +7,14 @@ import test from "node:test";
 import {NetworkPolicyAuthorizer} from "../src/policy/network/NetworkPolicyAuthorizer.js";
 import {NetworkDecisionCoordinator, DEFAULT_NETWORK_POLICY_GRANULARITY} from "../src/policy/network/NetworkPolicy.js";
 import {runNetworkSandboxedCommand} from "../src/policy/network/NetworkSandbox.js";
-import {FusePathPolicyAuthorizer} from "../src/policy/path/fuse/FusePathPolicyAuthorizer.js";
-import {withFuseFilesystem} from "../src/policy/path/fuse/fuse-runner.js";
+import {withNativeFuseFilesystem} from "../src/policy/path/native/native-fuse-runner.js";
+import {
+    NativeFilesystemPolicyBase,
+    NativeFilesystemPolicyView,
+} from "../src/policy/path/native/NativeFilesystemPolicyView.js";
+import {NativeFuseSessionBroker} from "../src/policy/path/native/NativeFuseSessionBroker.js";
 import type {ToolCallPathPolicyEvaluator} from "../src/policy/PolicyRuntime.js";
+import type {Policy} from "../src/policy/types.js";
 import {PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse, PolicyResult} from "../src/policy/types.js";
 
 test("one sandbox mediates the complete host filesystem and outbound network", async () => {
@@ -42,19 +47,31 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
     const evaluatedAccessTypes: PolicyAccessType[] = [];
     const output: Buffer[] = [];
     const report = (message: string) => output.push(Buffer.from(`${message}\n`));
+    const oncePolicies: Policy[] = [];
     const evaluator: ToolCallPathPolicyEvaluator = async (uri, accessType) => {
         evaluatedAccessTypes.push(accessType);
-        return policyResult(
-            uri,
-            accessType,
-            accessType === PolicyAccessType.FS_WRITE ? PolicyResponse.DENIED : PolicyResponse.ALLOWED,
-        );
+        const status = accessType === PolicyAccessType.FS_WRITE
+            ? PolicyResponse.DENIED
+            : PolicyResponse.ALLOWED;
+        if (accessType === PolicyAccessType.FS_WRITE) {
+            oncePolicies.push(policy(uri, accessType, status));
+        }
+        return policyResult(uri, accessType, status);
     };
-    const pathAuthorizer = new FusePathPolicyAuthorizer({
-        backingRoot: "/",
-        policyEvaluator: evaluator,
-        report,
-    });
+    const policyBase = new NativeFilesystemPolicyBase("combined-sandbox-test", () => [{
+        policies: [policy("/", PolicyAccessType.FS_READ, PolicyResponse.ALLOWED)],
+        resolutionSource: PolicyResolutionSource.SYSTEM,
+    }]);
+    const policyView = new NativeFilesystemPolicyView(
+        policyBase,
+        evaluator,
+        () => ({
+            policies: structuredClone(oncePolicies),
+            resolutionSource: PolicyResolutionSource.SYSTEM,
+        }),
+        () => undefined,
+    );
+    const broker = new NativeFuseSessionBroker();
     const networkAuthorizer = new NetworkPolicyAuthorizer({policyEvaluator: evaluator, report});
     const networkDecisions = new NetworkDecisionCoordinator({
         granularity: DEFAULT_NETWORK_POLICY_GRANULARITY,
@@ -62,9 +79,12 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
     });
 
     try {
-        const result = await withFuseFilesystem({
+        await broker.start();
+        const result = await withNativeFuseFilesystem({
             cwd: workspace,
-            decide: (event, signal) => pathAuthorizer.decide(event, signal),
+            policyView,
+            sessionBroker: broker,
+            onPolicyDeny: report,
         }, ({mediatedHostRoot, cwd}) => runNetworkSandboxedCommand({
             command: [
                 "/bin/bash",
@@ -100,13 +120,34 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.TCP_ACCESS), true);
         assert.equal(evaluatedAccessTypes.includes(PolicyAccessType.HTTP_GET), true);
     } finally {
+        policyView.close();
+        policyBase.close();
         await Promise.all([
+            broker.close(),
             new Promise<void>((resolve) => server.close(() => resolve())),
             new Promise<void>((resolve) => agentServer.close(() => resolve())),
         ]);
         rmSync(workspace, {recursive: true, force: true});
     }
 });
+
+function policy(
+    pattern: string,
+    accessType: PolicyAccessType,
+    status: PolicyResponse,
+): Policy {
+    return {
+        pattern,
+        info: {
+            [accessType]: {
+                accessType,
+                lifetime: PolicyLifetime.ONCE,
+                status,
+                reason: "combined sandbox test",
+            },
+        },
+    };
+}
 
 function policyResult(
     uri: string,

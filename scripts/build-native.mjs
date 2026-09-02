@@ -7,7 +7,7 @@ const outputDirectory = fileURLToPath(new URL("../build", import.meta.url));
 
 mkdirSync(outputDirectory, {recursive: true});
 compileNative("pi-exec-clean.c", "pi-exec-clean-native");
-compileNative("pi-mknod.c", "pi-mknod-native");
+compileNative("pi-fuse.c", "pi-fuse-native", fuseFlags());
 compileNative("pi-network-queue.c", "pi-network-queue-native", netfilterQueueFlags());
 compileNative("pi-tcp-gateway.c", "pi-tcp-gateway-native");
 
@@ -29,6 +29,27 @@ function compileNative(sourceName, outputName, extraFlags = []) {
 
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+function fuseFlags() {
+  const includeDirectory = packageOutput("fuse-shared-library/include");
+  const library = packageOutput("fuse-shared-library/lib");
+  return [`-I${includeDirectory}`, library, "-pthread"];
+}
+
+function packageOutput(moduleName) {
+  const result = spawnSync(process.execPath, ["-e", `require(${JSON.stringify(moduleName)})`], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    process.stderr.write(result.stderr);
+    throw new Error(`Could not resolve native build input from ${moduleName}`);
+  }
+  const output = result.stdout.trim();
+  if (!output) throw new Error(`Native build input from ${moduleName} was empty`);
+  return output;
 }
 
 function netfilterQueueFlags() {

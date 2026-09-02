@@ -31,6 +31,11 @@ import type {PolicyDaoInterface} from "../storage/PolicyDao";
 import {initialPolicyDefaults, type PolicyDefaultJsonStorageInterface, type ResponseDefaults} from "./defaults.js";
 import {UNIVERSAL_NETWORK_POLICY_PATTERN} from "./network/ParsedUri.js";
 import {
+    NativeFilesystemPolicyBase,
+    NativeFilesystemPolicyView,
+    type NativeFilesystemPolicyLayer,
+} from "./path/native/NativeFilesystemPolicyView.js";
+import {
     boundedPolicyApprovalAuditRecord,
     type PolicyApprovalAuditLogInterface,
     type PolicyApprovalAuditOutcome,
@@ -106,6 +111,8 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
     private readonly rootAgentIdentifier: string;
     private agentDecisionFlow: AgentPolicyDecisionFlow | undefined;
     private readonly fallbackRevisions = initialFallbackRevisions();
+    private readonly nativeFilesystemViews = new Set<NativeFilesystemPolicyView>();
+    private readonly nativeFilesystemPolicyBases = new Map<string, NativeFilesystemPolicyBase>();
     private closing = false;
     readonly defaultResponses: ResponseDefaults;
 
@@ -128,6 +135,10 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         });
         this.defaultResponses = {...initialPolicyDefaults, ...defaultsStore?.load()};
         this.setFallbacks();
+        this.nativeFilesystemPolicyBases.set(
+            agentIdentifier,
+            this.createNativeFilesystemPolicyBase(this.requirePrincipal(agentIdentifier)),
+        );
     }
 
     async once(
@@ -147,14 +158,29 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         const oncePolicies = new PolicyEngine();
         const principal = this.requirePrincipal(agentIdentifier);
         const context = normalizedToolCallContext(toolCall);
-        return (path, accessType, signal) => this.evaluate(
-            principal,
-            path,
-            accessType,
-            oncePolicies,
-            context,
-            signal,
+        return this.toolCallEvaluator(principal, oncePolicies, context);
+    }
+
+    beginNativeFilesystemToolCall(
+        agentIdentifier: string,
+        toolCall: PolicyToolCallContext = {},
+    ): NativeFilesystemPolicyView {
+        const oncePolicies = new PolicyEngine();
+        const principal = this.requirePrincipal(agentIdentifier);
+        const context = normalizedToolCallContext(toolCall);
+        const policyBase = this.nativeFilesystemPolicyBases.get(agentIdentifier);
+        if (!policyBase) throw new Error(`Native filesystem policy base is unavailable: ${agentIdentifier}`);
+        const view = new NativeFilesystemPolicyView(
+            policyBase,
+            this.toolCallEvaluator(principal, oncePolicies, context),
+            () => ({
+                policies: filesystemPolicies(oncePolicies.allPolicies()),
+                resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY,
+            }),
+            (closed) => this.nativeFilesystemViews.delete(closed),
         );
+        this.nativeFilesystemViews.add(view);
+        return view;
     }
 
     setAgentDecisionFlow(flow: AgentPolicyDecisionFlow | undefined): void {
@@ -164,6 +190,8 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
     beginShutdown(): void {
         this.closing = true;
         this.agentDecisionFlow = undefined;
+        for (const view of [...this.nativeFilesystemViews]) view.close();
+        for (const policyBase of this.nativeFilesystemPolicyBases.values()) policyBase.close();
     }
 
     setDefaultResponse(area: PolicyArea, response: PolicyFallbackResponse): void {
@@ -194,7 +222,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         }
         const parent = this.requirePrincipal(parentAgentIdentifier);
         const policies = this.inheritedPolicySnapshot(parent, inheritedAreas);
-        this.principals.set(agentIdentifier, {
+        const principal: PolicyPrincipal = {
             agentIdentifier,
             parentAgentIdentifier,
             children: new Set(),
@@ -202,7 +230,12 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             policyRevision: 0,
             context: normalizedPrincipalContext(context),
             contextRevision: 0,
-        });
+        };
+        this.principals.set(agentIdentifier, principal);
+        this.nativeFilesystemPolicyBases.set(
+            agentIdentifier,
+            this.createNativeFilesystemPolicyBase(principal),
+        );
         parent.children.add(agentIdentifier);
     }
 
@@ -223,10 +256,59 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         if (principal.children.size > 0) {
             throw new Error(`Policy principal still has registered children: ${agentIdentifier}`);
         }
+        for (const view of [...this.nativeFilesystemViews]) {
+            if (view.agentIdentifier === agentIdentifier) view.close();
+        }
+        this.nativeFilesystemPolicyBases.get(agentIdentifier)?.close();
+        this.nativeFilesystemPolicyBases.delete(agentIdentifier);
         if (principal.parentAgentIdentifier) {
             this.requirePrincipal(principal.parentAgentIdentifier).children.delete(agentIdentifier);
         }
         this.principals.delete(agentIdentifier);
+    }
+
+    private toolCallEvaluator(
+        principal: PolicyPrincipal,
+        oncePolicies: PolicyEngine,
+        context: PolicyToolCallContext,
+    ): ToolCallPathPolicyEvaluator {
+        return (path, accessType, signal) => this.evaluate(
+            principal,
+            path,
+            accessType,
+            oncePolicies,
+            context,
+            signal,
+        );
+    }
+
+    private createNativeFilesystemPolicyBase(principal: PolicyPrincipal): NativeFilesystemPolicyBase {
+        return new NativeFilesystemPolicyBase(
+            principal.agentIdentifier,
+            () => this.nativeFilesystemPolicyLayers(principal),
+        );
+    }
+
+    private nativeFilesystemPolicyLayers(
+        principal: PolicyPrincipal,
+    ): NativeFilesystemPolicyLayer[] {
+        const layers: NativeFilesystemPolicyLayer[] = [
+            {
+                policies: filesystemPolicies(principal.policies.allPolicies()),
+                resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY,
+            },
+        ];
+        if (principal.agentIdentifier === this.rootAgentIdentifier) {
+            layers.push({
+                policies: filesystemPolicies(this.rootFallbackPolicies.allPolicies()),
+                resolutionSource: PolicyResolutionSource.SYSTEM,
+            });
+        }
+        return layers;
+    }
+
+    private notifyNativeFilesystemPolicyBase(principal: PolicyPrincipal): void {
+        this.nativeFilesystemPolicyBases.get(principal.agentIdentifier)?.policyStateChanged();
     }
 
     private async evaluate(
@@ -786,7 +868,92 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             path,
             toolCall,
         );
+        const complete = (choice: PolicyChoice) => this.completeUserApproval(
+            requester,
+            uri,
+            accessType,
+            oncePolicies,
+            path,
+            pathSnapshot,
+            fallback,
+            requestContext,
+            choice,
+            signal,
+        );
+
+        if (typeof this.decisionFlow.resolveQueuedPolicy === "function") {
+            return this.decisionFlow.resolveQueuedPolicy(
+                uri,
+                accessType,
+                {
+                    beforePrompt: () => this.queuedUserApprovalResolution(
+                        requester,
+                        uri,
+                        accessType,
+                        oncePolicies,
+                        path,
+                        pathSnapshot,
+                        fallback,
+                        signal,
+                    ),
+                    complete,
+                },
+                signal,
+                requestContext,
+            );
+        }
+
         const choice = await this.decisionFlow.askForPolicy(uri, accessType, signal, requestContext);
+        return complete(choice);
+    }
+
+    private queuedUserApprovalResolution(
+        requester: PolicyPrincipal,
+        uri: string,
+        accessType: PolicyAccessType,
+        oncePolicies: PolicyEngine,
+        path: PolicyPrincipal[],
+        pathSnapshot: PrincipalPathSnapshot,
+        fallback: FallbackSnapshot,
+        signal?: AbortSignal,
+    ): PolicyResult | undefined {
+        if (signal?.aborted || this.closing || !this.isActivePrincipalPath(path)) {
+            return failedClosedResult(uri, accessType, "User policy approval is no longer active.");
+        }
+
+        const local = requester.policies.evaluate(uri, accessType);
+        if (local) return local;
+        if (requester.agentIdentifier === this.rootAgentIdentifier) {
+            const automatedFallback = this.rootFallbackPolicies.evaluate(uri, accessType);
+            if (automatedFallback) return systemFallbackResult(automatedFallback);
+        }
+        const once = oncePolicies.evaluate(uri, accessType);
+        if (once) return once;
+
+        const ancestor = this.resolveAncestorAuthority(requester, uri, accessType);
+        if (ancestor.kind === "denied") return ancestor.result;
+        if (
+            !this.isUnchangedPrincipalPath(pathSnapshot)
+            || !this.isUnchangedFallback(fallback)
+            || this.defaultResponses[fallback.area] !== PolicyFallbackResponse.ask_user
+        ) {
+            return failedClosedResult(uri, accessType, "User policy approval is no longer active.");
+        }
+        return undefined;
+    }
+
+    private completeUserApproval(
+        requester: PolicyPrincipal,
+        uri: string,
+        accessType: PolicyAccessType,
+        oncePolicies: PolicyEngine,
+        path: PolicyPrincipal[],
+        pathSnapshot: PrincipalPathSnapshot,
+        fallback: FallbackSnapshot,
+        requestContext: PolicyApprovalRequestContext,
+        choice: PolicyChoice,
+        signal?: AbortSignal,
+    ): PolicyResult {
         if (
             signal?.aborted
             || this.closing
@@ -866,6 +1033,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
     private addPrincipalPolicies(principal: PolicyPrincipal, policies: Policy[]): void {
         principal.policies.addPolicies(policies);
         principal.policyRevision++;
+        if (filesystemPolicies(policies).length > 0) this.notifyNativeFilesystemPolicyBase(principal);
     }
 
     private inheritedPolicySnapshot(
@@ -915,8 +1083,12 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         const accessTypes = policyAreaAccessTypes(area);
         const pattern = fallbackScope(accessTypes[0]!);
         const status = policyStatus(response);
+        const affectsFilesystem = area === PolicyArea.fs_read || area === PolicyArea.fs_write;
         if (!status) {
             this.rootFallbackPolicies.removePolicies([{uri: pattern, accessTypes: [...accessTypes]}]);
+            if (affectsFilesystem) {
+                this.notifyNativeFilesystemPolicyBase(this.requirePrincipal(this.rootAgentIdentifier));
+            }
             return;
         }
 
@@ -930,7 +1102,23 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             } satisfies PolicyStatus;
         }
         this.rootFallbackPolicies.addPolicies([policy]);
+        if (affectsFilesystem) {
+            this.notifyNativeFilesystemPolicyBase(this.requirePrincipal(this.rootAgentIdentifier));
+        }
     }
+}
+
+function filesystemPolicies(policies: Policy[]): Policy[] {
+    return policies
+        .map((policy) => ({
+            pattern: policy.pattern,
+            info: Object.fromEntries(
+                Object.entries(policy.info).filter(([accessType]) => (
+                    accessType === PolicyAccessType.FS_READ || accessType === PolicyAccessType.FS_WRITE
+                )),
+            ),
+        }))
+        .filter((policy) => Object.keys(policy.info).length > 0);
 }
 
 function policyFromChoice(choice: {

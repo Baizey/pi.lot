@@ -60,9 +60,11 @@ export type UiFlowShortcutOptions = {
     enabled?: boolean;
 };
 
-export type UiDecisionFlowOptions = {
+export type UiDecisionFlowOptions<T> = {
     shortcuts?: UiFlowShortcutOptions;
     signal?: AbortSignal;
+    beforeStart?: () => T | UiFlowShortcut | undefined;
+    afterFinish?: (result: T | UiFlowShortcut) => void | Promise<void>;
 };
 
 export type UiSelectDecision<T> = {
@@ -90,7 +92,7 @@ export class UiDecisionFlowManager {
         initialDecision: UiDecision<T>,
         allDecisions: Record<keyof T, UiDecision<T>>,
         onCancelReturn: (state: Partial<T>) => T,
-        options: UiDecisionFlowOptions = {},
+        options: UiDecisionFlowOptions<T> = {},
     ): Promise<T | UiFlowShortcut> {
         const state = {} as Partial<T>;
         let cancellation: T | undefined;
@@ -134,9 +136,33 @@ export class UiDecisionFlowManager {
         allDecisions: Record<keyof T, UiDecision<T>>,
         state: Partial<T>,
         cancel: () => T,
-        options: UiDecisionFlowOptions,
+        options: UiDecisionFlowOptions<T>,
     ): Promise<T | UiFlowShortcut> {
-        if (!this.ctx.hasUI || options.signal?.aborted || !this.ctx.ui?.select) return cancel();
+        let result: T | UiFlowShortcut;
+        if (options.signal?.aborted) {
+            result = cancel();
+        } else {
+            const resolvedBeforeStart = options.beforeStart?.();
+            result = resolvedBeforeStart ?? await this.runActiveFlow(
+                initialDecision,
+                allDecisions,
+                state,
+                cancel,
+                options,
+            );
+        }
+        await options.afterFinish?.(result);
+        return result;
+    }
+
+    private async runActiveFlow<T>(
+        initialDecision: UiDecision<T>,
+        allDecisions: Record<keyof T, UiDecision<T>>,
+        state: Partial<T>,
+        cancel: () => T,
+        options: UiDecisionFlowOptions<T>,
+    ): Promise<T | UiFlowShortcut> {
+        if (!this.ctx.hasUI || !this.ctx.ui?.select) return cancel();
 
         let currentDecision = initialDecision;
         while (currentDecision) {
@@ -158,7 +184,7 @@ export class UiDecisionFlowManager {
     private async resolveDecision<T>(
         decision: UiDecision<T>,
         state: Partial<T>,
-        options: UiDecisionFlowOptions,
+        options: UiDecisionFlowOptions<T>,
     ): Promise<UiSelectDecisionOption<T> | UiFlowShortcut | null> {
         if (options.signal?.aborted) return null;
         const title = parse(decision.title, state);
@@ -177,7 +203,7 @@ export class UiDecisionFlowManager {
         decision: UiSelectDecision<T>,
         state: Partial<T>,
         title: string,
-        options: UiDecisionFlowOptions,
+        options: UiDecisionFlowOptions<T>,
     ): Promise<UiSelectDecisionOption<T> | UiFlowShortcut | null> {
         const renderedOptions = decision.options.map((option) => renderOptionTitle(option, state));
         const lookup = Object.fromEntries(renderedOptions.map((renderedTitle, index) => (

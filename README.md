@@ -217,7 +217,18 @@ pi.lot also provides compact, copy-friendly tool rendering:
 - `/view-full-tool` toggles a full view for one selected call;
 - active subagent work appears above the editor and in the footer;
 - the chat editor border stays at the theme's `thinkingXhigh` color (Bash mode keeps its own color); and
-- a footer indicator shows the thinking amount as colored cubes: `□□□□□ off`, `■■■□□ medium`, or `■■■■■ xhigh`. Pi's `max` level adds a sixth filled cube. The indicator uses the active level's theme color and updates when the model, thinking level, or theme changes. The native thinking suffix beside the model is hidden to avoid duplication.
+- a structured footer groups model and usage into two rows, with the session name right-aligned beside the context/usage row:
+
+  ```text
+  provider/model                                            Thinking ■■■■□ high
+  Context 42.0% / 272k (auto) · ↑12k ↓3k · $0.120    agents ●2 ○1 · session name
+  ```
+
+The thinking indicator uses colored cubes: `□□□□□ off`, `■■■□□ medium`, or `■■■■■ xhigh`. Pi's `max` level adds a sixth filled cube. The footer reserves that sixth column and right-pads each level name to the longest label, keeping the indicator aligned when levels change. The bundled `pilot-dark` theme keeps `off` grey and uses a blue-to-purple gradient for active thinking levels: a lighter blue for `minimal`, progressing through blue, periwinkle, and violet to purple at `max`. Select `pilot-dark` in `/settings` to use this palette; other themes retain their own colors. It updates with the model, thinking level, and theme. Context usage follows the thinking palette: `thinkingMinimal` below 20%, `thinkingLow` from 20%, `thinkingMedium` from 40%, `thinkingHigh` from 60%, `thinkingXhigh` from 80%, and `thinkingMax` at 90% and above—including usage over 100%. Unknown usage uses `thinkingOff`; displayed percentages are never capped. Agent activity retains its own colors; labels and separators stay subdued.
+
+The footer omits the cwd and Git branch. It adapts to terminal width, shortening long session names and collapsing cache details before model/context information. At very narrow widths, the session name is omitted to preserve context usage and agent counts. Wide terminals also show cache read/write totals and the latest assistant cache-hit rate. Usage totals include all session entries, including nested-tool, compaction, and branch-summary usage. Other extensions' statuses appear on a separate row when present.
+
+pi.lot uses Pi's custom-footer slot, so another custom-footer extension can replace it (or be replaced by it, depending on load order). A small Pi `0.85.1` adapter preserves the live auto-compaction indicator through the native footer's public methods; if no native footer is available when pi.lot starts, that indicator is omitted rather than guessed.
 
 ## Documentation
 

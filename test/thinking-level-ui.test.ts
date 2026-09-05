@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import test from "node:test";
 import {stripVTControlCharacters} from "node:util";
 import {
@@ -14,12 +15,27 @@ import {
 import {Container, type Component, type EditorComponent, type EditorTheme, type TUI} from "@earendil-works/pi-tui";
 import {ThemeColor} from "../src/tui/Color.js";
 import {ThinkingLevelUiRuntime} from "../src/tui/ThinkingLevelUiRuntime.js";
+import {NativeFooterAutoCompaction} from "../src/tui/NativeFooterAutoCompaction.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 
 type EditorFactory = NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]>;
+type FooterFactory = NonNullable<Parameters<ExtensionUIContext["setFooter"]>[0]>;
+type Footer = ReturnType<FooterFactory>;
 const STATUS_KEY = "pi.lot-thinking";
 
 initTheme("dark");
+
+test("bundled theme defines seven distinct thinking colors, with an explicit max color", () => {
+    const theme = JSON.parse(readFileSync(new URL("../themes/pilot-dark.json", import.meta.url), "utf8")) as {
+        colors: Record<string, string>;
+    };
+    const tokens = [
+        "thinkingOff", "thinkingMinimal", "thinkingLow", "thinkingMedium",
+        "thinkingHigh", "thinkingXhigh", "thinkingMax",
+    ] as const;
+    for (const token of tokens) assert.match(theme.colors[token] ?? "", /^#[0-9a-f]{6}$/i, token);
+    assert.equal(new Set(tokens.map((token) => theme.colors[token])).size, tokens.length);
+});
 
 test("thinking indicator fills discrete cubes and uses each active level's theme color", () => {
     const harness = new UiHarness();
@@ -39,12 +55,56 @@ test("thinking indicator fills discrete cubes and uses each active level's theme
         harness.level = level;
         runtime.update();
         const status = harness.status();
-        assert.equal(stripVTControlCharacters(status), `Thinking ${bar} ${level}`);
+        assert.equal(stripVTControlCharacters(status), `Thinking ${bar.padEnd(6)} ${level.padEnd(7)}`);
+        assert.equal(displayWidth(status), 23);
         assert.ok(status.includes(harness.theme.fg(color, level)));
         const filled = bar.replaceAll("□", "");
         if (filled) assert.ok(status.includes(harness.theme.fg(color, filled)));
         const empty = bar.replaceAll("■", "");
         if (empty) assert.ok(status.includes(harness.theme.fg(ThemeColor.thinkingOff, empty)));
+    }
+    runtime.stopSession();
+});
+
+test("footer keeps thinking cubes and labels in fixed columns across every level and terminal width", () => {
+    const harness = new UiHarness();
+    const runtime = new ThinkingLevelUiRuntime();
+    runtime.startSession(harness.context);
+    const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+    for (let width = 0; width <= 120; width++) {
+        let expectedColumns: number[] | undefined;
+        for (const level of levels) {
+            harness.level = level;
+            runtime.update();
+            const row = harness.footer!.render(width)[0]!;
+            const plain = stripVTControlCharacters(row);
+            const cubes = plain.search(/[■□]/);
+            const label = cubes < 0 ? -1 : plain.indexOf(level, cubes);
+            const columns = [plain.indexOf("Thinking"), cubes, label];
+            expectedColumns ??= columns;
+            assert.deepEqual(columns, expectedColumns, `${level} stays aligned at width ${width}`);
+            assert.ok(displayWidth(row) <= width);
+            if (label >= 0) assert.equal(plain.slice(label), level.padEnd(7));
+        }
+    }
+    runtime.stopSession();
+});
+
+test("another loaded copy cannot undo footer padding by overwriting the shared thinking status", () => {
+    const harness = new UiHarness();
+    const runtime = new ThinkingLevelUiRuntime();
+    runtime.startSession(harness.context);
+    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+        harness.level = level;
+        runtime.update();
+        const expected = harness.footer!.render(80)[0];
+        // Older installed pi.lot copies use the same key with an unpadded label.
+        const unpadded = stripVTControlCharacters(harness.status()).replace(/ +/g, " ").trim();
+        harness.statuses.set(STATUS_KEY, unpadded);
+        harness.editor!.render(80);
+        assert.equal(harness.footer!.render(80)[0], expected, `${level} ignores the legacy status overwrite`);
+        harness.statuses.delete(STATUS_KEY);
+        assert.equal(harness.footer!.render(80)[0], expected, `${level} survives the other copy clearing its status`);
     }
     runtime.stopSession();
 });
@@ -56,17 +116,17 @@ test("model changes to non-reasoning or no model show thinking off", () => {
     harness.level = "xhigh";
     harness.reasoning = false;
     runtime.update();
-    assert.equal(stripVTControlCharacters(harness.status()), "Thinking □□□□□ off");
+    assert.equal(stripVTControlCharacters(harness.status()), "Thinking □□□□□  off".padEnd(23));
     harness.reasoning = true;
     harness.hasModel = false;
     runtime.update();
-    assert.equal(stripVTControlCharacters(harness.status()), "Thinking □□□□□ off");
+    assert.equal(stripVTControlCharacters(harness.status()), "Thinking □□□□□  off".padEnd(23));
     harness.hasModel = true;
     runtime.update();
-    assert.equal(stripVTControlCharacters(harness.status()), "Thinking ■■■■■ xhigh");
+    assert.equal(stripVTControlCharacters(harness.status()), "Thinking ■■■■■  xhigh".padEnd(23));
     harness.level = undefined;
     runtime.update();
-    assert.equal(stripVTControlCharacters(harness.status()), "Thinking □□□□□ off");
+    assert.equal(stripVTControlCharacters(harness.status()), "Thinking □□□□□  off".padEnd(23));
     runtime.stopSession();
 });
 
@@ -168,6 +228,8 @@ test("thinking UI does not install terminal components or statuses outside TUI m
         runtime.update();
         runtime.stopSession();
         assert.equal(harness.factory, undefined);
+        assert.equal(harness.footer, undefined);
+        assert.equal(harness.branchListeners.size, 0);
         assert.equal(harness.statusWrites, 0);
     }
 });
@@ -186,7 +248,7 @@ test("thinking UI can restart cleanly and preserves the editor's terminal width 
     assert.equal(harness.factory, undefined);
     harness.level = "low";
     runtime.startSession(harness.context);
-    assert.equal(stripVTControlCharacters(harness.status()), "Thinking ■■□□□ low");
+    assert.equal(stripVTControlCharacters(harness.status()), "Thinking ■■□□□  low".padEnd(23));
     const updates = harness.statusWrites;
     harness.level = "high";
     oldEditor.invalidate();
@@ -195,82 +257,69 @@ test("thinking UI can restart cleanly and preserves the editor's terminal width 
     runtime.stopSession();
 });
 
-test("native footer retains all its information except the redundant thinking suffix", () => {
+test("structured footer groups model and thinking, preserves statuses, and restores the native footer", () => {
     const harness = new UiHarness();
-    const footer = nativeFooter(harness);
-    const originalRender = footer.render;
+    const native = nativeFooter(harness);
+    const originalRender = native.render;
+    const originalSetter = native.setAutoCompactEnabled;
     const container = new Container();
-    container.addChild(footer);
+    container.addChild(native);
     harness.children.push(container);
     harness.statuses.set("other", "other status • low");
+    harness.statuses.set("pi.lot-subagents", "agents ●2");
     const runtime = new ThinkingLevelUiRuntime();
     runtime.startSession(harness.context);
-
-    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
-        harness.level = level;
-        runtime.update();
-        const before = originalRender.call(footer, 180);
-        const after = footer.render(180);
-        const suffix = ` • ${level === "off" ? "thinking off" : level}`;
-        const label = `(${harness.provider}) ${harness.modelId}`;
-        assert.equal(after[1], before[1]!.replace(label + suffix, " ".repeat(suffix.length) + label));
-        assert.equal(after[0], before[0]);
-        assert.deepEqual(after.slice(2), before.slice(2));
-        const plain = stripVTControlCharacters(after[1]!);
-        assert.ok(plain.includes("CH80.0%"));
-        assert.ok(plain.includes("$1.500 (sub)"));
-        assert.ok(plain.includes("74.4%/272k (auto)"));
-        assert.ok(plain.endsWith(harness.modelId));
-        assert.equal(displayWidth(after[1]!), displayWidth(before[1]!));
-    }
+    const footer = harness.footer!;
+    const lines = footer.render(180).map(stripVTControlCharacters);
+    assert.equal(lines.length, 3);
+    assert.ok(lines[0]!.includes("example/test-model-low"));
+    assert.ok(lines[0]!.endsWith("Thinking ■■■□□  medium".padEnd(23)));
+    assert.ok(lines[1]!.includes("(auto)"));
+    assert.ok(lines[1]!.endsWith("agents ●2 · test session"));
+    assert.equal(lines[2], "other status • low");
+    assert.ok(lines.every((line) => !line.includes("/tmp/pilot")));
+    assert.equal(harness.branchListeners.size, 0);
+    assert.equal(native.render, originalRender, "native rendered output is no longer patched");
+    native.setAutoCompactEnabled(false);
+    assert.ok(!stripVTControlCharacters(footer.render(180)[1]!).includes("(auto)"));
+    native.setAutoCompactEnabled(true);
+    assert.ok(stripVTControlCharacters(footer.render(180)[1]!).includes("(auto)"));
     runtime.stopSession();
-    assert.equal(footer.render, originalRender);
+    assert.equal(harness.footer, undefined);
+    assert.equal(native.setAutoCompactEnabled, originalSetter);
+    assert.equal(harness.branchListeners.size, 0);
 });
 
-test("native footer removes partially clipped thinking suffixes without disturbing narrow layouts", () => {
+test("shutdown leaves a later custom footer in place", () => {
     const harness = new UiHarness();
-    const footer = nativeFooter(harness);
-    const originalRender = footer.render;
-    harness.children.push(footer);
     const runtime = new ThinkingLevelUiRuntime();
     runtime.startSession(harness.context);
-
-    for (const level of ["off", "low", "xhigh"] as const) {
-        harness.level = level;
-        for (let width = 8; width <= 160; width++) {
-            const before = originalRender.call(footer, width);
-            const after = footer.render(width);
-            const plain = stripVTControlCharacters(after[1]!);
-            assert.ok(after.every((line) => displayWidth(line) <= width));
-            assert.equal(displayWidth(after[1]!), displayWidth(before[1]!));
-            if (stripVTControlCharacters(before[1]!).includes(harness.modelId)) {
-                assert.ok(plain.endsWith(harness.modelId), `no clipped suffix remains at width ${width}`);
-            } else {
-                assert.equal(after[1], before[1]);
-            }
-        }
-    }
-    harness.reasoning = false;
-    assert.deepEqual(footer.render(180), originalRender.call(footer, 180));
+    const later: Footer = {render: () => ["later footer"], invalidate() {}};
+    harness.context.ui.setFooter(() => later);
+    assert.equal(harness.branchListeners.size, 0);
     runtime.stopSession();
+    assert.equal(harness.footer, later);
 });
 
-test("footer decoration preserves model names containing a thinking level and detaches safely", () => {
+test("auto-compaction adapter reads disabled initial state and detaches without clobbering later decorators", () => {
     const harness = new UiHarness();
-    harness.modelId = "low";
-    harness.level = "low";
-    const footer = nativeFooter(harness);
-    const originalRender = footer.render;
-    harness.children.push(footer);
-    const runtime = new ThinkingLevelUiRuntime();
-    runtime.startSession(harness.context);
-    assert.ok(stripVTControlCharacters(footer.render(180)[1]!).endsWith("(example) low"));
-    const decorated = footer.render;
-    const later = (width: number) => decorated(width);
-    footer.render = later;
-    runtime.stopSession();
-    assert.equal(footer.render, later);
-    assert.deepEqual(footer.render(180), originalRender.call(footer, 180));
+    harness.modelId = "model (auto)";
+    const native = nativeFooter(harness);
+    native.setAutoCompactEnabled(false);
+    harness.children.push(native);
+    const adapter = new NativeFooterAutoCompaction();
+    adapter.attach(harness);
+    assert.equal(adapter.getEnabled(), false);
+    const decorated = native.setAutoCompactEnabled;
+    const later = (enabled: boolean) => decorated(enabled);
+    native.setAutoCompactEnabled = later;
+    adapter.dispose();
+    native.setAutoCompactEnabled(true);
+    assert.equal(native.setAutoCompactEnabled, later);
+    assert.equal(adapter.getEnabled(), false, "disposed adapter does not receive later updates");
+    assert.ok(stripVTControlCharacters(native.render(180)[1]!).includes("74.4%/272k (auto)"));
+    adapter.attach(harness);
+    assert.equal(native.setAutoCompactEnabled, later);
 });
 
 function nativeFooter(harness: UiHarness): FooterComponent {
@@ -307,6 +356,8 @@ class UiHarness {
     theme = testTheme();
     factory: EditorFactory | undefined;
     editor: EditorComponent | undefined;
+    footer: Footer | undefined;
+    readonly branchListeners = new Set<() => void>();
     readonly statuses = new Map<string, string>();
     statusWrites = 0;
     readonly context: ExtensionContext;
@@ -322,9 +373,30 @@ class UiHarness {
                     : undefined;
             },
             get thinkingLevel() { return harness.level; },
+            sessionManager: {
+                getEntries: () => [],
+                getCwd: () => "/tmp/pilot",
+                getSessionName: () => "test session",
+            },
+            getContextUsage: () => ({contextWindow: 272_000, percent: 74.4, tokens: 202_368}),
+            modelRegistry: {
+                isUsingOAuth: () => false,
+            },
             ui: {
                 get theme() { return harness.theme; },
                 getEditorComponent: () => this.factory,
+                setFooter: (factory: FooterFactory | undefined) => {
+                    this.footer?.dispose?.();
+                    this.footer = factory?.({requestRender() {}} as TUI, this.theme, {
+                        getGitBranch: () => "main",
+                        getAvailableProviderCount: () => 2,
+                        getExtensionStatuses: () => this.statuses,
+                        onBranchChange: (callback) => {
+                            this.branchListeners.add(callback);
+                            return () => { this.branchListeners.delete(callback); };
+                        },
+                    });
+                },
                 setEditorComponent: (factory: EditorFactory | undefined) => {
                     this.factory = factory;
                     const tui = {

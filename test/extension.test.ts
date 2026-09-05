@@ -768,6 +768,7 @@ function toolDisplayUi() {
             editorFactory = factory;
         },
         setStatus() {},
+        setFooter() {},
         setToolsExpanded() {},
     };
 }

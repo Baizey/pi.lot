@@ -70,12 +70,13 @@
     "syntaxOperator": "#D4D4D4",
     "syntaxPunctuation": "#D4D4D4",
 
-    "thinkingOff": "darkGray",
-    "thinkingMinimal": "#6e6e6e",
-    "thinkingLow": "#5f87af",
-    "thinkingMedium": "#81a2be",
-    "thinkingHigh": "#b294bb",
-    "thinkingXhigh": "#d183e8",
+    "thinkingOff": "#6e6e6e",
+    "thinkingMinimal": "#8ecaff",
+    "thinkingLow": "#80b7ff",
+    "thinkingMedium": "#9f9fff",
+    "thinkingHigh": "#b38ff6",
+    "thinkingXhigh": "#c785f4",
+    "thinkingMax": "#d183e8",
 
     "bashMode": "green"
   },

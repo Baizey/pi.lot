@@ -5,30 +5,23 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type {EditorComponent} from "@earendil-works/pi-tui";
 import {ThemeColor} from "./Color.js";
-import {ThinkingFooterDecoration} from "./ThinkingFooterDecoration.js";
+import {NativeFooterAutoCompaction} from "./NativeFooterAutoCompaction.js";
+import {PilotFooter} from "./PilotFooter.js";
+import {formatThinkingIndicator} from "./ThinkingIndicator.js";
 
 type EditorFactory = NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]>;
-type ThinkingLevel = NonNullable<ExtensionContext["thinkingLevel"]>;
 type ThinkingUiSession = {context: ExtensionContext};
 
 const STATUS_KEY = "pi.lot-thinking";
-const THINKING_STEPS = {
-    off: {filled: 0, color: ThemeColor.thinkingOff},
-    minimal: {filled: 1, color: ThemeColor.thinkingMinimal},
-    low: {filled: 2, color: ThemeColor.thinkingLow},
-    medium: {filled: 3, color: ThemeColor.thinkingMedium},
-    high: {filled: 4, color: ThemeColor.thinkingHigh},
-    xhigh: {filled: 5, color: ThemeColor.thinkingXhigh},
-    max: {filled: 6, color: ThemeColor.thinkingMax},
-} satisfies Record<ThinkingLevel, {filled: number; color: ThemeColor}>;
 
-/** Moves thinking-level color into the footer without replacing Pi's footer or editor behavior. */
+/** Owns the structured footer and thinking colors while preserving editor behavior. */
 export class ThinkingLevelUiRuntime {
     private session: ThinkingUiSession | undefined;
     private previousEditorFactory: EditorFactory | undefined;
     private editorFactory: EditorFactory | undefined;
     private lastStatus: string | undefined;
-    private footerDecoration: ThinkingFooterDecoration | undefined;
+    private autoCompaction: NativeFooterAutoCompaction | undefined;
+    private footer: PilotFooter | undefined;
 
     startSession(ctx: ExtensionContext): void {
         if (this.session) throw new Error("Thinking-level UI session is already started");
@@ -38,10 +31,10 @@ export class ThinkingLevelUiRuntime {
 
         this.previousEditorFactory = ctx.ui.getEditorComponent();
         const previous = this.previousEditorFactory;
-        const footer = new ThinkingFooterDecoration(ctx);
-        this.footerDecoration = footer;
+        const autoCompaction = new NativeFooterAutoCompaction();
+        this.autoCompaction = autoCompaction;
         this.editorFactory = (tui, theme, keybindings) => {
-            footer.attach(tui);
+            autoCompaction.attach(tui);
             return this.decorateEditor(
                 previous?.(tui, theme, keybindings)
                     ?? new CustomEditor(tui, theme, keybindings, {embedWorkingStatus: true}),
@@ -49,19 +42,18 @@ export class ThinkingLevelUiRuntime {
             );
         };
         ctx.ui.setEditorComponent(this.editorFactory);
+        ctx.ui.setFooter((_tui, _theme, footerData) => {
+            const footer = new PilotFooter(ctx, footerData, () => autoCompaction.getEnabled());
+            this.footer = footer;
+            return footer;
+        });
         this.update();
     }
 
     update(): void {
         const ctx = this.session?.context;
         if (!ctx?.hasUI || ctx.mode !== "tui") return;
-        const level = ctx.model?.reasoning ? (ctx.thinkingLevel ?? "off") : "off";
-        const {filled, color} = THINKING_STEPS[level];
-        const total = Math.max(THINKING_STEPS.xhigh.filled, filled);
-        const theme = ctx.ui.theme;
-        const bar = theme.fg(color, "■".repeat(filled))
-            + theme.fg(ThemeColor.thinkingOff, "□".repeat(total - filled));
-        const status = `${theme.fg(ThemeColor.dim, "Thinking")} ${bar} ${theme.fg(color, level)}`;
+        const status = formatThinkingIndicator(ctx);
         // Updates can originate from editor invalidation/rendering; do not schedule a render loop.
         if (status === this.lastStatus) return;
         this.lastStatus = status;
@@ -76,10 +68,14 @@ export class ThinkingLevelUiRuntime {
         this.editorFactory = undefined;
         this.previousEditorFactory = undefined;
         this.lastStatus = undefined;
-        this.footerDecoration?.dispose();
-        this.footerDecoration = undefined;
+        this.autoCompaction?.dispose();
+        this.autoCompaction = undefined;
+        const footer = this.footer;
+        this.footer = undefined;
         if (!ctx?.hasUI || ctx.mode !== "tui") return;
 
+        // Pi disposes the previous component when another extension replaces the footer.
+        if (footer && !footer.disposed) ctx.ui.setFooter(undefined);
         ctx.ui.setStatus(STATUS_KEY, undefined);
         // A later extension may have installed its own editor. Do not replace it on teardown.
         if (factory && ctx.ui.getEditorComponent() === factory) {

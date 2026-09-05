@@ -233,6 +233,36 @@ test("minimal presentation shows title arguments and hides successful or failed 
     );
 });
 
+test("every display mode formats the same header once and only expanded modes format the body", () => {
+    type Args = {block: string; path: string; range: string; note: string};
+    const formatted: string[] = [];
+    const format = (key: string, value: unknown): string => {
+        formatted.push(key);
+        return String(value);
+    };
+    const renderer = new ToolPresentationRenderer<Args>({
+        toolName: "mixed",
+        arguments: [
+            {key: "block", layout: ToolArgumentLayout.BLOCK, format: (value) => format("block", value)},
+            {key: "path", placement: ToolArgumentPlacement.TITLE_PRIMARY, format: (value) => format("path", value)},
+            {key: "range", placement: ToolArgumentPlacement.TITLE_SECONDARY, format: (value) => format("range", value)},
+            {key: "note", format: (value) => format("note", value)},
+        ],
+    });
+    const args = {block: "line 1\nline 2", path: "file.txt", range: ":2", note: "first"};
+
+    for (const mode of Object.values(ToolDisplayMode)) {
+        formatted.length = 0;
+        const lines = renderer.renderCall(args, plainTheme, mode, {isError: true}).render(120);
+        assert.deepEqual(lines, mode === ToolDisplayMode.MINIMAL
+            ? ["× mixed | file.txt:2"]
+            : ["× mixed | file.txt:2", "note: first", "block:", "line 1", "line 2"]);
+        assert.deepEqual(formatted, mode === ToolDisplayMode.MINIMAL
+            ? ["path", "range"]
+            : ["path", "range", "note", "block"]);
+    }
+});
+
 test("truncated presentation keeps argument heads and output tails", () => {
     const renderer = new ToolPresentationRenderer(bashPresentation());
     const call = renderer.renderCall({

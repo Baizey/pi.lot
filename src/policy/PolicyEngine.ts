@@ -82,17 +82,12 @@ export class PolicyEngine {
     }
 
     private findPolicy(evaluatedPath: string, accessType: PolicyAccessType): Policy | undefined {
-        return this.policies
-            .filter((policy) => policy.info[accessType] && this.isUnderPolicy(accessType, evaluatedPath, policy.pattern))
-            .sort((left, right) => right.pattern.length - left.pattern.length)[0];
-    }
-
-    private isUnderPolicy(
-        accessType: PolicyAccessType,
-        evaluatedUri: string,
-        pattern: string,
-    ): boolean {
-        return policyScopeCovers(accessType, pattern, evaluatedUri);
+        let match: Policy | undefined;
+        for (const policy of this.policies) {
+            if (!policy.info[accessType] || !policyScopeCovers(accessType, policy.pattern, evaluatedPath)) continue;
+            if (!match || policy.pattern.length > match.pattern.length) match = policy;
+        }
+        return match;
     }
 
     private standardizePolicy(policy: Policy): Policy {

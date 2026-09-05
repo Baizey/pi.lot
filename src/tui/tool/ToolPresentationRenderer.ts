@@ -88,48 +88,23 @@ export class ToolPresentationRenderer<TArgs extends object> {
         options: ToolCallRenderOptions,
     ): string[] {
         const resolved = this.resolveArguments(args);
-        const lines = mode === ToolDisplayMode.MINIMAL
-            ? this.minimalCallLines(resolved, args, theme, options)
-            : this.regularCallLines(resolved, args, theme, mode, options);
-        return this.boundCallLines(lines, theme);
-    }
-
-    private minimalCallLines(
-        resolved: ResolvedArgument<TArgs>[],
-        args: Partial<TArgs>,
-        theme: Theme,
-        options: ToolCallRenderOptions,
-    ): string[] {
         let title = this.toolTitle(theme, options);
         for (const argument of resolved) {
             if (argument.placement === ToolArgumentPlacement.BODY) continue;
             title = this.appendTitleArgument(title, argument, args, theme);
         }
-        return [title];
-    }
 
-    private regularCallLines(
-        resolved: ResolvedArgument<TArgs>[],
-        args: Partial<TArgs>,
-        theme: Theme,
-        mode: ToolDisplayMode,
-        options: ToolCallRenderOptions,
-    ): string[] {
-        let title = this.toolTitle(theme, options);
-        for (const argument of resolved) {
-            if (argument.placement === ToolArgumentPlacement.BODY) continue;
-            title = this.appendTitleArgument(title, argument, args, theme);
-        }
+        if (mode === ToolDisplayMode.MINIMAL) return this.boundCallLines([title], theme);
 
         const body = resolved.filter((argument) => argument.placement === ToolArgumentPlacement.BODY);
         const inline = body.filter((argument) => argument.layout === ToolArgumentLayout.INLINE);
         const blocks = body.filter((argument) => argument.layout === ToolArgumentLayout.BLOCK);
         const showLabels = body.length !== 1;
-        return [
+        return this.boundCallLines([
             title,
             ...inline.flatMap((argument) => this.bodyArgumentLines(argument, args, theme, showLabels, mode)),
             ...blocks.flatMap((argument) => this.bodyArgumentLines(argument, args, theme, showLabels, mode)),
-        ];
+        ], theme);
     }
 
     private toolResultLines(

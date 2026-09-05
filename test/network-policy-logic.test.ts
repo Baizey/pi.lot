@@ -134,6 +134,48 @@ test("the most-specific hostname or path policy wins", () => {
     assert.equal(logic.evaluate("notexample.com/resource", PolicyAccessType.HTTP_GET), null);
 });
 
+test("policy selection keeps specificity and access-type filtering independent of insertion order", () => {
+    const rules = [
+        policy("*", PolicyAccessType.HTTP_GET, PolicyLifetime.SESSION, PolicyResponse.DENIED, "fallback"),
+        policy("example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "domain"),
+        policy("api.example.com", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "host"),
+        policy("api.example.com/v1", PolicyAccessType.HTTP_GET, PolicyLifetime.GLOBAL, PolicyResponse.ALLOWED, "path"),
+        policy("api.example.com/v1/users", PolicyAccessType.HTTP_POST, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "write"),
+        policy("api.example.com:443/v1", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "port"),
+    ];
+    const cases: Array<[string, PolicyAccessType, string | undefined]> = [
+        ["api.example.com/v1/users", PolicyAccessType.HTTP_GET, "path"],
+        ["api.example.com/v1/users", PolicyAccessType.HTTP_POST, "write"],
+        ["api.example.com/v10", PolicyAccessType.HTTP_GET, "host"],
+        ["node.api.example.com/v1", PolicyAccessType.HTTP_GET, "host"],
+        ["other.example.com/v1", PolicyAccessType.HTTP_GET, "domain"],
+        ["api.example.com:443/v1/users", PolicyAccessType.HTTP_GET, "port"],
+        ["api.example.com:8443/v1/users", PolicyAccessType.HTTP_GET, "fallback"],
+        ["notexample.com", PolicyAccessType.HTTP_GET, "fallback"],
+        ["api.example.com/v1", PolicyAccessType.HTTP_DELETE, undefined],
+        ["api.example.com:invalid", PolicyAccessType.HTTP_GET, undefined],
+    ];
+
+    for (let offset = 0; offset < rules.length; offset++) {
+        const rotated = [...rules.slice(offset), ...rules.slice(0, offset)];
+        for (const ordering of [rotated, [...rotated].reverse()]) {
+            const engine = new PolicyEngine(ordering);
+            const before = engine.allPolicies();
+            for (const [uri, accessType, reason] of cases) {
+                const result = engine.evaluate(uri, accessType);
+                assert.equal(result?.matchedReason, reason, `${uri} (${accessType})`);
+                if (reason) {
+                    const expected = before.find((rule) => rule.info[accessType]?.reason === reason)!;
+                    assert.equal(result?.matchedPattern, expected.pattern);
+                    assert.equal(result?.matchedStatus, expected.info[accessType]?.status);
+                    assert.equal(result?.matchedLifetime, expected.info[accessType]?.lifetime);
+                }
+            }
+            assert.deepEqual(engine.allPolicies(), before);
+        }
+    }
+});
+
 test("the universal network pattern applies only after concrete valid targets", () => {
     const logic = new PolicyEngine([
         policy(

@@ -68,7 +68,7 @@ export class WriteTool {
             if (result.matchedStatus === PolicyResponse.DENIED) {
                 throw new Error(result.toDenyMessage());
             }
-            return createWriteToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+            return definition.execute(toolCallId, params, signal, onUpdate, ctx);
         };
         const renderCall: NonNullable<typeof definition.renderCall> = (args, theme, context) => {
             this.displayRows.observe("write", args, context);

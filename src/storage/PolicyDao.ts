@@ -1,8 +1,7 @@
 // noinspection SqlNoDataSourceInspection
 
 import {SqliteDatabase} from "./sqlite";
-import {Policy, PolicyLifetime, PolicyResponse} from "../policy/types";
-import {PolicyAccessType} from "../policy/types";
+import {type Policy, PolicyAccessType, PolicyLifetime, PolicyResponse} from "../policy/types";
 
 export const policyStatusesSql = sqlStringList(Object.values(PolicyResponse));
 export const policyLifetimesSql = sqlStringList(Object.values(PolicyLifetime));
@@ -37,44 +36,15 @@ export class PolicyDao implements PolicyDaoInterface {
     initializeSchema(): void {
         if (this.schemaInitialized) return;
         this.db.exec(`
-            create table if not exists "policy_rules"
-            (
-                "pattern"
-                text
-                not
-                null,
-                "accessType"
-                text
-                not
-                null
-                check (
-                "accessType"
-                in
-            (
-                ${fsAccessTypesSql}
-            )),
-                "lifetime" text not null check
-            (
-                "lifetime"
-                in
-            (
-                ${policyLifetimesSql}
-            )),
-                "status" text not null check
-            (
-                "status"
-                in
-            (
-                ${policyStatusesSql}
-            )),
+            create table if not exists "policy_rules" (
+                "pattern" text not null,
+                "accessType" text not null check ("accessType" in (${fsAccessTypesSql})),
+                "lifetime" text not null check ("lifetime" in (${policyLifetimesSql})),
+                "status" text not null check ("status" in (${policyStatusesSql})),
                 "reason" text not null,
                 "updatedAt" integer not null,
-                primary key
-            (
-                "pattern",
-                "accessType"
-            )
-                );
+                primary key ("pattern", "accessType")
+            );
 
             create index if not exists "idx_policy_rules_access"
                 on "policy_rules" ("accessType", "pattern");
@@ -102,7 +72,7 @@ export class PolicyDao implements PolicyDaoInterface {
             policies.set(row.pattern, policy);
         }
 
-        return {policies: [...policies.values()]}.policies;
+        return [...policies.values()];
     }
 
     upsertPolicies(policies: Policy[]): void {
@@ -119,7 +89,7 @@ export class PolicyDao implements PolicyDaoInterface {
                     "reason" = excluded."reason",
                     "updatedAt" = excluded."updatedAt"
             `);
-            for (const policy of ({policies: items}).policies) {
+            for (const policy of items) {
                 for (const status of Object.values(policy.info)) {
                     if (!status) continue;
                     upsert.run({pattern: policy.pattern, ...status, updatedAt: now});

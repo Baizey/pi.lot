@@ -1,5 +1,6 @@
 import {
     createEditToolDefinition,
+    type EditToolDetails,
     type EditToolInput,
     type ExtensionAPI,
     type ToolDefinition,
@@ -13,6 +14,12 @@ import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRunti
 import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {resolveBuiltinToolPath} from "./resolveBuiltinToolPath.js";
+
+type EditPresentationDefinition = ToolDefinition<
+    ReturnType<typeof createEditToolDefinition>["parameters"],
+    EditToolDetails | undefined,
+    {pilotFullDisplay?: boolean}
+>;
 
 const EDIT_PRESENTATION = {
     toolName: "edit",
@@ -43,7 +50,7 @@ const EDIT_PRESENTATION = {
 } satisfies ToolPresentationSpec<EditToolInput>;
 
 export class EditTool {
-    private definition: ToolDefinition<any, any> | undefined;
+    private definition: EditPresentationDefinition | undefined;
     private registered = false;
 
     constructor(
@@ -80,11 +87,11 @@ export class EditTool {
             if (result.matchedStatus === PolicyResponse.DENIED) {
                 throw new Error(result.toDenyMessage());
             }
-            return createEditToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+            return definition.execute(toolCallId, params, signal, onUpdate, ctx);
         };
-        const renderCall: NonNullable<typeof definition.renderCall> = (args, theme, context) => {
-            this.displayRows.observe("edit", args, context as any);
-            const mode = resolveToolDisplayMode(context.expanded, context.state as any);
+        const renderCall: NonNullable<EditPresentationDefinition["renderCall"]> = (args, theme, context) => {
+            this.displayRows.observe("edit", args, context);
+            const mode = resolveToolDisplayMode(context.expanded, context.state);
             return presentation.renderCall(
                 args,
                 theme,
@@ -92,8 +99,8 @@ export class EditTool {
                 {isPartial: context.isPartial, isError: context.isError},
             );
         };
-        const renderResult: NonNullable<typeof definition.renderResult> = (result, options, theme, context) => {
-            const mode = resolveToolDisplayMode(options.expanded, context.state as any);
+        const renderResult: NonNullable<EditPresentationDefinition["renderResult"]> = (result, options, theme, context) => {
+            const mode = resolveToolDisplayMode(options.expanded, context.state);
             const diff = !context.isError && typeof result.details?.diff === "string"
                 ? result.details.diff
                 : undefined;
@@ -108,7 +115,7 @@ export class EditTool {
             execute,
             renderCall,
             renderResult,
-        } as unknown as ToolDefinition<any, any>;
+        };
         return this.definition;
     }
 }

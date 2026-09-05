@@ -60,5 +60,3 @@ export class SqliteDatabase {
         this.db.close();
     }
 }
-
-export {SqliteDatabase as DatabaseOrm};

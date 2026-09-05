@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,9 +17,10 @@ import {ReadTool} from "../src/tools/builtin/ReadTool.js";
 import {WriteTool} from "../src/tools/builtin/WriteTool.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 
-test("builtin file tools authorize the same child-CWD paths they operate on", async () => {
+test("cached builtin file tools preserve invoking child paths and recheck authorization", async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), "pilot-builtin-paths-"));
     const evaluations: Array<{agent: string; path: string; accessType: PolicyAccessType}> = [];
+    let denied = false;
     const runtime = {
         policyRuntime: {
             async once(agent: string, evaluatedPath: string, accessType: PolicyAccessType) {
@@ -29,7 +30,7 @@ test("builtin file tools authorize the same child-CWD paths they operate on", as
                     evaluatedAccessType: accessType,
                     matchedPattern: evaluatedPath,
                     matchedLifetime: PolicyLifetime.ONCE,
-                    matchedStatus: PolicyResponse.ALLOWED,
+                    matchedStatus: denied ? PolicyResponse.DENIED : PolicyResponse.ALLOWED,
                     matchedReason: "test",
                     resolutionSource: PolicyResolutionSource.SYSTEM,
                 });
@@ -43,30 +44,51 @@ test("builtin file tools authorize the same child-CWD paths they operate on", as
         new WriteTool(pi, () => runtime, rows).toolDefinition(),
         new EditTool(pi, () => runtime, rows).toolDefinition(),
     ];
-    const ctx = {
-        cwd,
-        sessionManager: {getSessionId: () => "child-session"},
-    } as ExtensionContext;
+    const contexts = [cwd, path.join(cwd, "second-child")].map((directory, index) => ({
+        cwd: directory,
+        sessionManager: {getSessionId: () => `child-session-${index}`},
+    } as ExtensionContext));
 
     try {
-        writeFileSync(path.join(cwd, "target.txt"), "old value", "utf8");
-        const read = await invoke(definitions[0]!, {path: "@target.txt"}, ctx);
-        assert.equal(textResult(read), "old value");
+        for (const ctx of contexts) {
+            mkdirSync(ctx.cwd, {recursive: true});
+            writeFileSync(path.join(ctx.cwd, "target.txt"), "old value", "utf8");
+            const read = await invoke(definitions[0]!, {path: "@target.txt"}, ctx);
+            assert.equal(textResult(read), "old value");
 
-        await invoke(definitions[1]!, {path: "@created.txt", content: "created"}, ctx);
-        assert.equal(readFileSync(path.join(cwd, "created.txt"), "utf8"), "created");
+            await invoke(definitions[1]!, {path: "@created.txt", content: "created"}, ctx);
+            assert.equal(readFileSync(path.join(ctx.cwd, "created.txt"), "utf8"), "created");
 
-        await invoke(definitions[2]!, {
+            await invoke(definitions[2]!, {
+                path: "@target.txt",
+                edits: [{oldText: "old value", newText: "new value"}],
+            }, ctx);
+            assert.equal(readFileSync(path.join(ctx.cwd, "target.txt"), "utf8"), "new value");
+        }
+
+        assert.deepEqual(evaluations, contexts.flatMap((ctx) => [
+            {agent: ctx.sessionManager.getSessionId(), path: path.join(ctx.cwd, "target.txt"), accessType: PolicyAccessType.FS_READ},
+            {agent: ctx.sessionManager.getSessionId(), path: path.join(ctx.cwd, "created.txt"), accessType: PolicyAccessType.FS_WRITE},
+            {agent: ctx.sessionManager.getSessionId(), path: path.join(ctx.cwd, "target.txt"), accessType: PolicyAccessType.FS_WRITE},
+        ]));
+
+        denied = true;
+        const ctx = contexts[1]!;
+        await assert.rejects(invoke(definitions[0]!, {path: "@target.txt"}, ctx), /ACCESS DENIED/);
+        await assert.rejects(invoke(definitions[1]!, {path: "@created.txt", content: "denied write"}, ctx), /ACCESS DENIED/);
+        await assert.rejects(invoke(definitions[2]!, {
             path: "@target.txt",
-            edits: [{oldText: "old value", newText: "new value"}],
-        }, ctx);
-        assert.equal(readFileSync(path.join(cwd, "target.txt"), "utf8"), "new value");
-
-        assert.deepEqual(evaluations, [
-            {agent: "child-session", path: path.join(cwd, "target.txt"), accessType: PolicyAccessType.FS_READ},
-            {agent: "child-session", path: path.join(cwd, "created.txt"), accessType: PolicyAccessType.FS_WRITE},
-            {agent: "child-session", path: path.join(cwd, "target.txt"), accessType: PolicyAccessType.FS_WRITE},
+            edits: [{oldText: "new value", newText: "denied edit"}],
+        }, ctx), /ACCESS DENIED/);
+        assert.deepEqual(evaluations.slice(6), [
+            {agent: ctx.sessionManager.getSessionId(), path: path.join(ctx.cwd, "target.txt"), accessType: PolicyAccessType.FS_READ},
+            {agent: ctx.sessionManager.getSessionId(), path: path.join(ctx.cwd, "created.txt"), accessType: PolicyAccessType.FS_WRITE},
+            {agent: ctx.sessionManager.getSessionId(), path: path.join(ctx.cwd, "target.txt"), accessType: PolicyAccessType.FS_WRITE},
         ]);
+        for (const context of contexts) {
+            assert.equal(readFileSync(path.join(context.cwd, "created.txt"), "utf8"), "created");
+            assert.equal(readFileSync(path.join(context.cwd, "target.txt"), "utf8"), "new value");
+        }
     } finally {
         rmSync(cwd, {recursive: true, force: true});
     }

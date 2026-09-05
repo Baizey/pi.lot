@@ -9,7 +9,7 @@ pi.lot lets Pi work across repositories and absolute paths while mediating the f
 
 ## Requirements
 
-pi.lot currently supports **Linux x86-64 only** and targets Pi `0.84.2`.
+pi.lot currently supports **Linux x86-64 only** and targets Pi `0.85.1`.
 
 The host needs:
 
@@ -29,7 +29,7 @@ See [Installation and setup](docs/installation.md) for distribution packages, ho
 Install and authenticate the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.2
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.85.1
 pi
 ```
 

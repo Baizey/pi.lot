@@ -13,6 +13,8 @@ export enum ThemeColor {
     dim = "dim",
     text = "text",
     thinkingText = "thinkingText",
+    scrollbarTrack = "scrollbarTrack",
+    scrollbarThumb = "scrollbarThumb",
     userMessageText = "userMessageText",
     customMessageText = "customMessageText",
     customMessageLabel = "customMessageLabel",

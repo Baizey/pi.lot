@@ -214,8 +214,10 @@ Read [Web search](docs/web-search.md) for configuration, provider availability, 
 pi.lot also provides compact, copy-friendly tool rendering:
 
 - `Ctrl+O` toggles compact and expanded tool views;
-- `/view-full-tool` toggles a full view for one selected call; and
-- active subagent work appears above the editor and in the footer.
+- `/view-full-tool` toggles a full view for one selected call;
+- active subagent work appears above the editor and in the footer;
+- the chat editor border stays at the theme's `thinkingXhigh` color (Bash mode keeps its own color); and
+- a footer indicator shows the thinking amount as colored cubes: `□□□□□ off`, `■■■□□ medium`, or `■■■■■ xhigh`. Pi's `max` level adds a sixth filled cube. The indicator uses the active level's theme color and updates when the model, thinking level, or theme changes. The native thinking suffix beside the model is hidden to avoid duplication.
 
 ## Documentation
 

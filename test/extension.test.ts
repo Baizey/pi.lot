@@ -113,6 +113,7 @@ type ExtensionHarness = {
     registeredTools: RegisteredTool[];
     registeredToolNames: string[];
     hasShortcut: (key: string) => boolean;
+    registeredEventNames: string[];
     sessionStart: () => SessionStartHandler;
     sessionShutdown: () => SessionShutdownHandler;
     beforeAgentStart: () => BeforeAgentStartHandler;
@@ -152,6 +153,8 @@ test("the production extension installs built-in overrides immediately but defer
     assert.equal(harness.hasShortcut("alt+o"), false);
     assert.equal(typeof harness.sessionStart(), "function");
     assert.equal(typeof harness.sessionShutdown(), "function");
+    assert.ok(harness.registeredEventNames.includes("thinking_level_select"));
+    assert.ok(harness.registeredEventNames.includes("model_select"));
 });
 
 test("Bash always routes through a native filesystem policy view", async () => {
@@ -325,10 +328,7 @@ test("Pilot's expanded state switches Bash between minimal and truncated while r
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {
-            setToolsExpanded() {
-            }
-        },
+        ui: toolDisplayUi(),
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -420,10 +420,7 @@ test("Bash components remain renderable during and after session shutdown", asyn
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {
-            setToolsExpanded() {
-            }
-        },
+        ui: toolDisplayUi(),
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -501,10 +498,7 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
         cwd: process.cwd(),
         hasUI: true,
         mode: "tui",
-        ui: {
-            setToolsExpanded() {
-            }
-        },
+        ui: toolDisplayUi(),
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -764,7 +758,22 @@ function createNoopMcpExtension() {
     };
 }
 
+function toolDisplayUi() {
+    type EditorFactory = Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0];
+    let editorFactory: EditorFactory;
+    return {
+        theme: {fg: (_color: string, text: string) => text},
+        getEditorComponent: () => editorFactory,
+        setEditorComponent(factory: EditorFactory) {
+            editorFactory = factory;
+        },
+        setStatus() {},
+        setToolsExpanded() {},
+    };
+}
+
 function extensionHarness(): ExtensionHarness {
+    const registeredEventNames: string[] = [];
     const registeredTools: RegisteredTool[] = [];
     const registeredToolNames: string[] = [];
     const shortcuts = new Map<string, ShortcutHandler>();
@@ -782,6 +791,7 @@ function extensionHarness(): ExtensionHarness {
         registerCommand() {
         },
         on(event: string, handler: unknown) {
+            registeredEventNames.push(event);
             if (event === "session_start") startHandler = handler as SessionStartHandler;
             if (event === "session_shutdown") shutdownHandler = handler as SessionShutdownHandler;
             if (event === "before_agent_start") beforeAgentStartHandler = handler as BeforeAgentStartHandler;
@@ -792,6 +802,7 @@ function extensionHarness(): ExtensionHarness {
         pi,
         registeredTools,
         registeredToolNames,
+        registeredEventNames,
         hasShortcut(key) {
             return shortcuts.has(key);
         },

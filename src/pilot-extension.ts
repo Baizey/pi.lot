@@ -20,6 +20,7 @@ import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
 import {ViewFullToolCommand} from "./commands/ViewFullToolCommand.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
+import {ThinkingLevelUiRuntime} from "./tui/ThinkingLevelUiRuntime.js";
 import {PilotDocumentation} from "./runtime/PilotDocumentation.js";
 
 export type PilotExtensionOptions = {
@@ -38,6 +39,7 @@ export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     private readonly displayRows = new ToolDisplayRows();
     private readonly documentation = new PilotDocumentation();
+    private readonly thinkingLevelUiRuntime = new ThinkingLevelUiRuntime();
     private readonly bashTool: BashTool;
     private readonly webSearchTool: WebSearchTool;
     private readonly readTool: ReadTool;
@@ -119,6 +121,8 @@ export class PilotExtension {
             );
             return {systemPrompt: this.documentation.appendToSystemPrompt(event.systemPrompt)};
         });
+        this.pi.on("thinking_level_select", () => this.thinkingLevelUiRuntime.update());
+        this.pi.on("model_select", () => this.thinkingLevelUiRuntime.update());
         this.pi.on("session_compact", () => this.displayRows.clear());
         this.pi.on("session_tree", () => this.displayRows.clear());
         this.pi.on("session_shutdown", () => this.stopSession());
@@ -152,14 +156,20 @@ export class PilotExtension {
         await this.mcpExtension.startSession(ctx);
         await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
         await this.subagentUiRuntime.startSession(ctx, this.subagentRuntime.coordinator());
+        this.thinkingLevelUiRuntime.startSession(ctx);
     }
 
     private async stopOwnedExtensions(): Promise<void> {
         let firstError: unknown;
         try {
-            await this.subagentUiRuntime.stopSession();
+            this.thinkingLevelUiRuntime.stopSession();
         } catch (error) {
             firstError = error;
+        }
+        try {
+            await this.subagentUiRuntime.stopSession();
+        } catch (error) {
+            firstError ??= error;
         }
         try {
             await this.subagentRuntime.stopSession();

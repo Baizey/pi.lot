@@ -132,7 +132,7 @@ test("the production extension installs built-in overrides immediately but defer
     assert.ok(bashTool);
     const commandParameter = bashTool.parameters.properties.command;
     const purposeParameter = bashTool.parameters.properties.purpose;
-    assert.equal(commandParameter?.description, "Bash command to execute");
+    assert.equal(commandParameter?.description, "Shell command to execute");
     assert.ok(purposeParameter);
     assert.equal(purposeParameter.description, "A short, one-line explanation of what the command will achieve");
     assert.equal(purposeParameter.minLength, 1);

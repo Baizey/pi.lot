@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync} from "node:fs";
 import {createConnection} from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -124,6 +124,59 @@ test("one session-owned native broker serves sequential Bash mounts", async () =
             }
         }
     } finally {
+        await broker.close();
+        rmSync(workspace, {recursive: true, force: true});
+    }
+});
+
+test("one broker keeps read caches isolated between concurrent Bash mounts", async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-native-broker-read-cache-"));
+    const target = path.join(workspace, "shared.txt");
+    const continuePath = path.join(workspace, "continue");
+    writeFileSync(target, "content");
+    const broker = new NativeFuseSessionBroker();
+    const runtime = allowingRuntime();
+    const views = ["warm", "cold"].map((mode) => (
+        runtime.beginNativeFilesystemToolCall(AGENT, {toolName: `broker-read-cache-${mode}`})
+    ));
+    const outputs = ["", ""];
+    let revoked = false;
+    const script = [
+        "import errno,os,sys,time",
+        "descriptor=os.open(sys.argv[1],os.O_RDONLY)",
+        "warm=sys.argv[3] == 'warm'",
+        "if warm: assert os.read(descriptor,1) == b'c'",
+        "print('READY',flush=True)",
+        "while not os.path.exists(sys.argv[2]): time.sleep(0.01)",
+        "try:",
+        " value=os.pread(descriptor,1,0)",
+        "except OSError as error:",
+        " assert not warm and error.errno == errno.EACCES",
+        "else:",
+        " assert warm and value == b'c'",
+        "os.close(descriptor)",
+    ].join("\n");
+
+    try {
+        const results = await Promise.all(views.map((view, index) => runNativeFuseSandboxedCommand({
+            command: ["python3", "-c", script, target, continuePath, index === 0 ? "warm" : "cold"],
+            cwd: workspace,
+            policyView: view,
+            sessionBroker: broker,
+            timeoutSeconds: 20,
+            onStdout: (data) => {
+                outputs[index] += data;
+                if (revoked || !outputs.every((output) => output.includes("READY"))) return;
+                runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.deny);
+                revoked = true;
+                writeFileSync(continuePath, "continue");
+            },
+        })));
+        assert.equal(revoked, true);
+        for (const result of results) assert.equal(result.exitCode, 0);
+        assert.equal(broker.activeMountCount, 0);
+    } finally {
+        for (const view of views) view.close();
         await broker.close();
         rmSync(workspace, {recursive: true, force: true});
     }

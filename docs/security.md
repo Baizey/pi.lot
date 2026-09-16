@@ -41,7 +41,8 @@ Subagents have separate model sessions and policy principals but share the trust
 
 - Linux x86-64 only.
 - Host-side FUSE path resolution has pathname time-of-check/time-of-use race windows.
-- Filesystem mediation uses versioned live policy checkpoints and `direct_io` so reads and writes return to native FUSE policy callbacks; file-backed `mmap` through that mount is intentionally unsupported and fails closed. Active network-flow revocation is not implemented.
+- Filesystem opens and native I/O callbacks check versioned live policy checkpoints. Authorized read-only opens use the per-Bash-call FUSE page cache and support read-only shared `mmap`; cached reads and already-faulted mappings can remain readable after policy revocation or control-channel failure. Cache misses still check policy. Writable opens retain `direct_io` and per-write checks; shared mappings through writable descriptors remain unsupported. Private mappings do not provide per-memory-access policy checks either. Active network-flow revocation is not implemented.
+- Cached file data can become stale when the backing file changes outside the mount. Read-only opens request cache invalidation, but existing handles and mappings are not continuously refreshed.
 - The combined worker's `/dev`, pseudo-filesystem, pathname-socket, and supplementary-group compatibility is incomplete.
 - Some DNS, UDP lifecycle, IPv6, HTTP/2, HTTP/3/QUIC, WebSocket, `CONNECT`, private-trust-store, and certificate-pinning behaviour is unsupported or fails closed.
 - Request policy cannot currently distinguish HTTP from HTTPS, query strings, or fragments.

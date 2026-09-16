@@ -104,7 +104,7 @@ test("invalid policy rows roll back the entire upsert batch", (context) => {
 });
 
 function createDatabase(context: TestContext): SqliteDatabase {
-    // Exercise real SQLite without WAL's file-backed mmap, which FUSE intentionally rejects.
+    // Exercise real SQLite without WAL's shared mmap through writable descriptors, which FUSE rejects.
     const database = SqliteDatabase.test(false, ":memory:");
     context.after(() => database.close());
     return database;

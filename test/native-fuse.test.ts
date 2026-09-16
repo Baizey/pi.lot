@@ -223,39 +223,154 @@ test("native FUSE authorizes and enumerates the current directory identity", asy
     }
 });
 
-test("native FUSE re-evaluates policy before rereading an already-open descriptor", async () => {
-    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-native-fuse-read-handle-"));
-    const target = path.join(workspace, "open-handle.txt");
+test("native FUSE supports read-only shared mappings for opened and created files", async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-native-fuse-mmap-"));
+    const target = path.join(workspace, "existing.txt");
+    const created = path.join(workspace, "created.txt");
     writeFileSync(target, "content");
     const runtime = allowingRuntime();
     const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-fuse-test"});
-    let defaultChanged = false;
     const script = [
-        "import os,sys,time",
-        "descriptor=os.open(sys.argv[1], os.O_RDONLY)",
-        "os.read(descriptor, 1)",
-        "print('FIRST_DONE', flush=True)",
-        "time.sleep(0.5)",
-        "os.lseek(descriptor, 0, os.SEEK_SET)",
-        "status=90",
-        "try:",
-        " os.read(descriptor, 1)",
-        "except OSError:",
-        " status=0",
-        "os.close(descriptor)",
-        "raise SystemExit(status)",
+        "import errno,mmap,os,sys",
+        "for name,flags in [(sys.argv[1],os.O_RDONLY),(sys.argv[2],os.O_RDONLY|os.O_CREAT|os.O_EXCL)]:",
+        " descriptor=os.open(name,flags,0o600)",
+        " if flags & os.O_CREAT:",
+        "  writer=os.open(name,os.O_WRONLY)",
+        "  assert os.write(writer,b'content') == 7",
+        "  os.close(writer)",
+        " for mode in [mmap.MAP_SHARED,mmap.MAP_PRIVATE]:",
+        "  with mmap.mmap(descriptor,0,flags=mode,prot=mmap.PROT_READ) as mapping:",
+        "   assert mapping[:] == b'content'",
+        " with mmap.mmap(descriptor,0,flags=mmap.MAP_PRIVATE,prot=mmap.PROT_READ|mmap.PROT_WRITE) as mapping:",
+        "  mapping[0]=ord('X')",
+        " assert os.pread(descriptor,7,0) == b'content'",
+        " os.close(descriptor)",
+        " descriptor=os.open(name,os.O_RDWR)",
+        " try:",
+        "  mmap.mmap(descriptor,0,flags=mmap.MAP_SHARED,prot=mmap.PROT_READ|mmap.PROT_WRITE)",
+        " except OSError as error:",
+        "  assert error.errno == errno.ENODEV",
+        " else:",
+        "  raise AssertionError('Writable opens must remain direct I/O')",
+        " os.close(descriptor)",
     ].join("\n");
 
     try {
         const result = await runNativeFuseSandboxedCommand({
-            command: ["python3", "-c", script, target],
+            command: ["python3", "-c", script, target, created],
+            cwd: workspace,
+            policyView: view,
+            timeoutSeconds: 20,
+        });
+        assert.equal(result.exitCode, 0);
+        assert.equal(readFileSync(target, "utf8"), "content");
+        assert.equal(readFileSync(created, "utf8"), "content");
+    } finally {
+        view.close();
+        rmSync(workspace, {recursive: true, force: true});
+    }
+});
+
+for (const status of [PolicyResponse.ALLOWED, PolicyResponse.DENIED]) {
+    test(`native FUSE resolves read approval before cached access: ${status}`, async () => {
+        const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-native-fuse-read-approval-"));
+        const target = path.join(workspace, "content.txt");
+        const continuePath = path.join(workspace, "continue");
+        writeFileSync(target, "content");
+        const runtime = allowingRuntime(decisionFlow([{
+            uri: target,
+            accessType: PolicyAccessType.FS_READ,
+            lifetime: PolicyLifetime.ONCE,
+            status,
+            reason: "read approval before cached access",
+        }]));
+        const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-fuse-test"});
+        let defaultChanged = false;
+        let stdout = "";
+        const script = [
+            "import errno,mmap,os,sys,time",
+            "print('READY',flush=True)",
+            "while not os.path.exists(sys.argv[2]): time.sleep(0.01)",
+            "try:",
+            " descriptor=os.open(sys.argv[1],os.O_RDONLY)",
+            "except OSError as error:",
+            " assert sys.argv[3] == 'deny' and error.errno == errno.EACCES",
+            "else:",
+            " assert sys.argv[3] == 'allow'",
+            " with mmap.mmap(descriptor,0,flags=mmap.MAP_SHARED,prot=mmap.PROT_READ) as mapping:",
+            "  assert mapping[:] == b'content'",
+            " assert os.read(descriptor,7) == b'content'",
+            " os.close(descriptor)",
+        ].join("\n");
+
+        try {
+            const result = await runNativeFuseSandboxedCommand({
+                command: ["python3", "-c", script, target, continuePath,
+                    status === PolicyResponse.ALLOWED ? "allow" : "deny"],
+                cwd: workspace,
+                policyView: view,
+                timeoutSeconds: 20,
+                onStdout: (data) => {
+                    stdout += data;
+                    if (defaultChanged || !stdout.includes("READY")) return;
+                    runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.ask_user);
+                    defaultChanged = true;
+                    writeFileSync(continuePath, "continue");
+                },
+            });
+            assert.equal(defaultChanged, true);
+            assert.equal(result.exitCode, 0);
+            assert.equal(view.onceSnapshot().layers[0]!.policies[0]!.info[PolicyAccessType.FS_READ]?.status, status);
+        } finally {
+            view.close();
+            rmSync(workspace, {recursive: true, force: true});
+        }
+    });
+}
+
+test("native FUSE retains cached reads after revocation but checks uncached reads and new opens", async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-native-fuse-read-handle-"));
+    const target = path.join(workspace, "open-handle.txt");
+    const continuePath = path.join(workspace, "continue");
+    // Keep the last page beyond readahead from the first page.
+    writeFileSync(target, Buffer.alloc(8 * 1024 * 1024, "c"));
+    const runtime = allowingRuntime();
+    const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-fuse-test"});
+    let defaultChanged = false;
+    let stdout = "";
+    const script = [
+        "import errno,mmap,os,sys,time",
+        "descriptor=os.open(sys.argv[1],os.O_RDONLY)",
+        "assert os.read(descriptor,1) == b'c'",
+        "mapping=mmap.mmap(descriptor,mmap.PAGESIZE,flags=mmap.MAP_SHARED,prot=mmap.PROT_READ)",
+        "assert mapping[0] == ord('c')",
+        "print('FIRST_DONE',flush=True)",
+        "while not os.path.exists(sys.argv[2]): time.sleep(0.01)",
+        "assert os.pread(descriptor,1,0) == b'c'",
+        "assert mapping[0] == ord('c')",
+        "for operation in [lambda: os.pread(descriptor,1,8*1024*1024-1),lambda: os.open(sys.argv[1],os.O_RDONLY)]:",
+        " try:",
+        "  operation()",
+        " except OSError as error:",
+        "  assert error.errno == errno.EACCES",
+        " else:",
+        "  raise AssertionError('Uncached reads and new opens must check current policy')",
+        "mapping.close()",
+        "os.close(descriptor)",
+    ].join("\n");
+
+    try {
+        const result = await runNativeFuseSandboxedCommand({
+            command: ["python3", "-c", script, target, continuePath],
             cwd: workspace,
             policyView: view,
             timeoutSeconds: 20,
             onStdout: (data) => {
-                if (defaultChanged || !data.toString().includes("FIRST_DONE")) return;
+                stdout += data;
+                if (defaultChanged || !stdout.includes("FIRST_DONE")) return;
                 runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.deny);
                 defaultChanged = true;
+                writeFileSync(continuePath, "continue");
             },
         });
 

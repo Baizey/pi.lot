@@ -24,7 +24,9 @@ The Bash worker sees the host filesystem through a FUSE policy mount. Operations
 
 Multi-path operations such as rename can require approval for both paths. Direct `read`, `edit`, and `write` tool calls use the same policy runtime without launching the Bash worker.
 
-One native FUSE broker lives for the Pi session. Each policy principal has one immutable, revisioned base checkpoint shared by that principal's active Bash calls; each Bash call has a separate mount and a private revisioned `ONCE` overlay. Native callbacks perform a fresh lookup against the base and overlay. Misses return to the JavaScript policy runtime, and malformed, stale, disconnected, or unresolved control state fails closed.
+One native FUSE broker lives for the Pi session. Each policy principal has one immutable, revisioned base checkpoint shared by that principal's active Bash calls; each Bash call has a separate mount and a private revisioned `ONCE` overlay. Native callbacks perform a fresh lookup against the base and overlay. Misses return to the JavaScript policy runtime, and malformed, stale, disconnected, or unresolved control state fails closed at those checkpoints.
+
+Opens are authorized before returning a usable handle. Read-only opens then enable cached reads and read-only shared `mmap`; cache misses still pass through native read-policy checks, but cache hits and already-faulted mappings do not. Changing policy does not revoke data already cached or mapped during that Bash call. Each call has its own FUSE page cache, shared by that call's processes, not by other calls or agents. Read-only opens request cache invalidation rather than preserving data from previous opens; this does not continuously refresh existing handles when the host file changes. Writable opens retain direct I/O so reads and writes through those descriptors reach native policy callbacks; shared mappings through writable descriptors remain unsupported.
 
 ## Network mediation
 

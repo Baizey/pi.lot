@@ -482,7 +482,10 @@ static int benchmark_open(const char *path, struct fuse_file_info *info) {
     int descriptor = open(resolved, info->flags);
     if (descriptor < 0) return -errno;
     info->fh = (uint64_t) descriptor;
-    info->direct_io = 1;
+    /* Authorize before enabling cached reads and read-only shared mappings.
+     * Writable opens stay direct so every write reaches the policy callback. */
+    info->direct_io = (info->flags & O_ACCMODE) != O_RDONLY;
+    info->keep_cache = 0;
     return 0;
 }
 
@@ -495,7 +498,8 @@ static int benchmark_create(const char *path, mode_t mode, struct fuse_file_info
     int descriptor = open(resolved, O_CREAT | O_EXCL | O_RDWR, mode);
     if (descriptor < 0) return -errno;
     info->fh = (uint64_t) descriptor;
-    info->direct_io = 1;
+    info->direct_io = (info->flags & O_ACCMODE) != O_RDONLY;
+    info->keep_cache = 0;
     return 0;
 }
 

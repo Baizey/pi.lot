@@ -82,6 +82,7 @@ export class ParsedUri {
         };
         let acc = ""
         if (this.port) {
+            if (this.host === "localhost") addScope(this.host);
             acc = this.authority()
             addScope(acc);
         } else if (isIP(this.host)) {
@@ -124,10 +125,12 @@ export class ParsedUri {
         if (other.raw === UNIVERSAL_NETWORK_POLICY_PATTERN) return true
         if (!other.isValid) return false
 
-        // Exact match required for localhost & IP
-        if (this.port !== other.port) return false
-        if (this.host === "localhost" || other.host === "localhost")
-            if (this.host !== other.host) return false;
+        // Only a portless localhost policy spans ports; other hosts and IPs stay exact.
+        if(this.host === "localhost" || other.host === "localhost") {
+            if (this.host !== other.host) return false
+            if(other.port && other.port !== this.port) return false
+        } else if (this.port !== other.port) return false
+
         const ipInvolved = isIP(this.host) !== 0 || isIP(other.host) !== 0
         if (ipInvolved && this.host !== other.host) return false;
 

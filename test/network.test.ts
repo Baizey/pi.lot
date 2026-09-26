@@ -8,7 +8,7 @@ import {createServer as createHttpsServer} from "node:https";
 import {createServer} from "node:net";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, {before} from "node:test";
 import {
   NetworkAddressFamily,
   NetworkDecision,
@@ -20,10 +20,25 @@ import {
 } from "../src/policy/network/NetworkSandbox.js";
 import {parseTcpGatewayFlow} from "../src/policy/network/tcp-gateway-protocol.js";
 import {TlsCertificateAuthority} from "../src/policy/network/TlsCertificateAuthority.js";
+import {ManagedChildProcess, type ManagedChildProcessOptions} from "../src/runtime/ManagedChildProcess.js";
 
 const JAVA_TOOLCHAIN_AVAILABLE = ["java", "javac"].every(
   (command) => spawnSync(command, ["-version"], {stdio: "ignore"}).status === 0,
 );
+
+before(async () => {
+  try {
+    await verifySyntheticHostnameConnection({
+      hostname: "preflight.service.test",
+      hostListenAddress: "127.0.0.1",
+      dnsAddresses: {ipv4: "10.0.2.2"},
+      realAddress: "10.0.2.2",
+      syntheticAddress: "198.18.0.1",
+    });
+  } catch (error) {
+    throw new Error("IPv4 network preflight failed; stopping this file instead of repeating connection timeouts", {cause: error});
+  }
+});
 
 test("the network queue protocol validates IPv4, IPv6, TCP, UDP, and DNS events", () => {
   assert.deepEqual(parseNetworkQueueMessage("PI_NETWORK_QUEUE\t3\tREADY"), {type: "READY"});
@@ -393,6 +408,34 @@ test("cancellation closes an in-flight upstream DNS request", async () => {
     dnsServer.close();
     rmSync(workspace, {recursive: true, force: true});
   }
+});
+
+test("IPv4 transparent routing ignores inherited mark-based source validation", async (t) => {
+  const spawn = ManagedChildProcess.spawn;
+  let injected = false;
+  t.mock.method(ManagedChildProcess, "spawn", (options: ManagedChildProcessOptions) => {
+    if (options.name !== "enable gateway forwarding") return spawn(options);
+    const args = [...(options.arguments ?? [])];
+    const forwardingIndex = args.indexOf("net.ipv4.ip_forward=1");
+    assert.ok(forwardingIndex >= 0);
+    // Seed only the private gateway namespace, never the host's sysctls.
+    // The normal setup must override both values before admitting worker traffic.
+    args.splice(forwardingIndex + 1, 0,
+      "net.ipv4.conf.all.src_valid_mark=1",
+      "net.ipv4.conf.pi-gate0.src_valid_mark=1",
+      "net.ipv4.conf.pi-gate0.rp_filter=2",
+    );
+    injected = true;
+    return spawn({...options, arguments: args});
+  });
+  await verifySyntheticHostnameConnection({
+    hostname: "marked-source.service.test",
+    hostListenAddress: "127.0.0.1",
+    dnsAddresses: {ipv4: "10.0.2.2"},
+    realAddress: "10.0.2.2",
+    syntheticAddress: "198.18.0.1",
+  });
+  assert.equal(injected, true);
 });
 
 test("a synthetic IPv4 DNS lease attributes and forwards a hostname connection", async () => {
@@ -1878,6 +1921,8 @@ async function verifySyntheticHostnameConnection(testCase: {
 
   let acceptedConnections = 0;
   let output = "";
+  let stderr = "";
+  const errors: string[] = [];
   const prompted: Array<{operation: NetworkOperation; target: string}> = [];
   const observed: Array<{
     operation: NetworkOperation;
@@ -1911,15 +1956,20 @@ async function verifySyntheticHostnameConnection(testCase: {
       command: [
         "/bin/bash",
         "-c",
-        `curl --noproxy '*' --connect-timeout 6 --silent http://${testCase.hostname}:${httpAddress.port}`,
+        `curl --noproxy '*' --connect-timeout 2 --max-time 3 --silent --show-error http://${testCase.hostname}:${httpAddress.port}`,
       ],
       cwd: workspace,
       dnsUpstream: {address: dnsAddress.address, port: dnsAddress.port},
       globalIpv6Available: testCase.globalIpv6Available,
-      timeoutSeconds: 10,
+      timeoutSeconds: 5,
       onStdout(data) {
         output += data.toString();
       },
+      onStderr(data) {
+        stderr += data.toString();
+      },
+      onDecisionError: (error) => errors.push(String(error)),
+      onNetworkError: (error) => errors.push(String(error)),
       authorizeHttpRequest(event) {
         httpRequests.push({
           hostname: event.hostname,
@@ -1943,7 +1993,9 @@ async function verifySyntheticHostnameConnection(testCase: {
       },
     });
 
-    assert.equal(result.exitCode, 0);
+    assert.equal(result.exitCode, 0, JSON.stringify({
+      result, stderr, errors, prompted, observed, httpRequests, acceptedConnections,
+    }, null, 2));
     assert.equal(output, "OK");
     assert.equal(acceptedConnections, 1);
     assert.deepEqual(prompted, [{operation: NetworkOperation.DNS_QUERY, target: testCase.hostname}]);

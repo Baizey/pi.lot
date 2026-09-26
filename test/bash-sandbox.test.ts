@@ -93,8 +93,8 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
                     "unshare --user --map-current-user --net -- /bin/true || exit 92",
                     "for descriptor in /proc/$$/fd/*; do if [ \"$(readlink \"$descriptor\")\" = /dev/fuse ]; then echo LEAKED_FUSE_FD; exit 91; fi; done",
                     `printf blocked > ${shellQuote(deniedFile)}`,
-                    `curl --noproxy '*' --silent http://10.0.2.2:${address.port}`,
-                    "curl --unix-socket \"$SSH_AUTH_SOCK\" --silent http://localhost",
+                    `curl --noproxy '*' --connect-timeout 2 --max-time 3 --silent --show-error http://10.0.2.2:${address.port} || exit $?`,
+                    "curl --unix-socket \"$SSH_AUTH_SOCK\" --connect-timeout 2 --max-time 3 --silent --show-error http://localhost",
                 ].join("; "),
             ],
             cwd,
@@ -110,7 +110,7 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
             authorizeHttpRequest: networkAuthorizer.authorizeHttpRequest,
         }));
 
-        assert.equal(result.exitCode, 0);
+        assert.equal(result.exitCode, 0, `signal=${result.signal}\n${Buffer.concat(output).toString()}`);
         assert.equal(existsSync(deniedFile), false);
         assert.match(Buffer.concat(output).toString(), /ACCESS DENIED/);
         assert.match(Buffer.concat(output).toString(), /OK/);

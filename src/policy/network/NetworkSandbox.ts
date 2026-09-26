@@ -201,9 +201,9 @@ class NetworkSandboxRunner {
         this.runWorkerNft(baseRuleset(this.dnsProxyPort(), this.tcpBroker.port)),
         "worker nftables setup",
       );
-      const tcpIngressPort = await this.startTcpIngress();
+      const tcpIngressPort = await this.completeSetupStep(this.startTcpIngress(), "TCP gateway ingress readiness");
       await this.completeSetupStep(this.configureGateway(tcpIngressPort), "gateway setup");
-      await this.startQueueHelper();
+      await this.completeSetupStep(this.startQueueHelper(), "network queue helper readiness");
       await this.startSlirp();
       await this.waitForIpv6Ready();
       await this.unblockWorker();
@@ -215,6 +215,11 @@ class NetworkSandboxRunner {
       if (this.timedOut) throw new Error(`timeout:${this.options.timeoutSeconds}`);
       if (this.fatalError) throw this.fatalError;
       return result;
+    } catch (error) {
+      // Startup waits can fail before the terminated outer process reports its exit.
+      if (this.aborted || this.options.signal?.aborted) throw new Error("aborted");
+      if (this.timedOut) throw new Error(`timeout:${this.options.timeoutSeconds}`);
+      throw error;
     } finally {
       await this.cleanup();
     }
@@ -456,6 +461,11 @@ class NetworkSandboxRunner {
         "-q",
         "-w",
         "net.ipv4.ip_forward=1",
+        // TPROXY's mark selects a local route only in the forward direction.
+        // Including it in reverse-path validation makes worker sources look local
+        // and drops IPv4 SYNs as martians. Override inherited settings only here.
+        "net.ipv4.conf.all.src_valid_mark=0",
+        `net.ipv4.conf.${GATEWAY_LINK}.src_valid_mark=0`,
         "net.ipv6.conf.all.forwarding=1",
         "net.ipv6.conf.all.accept_ra=2",
         "net.ipv6.conf.default.accept_ra=2",

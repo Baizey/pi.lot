@@ -25,6 +25,7 @@ import {
 } from "../src/policy/types.js";
 import {runNativeFuseSandboxedCommand} from "../src/policy/path/native/native-fuse-runner.js";
 import type {PolicyDaoInterface} from "../src/storage/PolicyDao.js";
+import {RevocableReadPolicy} from "./fixtures/RevocableReadPolicy.js";
 
 const AGENT = "native-fuse-test";
 
@@ -334,10 +335,11 @@ test("native FUSE retains cached reads after revocation but checks uncached read
     const continuePath = path.join(workspace, "continue");
     // Keep the last page beyond readahead from the first page.
     writeFileSync(target, Buffer.alloc(8 * 1024 * 1024, "c"));
-    const runtime = allowingRuntime();
-    const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-fuse-test"});
-    let defaultChanged = false;
+    const cachePolicy = new RevocableReadPolicy(allowingRuntime(), AGENT, target);
+    const view = cachePolicy.createView();
+    let revoked = false;
     let stdout = "";
+    let stderr = "";
     const script = [
         "import errno,mmap,os,sys,time",
         "descriptor=os.open(sys.argv[1],os.O_RDONLY)",
@@ -367,17 +369,19 @@ test("native FUSE retains cached reads after revocation but checks uncached read
             timeoutSeconds: 20,
             onStdout: (data) => {
                 stdout += data;
-                if (defaultChanged || !stdout.includes("FIRST_DONE")) return;
-                runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.deny);
-                defaultChanged = true;
+                if (revoked || !stdout.includes("FIRST_DONE")) return;
+                cachePolicy.revoke();
+                revoked = true;
                 writeFileSync(continuePath, "continue");
             },
+            onStderr: (data) => { stderr += data.toString(); },
         });
 
-        assert.equal(defaultChanged, true);
-        assert.equal(result.exitCode, 0);
+        assert.equal(revoked, true);
+        assert.equal(result.exitCode, 0, `signal=${result.signal} stderr=${stderr}`);
     } finally {
         view.close();
+        cachePolicy.close();
         rmSync(workspace, {recursive: true, force: true});
     }
 });

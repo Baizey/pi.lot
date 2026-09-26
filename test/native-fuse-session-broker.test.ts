@@ -16,6 +16,7 @@ import {
     PolicyResponse,
 } from "../src/policy/types.js";
 import type {PolicyDaoInterface} from "../src/storage/PolicyDao.js";
+import {RevocableReadPolicy} from "./fixtures/RevocableReadPolicy.js";
 
 const AGENT = "native-fuse-session-broker-test";
 const CHILD_AGENT = "native-fuse-session-broker-child";
@@ -135,11 +136,11 @@ test("one broker keeps read caches isolated between concurrent Bash mounts", asy
     const continuePath = path.join(workspace, "continue");
     writeFileSync(target, "content");
     const broker = new NativeFuseSessionBroker();
-    const runtime = allowingRuntime();
-    const views = ["warm", "cold"].map((mode) => (
-        runtime.beginNativeFilesystemToolCall(AGENT, {toolName: `broker-read-cache-${mode}`})
-    ));
+    const cachePolicy = new RevocableReadPolicy(allowingRuntime(), AGENT, target);
+    const modes = ["warm", "cold"];
+    const views = modes.map(() => cachePolicy.createView());
     const outputs = ["", ""];
+    const stderrs = ["", ""];
     let revoked = false;
     const script = [
         "import errno,os,sys,time",
@@ -159,7 +160,7 @@ test("one broker keeps read caches isolated between concurrent Bash mounts", asy
 
     try {
         const results = await Promise.all(views.map((view, index) => runNativeFuseSandboxedCommand({
-            command: ["python3", "-c", script, target, continuePath, index === 0 ? "warm" : "cold"],
+            command: ["python3", "-c", script, target, continuePath, modes[index]!],
             cwd: workspace,
             policyView: view,
             sessionBroker: broker,
@@ -167,16 +168,20 @@ test("one broker keeps read caches isolated between concurrent Bash mounts", asy
             onStdout: (data) => {
                 outputs[index] += data;
                 if (revoked || !outputs.every((output) => output.includes("READY"))) return;
-                runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.deny);
+                cachePolicy.revoke();
                 revoked = true;
                 writeFileSync(continuePath, "continue");
             },
+            onStderr: (data) => { stderrs[index] += data.toString(); },
         })));
         assert.equal(revoked, true);
-        for (const result of results) assert.equal(result.exitCode, 0);
+        for (const [index, result] of results.entries()) {
+            assert.equal(result.exitCode, 0, `mode=${modes[index]} signal=${result.signal} stderr=${stderrs[index]}`);
+        }
         assert.equal(broker.activeMountCount, 0);
     } finally {
         for (const view of views) view.close();
+        cachePolicy.close();
         await broker.close();
         rmSync(workspace, {recursive: true, force: true});
     }

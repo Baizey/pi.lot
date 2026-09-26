@@ -9,6 +9,7 @@ import {initialPolicyDefaults} from "../src/policy/defaults.js";
 import {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
 import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import {policyScopeCovers, policyScopeHierarchy} from "../src/policy/PolicyScope.js";
 import {ParsedUri, UNIVERSAL_NETWORK_POLICY_PATTERN} from "../src/policy/network/ParsedUri.js";
 import type {Policy} from "../src/policy/types.js";
 import {
@@ -210,6 +211,117 @@ test("ports are exact and path scopes respect segment boundaries", () => {
     assert.equal(logic.evaluate("api.example.com:444/other", PolicyAccessType.HTTP_GET), null);
     assert.equal(logic.evaluate("api.example.com:443/v1/users", PolicyAccessType.HTTP_GET)?.matchedReason, "path");
     assert.equal(logic.evaluate("api.example.com:443/v10", PolicyAccessType.HTTP_GET)?.matchedReason, "port");
+});
+
+test("portless localhost scopes cover all ports without widening other hosts or explicit ports", () => {
+    const cases: Array<[string, string, boolean]> = [
+        ["localhost", "localhost", true],
+        ["localhost", "localhost:1", true],
+        ["localhost", "localhost:3000", true],
+        ["localhost", "localhost:65535", true],
+        ["LOCALHOST", "http://LOCALHOST:3000/api?ignored=true", true],
+        ["localhost:3000", "localhost:3000", true],
+        ["localhost:3000", "localhost:4000", false],
+        ["localhost:3000", "localhost", false],
+        ["localhost", "sub.localhost:3000", false],
+        ["localhost", "localhost.example:3000", false],
+        ["localhost", "127.0.0.1:3000", false],
+        ["localhost", "0.0.0.0:3000", false],
+        ["localhost", "[::1]:3000", false],
+        ["localhost/api", "localhost:3000/api/users", true],
+        ["localhost/api", "localhost:4000/api/users", true],
+        ["localhost/api", "localhost:3000/apiary", false],
+        ["localhost/api", "localhost:3000", false],
+        ["localhost:3000/api", "localhost:4000/api/users", false],
+        ["localhost:3000/api", "localhost/api", false],
+        ["example.com", "example.com:3000", false],
+        ["example.com", "sub.example.com:3000", false],
+        ["example.com:3000", "sub.example.com:3000", true],
+    ];
+    for (const [scope, target, expected] of cases) {
+        assert.equal(policyScopeCovers(PolicyAccessType.HTTP_GET, scope, target), expected, `${scope} covers ${target}`);
+    }
+});
+
+test("IP policy scopes still require exact addresses and ports", () => {
+    for (const host of ["127.0.0.1", "127.0.0.2", "0.0.0.0", "192.0.2.1", "[::1]", "[2001:db8::1]"]) {
+        const scope = `${host}:3000`;
+        assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, scope, scope), true);
+        assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, host, scope), false);
+        assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, scope, host), false);
+        assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, scope, `${host}:4000`), false);
+        assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, scope, "localhost:3000"), false);
+    }
+    assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, "127.0.0.1:3000", "127.0.0.2:3000"), false);
+    assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, "[::1]:3000", "[::2]:3000"), false);
+});
+
+test("localhost port coverage rejects invalid ports and does not introduce wildcard syntax", () => {
+    for (const target of ["localhost:", "localhost:0", "localhost:65536", "localhost:-1", "localhost:1.5", "localhost:invalid", "localhost:*"]) {
+        assert.equal(new ParsedUri(target).isValid, false, target);
+        assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, "localhost", target), false, target);
+        assert.equal(policyScopeCovers(PolicyAccessType.TCP_ACCESS, target, "localhost:3000"), false, target);
+    }
+});
+
+test("specific localhost port and path policies override all-port policies in either insertion order", () => {
+    for (const [broad, narrow] of [
+        [PolicyResponse.ALLOWED, PolicyResponse.DENIED],
+        [PolicyResponse.DENIED, PolicyResponse.ALLOWED],
+    ] as const) {
+        const rules = [
+            policy("localhost", PolicyAccessType.HTTP_GET, PolicyLifetime.LOCAL, broad, "all ports"),
+            policy("localhost:3000", PolicyAccessType.HTTP_GET, PolicyLifetime.SESSION, narrow, "one port"),
+            policy("localhost:3000/api", PolicyAccessType.HTTP_GET, PolicyLifetime.SESSION, broad, "one path"),
+        ];
+        for (const ordering of [rules, [...rules].reverse()]) {
+            const engine = new PolicyEngine(ordering);
+            assert.equal(engine.evaluate("localhost:4000/api", PolicyAccessType.HTTP_GET)?.matchedStatus, broad);
+            assert.equal(engine.evaluate("localhost:3000/other", PolicyAccessType.HTTP_GET)?.matchedStatus, narrow);
+            assert.equal(engine.evaluate("localhost:3000/api/users", PolicyAccessType.HTTP_GET)?.matchedReason, "one path");
+            assert.equal(engine.evaluate("localhost:3000/apiary", PolicyAccessType.HTTP_GET)?.matchedReason, "one port");
+            assert.equal(engine.evaluate("localhost:4000/api", PolicyAccessType.HTTP_POST), null);
+        }
+    }
+});
+
+test("only localhost gains an all-port parent in the policy scope hierarchy", () => {
+    assert.deepEqual(
+        new ParsedUri("http://LOCALHOST:3000/api/users?ignored=true").scopeHierarchy(),
+        ["localhost", "localhost:3000", "localhost:3000/api", "localhost:3000/api/users"],
+    );
+    assert.deepEqual(policyScopeHierarchy("localhost:3000", PolicyAccessType.TCP_ACCESS), ["localhost:3000", "localhost"]);
+    assert.deepEqual(policyScopeHierarchy("localhost", PolicyAccessType.TCP_ACCESS), ["localhost"]);
+    assert.deepEqual(
+        policyScopeHierarchy("localhost:3000/api/users", PolicyAccessType.HTTP_GET, 2),
+        ["localhost:3000/api/users", "localhost"],
+    );
+    for (const host of ["127.0.0.1", "0.0.0.0", "[::1]", "example.com", "sub.localhost"]) {
+        assert.deepEqual(policyScopeHierarchy(`${host}:3000`, PolicyAccessType.TCP_ACCESS), [`${host}:3000`]);
+    }
+});
+
+test("localhost approval offers an all-port scope that can be selected", async () => {
+    const ctx = {
+        hasUI: true,
+        mode: "rpc",
+        ui: {
+            async select(title: string, options: string[]): Promise<string | undefined> {
+                if (title.startsWith("Network policy scope")) {
+                    assert.deepEqual(options, ["localhost:3000", "localhost"]);
+                    return "localhost";
+                }
+                if (title.startsWith("Network policy decision")) return "Allow";
+                if (title.startsWith("Network policy lifetime")) return "Once";
+                assert.fail(`Unexpected policy prompt: ${title}`);
+            },
+        },
+    } as unknown as ExtensionContext;
+    const flow = new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)});
+    const choice = await flow.askForPolicy("localhost:3000", PolicyAccessType.TCP_ACCESS);
+    assert.equal(choice.uri, "localhost");
+    assert.equal(choice.status, PolicyResponse.ALLOWED);
+    assert.equal(choice.lifetime, PolicyLifetime.ONCE);
 });
 
 test("IPv6 policy targets retain bracketed ports", () => {

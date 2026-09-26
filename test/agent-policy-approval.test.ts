@@ -185,6 +185,60 @@ test("network approval scopes use canonical matching and stop at the super-agent
     ]);
 });
 
+test("localhost all-port authority can be delegated and reused across ports", async () => {
+    const approvals = agentDecisions((request) => ({
+        uri: "localhost",
+        accessType: request.accessType,
+        lifetime: PolicyLifetime.SESSION,
+        status: PolicyResponse.ALLOWED,
+        reason: "Allow local development ports.",
+    }));
+    const runtime = new PolicyRuntime(ROOT, policyDao([
+        policy("localhost", PolicyAccessType.TCP_ACCESS, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "All-port authority"),
+    ]), noUserDecision());
+    runtime.setDefaultResponse(PolicyArea.web_tcp, PolicyFallbackResponse.deny);
+    runtime.setAgentDecisionFlow(approvals.flow);
+    runtime.registerPolicyPrincipal("child", ROOT, []);
+
+    const result = await runtime.beginToolCall("child")("localhost:3000", PolicyAccessType.TCP_ACCESS);
+    assert.equal(result.matchedStatus, PolicyResponse.ALLOWED);
+    assert.equal(result.matchedPattern, "localhost");
+    assert.equal(result.matchedLifetime, PolicyLifetime.SESSION);
+    assert.deepEqual(approvals.requests[0]?.allowedScopes, ["localhost:3000", "localhost"]);
+    assert.equal(
+        (await runtime.beginToolCall("child")("localhost:4000", PolicyAccessType.TCP_ACCESS)).matchedStatus,
+        PolicyResponse.ALLOWED,
+    );
+    assert.equal(approvals.requests.length, 1);
+});
+
+test("single-port localhost authority cannot be widened to all ports by a delegated approval", async () => {
+    const approvals = agentDecisions((request) => ({
+        uri: "localhost",
+        accessType: request.accessType,
+        lifetime: PolicyLifetime.SESSION,
+        status: PolicyResponse.ALLOWED,
+        reason: "Attempted all-port grant",
+    }));
+    const runtime = new PolicyRuntime(ROOT, policyDao([
+        policy("localhost:3000", PolicyAccessType.TCP_ACCESS, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "Single-port authority"),
+    ]), noUserDecision());
+    runtime.setDefaultResponse(PolicyArea.web_tcp, PolicyFallbackResponse.deny);
+    runtime.setAgentDecisionFlow(approvals.flow);
+    runtime.registerPolicyPrincipal("child", ROOT, []);
+
+    const result = await runtime.beginToolCall("child")("localhost:3000", PolicyAccessType.TCP_ACCESS);
+    assert.equal(result.matchedStatus, PolicyResponse.DENIED);
+    assert.equal(result.matchedLifetime, PolicyLifetime.ONCE);
+    assert.match(result.matchedReason, /selected scope exceeded/);
+    assert.deepEqual(approvals.requests[0]?.allowedScopes, ["localhost:3000"]);
+    assert.equal(
+        (await runtime.beginToolCall("child")("localhost:4000", PolicyAccessType.TCP_ACCESS)).matchedStatus,
+        PolicyResponse.DENIED,
+    );
+    assert.equal(approvals.requests.length, 1, "the invalid choice must not install an all-port grant");
+});
+
 test("agent approvals are revalidated and an invalid widening fails closed for only the tool call", async () => {
     const workspace = path.join(os.tmpdir(), "pilot-agent-approval-invalid");
     const target = path.join(workspace, "file.ts");

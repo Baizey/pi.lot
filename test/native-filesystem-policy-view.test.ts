@@ -22,6 +22,7 @@ import {
     NativeFilesystemResponseMessage,
 } from "../src/policy/path/native/NativeFilesystemPolicyProtocol.js";
 import {NativeFilesystemPolicyBridge} from "../src/policy/path/native/NativeFilesystemPolicyBridge.js";
+import {RevocableReadPolicy} from "./fixtures/RevocableReadPolicy.js";
 
 const AGENT = "native-policy-view-test";
 const CHILD_AGENT = "native-policy-view-child";
@@ -78,6 +79,31 @@ test("a native tool-call view starts with the root filesystem fallback snapshot"
 
     view.close();
     assert.throws(() => view.baseSnapshot(), /closed/);
+});
+
+test("cache-test revocation denies only the target and preserves executable and control-file access", () => {
+    const runtime = new PolicyRuntime(AGENT, emptyPolicyDao(), decisionFlow([]));
+    runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.allow);
+    const target = path.join(os.tmpdir(), "cache-fixture", "target");
+    const fixture = new RevocableReadPolicy(runtime, AGENT, target);
+    const views = [fixture.createView(), fixture.createView()];
+    let publishedRevision = 0;
+    views[0]!.policyBase.onSnapshotChanged((snapshot) => { publishedRevision = snapshot.revision; });
+    try {
+        assert.equal(views[0]!.policyBase.currentPolicyResult(target, PolicyAccessType.FS_READ)?.matchedStatus, PolicyResponse.ALLOWED);
+        fixture.revoke();
+        assert.equal(publishedRevision, 1, "the revocation is published before workers are released");
+        for (const view of views) {
+            assert.equal(view.policyBase.currentPolicyResult(target, PolicyAccessType.FS_READ)?.matchedStatus, PolicyResponse.DENIED);
+            for (const readable of ["/usr/bin/python3", "/usr/lib/libc.so", path.join(path.dirname(target), "continue")]) {
+                assert.equal(view.policyBase.currentPolicyResult(readable, PolicyAccessType.FS_READ)?.matchedStatus, PolicyResponse.ALLOWED);
+            }
+            assert.equal(view.policyBase.currentPolicyResult(target, PolicyAccessType.FS_WRITE)?.matchedStatus, PolicyResponse.ALLOWED);
+        }
+    } finally {
+        for (const view of views) view.close();
+        fixture.close();
+    }
 });
 
 test("native snapshots have a bounded length-prefixed binary representation", () => {

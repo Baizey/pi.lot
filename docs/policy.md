@@ -117,6 +117,10 @@ Network prompts also expose **Always synchronised**, but synchronised policy is 
 
 More-specific path and network scopes take precedence over broader scopes. Persisted rules live in `~/.pilot/pilot.sqlite`.
 
+For the literal hostname `localhost`, a scope without a port covers every port. An approval for `localhost:3000` therefore offers both `localhost:3000` (one port) and `localhost` (all ports). Explicit ports remain exact, path restrictions still apply, and more-specific port rules override a broader `localhost` rule. This meaning also applies to existing saved portless `localhost` policies.
+
+This is only a policy-matching rule: it does not alias IP addresses to `localhost`. IPv4, IPv6, and other hostname scopes retain their existing exact-port matching; `127.0.0.1`, `0.0.0.0`, and `::1` do not gain all-port coverage. No `:*` syntax is supported. Access types and lifetimes are unchanged.
+
 ## Agent authority and approvals
 
 Every agent is a separate policy principal. Policy-area capabilities selected at subagent spawn snapshot the parent's effective rules for those areas. See [Subagent capabilities](subagents.md#capability-model).

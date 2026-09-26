@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {stripVTControlCharacters} from "node:util";
-import type {Usage} from "@earendil-works/pi-ai";
 import {
     initTheme,
     type ContextUsage,
@@ -15,6 +14,8 @@ import {ThemeColor} from "../src/tui/Color.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 
 initTheme("dark");
+
+type Usage = NonNullable<Extract<SessionEntry, {type: "compaction"}>["usage"]>;
 
 const MODEL_ROW = 0;
 const USAGE_ROW = 1;

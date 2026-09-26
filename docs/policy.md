@@ -28,6 +28,8 @@ One native FUSE broker lives for the Pi session. Each policy principal has one i
 
 Opens are authorized before returning a usable handle. Read-only opens then enable cached reads and read-only shared `mmap`; cache misses still pass through native read-policy checks, but cache hits and already-faulted mappings do not. Changing policy does not revoke data already cached or mapped during that Bash call. Each call has its own FUSE page cache, shared by that call's processes, not by other calls or agents. Read-only opens request cache invalidation rather than preserving data from previous opens; this does not continuously refresh existing handles when the host file changes. Writable opens retain direct I/O so reads and writes through those descriptors reach native policy callbacks; shared mappings through writable descriptors remain unsupported.
 
+A denied page-cache fill can surface to the caller as `EIO` rather than the native callback's `EACCES`. Native policy-denial reports still identify the rejected read; new-open denials retain `EACCES`.
+
 ## Network mediation
 
 The Bash worker has a private network namespace. pi.lot evaluates effects produced by the command and its descendants across:

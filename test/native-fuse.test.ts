@@ -337,6 +337,7 @@ test("native FUSE retains cached reads after revocation but checks uncached read
     writeFileSync(target, Buffer.alloc(8 * 1024 * 1024, "c"));
     const cachePolicy = new RevocableReadPolicy(allowingRuntime(), AGENT, target);
     const view = cachePolicy.createView();
+    const denials: string[] = [];
     let revoked = false;
     let stdout = "";
     let stderr = "";
@@ -350,11 +351,13 @@ test("native FUSE retains cached reads after revocation but checks uncached read
         "while not os.path.exists(sys.argv[2]): time.sleep(0.01)",
         "assert os.pread(descriptor,1,0) == b'c'",
         "assert mapping[0] == ord('c')",
-        "for operation in [lambda: os.pread(descriptor,1,8*1024*1024-1),lambda: os.open(sys.argv[1],os.O_RDONLY)]:",
+        // Page-cache fill failures may surface as EIO; fresh opens must retain EACCES.
+        "operations=[(lambda: os.pread(descriptor,1,8*1024*1024-1),(errno.EACCES,errno.EIO)),(lambda: os.open(sys.argv[1],os.O_RDONLY),(errno.EACCES,))]",
+        "for operation,expected_errors in operations:",
         " try:",
         "  operation()",
         " except OSError as error:",
-        "  assert error.errno == errno.EACCES",
+        "  assert error.errno in expected_errors, error",
         " else:",
         "  raise AssertionError('Uncached reads and new opens must check current policy')",
         "mapping.close()",
@@ -375,10 +378,15 @@ test("native FUSE retains cached reads after revocation but checks uncached read
                 writeFileSync(continuePath, "continue");
             },
             onStderr: (data) => { stderr += data.toString(); },
+            onPolicyDeny: (message) => denials.push(message),
         });
 
         assert.equal(revoked, true);
         assert.equal(result.exitCode, 0, `signal=${result.signal} stderr=${stderr}`);
+        assert.ok(denials.some((message) => (
+            message.includes(`The uri '${target}' had an attempted access of type FS_READ`)
+            && message.includes("Revoke only the cache target")
+        )), `Expected an explicit target read denial, got: ${denials.join("\n")}`);
     } finally {
         view.close();
         cachePolicy.close();

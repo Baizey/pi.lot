@@ -141,6 +141,7 @@ test("one broker keeps read caches isolated between concurrent Bash mounts", asy
     const views = modes.map(() => cachePolicy.createView());
     const outputs = ["", ""];
     const stderrs = ["", ""];
+    const denials: string[][] = [[], []];
     let revoked = false;
     const script = [
         "import errno,os,sys,time",
@@ -152,7 +153,8 @@ test("one broker keeps read caches isolated between concurrent Bash mounts", asy
         "try:",
         " value=os.pread(descriptor,1,0)",
         "except OSError as error:",
-        " assert not warm and error.errno == errno.EACCES",
+        // A denied page-cache fill can become EIO; verify the native denial below too.
+        " assert not warm and error.errno in (errno.EACCES,errno.EIO), error",
         "else:",
         " assert warm and value == b'c'",
         "os.close(descriptor)",
@@ -173,11 +175,17 @@ test("one broker keeps read caches isolated between concurrent Bash mounts", asy
                 writeFileSync(continuePath, "continue");
             },
             onStderr: (data) => { stderrs[index] += data.toString(); },
+            onPolicyDeny: (message) => denials[index]!.push(message),
         })));
         assert.equal(revoked, true);
         for (const [index, result] of results.entries()) {
             assert.equal(result.exitCode, 0, `mode=${modes[index]} signal=${result.signal} stderr=${stderrs[index]}`);
         }
+        const coldDenials = denials[1]!;
+        assert.ok(coldDenials.some((message) => (
+            message.includes(`The uri '${target}' had an attempted access of type FS_READ`)
+            && message.includes("Revoke only the cache target")
+        )), `Expected a cold-mount target read denial, got: ${coldDenials.join("\n")}`);
         assert.equal(broker.activeMountCount, 0);
     } finally {
         for (const view of views) view.close();

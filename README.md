@@ -250,7 +250,7 @@ The extension appends this topic map, using absolute package paths, to the root 
 | `~/.pilot/subagent-defaults.json` | Saved reasoning-skill model mappings |
 | `~/.pilot/mcp.json` | MCP servers and tool exposure |
 | `~/.pilot/web-search.json` | Web-search providers and credentials |
-| `~/.pilot/credential-ipc.json` | Host D-Bus and Unix-socket passthrough |
+| `~/.pilot/credential-ipc.json` | [Host D-Bus and Unix-socket passthrough; common integrations and when to enable them](docs/policy.md#host-credential-ipc) |
 | `~/.pilot/logs/<session-id>.log` | Policy approval audit records |
 
 ## Development

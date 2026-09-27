@@ -168,12 +168,30 @@ With inspection off, HTTPS stays end-to-end. DNS and TCP hostname/port policy st
 
 The worker inherits Pi's environment and sees ordinary credential files through filesystem policy. Some live credential sockets cannot pass through FUSE by pathname, so pi.lot preserves selected protocols explicitly.
 
-Defaults:
+Without `~/.pilot/credential-ipc.json`, the defaults are:
 
-- filtered session D-Bus access to `org.freedesktop.secrets`; and
+- filtered session D-Bus access to `org.freedesktop.secrets`, when Pi inherits `DBUS_SESSION_BUS_ADDRESS`; and
 - a read-only mount of the socket named by `SSH_AUTH_SOCK`, when present.
 
-Create `~/.pilot/credential-ipc.json` to replace those defaults. Repeat the defaults if you want to keep them while adding another socket:
+### Common integrations — enable only when required
+
+Keep only the integrations your workflow needs. Docker, GPG, Podman, and the system bus are **not enabled by default**.
+
+| Integration | When needed | Configuration |
+| --- | --- | --- |
+| Secret Service (default) | Credential helpers that use a desktop keyring, such as GNOME Keyring or a compatible KWallet setup. | Keep `org.freedesktop.secrets` in `sessionBus.talk`. |
+| SSH agent (default) | SSH or Git-over-SSH authentication using keys held by an existing agent. | Keep `"environment": "SSH_AUTH_SOCK"`. |
+| GPG agent | GPG signing, including signed Git commits, using an existing host agent. | Add a socket with `"path"` set to the output of `gpgconf --list-dirs agent-socket` on the host. |
+| Docker | Docker CLI, Compose, or tests that require a local Docker daemon. | Add `"path": "/var/run/docker.sock"`, or the Unix-socket path used by your Docker context. Rootless Docker commonly uses `${XDG_RUNTIME_DIR}/docker.sock`. |
+| Rootless Podman API | Docker-compatible tools or remote clients using Podman's API; not needed merely to run the local Podman CLI. | Add `"path": "${XDG_RUNTIME_DIR}/podman/podman.sock"` when the host API socket is available. |
+| System D-Bus | Tools that must talk to host system services, such as systemd or NetworkManager, over the system bus. | Add `"path": "/run/dbus/system_bus_socket"` only when that access is required. |
+
+> [!WARNING]
+> A read-only socket mount does **not** make the service protocol read-only. Clients can ask an SSH/GPG agent to sign or a container daemon to create containers and mount host files. A rootful Docker socket normally grants root-equivalent host authority; rootless container sockets still delegate the owning user's authority. The system-bus socket is raw passthrough, **not** filtered by `sessionBus.talk`; host D-Bus/service authorization still applies. Service-side effects bypass pi.lot's filesystem/network gate. See [Host credential IPC security](security.md#host-credential-ipc).
+
+### Example: defaults plus Docker and system D-Bus
+
+Create `~/.pilot/credential-ipc.json` to **replace**, not merge with, the defaults. This example retains Secret Service and SSH-agent access and adds Docker and system D-Bus. Remove either added socket unless your workflow requires it; this is not a recommended blanket configuration.
 
 ```json
 {
@@ -189,15 +207,50 @@ Create `~/.pilot/credential-ipc.json` to replace those defaults. Repeat the defa
       "optional": true
     },
     {
-      "id": "gpg-agent",
-      "path": "${XDG_RUNTIME_DIR}/gnupg/S.gpg-agent",
+      "id": "docker",
+      "path": "/var/run/docker.sock",
+      "optional": true
+    },
+    {
+      "id": "system-bus",
+      "path": "/run/dbus/system_bus_socket",
       "optional": true
     }
   ]
 }
 ```
 
-Path templates support only explicit `${VARIABLE}` expansion. A read-only socket mount does not make the service protocol read-only: a client can still ask an imported SSH agent to sign, or ask another service to exercise its normal authority.
+For GPG, add an entry like this to `unixSockets` **only if** the path matches `gpgconf --list-dirs agent-socket` on your host; otherwise use that command's absolute path:
+
+```json
+{
+  "id": "gpg-agent",
+  "path": "${XDG_RUNTIME_DIR}/gnupg/S.gpg-agent",
+  "optional": true
+}
+```
+
+### Configuration details
+
+- Use `version: 1`, a `sessionBus` object, and a `unixSockets` array. Unknown fields are rejected.
+- Each socket needs a unique `id` containing only letters, digits, `_`, or `-`, and exactly one of `environment` or `path`.
+- `environment` names a variable inherited by Pi whose value is an absolute socket pathname, such as `SSH_AUTH_SOCK`. It is not a URI: do not use `DOCKER_HOST` when its value is `unix:///...`; configure that socket with `path` instead.
+- `path` must resolve to an absolute pathname. Templates support only explicit `${VARIABLE}` expansion from Pi's environment, not `~`, `$VARIABLE`, or shell commands. An unset template variable is a configuration error even with `optional: true`.
+- `optional` defaults to `true`: missing socket paths or an unset `environment` source are skipped. It does **not** make access conditional on a later approval; an available configured socket is imported. Permission errors and non-socket paths are still reported.
+- A socket entry can use `enabled: false` to omit it, but it must still be valid, including any path-template expansion. Use `sessionBus.enabled: false` to disable the session-bus proxy. Prefer specific names in `sessionBus.talk` over broad wildcards.
+- Passthrough does not start the host service or grant missing host permissions. For a non-default container socket, also point the client at it using its context or, for Docker-compatible clients, `DOCKER_HOST=unix:///absolute/socket/path`.
+
+To disable all configured IPC passthrough explicitly:
+
+```json
+{
+  "version": 1,
+  "sessionBus": {"enabled": false, "talk": []},
+  "unixSockets": []
+}
+```
+
+Deleting the configuration file restores the defaults; it does not disable IPC.
 
 ## Boundaries
 

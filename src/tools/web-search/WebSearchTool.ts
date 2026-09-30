@@ -122,7 +122,7 @@ export class WebSearchTool {
                     args as WebSearchInput,
                     theme,
                     resolveToolDisplayMode(context.expanded, context.state),
-                    {isPartial: context.isPartial, isError: context.isError},
+                    context,
                 );
             },
             renderResult: (result, options, theme, context) => presentation.renderResult(

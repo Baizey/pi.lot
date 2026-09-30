@@ -72,7 +72,7 @@ export class McpToolRegistry {
                     args as Record<string, unknown>,
                     theme,
                     resolveToolDisplayMode(context.expanded, context.state),
-                    {isPartial: context.isPartial, isError: context.isError},
+                    context,
                 );
             },
             renderResult: (result, options, theme, context) => presentation.renderResult(

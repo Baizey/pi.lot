@@ -145,7 +145,7 @@ export class BashTool {
                     args,
                     theme,
                     resolveToolDisplayMode(context.expanded, context.state),
-                    {isPartial: context.isPartial, isError: context.isError},
+                    context,
                 );
             },
 

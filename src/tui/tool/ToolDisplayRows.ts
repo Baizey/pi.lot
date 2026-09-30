@@ -1,6 +1,10 @@
+import type {ToolCallSpinnerState} from "./ToolCallSpinner.js";
+
+export type ToolDisplayState = ToolCallSpinnerState & {pilotFullDisplay?: boolean};
+
 type ToolDisplayRenderContext = {
     toolCallId: string;
-    state: {pilotFullDisplay?: boolean};
+    state: ToolDisplayState;
     invalidate(): void;
 };
 
@@ -16,7 +20,7 @@ type StoredToolDisplayRow = {
     toolName: string;
     args: unknown;
     sequence: number;
-    state: {pilotFullDisplay?: boolean};
+    state: ToolDisplayState;
     invalidate(): void;
 };
 
@@ -55,6 +59,10 @@ export class ToolDisplayRows {
     }
 
     clear(): void {
+        for (const row of this.rows.values()) {
+            row.state.pilotCallSpinner?.stop();
+            row.state.pilotCallSpinner = null;
+        }
         this.rows.clear();
         this.nextSequence = 1;
     }

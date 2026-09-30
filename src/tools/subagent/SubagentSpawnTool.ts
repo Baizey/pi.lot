@@ -173,7 +173,7 @@ function createDefinition(
                 args as SpawnToolInput,
                 theme,
                 resolveToolDisplayMode(context.expanded, context.state),
-                {isPartial: context.isPartial, isError: context.isError},
+                context,
             );
         },
         renderResult: (result, options, theme, context) => presentation.renderResult(

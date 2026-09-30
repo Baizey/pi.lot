@@ -18,6 +18,7 @@ import {ToolPresentationRenderer} from "../src/tui/tool/ToolPresentationRenderer
 import {ThemeColor} from "../src/tui/Color.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
+import type {ToolCallSpinnerState} from "../src/tui/tool/ToolCallSpinner.js";
 import {ViewFullToolCommand} from "../src/commands/ViewFullToolCommand.js";
 
 const plainTheme = {
@@ -111,7 +112,7 @@ test("self-shell composition keeps symbolic content free of fill-to-width whites
             args as Args,
             theme,
             ToolDisplayMode.TRUNCATED,
-            {isPartial: context.isPartial, isError: context.isError},
+            context,
         ),
         renderResult: (result, _options, theme, context) => presentation.renderResult(
             result,
@@ -183,22 +184,144 @@ test("full Bash presentation promotes purpose and timeout and shows complete out
     );
 });
 
-test("tool headers show lifecycle state without adding a padded shell", () => {
+test("tool headers animate Pi's spinner and omit status after success or error", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
     const renderer = new ToolPresentationRenderer(bashPresentation());
     const args = {purpose: "Check lifecycle", command: "true"};
+    const state: ToolCallSpinnerState = {};
+    let invalidations = 0;
+    const options = {isPartial: true, state, invalidate: () => invalidations++};
+    const call = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, options);
+    assert.equal(invalidations, 0, "construction must not recursively invalidate the tool row");
+    assert.deepEqual(call.render(120), ["⠋ bash | Check lifecycle"]);
 
-    assert.deepEqual(
-        renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {isPartial: true}).render(120),
-        ["· bash | Check lifecycle"],
-    );
-    assert.deepEqual(
-        renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {isPartial: false}).render(120),
-        ["✓ bash | Check lifecycle"],
-    );
-    assert.deepEqual(
-        renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {isPartial: false, isError: true}).render(120),
-        ["× bash | Check lifecycle"],
-    );
+    for (const frame of ["⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠋"]) {
+        t.mock.timers.tick(80);
+        assert.deepEqual(call.render(120), [`${frame} bash | Check lifecycle`]);
+        assert.deepEqual(
+            renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, options).render(120),
+            call.render(120),
+            "redraws must reuse the animation rather than resetting its phase",
+        );
+    }
+    assert.equal(invalidations, 10);
+
+    for (const mode of Object.values(ToolDisplayMode)) {
+        for (const width of [1, 2, 10, 120]) {
+            const lines = renderer.renderCall(args, plainTheme, mode, options).render(width);
+            assert.ok(lines.every((line) => displayWidth(line) <= width));
+            assert.ok(lines.every((line) => !/[ \t]+$/.test(line)));
+        }
+    }
+
+    for (const isError of [false, true]) {
+        const completed = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {
+            ...options, isPartial: false, isError,
+        });
+        assert.deepEqual(completed.render(120), ["bash | Check lifecycle"]);
+        assert.deepEqual(call.render(120), ["bash | Check lifecycle"]);
+        assert.equal(state.pilotCallSpinner, null);
+        t.mock.timers.tick(800);
+        assert.equal(invalidations, 10, "finished rows must stop requesting redraws");
+    }
+});
+
+test("Pi tool execution keeps the spinner through streaming and expansion and stops it on completion", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const presentation = new ToolPresentationRenderer(bashPresentation());
+    const definition = {
+        name: "bash",
+        label: "Bash",
+        description: "Exercise animated tool rendering",
+        parameters: {type: "object", properties: {}},
+        renderShell: "self",
+        async execute() { return {content: [], details: undefined}; },
+        renderCall: (args, theme, context) => {
+            rows.observe("bash", args, context);
+            return presentation.renderCall(
+                args as {purpose: string; command: string},
+                theme,
+                resolveToolDisplayMode(context.expanded, context.state),
+                context,
+            );
+        },
+        renderResult: (result, options, theme, context) => presentation.renderResult(
+            result, theme, {isError: context.isError},
+            resolveToolDisplayMode(options.expanded, context.state),
+        ),
+    } satisfies ToolDefinition<any, any>;
+    const args = {purpose: "Streaming", command: "echo live"};
+
+    for (const isError of [false, true]) {
+        let renderRequests = 0;
+        const component = new ToolExecutionComponent(
+            "bash", `stream-${isError}`, args, {}, definition,
+            {requestRender() { renderRequests++; }} as any, process.cwd(),
+        );
+        component.setArgsComplete();
+        component.markExecutionStarted();
+        component.updateResult({content: [{type: "text", text: "partial output"}], isError}, true);
+        assert.deepEqual(component.render(120).map(stripAnsi).filter(Boolean), ["⠋ bash | Streaming"]);
+        const requestsBeforeTick = renderRequests;
+        t.mock.timers.tick(80);
+        assert.equal(renderRequests, requestsBeforeTick + 1);
+        assert.deepEqual(component.render(120).map(stripAnsi).filter(Boolean), ["⠙ bash | Streaming"]);
+
+        component.setExpanded(true);
+        assert.deepEqual(component.render(120).map(stripAnsi).filter(Boolean), [
+            "⠙ bash | Streaming", "echo live", "partial output",
+        ]);
+        rows.toggle(`stream-${isError}`);
+        component.setExpanded(false);
+        assert.ok(component.render(120).map(stripAnsi).includes("⠙ bash | Streaming"));
+
+        component.updateResult({content: [{type: "text", text: "finished output"}], isError});
+        assert.deepEqual(component.render(120).map(stripAnsi).filter(Boolean), [
+            "bash | Streaming", "echo live", "finished output",
+        ]);
+        const requestsAfterCompletion = renderRequests;
+        t.mock.timers.tick(800);
+        assert.equal(renderRequests, requestsAfterCompletion);
+    }
+});
+
+test("clearing tool rows stops independent animations and cannot restart detached rows", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const rows = new ToolDisplayRows();
+    const renderer = new ToolPresentationRenderer(bashPresentation());
+    const args = {purpose: "Cleanup", command: "true"};
+    const state: ToolCallSpinnerState = {};
+    let invalidations = 0;
+    const context = {toolCallId: "first", state, isPartial: true, invalidate: () => invalidations++};
+    rows.observe("bash", args, context);
+    const first = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, context);
+    t.mock.timers.tick(80);
+
+    const secondContext = {...context, toolCallId: "second", state: {} as ToolCallSpinnerState};
+    rows.observe("bash", args, secondContext);
+    const second = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, secondContext);
+    assert.deepEqual(first.render(120), ["⠙ bash | Cleanup"]);
+    assert.deepEqual(second.render(120), ["⠋ bash | Cleanup"]);
+    t.mock.timers.tick(80);
+    assert.equal(invalidations, 3);
+
+    rows.clear();
+    rows.clear();
+    assert.deepEqual(rows.list(), []);
+    for (const options of [context, secondContext]) {
+        assert.equal(options.state.pilotCallSpinner, null);
+        assert.deepEqual(
+            renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, options).render(120),
+            ["bash | Cleanup"],
+        );
+    }
+    assert.deepEqual(first.render(120), ["bash | Cleanup"]);
+    assert.deepEqual(second.render(120), ["bash | Cleanup"]);
+    t.mock.timers.tick(800);
+    assert.equal(invalidations, 3);
 });
 
 test("minimal presentation shows title arguments and hides successful or failed output", () => {
@@ -255,8 +378,8 @@ test("every display mode formats the same header once and only expanded modes fo
         formatted.length = 0;
         const lines = renderer.renderCall(args, plainTheme, mode, {isError: true}).render(120);
         assert.deepEqual(lines, mode === ToolDisplayMode.MINIMAL
-            ? ["× mixed | file.txt:2"]
-            : ["× mixed | file.txt:2", "note: first", "block:", "line 1", "line 2"]);
+            ? ["mixed | file.txt:2"]
+            : ["mixed | file.txt:2", "note: first", "block:", "line 1", "line 2"]);
         assert.deepEqual(formatted, mode === ToolDisplayMode.MINIMAL
             ? ["path", "range"]
             : ["path", "range", "note", "block"]);

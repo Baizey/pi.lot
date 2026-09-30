@@ -18,6 +18,8 @@ import {
     ToolTextDirection,
 } from "./ToolPresentation.js";
 import {ToolDisplayMode} from "./ToolDisplayMode.js";
+import {ToolCallSpinner} from "./ToolCallSpinner.js";
+import type {ToolDisplayState} from "./ToolDisplayRows.js";
 
 const DEFAULT_ARGUMENT_PREVIEW_LINES = 8;
 const DEFAULT_RESULT_PREVIEW_LINES = 5;
@@ -27,6 +29,8 @@ const DEFAULT_MAX_ARGUMENT_LINES = 100;
 export type ToolCallRenderOptions = {
     isPartial?: boolean;
     isError?: boolean;
+    state?: ToolDisplayState;
+    invalidate?: () => void;
 };
 
 export type ToolResultRenderOptions = {
@@ -69,7 +73,10 @@ export class ToolPresentationRenderer<TArgs extends object> {
         options: ToolCallRenderOptions = {},
     ): TextComponent {
         const normalizedArgs = (args ?? {}) as Partial<TArgs>;
-        return renderLineFactory(() => this.toolCallLines(normalizedArgs, theme, mode, options));
+        this.updateCallSpinner(options);
+        return renderLineFactory(() => this.toolCallLines(
+            normalizedArgs, theme, mode, options.state?.pilotCallSpinner?.frame(),
+        ));
     }
 
     renderResult(
@@ -81,14 +88,25 @@ export class ToolPresentationRenderer<TArgs extends object> {
         return renderLineFactory(() => this.toolResultLines(result, theme, options, mode));
     }
 
+    private updateCallSpinner(options: ToolCallRenderOptions): void {
+        const state = options.state;
+        if (!state) return;
+        if (!options.isPartial) {
+            state.pilotCallSpinner?.stop();
+            state.pilotCallSpinner = null;
+        } else if (state.pilotCallSpinner === undefined && options.invalidate) {
+            state.pilotCallSpinner = new ToolCallSpinner(options.invalidate);
+        }
+    }
+
     private toolCallLines(
         args: Partial<TArgs>,
         theme: Theme,
         mode: ToolDisplayMode,
-        options: ToolCallRenderOptions,
+        indicator: string | undefined,
     ): string[] {
         const resolved = this.resolveArguments(args);
-        let title = this.toolTitle(theme, options);
+        let title = this.toolTitle(theme, indicator);
         for (const argument of resolved) {
             if (argument.placement === ToolArgumentPlacement.BODY) continue;
             title = this.appendTitleArgument(title, argument, args, theme);
@@ -241,12 +259,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
         return argument.presentation?.label ?? argument.key;
     }
 
-    private toolTitle(theme: Theme, options: ToolCallRenderOptions): string {
+    private toolTitle(theme: Theme, indicator: string | undefined): string {
         const title = theme.fg(ThemeColor.toolTitle, theme.bold(this.presentation.toolName));
-        if (options.isError) return `${theme.fg(ThemeColor.error, "×")} ${title}`;
-        if (options.isPartial) return `${theme.fg(ThemeColor.accent, "·")} ${title}`;
-        if (options.isPartial === false) return `${theme.fg(ThemeColor.success, "✓")} ${title}`;
-        return title;
+        return indicator ? `${theme.fg(ThemeColor.accent, indicator)} ${title}` : title;
     }
 
     private textRow(row: TextWindowRow, theme: Theme, contentColor: ThemeColor): string {

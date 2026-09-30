@@ -87,7 +87,7 @@ export class ReadTool {
                 args,
                 theme,
                 mode,
-                {isPartial: context.isPartial, isError: context.isError},
+                context,
             );
         };
         const renderResult: NonNullable<typeof definition.renderResult> = (result, options, theme, context) => {

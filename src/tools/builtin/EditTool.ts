@@ -96,7 +96,7 @@ export class EditTool {
                 args,
                 theme,
                 mode,
-                {isPartial: context.isPartial, isError: context.isError},
+                context,
             );
         };
         const renderResult: NonNullable<EditPresentationDefinition["renderResult"]> = (result, options, theme, context) => {

@@ -95,7 +95,7 @@ function createDefinition(
                 args as StatusToolInput,
                 theme,
                 resolveToolDisplayMode(context.expanded, context.state),
-                {isPartial: context.isPartial, isError: context.isError},
+                context,
             );
         },
         renderResult: (result, options, theme, context) => presentation.renderResult(

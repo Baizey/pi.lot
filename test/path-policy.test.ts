@@ -15,6 +15,7 @@ import {
     PolicyLifetime,
     PolicyResolutionSource,
     PolicyResponse,
+    PolicyResult,
     PolicyFallbackResponse
 } from "../src/policy/types";
 import {resolvePhysicalPath} from "../src/policy/path/validation.js";
@@ -68,6 +69,63 @@ function scriptedDecisionFlow(choices: PolicyChoice[]): {
     } as unknown as PolicyDecisionFlow;
     return {flow, callCount: () => calls};
 }
+
+test("SYSTEM denial messages explain automatic blocks without implying a policy refusal or expired approval", () => {
+    const scenarios = [
+        {reason: "User policy approval is no longer active.", lifetime: PolicyLifetime.ONCE},
+        {reason: "LLM policy approval failed closed: the pending operation was aborted", lifetime: PolicyLifetime.ONCE},
+        {reason: "Automated fallback", lifetime: PolicyLifetime.SESSION},
+    ];
+
+    for (const {reason, lifetime} of scenarios) {
+        const result = PolicyResult.of({
+            evaluatedUri: "registry.npmjs.org",
+            evaluatedAccessType: PolicyAccessType.DNS_ACCESS,
+            matchedPattern: "registry.npmjs.org",
+            matchedLifetime: lifetime,
+            matchedStatus: PolicyResponse.DENIED,
+            matchedReason: reason,
+            resolutionSource: PolicyResolutionSource.SYSTEM,
+        });
+        const message = result.toDenyMessage();
+
+        assert.match(message, /^ACCESS DENIED\nAutomatic SYSTEM block:/);
+        assert.match(message, /not a user or LLM decision/);
+        assert.match(message, /not an explicit user deny policy/);
+        assert.match(message, /fail-closed safeguard or configured fallback default/);
+        assert.ok(message.includes(`Automatic block reason: ${reason}`));
+        assert.match(message, /Policy resolution source: SYSTEM/);
+        assert.ok(message.includes(`System result lifetime: ${lifetime}`));
+        assert.match(message, /does not mean a previous approval expired/);
+        assert.match(message, /Diagnose the automatic block using the reason above/);
+        assert.match(message, /Do not bypass policy enforcement/);
+        assert.doesNotMatch(message, /policy .* was triggered|wakeup-call|report back to them for clarification/);
+    }
+});
+
+test("non-SYSTEM denial messages retain the policy source, scope, lifetime, reason, and refusal guidance", () => {
+    for (const source of Object.values(PolicyResolutionSource).filter((value) => value !== PolicyResolutionSource.SYSTEM)) {
+        const result = PolicyResult.of({
+            evaluatedUri: "registry.npmjs.org/package",
+            evaluatedAccessType: PolicyAccessType.HTTP_GET,
+            matchedPattern: "registry.npmjs.org",
+            matchedLifetime: PolicyLifetime.SESSION,
+            matchedStatus: PolicyResponse.DENIED,
+            matchedReason: "Registry access is denied.",
+            resolutionSource: source,
+        });
+        const message = result.toDenyMessage();
+
+        assert.match(message, /^ACCESS DENIED\n/);
+        assert.ok(message.includes("The uri 'registry.npmjs.org/package' had an attempted access of type GET"));
+        assert.ok(message.includes("The policy for uri (and any subfiles without own policies) 'registry.npmjs.org' was triggered"));
+        assert.ok(message.includes("Policy reason for why this was denied: Registry access is denied."));
+        assert.ok(message.includes(`Policy resolution source: ${source}`));
+        assert.match(message, /Policy lifetime: SESSION/);
+        assert.match(message, /report back to them for clarification/);
+        assert.doesNotMatch(message, /Automatic SYSTEM block|Automatic block reason|previous approval expired/);
+    }
+});
 
 test("a path and access type identify one policy whose properties can be replaced", () => {
     const target = path.join(os.tmpdir(), "pi-policy-replacement");

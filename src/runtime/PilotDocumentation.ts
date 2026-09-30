@@ -22,7 +22,6 @@ export class PilotDocumentation {
             "- Installation or setup: read docs/installation.md.",
             "- Policies, permissions, network mediation, credentials, or audit logs: read docs/policy.md.",
             "- Subagents or delegation: read docs/subagents.md.",
-            "- MCP configuration or tools: read docs/mcp.md.",
             "- Web search: read docs/web-search.md.",
             "- Security model or limitations: read docs/security.md.",
             "Resolve docs/... under Additional docs, not the current working directory, and read relevant files before answering.",

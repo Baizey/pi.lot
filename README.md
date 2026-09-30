@@ -147,26 +147,11 @@ Read [Subagents](docs/subagents.md) for capability inheritance, child context, m
 
 ### MCP
 
-pi.lot hosts Pi `0.99.1`'s native MCP adapter for stdio and Streamable HTTP. Configure global servers in `~/.pi/agent/mcp.json`, or project servers in trusted `.pi/mcp.json`. Native default exposure is `codemode`; for least privilege, hide the server and directly expose only chosen tools:
+pi.lot hosts Pi's native MCP adapter. Use [Pi's MCP documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for configuration and server management, and follow the [Pilot loader setup](docs/installation.md#install-the-package).
 
-```json
-{
-  "mcpServers": {
-    "example": {
-      "command": "example-mcp-server",
-      "args": [],
-      "exposure": "hidden",
-      "toolExposure": { "read_resource": "direct" }
-    }
-  }
-}
-```
+MCP effects are [outside filesystem and network mediation](docs/security.md#mcp). Children require the hard `mcp` grant; see [subagent capability semantics](docs/subagents.md#hard-mechanism-capabilities).
 
-Use `/mcp` to inspect or manage servers, `/mcp reconnect <server>` to reconnect and `/reload` after editing `toolExposure`. Configure servers in native Pi JSON; installing pi.lot does not change any live user MCP configuration. Since Pilot hosts the native adapter itself, disable Pi's separate built-in loader with `"extensions": ["-builtin:mcp"]` in Pi user settings to avoid a duplicate-loader warning.
-
-MCP is an explicit boundary outside filesystem and network mediation: servers and tools may perform opaque host effects. Children need the hard `mcp` capability, receive no ambient native config, and do not receive native aggregate resource tools; Pilot's `Ctrl+O` and `/view-full-tool` display remains available.
-
-Read [MCP](docs/mcp.md) for native setup, timeouts, exposure, resource behavior and subagent access.
+MCP tools retain Pilot's `Ctrl+O` and `/view-full-tool` display. Routine connection notices are quiet; configuration errors, discovery warnings, load failures, command diagnostics, and tool errors still surface. Check `/mcp` for connection state.
 
 ### Web search
 
@@ -217,7 +202,6 @@ pi.lot uses Pi's custom-footer slot, so another custom-footer extension can repl
 - [Installation and setup](docs/installation.md)
 - [Policy system](docs/policy.md)
 - [Subagents](docs/subagents.md)
-- [MCP](docs/mcp.md)
 - [Web search](docs/web-search.md)
 - [Security model and limitations](docs/security.md)
 
@@ -230,7 +214,6 @@ The extension appends this topic map, using absolute package paths, to the root 
 | `~/.pilot/pilot.sqlite` | Locally persisted policy rules |
 | `~/.pilot/policy-defaults.json` | Saved policy-area fallbacks |
 | `~/.pilot/subagent-defaults.json` | Saved reasoning-skill model mappings |
-| `~/.pi/agent/mcp.json` | Native global MCP servers and exposure (`.pi/mcp.json` for trusted projects) |
 | `~/.pilot/web-search.json` | Web-search providers and credentials |
 | `~/.pilot/credential-ipc.json` | [Host D-Bus and Unix-socket passthrough; common integrations and when to enable them](docs/policy.md#host-credential-ipc) |
 | `~/.pilot/logs/<session-id>.log` | Policy approval audit records |

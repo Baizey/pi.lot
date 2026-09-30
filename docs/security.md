@@ -27,7 +27,7 @@ See [Policy system](policy.md) for exact semantics.
 
 ### MCP
 
-MCP stdio servers run as host processes and MCP HTTP transports use the host network. MCP tool effects are not inspected by filesystem or network policy. See [MCP security boundary](mcp.md#security-boundary).
+MCP stdio servers run as host processes and MCP HTTP transports use the host network. MCP tool effects are opaque and not inspected by filesystem or network policy; tool annotations are hints, not enforcement. Trust the servers and expose only the tools you need. Child access requires the hard `mcp` grant, independent of policy-area grants; see [subagent capabilities](subagents.md#hard-mechanism-capabilities).
 
 ### Host credential IPC
 

@@ -44,12 +44,12 @@ Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always ava
 
 ### Hard mechanism capabilities
 
-- `mcp` supplies child-callable MCP tool definitions from the root session's current native MCP servers at child creation. It does not load ambient `~/.pi/agent/mcp.json` or project `.pi/mcp.json` into the child. Newly exposed tools do not automatically enter an existing child's conversation; calls still check the root's latest hidden state and tool schema at execution. Native aggregate resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) are root-only, not delegated because their server scope is not snapshotted per child.
+- `mcp` supplies child-callable MCP tool definitions from the root session's current native MCP servers at child creation. No ambient MCP configuration is loaded into the child. Newly exposed tools do not automatically enter an existing child's conversation; calls still check the root's latest hidden state and tool schema at execution. Native aggregate resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) are root-only, not delegated because their server scope is not snapshotted per child.
 - `delegate` exposes subagent tools and permits nested delegation.
 
 A child cannot request these mechanisms later. A nested child cannot receive either mechanism unless its parent already has it.
 
-MCP remains an opaque capability outside filesystem/network mediation. Granting `mcp` does not cause MCP effects to inherit Pilot's path or network policies. See [Native MCP configuration](mcp.md).
+MCP remains an opaque capability outside filesystem/network mediation. Granting `mcp` does not cause MCP effects to inherit Pilot's path or network policies. See [MCP security boundary](security.md#mcp).
 
 ## Reasoning and model selection
 

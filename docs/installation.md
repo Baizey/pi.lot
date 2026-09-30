@@ -92,13 +92,7 @@ pi -e "$PWD"
 
 The checked-in `.pi/settings.json` also loads the repository root as a project-local package when Pi starts inside the checkout and the project is trusted.
 
-Pilot hosts Pi's native MCP extension itself. In your Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), disable the separate built-in MCP loader to avoid a duplicate-loader warning:
-
-```json
-{ "extensions": ["-builtin:mcp"] }
-```
-
-Preserve any other existing extension entries. This does not disable Pilot's MCP adapter or the shell `pi mcp` commands. Add servers to native `~/.pi/agent/mcp.json` or trusted project `.pi/mcp.json` yourself; installing pi.lot does not change live user MCP config. See [MCP setup](mcp.md#configuration).
+Pilot hosts Pi's native MCP factory itself: add `"-builtin:mcp"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving other entries, to disable the duplicate loader—not Pilot's adapter. Installing pi.lot does not change live user MCP configuration.
 
 ## Verify the installation
 
@@ -132,7 +126,7 @@ Continue with:
 
 - [Policy configuration](policy.md)
 - [Subagent model defaults](subagents.md#reasoning-and-model-selection)
-- [Native MCP configuration](mcp.md)
+- [Pi's MCP configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md)
 - [Web-search providers](web-search.md)
 
 ## Update a local installation

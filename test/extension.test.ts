@@ -251,7 +251,8 @@ test("the production extension appends topic-routed pi.lot documentation to the 
     const documentationDirectory = path.join(packageRoot, "docs");
     assert.match(systemPrompt, new RegExp(escapeRegex(path.join(packageRoot, "README.md"))));
     assert.match(systemPrompt, new RegExp(escapeRegex(documentationDirectory)));
-    for (const filename of ["installation.md", "policy.md", "subagents.md", "mcp.md", "web-search.md", "security.md"]) {
+    assert.doesNotMatch(systemPrompt, /docs\/mcp\.md/);
+    for (const filename of ["installation.md", "policy.md", "subagents.md", "web-search.md", "security.md"]) {
         assert.match(systemPrompt, new RegExp(escapeRegex(`docs/${filename}`)));
         assert.doesNotThrow(() => readFileSync(path.join(documentationDirectory, filename), "utf8"));
     }

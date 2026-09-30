@@ -147,7 +147,7 @@ Read [Subagents](docs/subagents.md) for capability inheritance, child context, m
 
 ### MCP
 
-pi.lot hosts Pi's native MCP adapter. Use [Pi's MCP documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for configuration and server management, and follow the [Pilot loader setup](docs/installation.md#install-the-package).
+Pilot runs Pi's built-in MCP implementation via `createMcpExtension()`. The [loader setting](docs/installation.md#install-the-package) `"-builtin:mcp"` suppresses Pi's separate automatic instance and override warning—not MCP functionality. Without it, Pi omits the duplicate instance and warns. Use [Pi's MCP documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for configuration and server management.
 
 MCP effects are [outside filesystem and network mediation](docs/security.md#mcp). Children require the hard `mcp` grant; see [subagent capability semantics](docs/subagents.md#hard-mechanism-capabilities).
 

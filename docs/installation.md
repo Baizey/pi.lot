@@ -92,7 +92,9 @@ pi -e "$PWD"
 
 The checked-in `.pi/settings.json` also loads the repository root as a project-local package when Pi starts inside the checkout and the project is trusted.
 
-Pilot hosts Pi's native MCP factory itself: add `"-builtin:mcp"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving other entries, to disable the duplicate loader—not Pilot's adapter. Installing pi.lot does not change live user MCP configuration.
+Pilot runs Pi's built-in MCP implementation via `createMcpExtension()`. Add `"-builtin:mcp"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. This suppresses Pi's separate automatic MCP instance and its override warning, **not MCP functionality**: Pilot still runs the built-in implementation. Without this entry, Pi omits the duplicate built-in instance because Pilot registers `/mcp`, and emits an override warning.
+
+Installing pi.lot does not modify live user configuration; make this loader setting change yourself.
 
 ## Verify the installation
 

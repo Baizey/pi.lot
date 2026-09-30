@@ -168,7 +168,7 @@ test("full Bash presentation promotes purpose and timeout and shows complete out
             timeout: 300,
         }, plainTheme, ToolDisplayMode.FULL).render(120),
         [
-            "bash | Build the native helper (timeout 300s)",
+            "  bash | Build the native helper (timeout 300s)",
             "npm run build",
             "npm test",
         ],
@@ -184,7 +184,7 @@ test("full Bash presentation promotes purpose and timeout and shows complete out
     );
 });
 
-test("tool headers animate Pi's spinner and omit status after success or error", (t) => {
+test("tool headers animate Pi's spinner and keep its blank slot after success or error", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const renderer = new ToolPresentationRenderer(bashPresentation());
     const args = {purpose: "Check lifecycle", command: "true"};
@@ -214,12 +214,17 @@ test("tool headers animate Pi's spinner and omit status after success or error",
         }
     }
 
+    const runningTitleColumn = call.render(120)[0]!.indexOf("bash");
     for (const isError of [false, true]) {
-        const completed = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, {
-            ...options, isPartial: false, isError,
-        });
-        assert.deepEqual(completed.render(120), ["bash | Check lifecycle"]);
-        assert.deepEqual(call.render(120), ["bash | Check lifecycle"]);
+        for (const mode of Object.values(ToolDisplayMode)) {
+            const completed = renderer.renderCall(args, plainTheme, mode, {
+                ...options, isPartial: false, isError,
+            });
+            const header = completed.render(120)[0]!;
+            assert.equal(header, "  bash | Check lifecycle");
+            assert.equal(header.indexOf("bash"), runningTitleColumn, "completion must not shift the title");
+        }
+        assert.deepEqual(call.render(120), ["  bash | Check lifecycle"]);
         assert.equal(state.pilotCallSpinner, null);
         t.mock.timers.tick(800);
         assert.equal(invalidations, 10, "finished rows must stop requesting redraws");
@@ -280,7 +285,7 @@ test("Pi tool execution keeps the spinner through streaming and expansion and st
 
         component.updateResult({content: [{type: "text", text: "finished output"}], isError});
         assert.deepEqual(component.render(120).map(stripAnsi).filter(Boolean), [
-            "bash | Streaming", "echo live", "finished output",
+            "  bash | Streaming", "echo live", "finished output",
         ]);
         const requestsAfterCompletion = renderRequests;
         t.mock.timers.tick(800);
@@ -315,11 +320,11 @@ test("clearing tool rows stops independent animations and cannot restart detache
         assert.equal(options.state.pilotCallSpinner, null);
         assert.deepEqual(
             renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, options).render(120),
-            ["bash | Cleanup"],
+            ["  bash | Cleanup"],
         );
     }
-    assert.deepEqual(first.render(120), ["bash | Cleanup"]);
-    assert.deepEqual(second.render(120), ["bash | Cleanup"]);
+    assert.deepEqual(first.render(120), ["  bash | Cleanup"]);
+    assert.deepEqual(second.render(120), ["  bash | Cleanup"]);
     t.mock.timers.tick(800);
     assert.equal(invalidations, 3);
 });
@@ -334,7 +339,7 @@ test("minimal presentation shows title arguments and hides successful or failed 
 
     assert.deepEqual(
         renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL).render(120),
-        ["bash | Build the native helper (timeout 300s)"],
+        ["  bash | Build the native helper (timeout 300s)"],
     );
     assert.deepEqual(
         renderer.renderResult(
@@ -378,8 +383,8 @@ test("every display mode formats the same header once and only expanded modes fo
         formatted.length = 0;
         const lines = renderer.renderCall(args, plainTheme, mode, {isError: true}).render(120);
         assert.deepEqual(lines, mode === ToolDisplayMode.MINIMAL
-            ? ["mixed | file.txt:2"]
-            : ["mixed | file.txt:2", "note: first", "block:", "line 1", "line 2"]);
+            ? ["  mixed | file.txt:2"]
+            : ["  mixed | file.txt:2", "note: first", "block:", "line 1", "line 2"]);
         assert.deepEqual(formatted, mode === ToolDisplayMode.MINIMAL
             ? ["path", "range"]
             : ["path", "range", "note", "block"]);
@@ -400,7 +405,7 @@ test("truncated presentation keeps argument heads and output tails", () => {
     ).render(120);
 
     assert.deepEqual(call.slice(0, 3), [
-        "bash | Exercise truncation",
+        "  bash | Exercise truncation",
         "line 1",
         "line 2",
     ]);
@@ -429,7 +434,7 @@ test("known arguments retain declared order, unknown arguments sort, and blocks 
             unknownBlock: "first\nsecond",
         } as Args, plainTheme, ToolDisplayMode.FULL).render(120),
         [
-            "ordered",
+            "  ordered",
             "known: configured inline",
             "alpha: 1",
             "zeta: 2",
@@ -461,7 +466,7 @@ test("body argument values honor configured colors", () => {
         renderer.renderCall({inline: "configured inline", block: "first\nsecond"}, colorTheme, ToolDisplayMode.FULL)
             .render(120),
         [
-            "<toolTitle>colored</toolTitle>",
+            "  <toolTitle>colored</toolTitle>",
             "<dim>inline:</dim> <warning>configured inline</warning>",
             "<dim>block:</dim>",
             "<text>first</text>",
@@ -567,7 +572,7 @@ test("character safety limits retain the configured head or tail boundary", () =
 
     assert.deepEqual(
         renderer.renderCall({content: "abcdefghij"}, plainTheme, ToolDisplayMode.FULL).render(120),
-        ["character-bounded", "abcde", "[display truncated]"],
+        ["  character-bounded", "abcde", "[display truncated]"],
     );
     assert.deepEqual(
         renderer.renderResult(
@@ -611,11 +616,11 @@ test("secondary owners consume declared arguments and retain independent title p
             plainTheme,
             ToolDisplayMode.MINIMAL,
         ).render(120),
-        ["read | file.txt:2-3 (utf8)"],
+        ["  read | file.txt:2-3 (utf8)"],
     );
     assert.deepEqual(
         renderer.renderCall({path: "file.txt", limit: 2}, plainTheme, ToolDisplayMode.MINIMAL).render(120),
-        ["read | file.txt:1-2"],
+        ["  read | file.txt:1-2"],
     );
 });
 

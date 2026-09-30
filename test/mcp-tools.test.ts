@@ -117,7 +117,7 @@ test("native MCP calls keep Pilot's copy-safe shell, compact, expanded, and row-
     component.updateResult({content: [{type: "text", text: output.join("\n")}], isError: false});
     component.setExpanded(false);
     const compact = component.render(100).map(stripAnsi);
-    assert.deepEqual(compact.filter(Boolean), ["mcp__demo__echo"]);
+    assert.deepEqual(compact.filter(Boolean), ["  mcp__demo__echo"]);
     assert.equal(rows.list().length, 1);
 
     component.setExpanded(true);
@@ -136,7 +136,7 @@ test("native MCP calls keep Pilot's copy-safe shell, compact, expanded, and row-
         assert.ok(component.render(width).every((line) => displayWidth(line) <= width));
     }
     component.updateResult({content: [{type: "text", text: "native MCP error"}], isError: true});
-    assert.ok(component.render(100).map(stripAnsi).some((line) => line === "mcp__demo__echo"));
+    assert.ok(component.render(100).map(stripAnsi).some((line) => line === "  mcp__demo__echo"));
 
     const plainTheme = {fg: (_color: string, text: string) => text, bold: (text: string) => text} as unknown as Theme;
     const state = {};

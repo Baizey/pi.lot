@@ -261,7 +261,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
 
     private toolTitle(theme: Theme, indicator: string | undefined): string {
         const title = theme.fg(ThemeColor.toolTitle, theme.bold(this.presentation.toolName));
-        return indicator ? `${theme.fg(ThemeColor.accent, indicator)} ${title}` : title;
+        // Keep the spinner's column empty after completion rather than shifting the title left.
+        const status = indicator ? theme.fg(ThemeColor.accent, indicator) : " ";
+        return `${status} ${title}`;
     }
 
     private textRow(row: TextWindowRow, theme: Theme, contentColor: ThemeColor): string {

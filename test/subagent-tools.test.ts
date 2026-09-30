@@ -71,10 +71,10 @@ test("each subagent tool registers independently and delegates only to the coord
         reasoning_amount: SubagentReasoningAmount.MID,
     };
     const minimalCalls = [
-        [{task: "Delegate work", role: "reviewer", ...reasoning}, "subagent_spawn | reviewer"],
-        [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, "subagent_status | job-1, job-2 (wait 2s)"],
-        [{jobId: "job-1", task: "Continue"}, "subagent_message | job-1"],
-        [{jobId: "job-1"}, "subagent_stop | job-1"],
+        [{task: "Delegate work", role: "reviewer", ...reasoning}, "  subagent_spawn | reviewer"],
+        [{jobIds: ["job-1", "job-2"], waitSeconds: 2}, "  subagent_status | job-1, job-2 (wait 2s)"],
+        [{jobId: "job-1", task: "Continue"}, "  subagent_message | job-1"],
+        [{jobId: "job-1"}, "  subagent_stop | job-1"],
     ] as const;
     for (let index = 0; index < registered.length; index++) {
         const tool = registered[index]!;

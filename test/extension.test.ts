@@ -365,7 +365,7 @@ test("Pilot's expanded state switches Bash between minimal and truncated while r
 
     assert.deepEqual(
         bashTool.renderCall(args, theme, toolRenderContext(args, displayState)).render(120),
-        ["bash | Verify native display controls"],
+        ["  bash | Verify native display controls"],
     );
     assert.deepEqual(
         bashTool.renderResult(
@@ -484,7 +484,7 @@ test("Bash components remain renderable during and after session shutdown", asyn
 
     assert.ifError(renderError);
     const expectedLines = [
-        "bash | Keep rendering during teardown",
+        "  bash | Keep rendering during teardown",
         "echo complete",
     ];
     assert.deepEqual(renderedLines, expectedLines);
@@ -556,14 +556,14 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
     let writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     let editCall = editTool.renderCall(editArgs, theme, editCallContext);
 
-    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["read | notes.data:2-3"]);
+    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["  read | notes.data:2-3"]);
     assert.deepEqual(
         writeCall.render(120).map((line) => line.trimEnd()),
-        ["write | created.data", "alpha", "beta"],
+        ["  write | created.data", "alpha", "beta"],
     );
     assert.deepEqual(
         editCall.render(120).map((line) => line.trimEnd()),
-        ["edit | changed.data (2 replacements)"],
+        ["  edit | changed.data (2 replacements)"],
     );
 
     readCallContext = {...readCallContext, expanded: false, lastComponent: readCall};
@@ -573,8 +573,8 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
     writeCall = writeTool.renderCall(writeArgs, theme, writeCallContext);
     editCall = editTool.renderCall(editArgs, theme, editCallContext);
 
-    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["read | notes.data:2-3"]);
-    assert.deepEqual(writeCall.render(120).map((line) => line.trimEnd()), ["write | created.data"]);
+    assert.deepEqual(readCall.render(120).map((line) => line.trimEnd()), ["  read | notes.data:2-3"]);
+    assert.deepEqual(writeCall.render(120).map((line) => line.trimEnd()), ["  write | created.data"]);
     assert.equal(editCall.render(120).some((line) => line.includes("edit | changed.data")), true);
     assert.equal(editCall.render(120).some((line) => line.includes("2 replacements")), true);
     assert.deepEqual(
@@ -583,7 +583,7 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
             theme,
             toolRenderContext({path: "notes.data", limit: 2}, {}),
         ).render(120).map((line) => line.trimEnd()),
-        ["read | notes.data:1-2"],
+        ["  read | notes.data:1-2"],
     );
     assert.deepEqual(
         readTool.renderCall(
@@ -591,7 +591,7 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
             theme,
             toolRenderContext({path: "notes.data", offset: 2}, {}),
         ).render(120).map((line) => line.trimEnd()),
-        ["read | notes.data:2"],
+        ["  read | notes.data:2"],
     );
 
     const errorResult = {content: [{type: "text", text: "visible error details"}]};
@@ -636,8 +636,8 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
         theme,
         {...writeCallContext, expanded: false, lastComponent: writeCall},
     );
-    assert.equal(readCall.render(120)[0]?.includes("read |"), true);
-    assert.equal(writeCall.render(120)[0]?.includes("write |"), true);
+    assert.equal(readCall.render(120)[0]?.startsWith("  read |"), true);
+    assert.equal(writeCall.render(120)[0]?.startsWith("  write |"), true);
 
     editCallContext = {...editCallContext, expanded: false, lastComponent: editCall};
     editCall = editTool.renderCall(editArgs, theme, editCallContext);
@@ -654,7 +654,7 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
         theme,
         toolRenderContext(editArgs, editState, {expanded: false}),
     );
-    assert.deepEqual(editCall.render(120), ["edit | changed.data (2 replacements)"]);
+    assert.deepEqual(editCall.render(120), ["  edit | changed.data (2 replacements)"]);
     assert.equal(editResult.render(120).some((line) => line.includes("old value")), true);
     assert.equal(editResult.render(120).some((line) => line.includes("new value")), true);
     assert.equal(editResult.render(120).some((line) => /^\s+[+-]/.test(line)), false);

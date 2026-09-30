@@ -19,7 +19,7 @@ import {
 } from "../src/subagents/types.js";
 
 const bashTool = tool("bash");
-const mcpTool = tool("mcp_test");
+const mcpTool = tool("mcp__test__echo");
 const delegateTool = tool("subagent_spawn");
 
 function tool(name: string): ToolDefinition<any, any> {
@@ -167,7 +167,7 @@ test("MCP tools are exposed only by the hard MCP capability", async () => {
 
     assert.deepEqual(observed, [
         ["bash"],
-        ["bash", "mcp_test"],
+        ["bash", "mcp__test__echo"],
         ["bash", "subagent_spawn"],
     ]);
     await coordinator.close();

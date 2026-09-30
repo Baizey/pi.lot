@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {ExtensionContext, Theme, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import type {ExtensionContext, ExtensionToolContext, Theme, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
 import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
@@ -202,15 +202,20 @@ function numberedLineArray(count: number, start: number): string[] {
 }
 
 function invoke(tool: ToolDefinition<any, any>, params: unknown): Promise<unknown> {
+    const context = {
+        cwd: process.cwd(),
+        sessionManager: {getSessionId: () => "subagent-tool-test-agent"},
+    } as ExtensionContext;
     return tool.execute(
         "test-call",
         params,
         undefined,
         undefined,
         {
-            cwd: process.cwd(),
-            sessionManager: {getSessionId: () => "subagent-tool-test-agent"},
-        } as ExtensionContext,
+            ...context,
+            tools: [],
+            async executeTool() { throw new Error("Unexpected nested tool execution"); },
+        } satisfies ExtensionToolContext,
     );
 }
 

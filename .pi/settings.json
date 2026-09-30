@@ -1,5 +1,8 @@
 {
   "packages": [
     ".."
+  ],
+  "extensions": [
+    "-builtin:mcp"
   ]
 }

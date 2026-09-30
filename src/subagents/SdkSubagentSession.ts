@@ -1,11 +1,14 @@
 import {
     createAgentSession,
+    createCodemodeExtension,
+    createToolSearchExtension,
     DefaultResourceLoader,
     getAgentDir,
     ModelRuntime,
     SessionManager,
     SettingsManager,
     type ExtensionContext,
+    type InlineExtension,
     type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type {
@@ -21,6 +24,7 @@ import {
     type SubagentModelPerformanceRanker,
 } from "./SubagentModelResolver.js";
 import type {SubagentModelPreference} from "./SubagentDefaults.js";
+import {AgentMechanismCapability} from "./AgentCapability.js";
 import type {
     SubagentReasoningAmount,
     SubagentReasoningSkill,
@@ -47,6 +51,9 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         signal: AbortSignal,
     ): Promise<SubagentChildSession> {
         if (signal.aborted) throw abortError();
+        if (!request.capabilities.includes(AgentMechanismCapability.mcp) && tools.some(isMcpTool)) {
+            throw new Error("MCP tools require the subagent mcp capability");
+        }
         const resolved = await this.resolveModel(
             request.reasoningSkill,
             request.reasoningAmount,
@@ -57,7 +64,7 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         if (signal.aborted) throw abortError();
 
         const settingsManager = SettingsManager.inMemory();
-        const resourceLoader = await createSubagentResourceLoader(request, getAgentDir(), settingsManager);
+        const resourceLoader = await createSubagentResourceLoader(request, getAgentDir(), settingsManager, tools);
         if (signal.aborted) throw abortError();
 
         const sessionManager = SessionManager.inMemory(request.cwd, {id: request.agentIdentifier});
@@ -72,16 +79,20 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
             noTools: "builtin",
             customTools: tools,
         });
-        if (signal.aborted) {
+        try {
+            if (signal.aborted) throw abortError();
+            if (resourceLoader.getExtensions().extensions.length > 0) await session.bindExtensions({});
+            if (signal.aborted) throw abortError();
+        } catch (error) {
             try {
                 session.dispose();
-            } catch (error) {
+            } catch (disposeError) {
                 throw new Error(
-                    `Failed to dispose aborted subagent session ${request.agentIdentifier}: ${errorMessage(error)}`,
+                    `Failed to dispose subagent session ${request.agentIdentifier}: ${errorMessage(disposeError)}`,
                     {cause: error},
                 );
             }
-            throw abortError();
+            throw error;
         }
         return new SdkSubagentSession(session, {
             model: `${resolved.model.provider}/${resolved.model.id}`,
@@ -117,8 +128,29 @@ export async function createSubagentResourceLoader(
     request: SubagentSessionRequest,
     agentDir = getAgentDir(),
     settingsManager = SettingsManager.inMemory(),
+    tools: readonly ToolDefinition<any, any>[] = [],
 ): Promise<DefaultResourceLoader> {
+    const extensionFactories: InlineExtension[] = [];
+    if (request.capabilities.includes(AgentMechanismCapability.mcp)) {
+        const codemode = tools.some((tool) => tool.exposure === "codemode");
+        // Native codemode-deferred tools are registered with the deferred tool exposure.
+        const toolSearch = tools.some((tool) => tool.exposure === "deferred");
+        if (codemode) extensionFactories.push(createCodemodeExtension({mode: "on", models: false}));
+        if (toolSearch) extensionFactories.push(createToolSearchExtension());
+        if (codemode || toolSearch) {
+            extensionFactories.push((pi) => {
+                pi.on("session_start", () => {
+                    pi.setActiveTools([
+                        ...pi.getActiveTools(),
+                        ...(codemode ? ["codemode"] : []),
+                        ...(toolSearch ? ["tool_search"] : []),
+                    ]);
+                });
+            });
+        }
+    }
     const resourceLoader = new DefaultResourceLoader({
+        extensionFactories,
         cwd: request.cwd,
         agentDir,
         settingsManager,
@@ -213,6 +245,13 @@ export class SdkSubagentSession implements SubagentChildSession {
         this.disposed = true;
         this.session.dispose();
     }
+}
+
+function isMcpTool(tool: ToolDefinition<any, any>): boolean {
+    return tool.name.startsWith("mcp__")
+        || ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(tool.name)
+        || tool.exposure === "codemode"
+        || tool.exposure === "deferred";
 }
 
 function subagentSystemPrompt(request: SubagentSessionRequest): string {

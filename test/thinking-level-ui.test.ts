@@ -327,10 +327,14 @@ function nativeFooter(harness: UiHarness): FooterComponent {
         input: 1_000, output: 200, cacheRead: 4_000, cacheWrite: 0, totalTokens: 5_200,
         cost: {input: 0.5, output: 0.5, cacheRead: 0.5, cacheWrite: 0, total: 1.5},
     };
+    const entries = [{id: "assistant-entry", type: "message", message: {role: "assistant", usage}}];
     const session = {
         get state() { return {model: harness.context.model, thinkingLevel: harness.level}; },
         sessionManager: {
-            getEntries: () => [{type: "message", message: {role: "assistant", usage}}],
+            getEntries: () => entries,
+            getEntryCount: () => entries.length,
+            getSessionId: () => "native-footer-session",
+            getLeafId: () => entries.at(-1)?.id ?? null,
             getCwd: () => "/tmp/pilot",
             getSessionName: () => "session • low",
         },

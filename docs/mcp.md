@@ -1,133 +1,42 @@
 # MCP
 
-pi.lot supports MCP servers over **stdio** and **Streamable HTTP**. It connects servers, discovers their tools, and registers only explicitly exposed tools with Pi.
+pi.lot uses Pi `0.99.1`'s native MCP adapter for stdio and Streamable HTTP servers. MCP remains an **opaque host capability outside pi.lot's filesystem and network mediation**: stdio servers run host processes, HTTP servers use the host network, and tool annotations are hints, not enforcement. Trust the server and expose only the tools you need.
 
-> [!WARNING]
-> MCP is an explicit host capability outside pi.lot's filesystem and network mediation. Expose only trusted servers and the minimum tools required.
+## Configuration
 
-## Configuration file
-
-MCP configuration lives at:
-
-```text
-~/.pilot/mcp.json
-```
-
-Tools are unexposed by default. A server may connect and advertise tools without making them callable by the model.
-
-Example:
+Put global servers in `~/.pi/agent/mcp.json` (or `mcp.json` under the configured Pi agent directory). Trusted projects can provide `.pi/mcp.json`; those entries override same-named global entries. Untrusted project config is not loaded. No live user configuration is changed by installing pi.lot.
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "local": {
-      "transport": "stdio",
       "command": "my-mcp-server",
       "args": [],
-      "env": {},
-      "enabled": true,
-      "autoConnect": true,
-      "tools": {
-        "expose": ["read_resource"],
-        "hide": []
-      }
+      "env": { "TOKEN": "${MY_TOKEN}" },
+      "exposure": "hidden",
+      "toolExposure": { "read_resource": "direct" }
     },
     "remote": {
-      "transport": "http",
       "url": "https://mcp.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer replace-me"
-      },
-      "enabled": true,
-      "autoConnect": true,
-      "tools": {
-        "expose": []
-      }
+      "headers": { "Authorization": "Bearer ${MCP_TOKEN}" },
+      "exposure": "hidden"
     }
   }
 }
 ```
 
-Protect the file when it contains credentials:
+A `command` selects stdio; a `url` selects Streamable HTTP. A stdio entry may also set `cwd` and `env`; an HTTP entry may set `headers` and OAuth options. Pi supports `${NAME}` environment substitution and `!command` values for env/headers; prefer `${NAME}` to putting credentials in JSON. The native `timeout` is in **seconds** (per request, reset on progress), and `enabled: false` keeps an entry without connecting. Invalid entries are reported, not used. See [Pi's MCP reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) for transport, OAuth and timeout details.
 
-```bash
-chmod 600 ~/.pilot/mcp.json
-```
+Native default exposure is `codemode`, **not hidden**. Use `"exposure": "hidden"` and exact `toolExposure` overrides for direct access with least privilege. `toolExposure` patterns use `*` as a glob; `"*": "direct"` exposes every tool of a hidden server, so review it carefully. An exact name overrides a wildcard. Other modes (`codemode`, `codemode-deferred`, `deferred`, `direct`) are available when intentionally selected. Making the whole server `direct` can also expose its resources; use hidden plus per-tool overrides for an explicit tool allowlist. Pi names tools `mcp__<server>__<tool>`. Native aggregate resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) can be available to the **root** when a non-hidden server offers resources; they retain pi.lot's tool rendering but are not delegated to children because their server scope is not snapshotted per child.
 
-## Server settings
+## Manage servers
 
-Common settings:
+`/mcp` opens the native server manager: inspect status, errors and tools; enable/disable, change server exposure, sign in to OAuth servers, or reconnect. `/mcp reconnect <server>` reconnects from a command. From a shell use `pi mcp add`, `pi mcp remove`, `pi mcp list`, `pi mcp login` and `pi mcp logout`. Edit `toolExposure` in the native JSON file and use `/reload` (or a new session) to apply changes. Pi's connection notices are kept quiet for routine connection attention and still-connecting states; config errors, discovery warnings, native load failures, command diagnostics and tool errors still surface. Check `/mcp` for current state.
 
-| Field | Meaning | Default |
-| --- | --- | --- |
-| `enabled` | Whether the server can be used | `true` |
-| `autoConnect` | Connect when a Pi session starts | `true` |
-| `tools.expose` | Tool names to register; `*` means all | none |
-| `tools.hide` | Tool names to block; `*` means all | none |
-| `connectTimeoutMs` | Connection timeout | 15 seconds |
-| `listToolsTimeoutMs` | Tool-discovery timeout | 15 seconds |
-| `toolTimeoutMs` | Tool-call inactivity timeout | 60 seconds |
-| `toolMaxTotalTimeoutMs` | Maximum total tool-call time | 5 minutes |
+**Avoid a duplicate native loader in Pilot.** Pilot hosts `createMcpExtension()` itself; set `"extensions": ["-builtin:mcp"]` in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory) while using Pilot. Alternatively disable Built-in MCP in `pi config`. This disables Pi's separately auto-loaded built-in extension, **not** Pilot's hosted native adapter; it avoids the duplicate-loader warning. Preserve any other existing extensions in that settings list. Pi's shell `pi mcp` commands still work.
 
-Stdio servers additionally accept:
+## Subagents and display
 
-- `command` — required executable;
-- `args` — argument array;
-- `cwd` — optional working directory; and
-- `env` — additional environment values.
+A child gets MCP tool definitions only when spawned with the hard `mcp` capability; no ambient native MCP config is loaded into child sessions. Available tools are selected at child creation. Newly exposed tools do not automatically enter an existing child's conversation. At execution, the root's current hidden state and schema are checked, so later hides still block calls. A nested child cannot receive MCP unless its immediate parent has the hard capability. Native resource aggregate tools are root-only, not in delegated child tool sets. MCP is independent of policy-area snapshots and cannot be made filesystem/network mediated by granting `fs_*` or `web_*`. See [Subagents](subagents.md#capability-model).
 
-HTTP servers additionally accept:
-
-- `url` — required HTTP(S) endpoint; and
-- `headers` — request headers.
-
-Invalid server entries are ignored by the sanitising loader. Use `/mcp show` after editing to verify what was accepted.
-
-## Runtime commands
-
-```text
-/mcp
-/mcp show [all|server]
-/mcp connect [all|server]
-/mcp disconnect [all|server]
-/mcp refresh [all|server]
-/mcp expose <server> <tool...|*>
-/mcp hide <server> <tool...|*>
-/mcp reset <server> [tool...|*]
-```
-
-`/mcp expose`, `/mcp hide`, and `/mcp reset` persist exposure changes to `~/.pilot/mcp.json`.
-
-Exposed tools receive Pi-safe names derived from server and tool names, for example:
-
-```text
-mcp_local_read_resource
-```
-
-Name collisions are resolved deterministically.
-
-## Exposure behaviour
-
-- `hide` takes precedence over `expose`.
-- `*` exposes or hides all discovered tools.
-- Hiding an already registered tool blocks calls immediately.
-- A hidden tool can remain visible in the current model's tool list until `/reload` or a new session.
-- Exposing a newly discovered tool registers it dynamically in the active session.
-
-## Subagents
-
-A child receives currently exposed MCP definitions only when spawned with the hard `mcp` capability. Nested children cannot receive MCP unless their immediate parent already has it.
-
-MCP access is independent of policy-area snapshots. An MCP server or tool does not become filesystem/network mediated merely because the caller also has `fs_*` or `web_*` capabilities.
-
-See [Subagent capabilities](subagents.md#capability-model).
-
-## Security boundary
-
-- Stdio servers run as ordinary host processes.
-- HTTP transports use the host network.
-- MCP tools may read, write, execute, or access services outside Pilot's policy runtime.
-- Tool annotations such as read-only or destructive hints are metadata, not enforcement.
-- Secrets placed in `headers` or `env` are available to the configured server.
-
-See [Security model and limitations](security.md).
+Pilot still renders MCP tools with its normal compact/full display; `Ctrl+O` toggles tool expansion and `/view-full-tool` selects one full call. See [Security model and limitations](security.md).

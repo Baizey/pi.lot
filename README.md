@@ -9,7 +9,7 @@ pi.lot lets Pi work across repositories and absolute paths while mediating the f
 
 ## Requirements
 
-pi.lot currently supports **Linux x86-64 only** and targets Pi `0.85.1`.
+pi.lot currently supports **Linux x86-64 only** and targets Pi `0.99.1`.
 
 The host needs:
 
@@ -29,7 +29,7 @@ See [Installation and setup](docs/installation.md) for distribution packages, ho
 Install and authenticate the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.85.1
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.1
 pi
 ```
 
@@ -71,7 +71,7 @@ Verify the extension:
 ```text
 /policy-defaults
 /subagent-defaults
-/mcp show
+/mcp
 /network-inspection
 ```
 
@@ -147,44 +147,26 @@ Read [Subagents](docs/subagents.md) for capability inheritance, child context, m
 
 ### MCP
 
-pi.lot supports MCP servers over stdio and Streamable HTTP. Configuration is stored in:
-
-```text
-~/.pilot/mcp.json
-```
-
-Tools are unexposed by default. Expose only the server tools the model should be able to call:
+pi.lot hosts Pi `0.99.1`'s native MCP adapter for stdio and Streamable HTTP. Configure global servers in `~/.pi/agent/mcp.json`, or project servers in trusted `.pi/mcp.json`. Native default exposure is `codemode`; for least privilege, hide the server and directly expose only chosen tools:
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "example": {
-      "transport": "stdio",
       "command": "example-mcp-server",
       "args": [],
-      "tools": {
-        "expose": ["read_resource"]
-      }
+      "exposure": "hidden",
+      "toolExposure": { "read_resource": "direct" }
     }
   }
 }
 ```
 
-Manage servers and exposure:
+Use `/mcp` to inspect or manage servers, `/mcp reconnect <server>` to reconnect and `/reload` after editing `toolExposure`. Configure servers in native Pi JSON; installing pi.lot does not change any live user MCP configuration. Since Pilot hosts the native adapter itself, disable Pi's separate built-in loader with `"extensions": ["-builtin:mcp"]` in Pi user settings to avoid a duplicate-loader warning.
 
-```text
-/mcp show [all|server]
-/mcp connect [all|server]
-/mcp disconnect [all|server]
-/mcp refresh [all|server]
-/mcp expose <server> <tool...|*>
-/mcp hide <server> <tool...|*>
-/mcp reset <server> [tool...|*]
-```
+MCP is an explicit boundary outside filesystem and network mediation: servers and tools may perform opaque host effects. Children need the hard `mcp` capability, receive no ambient native config, and do not receive native aggregate resource tools; Pilot's `Ctrl+O` and `/view-full-tool` display remains available.
 
-MCP is an explicit boundary outside filesystem and network mediation: stdio servers run as host processes, HTTP transports use the host network, and their tools may perform opaque effects.
-
-Read [MCP](docs/mcp.md) for complete stdio/HTTP configuration, timeout settings, exposure behaviour, generated tool names, and subagent access.
+Read [MCP](docs/mcp.md) for native setup, timeouts, exposure, resource behavior and subagent access.
 
 ### Web search
 
@@ -228,7 +210,7 @@ The thinking indicator uses colored cubes: `□□□□□ off`, `■■■□�
 
 The footer omits the cwd and Git branch. It adapts to terminal width, shortening long session names and collapsing cache details before model/context information. At very narrow widths, the session name is omitted to preserve context usage and agent counts. Wide terminals also show cache read/write totals and the latest assistant cache-hit rate. Usage totals include all session entries, including nested-tool, compaction, and branch-summary usage. Other extensions' statuses appear on a separate row when present.
 
-pi.lot uses Pi's custom-footer slot, so another custom-footer extension can replace it (or be replaced by it, depending on load order). A small Pi `0.85.1` adapter preserves the live auto-compaction indicator through the native footer's public methods; if no native footer is available when pi.lot starts, that indicator is omitted rather than guessed.
+pi.lot uses Pi's custom-footer slot, so another custom-footer extension can replace it (or be replaced by it, depending on load order). A small Pi `0.99.1` adapter preserves the live auto-compaction indicator through the native footer's public methods; if no native footer is available when pi.lot starts, that indicator is omitted rather than guessed.
 
 ## Documentation
 
@@ -248,7 +230,7 @@ The extension appends this topic map, using absolute package paths, to the root 
 | `~/.pilot/pilot.sqlite` | Locally persisted policy rules |
 | `~/.pilot/policy-defaults.json` | Saved policy-area fallbacks |
 | `~/.pilot/subagent-defaults.json` | Saved reasoning-skill model mappings |
-| `~/.pilot/mcp.json` | MCP servers and tool exposure |
+| `~/.pi/agent/mcp.json` | Native global MCP servers and exposure (`.pi/mcp.json` for trusted projects) |
 | `~/.pilot/web-search.json` | Web-search providers and credentials |
 | `~/.pilot/credential-ipc.json` | [Host D-Bus and Unix-socket passthrough; common integrations and when to enable them](docs/policy.md#host-credential-ipc) |
 | `~/.pilot/logs/<session-id>.log` | Policy approval audit records |

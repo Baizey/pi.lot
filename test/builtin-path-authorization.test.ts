@@ -3,7 +3,7 @@ import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type {ExtensionAPI, ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {
     PolicyAccessType,
     PolicyLifetime,
@@ -44,10 +44,17 @@ test("cached builtin file tools preserve invoking child paths and recheck author
         new WriteTool(pi, () => runtime, rows).toolDefinition(),
         new EditTool(pi, () => runtime, rows).toolDefinition(),
     ];
-    const contexts = [cwd, path.join(cwd, "second-child")].map((directory, index) => ({
-        cwd: directory,
-        sessionManager: {getSessionId: () => `child-session-${index}`},
-    } as ExtensionContext));
+    const contexts = [cwd, path.join(cwd, "second-child")].map((directory, index) => {
+        const context = {
+            cwd: directory,
+            sessionManager: {getSessionId: () => `child-session-${index}`},
+        } as ExtensionContext;
+        return {
+            ...context,
+            tools: [],
+            async executeTool() { throw new Error("Unexpected nested tool execution"); },
+        } satisfies ExtensionToolContext;
+    });
 
     try {
         for (const ctx of contexts) {
@@ -97,7 +104,7 @@ test("cached builtin file tools preserve invoking child paths and recheck author
 function invoke(
     definition: ToolDefinition<any, any>,
     params: unknown,
-    ctx: ExtensionContext,
+    ctx: ExtensionToolContext,
 ): Promise<unknown> {
     return definition.execute("test-call", params, undefined, undefined, ctx);
 }

@@ -4,7 +4,7 @@ pi.lot is a Pi package for **Linux x86-64**. It overrides Pi's core file and she
 
 ## Requirements
 
-This checkout targets Pi `0.85.1` and requires:
+This checkout targets Pi `0.99.1` and requires:
 
 - Node.js and npm;
 - FUSE 2, including `/dev/fuse` and `fusermount`;
@@ -48,7 +48,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.85.1
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.1
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:
@@ -92,6 +92,14 @@ pi -e "$PWD"
 
 The checked-in `.pi/settings.json` also loads the repository root as a project-local package when Pi starts inside the checkout and the project is trusted.
 
+Pilot hosts Pi's native MCP extension itself. In your Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), disable the separate built-in MCP loader to avoid a duplicate-loader warning:
+
+```json
+{ "extensions": ["-builtin:mcp"] }
+```
+
+Preserve any other existing extension entries. This does not disable Pilot's MCP adapter or the shell `pi mcp` commands. Add servers to native `~/.pi/agent/mcp.json` or trusted project `.pi/mcp.json` yourself; installing pi.lot does not change live user MCP config. See [MCP setup](mcp.md#configuration).
+
 ## Verify the installation
 
 Start Pi in a project:
@@ -116,7 +124,7 @@ Then inspect the initial state:
 ```text
 /policy-defaults
 /subagent-defaults
-/mcp show
+/mcp
 /network-inspection
 ```
 
@@ -124,7 +132,7 @@ Continue with:
 
 - [Policy configuration](policy.md)
 - [Subagent model defaults](subagents.md#reasoning-and-model-selection)
-- [MCP configuration](mcp.md)
+- [Native MCP configuration](mcp.md)
 - [Web-search providers](web-search.md)
 
 ## Update a local installation

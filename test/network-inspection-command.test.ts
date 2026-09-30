@@ -18,23 +18,24 @@ type RegisteredCommand = {
 
 test("session runtime owns native FUSE and enables full network inspection by default", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-network-inspection-runtime-"));
-    const runtime = new PilotSessionRuntime({
-        cwd: directory,
-        sessionManager: {getSessionId: () => "network-inspection-test-agent"},
-    } as ExtensionContext, {
-        openDatabase: () => SqliteDatabase.test(false, path.join(directory, "pilot.sqlite")),
-        policyDefaultsStore: {
-            load: () => structuredClone(initialPolicyDefaults), save() {
-            }
-        },
-    });
+    let runtime: PilotSessionRuntime | undefined;
     try {
+        runtime = new PilotSessionRuntime({
+            cwd: directory,
+            sessionManager: {getSessionId: () => "network-inspection-test-agent"},
+        } as ExtensionContext, {
+            openDatabase: () => SqliteDatabase.test(false, ":memory:"),
+            policyDefaultsStore: {
+                load: () => structuredClone(initialPolicyDefaults), save() {
+                }
+            },
+        });
         assert.ok(runtime.nativeFuseSessionBroker);
         assert.equal(runtime.fullNetworkInspection, true);
         runtime.setFullNetworkInspection(false);
         assert.equal(runtime.fullNetworkInspection, false);
     } finally {
-        await runtime.close();
+        await runtime?.close();
         rmSync(directory, {recursive: true, force: true});
     }
 });

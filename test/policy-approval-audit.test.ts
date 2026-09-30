@@ -194,7 +194,6 @@ test("user and super-agent decisions are recorded with their distinct routes", a
 test("PilotSessionRuntime wires approvals to the default file logger", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-approval-audit-runtime-"));
     const sessionIdentifier = "production-audit-session";
-    const databaseFile = path.join(directory, "pilot.sqlite");
     const auditDirectory = path.join(directory, "logs");
     const target = path.join(directory, "approved.txt");
     const ctx = {
@@ -214,7 +213,7 @@ test("PilotSessionRuntime wires approvals to the default file logger", async () 
     let runtime: PilotSessionRuntime | undefined;
     try {
         runtime = new PilotSessionRuntime(ctx, {
-            openDatabase: () => SqliteDatabase.test(false, databaseFile),
+            openDatabase: () => SqliteDatabase.test(false, ":memory:"),
             policyDefaultsStore: {
                 load: () => ({
                     ...initialPolicyDefaults,

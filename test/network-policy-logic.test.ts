@@ -23,6 +23,7 @@ import {
 import {PilotSessionRuntime} from "../src/runtime/PilotSessionRuntime.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
+import {openIsolatedTestDatabase} from "./fixtures/IsolatedTestDatabase.js";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 
 const TEST_AGENT_IDENTIFIER = "network-policy-test-agent";
@@ -359,9 +360,8 @@ test("deletion is per access type and persistence includes only local and global
     );
 });
 
-test("local and global network policies round-trip through SQLite", () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), "pi-network-policy-dao-"));
-    const database = SqliteDatabase.test(false, path.join(directory, "policies.sqlite"));
+test("local and global network policies round-trip through in-memory SQLite", () => {
+    const database = SqliteDatabase.test(false, ":memory:");
 
     try {
         const saved = new PolicyEngine([
@@ -406,7 +406,6 @@ test("local and global network policies round-trip through SQLite", () => {
         );
     } finally {
         database.close();
-        rmSync(directory, {recursive: true, force: true});
     }
 });
 
@@ -423,22 +422,25 @@ test("session runtime loads persisted network policies from its database", async
     let runtime: PilotSessionRuntime | null = null;
 
     try {
-        const setupDatabase = SqliteDatabase.test(false, databaseFile);
-        const dao = new PolicyDao(setupDatabase);
-        dao.initializeSchema();
-        dao.upsertPolicies([
-            policy(
-                "persistent.example/api",
-                PolicyAccessType.HTTP_GET,
-                PolicyLifetime.LOCAL,
-                PolicyResponse.ALLOWED,
-                "remembered",
-            ),
-        ]);
-        setupDatabase.close();
+        const setupDatabase = openIsolatedTestDatabase(databaseFile);
+        try {
+            const dao = new PolicyDao(setupDatabase);
+            dao.initializeSchema();
+            dao.upsertPolicies([
+                policy(
+                    "persistent.example/api",
+                    PolicyAccessType.HTTP_GET,
+                    PolicyLifetime.LOCAL,
+                    PolicyResponse.ALLOWED,
+                    "remembered",
+                ),
+            ]);
+        } finally {
+            setupDatabase.close();
+        }
 
         runtime = new PilotSessionRuntime(ctx, {
-            openDatabase: () => SqliteDatabase.test(false, databaseFile),
+            openDatabase: () => openIsolatedTestDatabase(databaseFile),
             policyDefaultsStore: {
                 load: () => structuredClone(initialPolicyDefaults), save() {
                 }

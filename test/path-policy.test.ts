@@ -253,9 +253,9 @@ test("path policy matching preserves Linux case sensitivity", () => {
     assert.equal(logic.evaluate(lowerCasePath, PolicyAccessType.FS_WRITE), null);
 });
 
-test("local and global path policies round-trip through SQLite", () => {
+test("local and global path policies round-trip through in-memory SQLite", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pi-policy-dao-"));
-    const database = SqliteDatabase.test(false, path.join(directory, "policies.sqlite"));
+    const database = SqliteDatabase.test(false, ":memory:");
 
     try {
         const persistedTarget = path.join(directory, "persisted-workspace");

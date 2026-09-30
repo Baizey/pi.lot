@@ -39,8 +39,13 @@ export class SqliteDatabase {
             fs.mkdirSync(path.dirname(this.file), {recursive: true, mode: 0o700});
         }
         this.db = new Database(this.file, {readonly: isReadonly});
-        this.db.pragma("busy_timeout = 5000");
-        if (!isReadonly) this.db.pragma("journal_mode = WAL");
+        try {
+            this.db.pragma("busy_timeout = 5000");
+            if (!isReadonly) this.db.pragma("journal_mode = WAL");
+        } catch (error) {
+            this.db.close();
+            throw error;
+        }
     }
 
     exec(sql: string) {

@@ -4,7 +4,7 @@ pi.lot is a Pi package for **Linux x86-64**. It overrides Pi's core file and she
 
 ## Requirements
 
-This checkout targets Pi `0.99.1` and requires:
+This checkout targets Pi `0.99.2` and requires:
 
 - Node.js and npm;
 - FUSE 2, including `/dev/fuse` and `fusermount`;
@@ -48,7 +48,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.1
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.2
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:
@@ -92,7 +92,9 @@ pi -e "$PWD"
 
 The checked-in `.pi/settings.json` also loads the repository root as a project-local package when Pi starts inside the checkout and the project is trusted.
 
-Pilot runs Pi's built-in MCP implementation via `createMcpExtension()`. Add `"-builtin:mcp"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. This suppresses Pi's separate automatic MCP instance and its override warning, **not MCP functionality**: Pilot still runs the built-in implementation. Without this entry, Pi omits the duplicate built-in instance because Pilot registers `/mcp`, and emits an override warning.
+Pilot runs Pi's built-in MCP and codemode implementations via `createMcpExtension()` and `createCodemodeExtension()`, adding its own presentation. Add `"-builtin:mcp"` and `"-builtin:codemode"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. These suppress Pi's separate automatic instances and their override warnings, **not MCP or codemode functionality**: Pilot still runs the built-in implementations. Without these entries, Pi omits the duplicate built-in instances because Pilot registers `/mcp` and `codemode`, and emits override warnings.
+
+Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools alongside it, or use `--tools` for one invocation. MCP activates it automatically when its tools require scripts. Pi's `codemode.mode` and `codemode.inlineBudget` settings continue to apply.
 
 Installing pi.lot does not modify live user configuration; make this loader setting change yourself.
 

@@ -132,12 +132,14 @@ export async function createSubagentResourceLoader(
 ): Promise<DefaultResourceLoader> {
     const extensionFactories: InlineExtension[] = [];
     if (request.capabilities.includes(AgentMechanismCapability.mcp)) {
-        const codemode = tools.some((tool) => tool.exposure === "codemode");
-        // Native codemode-deferred tools are registered with the deferred tool exposure.
+        // Pi 0.99.2 registers default MCP codemode tools as deferred so their declarations
+        // stay out of codemode. Either helper can reach the same granted tool snapshot.
+        const codemode = tools.some((tool) => tool.exposure === "codemode" || tool.exposure === "deferred");
         const toolSearch = tools.some((tool) => tool.exposure === "deferred");
         if (codemode) extensionFactories.push(createCodemodeExtension({mode: "on", models: false}));
         if (toolSearch) extensionFactories.push(createToolSearchExtension());
         if (codemode || toolSearch) {
+            const namespaceSection = subagentMcpServersSection(tools);
             extensionFactories.push((pi) => {
                 pi.on("session_start", () => {
                     pi.setActiveTools([
@@ -145,6 +147,9 @@ export async function createSubagentResourceLoader(
                         ...(codemode ? ["codemode"] : []),
                         ...(toolSearch ? ["tool_search"] : []),
                     ]);
+                });
+                pi.on("before_agent_start", (event) => {
+                    if (namespaceSection) event.systemPromptOptions.sections.mcp_servers = namespaceSection;
                 });
             });
         }
@@ -252,6 +257,33 @@ function isMcpTool(tool: ToolDefinition<any, any>): boolean {
         || ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(tool.name)
         || tool.exposure === "codemode"
         || tool.exposure === "deferred";
+}
+
+/** Discovery hints come only from the immutable granted snapshot, never the root's live catalog. */
+function subagentMcpServersSection(tools: readonly ToolDefinition<any, any>[]): string | undefined {
+    const namespaces = new Map<string, NonNullable<ToolDefinition["namespace"]>>();
+    for (const tool of tools) {
+        if ((tool.exposure === "codemode" || tool.exposure === "deferred") && tool.namespace) {
+            namespaces.set(tool.namespace.name, tool.namespace);
+        }
+    }
+    if (namespaces.size === 0) return undefined;
+    const lines = [
+        "MCP servers in your granted tool snapshot. Find tools with searchTools(query, { namespace }) or tool_search; "
+        + "read instructions and tool names with describeNamespace(name).",
+    ];
+    const ordered = [...namespaces.values()].sort((a, b) => a.name.localeCompare(b.name));
+    for (const [index, namespace] of ordered.entries()) {
+        const summary = (namespace.description?.trim() || namespace.instructions || "").split("\n", 1)[0]!.trim();
+        const line = `- ${namespace.name} (codemode or tool_search)${summary ? `: ${summary.slice(0, 250)}` : ""}`;
+        // Reserve room for the omission notice; match Pi's 4096-character section budget.
+        if (lines.join("\n").length + line.length + 100 > 4096) {
+            lines.push(`- … ${ordered.length - index} more servers; find their tools with searchTools()`);
+            break;
+        }
+        lines.push(line);
+    }
+    return lines.join("\n");
 }
 
 function subagentSystemPrompt(request: SubagentSessionRequest): string {

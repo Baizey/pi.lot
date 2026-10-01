@@ -29,6 +29,7 @@ const expectedToolNames = [
     "read",
     "edit",
     "write",
+    "codemode",
     "subagent_spawn",
     "subagent_status",
     "subagent_message",
@@ -228,7 +229,7 @@ test("Bash always routes through a native filesystem policy view", async () => {
     }
 });
 
-test("the production extension appends topic-routed pi.lot documentation to the system prompt", async () => {
+test("the production extension adds routed documentation without forcing or replacing native prompt sections", async () => {
     const harness = extensionHarness();
     const ctx = {} as ExtensionContext;
 
@@ -236,15 +237,19 @@ test("the production extension appends topic-routed pi.lot documentation to the 
         createMcpExtension: createNoopMcpExtension,
     }).register();
 
-    const result = await harness.beforeAgentStart()({
+    const sections: Record<string, string> = {mcp_servers: "NATIVE_MCP_SERVERS"};
+    const event = {
         type: "before_agent_start",
         prompt: "Help me configure MCP",
         systemPrompt: "BASE_SYSTEM_PROMPT",
-        systemPromptOptions: {},
-    } as BeforeAgentStartEvent, ctx);
-    const systemPrompt = result?.systemPrompt;
+        systemPromptOptions: {sections},
+    } as BeforeAgentStartEvent;
+    const result = await harness.beforeAgentStart()(event, ctx);
+    assert.equal(result, undefined);
+    assert.equal(event.systemPromptOptions.forceSystemPrompt, undefined);
+    assert.equal(sections.mcp_servers, "NATIVE_MCP_SERVERS");
+    const systemPrompt = sections.pilot_docs;
     assert.ok(systemPrompt);
-    assert.equal(systemPrompt.startsWith("BASE_SYSTEM_PROMPT\n\n"), true);
     assert.equal(systemPrompt.match(/pi\.lot documentation/g)?.length, 1);
 
     const packageRoot = fileURLToPath(new URL("../", import.meta.url));

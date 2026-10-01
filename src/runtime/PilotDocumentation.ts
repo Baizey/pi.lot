@@ -10,10 +10,6 @@ export class PilotDocumentation {
         this.directory = path.join(packageRoot, "docs");
     }
 
-    appendToSystemPrompt(systemPrompt: string): string {
-        return [systemPrompt.trimEnd(), this.routingPrompt()].filter(Boolean).join("\n\n");
-    }
-
     routingPrompt(): string {
         return [
             "pi.lot documentation (read only when helping the user with pi.lot):",

@@ -1,6 +1,9 @@
 import type {ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import {getCapabilities} from "@earendil-works/pi-tui";
+import {ThemeColor} from "../tui/Color.js";
+import {renderLineFactory} from "../tui/terminalText.js";
 import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
-import {resolveToolDisplayMode} from "../tui/tool/ToolDisplayMode.js";
+import {resolveToolDisplayMode, ToolDisplayMode} from "../tui/tool/ToolDisplayMode.js";
 import {ToolTextDirection} from "../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../tui/tool/ToolPresentationRenderer.js";
 
@@ -49,7 +52,7 @@ export class McpToolRegistry {
         const presentation = new ToolPresentationRenderer<Record<string, unknown>>({
             toolName: definition.name,
             arguments: [],
-            result: {direction: ToolTextDirection.TAIL},
+            result: {direction: ToolTextDirection.TAIL, wrap: true},
         });
         return {
             ...definition,
@@ -75,12 +78,23 @@ export class McpToolRegistry {
                     context,
                 );
             },
-            renderResult: (result, options, theme, context) => presentation.renderResult(
-                result,
-                theme,
-                {isError: context.isError},
-                resolveToolDisplayMode(options.expanded, context.state),
-            ),
+            renderResult: (result, options, theme, context) => {
+                const mode = resolveToolDisplayMode(options.expanded, context.state);
+                const displayed = presentation.renderResult({
+                    content: result.content.map((part) => (
+                        part.type === "image" && (!context.showImages || !getCapabilities().images)
+                            ? {type: "text", text: "[image]"}
+                            : part
+                    )),
+                }, theme, {isError: context.isError}, mode);
+                return renderLineFactory((width) => {
+                    const lines = displayed.render(width);
+                    if (mode !== ToolDisplayMode.MINIMAL && typeof result.details?.fullOutputPath === "string") {
+                        lines.push(theme.fg(ThemeColor.muted, `Full output: ${result.details.fullOutputPath}`));
+                    }
+                    return lines;
+                });
+            },
         };
     }
 }

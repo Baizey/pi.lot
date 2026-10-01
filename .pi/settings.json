@@ -3,6 +3,7 @@
     ".."
   ],
   "extensions": [
-    "-builtin:mcp"
+    "-builtin:mcp",
+    "-builtin:codemode"
   ]
 }

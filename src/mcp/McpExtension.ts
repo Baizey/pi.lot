@@ -8,13 +8,14 @@ import {
     type SessionShutdownEvent,
     type SessionStartEvent,
     type ToolDefinition,
+    type ToolCallEvent,
     type TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import {McpToolRegistry} from "./McpToolRegistry.js";
 import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
 
 type NativeEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent
-    | TurnStartEvent | McpServersChangeEvent;
+    | TurnStartEvent | McpServersChangeEvent | ToolCallEvent;
 type NativeHandler = (event: NativeEvent, ctx: ExtensionContext) => void | Promise<void>;
 
 export type McpExtensionServices = {
@@ -103,6 +104,8 @@ export class McpExtension implements McpExtensionInterface {
             case "turn_start":
                 return this.pi.on(event, (event, ctx) => handler(event, quietBackgroundContext(ctx)));
             case "mcp_servers_change":
+                return this.pi.on(event, (event, ctx) => handler(event, quietBackgroundContext(ctx)));
+            case "tool_call":
                 return this.pi.on(event, (event, ctx) => handler(event, quietBackgroundContext(ctx)));
             default:
                 throw new Error(`Unsupported native MCP lifecycle event: ${event}`);

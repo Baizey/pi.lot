@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import type {ExtensionToolContext, LoadedMcpConfig} from "@earendil-works/pi-coding-agent";
+import {
+    createCodemodeExtension,
+    createToolSearchExtension,
+    type ExtensionContext,
+    type ExtensionToolContext,
+    type LoadedMcpConfig,
+} from "@earendil-works/pi-coding-agent";
 import {McpExtension} from "../src/mcp/McpExtension.js";
 import {NativeMcpFixture} from "./fixtures/NativeMcpFixture.js";
 
@@ -38,7 +44,8 @@ test("Pilot hosts native MCP core, quietly connects, and leaves explicit native 
         assert.equal(fixture.tools.get("mcp__demo__blocked")?.exposure, "hidden");
         const tool = fixture.tools.get("mcp__demo__echo")!;
         assert.equal(tool.renderShell, "self");
-        assert.equal(tool.namespace?.description, "Fixture namespace instructions");
+        assert.equal(tool.namespace?.instructions, "Fixture namespace instructions");
+        assert.equal(tool.namespace?.description, undefined);
         assert.equal(tool.annotations?.readOnlyHint, true);
         const result = await tool.execute("call", {}, undefined, undefined, fixture.ctx as ExtensionToolContext);
         assert.deepEqual(result.content, [{type: "text", text: "fixture result"}]);
@@ -188,6 +195,11 @@ test("native hidden exposure is unreachable even when deferred and codemode disc
     try {
         await extension.startSession(fixture.ctx);
         await fixture.emit("before_agent_start");
+        await fixture.emit("tool_call", {toolCallId: "discover", toolName: "list_mcp_resources", input: {}});
+        // Wait for background discovery without depending on a prompt-start barrier.
+        for (let attempt = 0; attempt < 20 && extension.toolDefinitions().length === 0; attempt++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
         assert.equal(extension.toolDefinitions()[0]!.exposure, "deferred");
         assert.equal(fixture.tools.get("mcp__demo__blocked")?.exposure, "hidden");
         assert.equal(fixture.tools.has("read_mcp_resource"), false);
@@ -196,6 +208,125 @@ test("native hidden exposure is unreachable even when deferred and codemode disc
         const hidden = fixture.tools.get("mcp__demo__blocked")!;
         await assert.rejects(async () => hidden.execute("call", {}, undefined, undefined, fixture.ctx as ExtensionToolContext), /no longer exposed/);
         assert.equal(fixture.calls.some((call) => call.method === "tools/call"), false);
+    } finally {
+        await extension.stopSession();
+        await fixture.close();
+    }
+});
+
+test("default MCP servers do not block prompts, activate discovery early, and wait when a script needs them", async () => {
+    const fixture = new NativeMcpFixture();
+    createCodemodeExtension()(fixture.pi);
+    let finishStartup!: () => void;
+    fixture.startWait = new Promise<void>((resolve) => { finishStartup = resolve; });
+    const extension = createExtension(fixture, {
+        errors: [], servers: [{name: "demo", source: "fixture", scope: "extension",
+            config: {command: "fake", description: "Search the fixture service"}}],
+    });
+    extension.register();
+    try {
+        await extension.startSession(fixture.ctx);
+        assert.ok(fixture.active.includes("codemode"), "activation must precede discovery");
+        const sections: Record<string, string> = {};
+        await fixture.emit("before_agent_start", {systemPromptOptions: {sections}});
+        assert.deepEqual(extension.toolDefinitions(), []);
+        assert.match(sections.mcp_servers!, /mcp__demo \(codemode\): Search the fixture service/);
+        assert.equal(fixture.notifications.length, 0);
+
+        let completed = false;
+        const waiting = fixture.emit("tool_call", {
+            toolCallId: "script", toolName: "codemode", input: {code: "await tools.mcp__demo__echo({});"},
+        }).then(() => { completed = true; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(completed, false, "script execution waits for its named server");
+        finishStartup();
+        await waiting;
+        assert.equal(extension.toolDefinitions().length, 2);
+        assert.ok(extension.toolDefinitions().every((tool) => tool.exposure === "deferred"));
+        await fixture.emit("before_agent_start", {systemPromptOptions: {sections}});
+        assert.match(sections.mcp_servers!, /Search the fixture service/);
+        assert.equal(fixture.notifications.length, 0);
+    } finally {
+        finishStartup();
+        await extension.stopSession();
+        await fixture.close();
+    }
+});
+
+test("script waits are namespace-scoped, tool search waits for all servers, and cancellation releases waits", async () => {
+    const fixture = new NativeMcpFixture();
+    createCodemodeExtension()(fixture.pi);
+    createToolSearchExtension()(fixture.pi);
+    let finishDemo!: () => void;
+    let finishOther!: () => void;
+    fixture.serverStartWaits.set("demo", new Promise<void>((resolve) => { finishDemo = resolve; }));
+    fixture.serverStartWaits.set("other", new Promise<void>((resolve) => { finishOther = resolve; }));
+    const extension = createExtension(fixture, {
+        errors: [], servers: ["demo", "other"].map((name) => ({
+            name, source: "fixture", scope: "extension" as const, config: {command: "fake"},
+        })),
+    });
+    extension.register();
+    try {
+        await extension.startSession(fixture.ctx);
+        await fixture.emit("before_agent_start");
+        const named = fixture.emit("tool_call", {
+            toolCallId: "named", toolName: "codemode", input: {code: "await tools.mcp__demo__echo({});"},
+        });
+        finishDemo();
+        await named;
+        assert.ok(extension.toolDefinitions().some((tool) => tool.name.startsWith("mcp__demo__")));
+        assert.equal(extension.toolDefinitions().some((tool) => tool.name.startsWith("mcp__other__")), false);
+
+        for (const [toolName, input] of [
+            ["codemode", {code: 'await describeNamespace("other");'}],
+            ["tool_search", {query: "fixture"}],
+            ["list_mcp_resources", {}],
+        ] as const) {
+            const controller = new AbortController();
+            let completed = false;
+            const waiting = fixture.emit("tool_call", {toolCallId: "wait", toolName, input},
+                {...fixture.ctx, signal: controller.signal} as ExtensionContext).then(() => { completed = true; });
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            assert.equal(completed, false, `${toolName} waits for the remaining server`);
+            controller.abort();
+            await waiting;
+        }
+        assert.equal(extension.toolDefinitions().some((tool) => tool.name.startsWith("mcp__other__")), false);
+    } finally {
+        finishDemo();
+        finishOther();
+        await extension.stopSession();
+        await fixture.close();
+    }
+});
+
+test("native normalized names preserve distinct colliding tools and separate namespace summary from instructions", async () => {
+    const fixture = new NativeMcpFixture();
+    fixture.toolNames = ["read-file", "read_file"];
+    const extension = createExtension(fixture, {
+        errors: [], servers: [{name: "prod-api", source: "fixture", scope: "extension",
+            config: {command: "fake", exposure: "direct", description: "Production search service"}}],
+    });
+    extension.register();
+    try {
+        await extension.startSession(fixture.ctx);
+        await fixture.emit("before_agent_start");
+        const tools = extension.toolDefinitions();
+        assert.equal(tools.length, 2);
+        assert.notEqual(tools[0]!.name, tools[1]!.name);
+        for (const tool of tools) {
+            assert.match(tool.name, /^mcp__prod_api__read_file_[a-f0-9]{8}$/);
+            assert.deepEqual(tool.namespace, {
+                name: "mcp__prod_api", description: "Production search service", instructions: "Fixture namespace instructions",
+            });
+            await tool.execute("call", {}, undefined, undefined, fixture.ctx as ExtensionToolContext);
+        }
+        const calls = fixture.calls.filter((call) => call.method === "tools/call").map(({params}) => {
+            assert.ok(params && typeof params === "object" && "name" in params && "arguments" in params);
+            return {name: params.name, arguments: params.arguments};
+        });
+        assert.deepEqual(calls, [{name: "read-file", arguments: {}}, {name: "read_file", arguments: {}}]);
     } finally {
         await extension.stopSession();
         await fixture.close();

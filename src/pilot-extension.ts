@@ -22,6 +22,7 @@ import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
 import {ThinkingLevelUiRuntime} from "./tui/ThinkingLevelUiRuntime.js";
 import {PilotDocumentation} from "./runtime/PilotDocumentation.js";
+import {CodemodeExtension} from "./tools/codemode/CodemodeExtension.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -107,6 +108,7 @@ export class PilotExtension {
         ).register();
         new ViewFullToolCommand(this.pi, this.displayRows).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
+        new CodemodeExtension(this.pi, this.displayRows).register();
         this.mcpExtension.register();
         this.subagentSpawnTool.register();
         this.subagentStatusTool.register();
@@ -119,7 +121,7 @@ export class PilotExtension {
                 ctx.sessionManager.getSessionId(),
                 {task: event.prompt},
             );
-            return {systemPrompt: this.documentation.appendToSystemPrompt(event.systemPrompt)};
+            event.systemPromptOptions.sections.pilot_docs = this.documentation.routingPrompt();
         });
         this.pi.on("thinking_level_select", () => this.thinkingLevelUiRuntime.update());
         this.pi.on("model_select", () => this.thinkingLevelUiRuntime.update());

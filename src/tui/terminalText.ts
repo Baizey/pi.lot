@@ -31,12 +31,12 @@ export function renderLines(lines: readonly string[]): TextComponent {
 }
 
 /** Rebuilds logical lines for each render instead of caching derived content. */
-export function renderLineFactory(buildLines: () => readonly string[]): TextComponent {
+export function renderLineFactory(buildLines: (width: number) => readonly string[]): TextComponent {
     return {
         render(width: number): string[] {
             // Pi resets SGR state after each rendered line. A redundant trailing
             // full reset can interfere with styling applied by an outer component.
-            return buildLines().map((line) => withoutTrailingFullReset(truncateToWidth(line, width)));
+            return buildLines(width).map((line) => withoutTrailingFullReset(truncateToWidth(line, width)));
         },
         invalidate(): void {
             // No cache: the next render rebuilds the logical lines.

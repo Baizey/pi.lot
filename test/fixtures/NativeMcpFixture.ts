@@ -22,6 +22,8 @@ export class NativeMcpFixture {
     active: string[] = [];
     closes = 0;
     startWait: Promise<void> | undefined;
+    readonly serverStartWaits = new Map<string, Promise<void>>();
+    toolNames: string[] | undefined;
     callResult: unknown = {content: [{type: "text", text: "fixture result"}], structuredContent: {ok: true}};
     private transports: Transport[] = [];
     private toolList = [
@@ -73,7 +75,7 @@ export class NativeMcpFixture {
         const transport: Transport = {
             start: async () => {
                 if (entry.name === "offline") throw new Error("fixture offline");
-                await this.startWait;
+                await (this.serverStartWaits.get(entry.name) ?? this.startWait);
             },
             onMessage(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
             onError() { return () => {}; },
@@ -96,7 +98,9 @@ export class NativeMcpFixture {
                         };
                         break;
                     case "tools/list":
-                        result = {tools: this.toolList};
+                        result = {tools: this.toolNames
+                            ? this.toolNames.map((name) => ({name, inputSchema: {type: "object", properties: {}}}))
+                            : this.toolList};
                         break;
                     case "tools/call":
                         result = this.callResult;
@@ -120,9 +124,15 @@ export class NativeMcpFixture {
         return transport;
     };
 
-    async emit(name: string): Promise<void> {
-        const event = {type: name} as ExtensionEvent;
-        for (const handler of this.handlers.get(name) ?? []) await handler(event, this.ctx);
+    async emit(name: string, fields: Record<string, unknown> = {}, ctx = this.ctx): Promise<void> {
+        const event = {
+            type: name,
+            ...(name === "before_agent_start" ? {
+                prompt: "fixture prompt", systemPrompt: "BASE", systemPromptOptions: {sections: {}},
+            } : {}),
+            ...fields,
+        } as ExtensionEvent;
+        for (const handler of this.handlers.get(name) ?? []) await handler(event, ctx);
     }
 
     async changeTools(names: string[]): Promise<void> {

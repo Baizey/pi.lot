@@ -25,6 +25,8 @@ export type ToolArgumentPresentation<TArgs extends object> = {
     color?: ThemeColor;
     direction?: ToolTextDirection;
     previewLines?: number;
+    /** Wrap content before applying preview and full-view row limits. */
+    wrap?: boolean;
     maxCharacters?: number;
     maxFullLines?: number;
     format?: (value: unknown, args: Partial<TArgs>) => string;
@@ -34,6 +36,8 @@ export type ToolResultPresentation = {
     direction?: ToolTextDirection;
     color?: ThemeColor | ((line: string) => ThemeColor);
     previewLines?: number;
+    /** Wrap content before applying preview and full-view row limits. */
+    wrap?: boolean;
     maxCharacters?: number;
     maxFullLines?: number;
 };

@@ -3,8 +3,9 @@ import {
     DEFAULT_MAX_LINES,
     type Theme,
 } from "@earendil-works/pi-coding-agent";
+import {wrapTextWithAnsi} from "@earendil-works/pi-tui";
 import {ThemeColor} from "../Color.js";
-import {renderLineFactory} from "../terminalText.js";
+import {renderLineFactory, sanitizeTerminalLine} from "../terminalText.js";
 import type {TextComponent} from "../terminalText.js";
 import type {
     ToolArgumentPresentation,
@@ -74,8 +75,8 @@ export class ToolPresentationRenderer<TArgs extends object> {
     ): TextComponent {
         const normalizedArgs = (args ?? {}) as Partial<TArgs>;
         this.updateCallSpinner(options);
-        return renderLineFactory(() => this.toolCallLines(
-            normalizedArgs, theme, mode, options.state?.pilotCallSpinner?.frame(),
+        return renderLineFactory((width) => this.toolCallLines(
+            normalizedArgs, theme, mode, options.state?.pilotCallSpinner?.frame(), width,
         ));
     }
 
@@ -85,7 +86,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         options: ToolResultRenderOptions,
         mode: ToolDisplayMode,
     ): TextComponent {
-        return renderLineFactory(() => this.toolResultLines(result, theme, options, mode));
+        return renderLineFactory((width) => this.toolResultLines(result, theme, options, mode, width));
     }
 
     private updateCallSpinner(options: ToolCallRenderOptions): void {
@@ -104,6 +105,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         theme: Theme,
         mode: ToolDisplayMode,
         indicator: string | undefined,
+        width: number,
     ): string[] {
         const resolved = this.resolveArguments(args);
         let title = this.toolTitle(theme, indicator);
@@ -120,8 +122,8 @@ export class ToolPresentationRenderer<TArgs extends object> {
         const showLabels = body.length !== 1;
         return this.boundCallLines([
             title,
-            ...inline.flatMap((argument) => this.bodyArgumentLines(argument, args, theme, showLabels, mode)),
-            ...blocks.flatMap((argument) => this.bodyArgumentLines(argument, args, theme, showLabels, mode)),
+            ...inline.flatMap((argument) => this.bodyArgumentLines(argument, args, theme, showLabels, mode, width)),
+            ...blocks.flatMap((argument) => this.bodyArgumentLines(argument, args, theme, showLabels, mode, width)),
         ], theme);
     }
 
@@ -130,6 +132,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         theme: Theme,
         options: ToolResultRenderOptions,
         mode: ToolDisplayMode,
+        width: number,
     ): string[] {
         if (mode === ToolDisplayMode.MINIMAL) return [];
 
@@ -142,6 +145,8 @@ export class ToolPresentationRenderer<TArgs extends object> {
             previewLines: resultPresentation.previewLines ?? DEFAULT_RESULT_PREVIEW_LINES,
             maxCharacters: resultPresentation.maxCharacters ?? DEFAULT_MAX_BYTES,
             maxFullLines: resultPresentation.maxFullLines ?? DEFAULT_MAX_LINES,
+            wrap: resultPresentation.wrap === true,
+            width,
         });
         return [
             "",
@@ -223,6 +228,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         theme: Theme,
         showLabel: boolean,
         mode: ToolDisplayMode,
+        width: number,
     ): string[] {
         const contentColor = argument.presentation?.color ?? ThemeColor.dim;
         if (argument.layout === ToolArgumentLayout.INLINE) {
@@ -239,6 +245,8 @@ export class ToolPresentationRenderer<TArgs extends object> {
             previewLines: argument.presentation?.previewLines ?? DEFAULT_ARGUMENT_PREVIEW_LINES,
             maxCharacters: argument.presentation?.maxCharacters ?? DEFAULT_MAX_BYTES,
             maxFullLines: argument.presentation?.maxFullLines ?? DEFAULT_MAX_ARGUMENT_LINES,
+            wrap: argument.presentation?.wrap === true,
+            width,
         });
         const lines = rows.map((row) => this.textRow(row, theme, contentColor));
         if (!showLabel) return lines;
@@ -341,6 +349,8 @@ type TextWindowOptions = {
     previewLines: number;
     maxCharacters: number;
     maxFullLines: number;
+    wrap: boolean;
+    width: number;
 };
 
 function selectTextRows(value: string, options: TextWindowOptions): TextWindowRow[] {
@@ -351,7 +361,11 @@ function selectTextRows(value: string, options: TextWindowOptions): TextWindowRo
             ? value.slice(-maxCharacters)
             : value.slice(0, maxCharacters)
         : value;
-    const lines = logicalLines(bounded);
+    const lines = logicalLines(bounded).flatMap((line) => (
+        options.wrap && Number.isFinite(options.width) && options.width > 0
+            ? wrapTextWithAnsi(sanitizeTerminalLine(line), Math.floor(options.width))
+            : [line]
+    ));
     const reservedCharacterNotice = characterTruncated && options.mode === ToolDisplayMode.FULL ? 1 : 0;
     const lineLimit = options.mode === ToolDisplayMode.TRUNCATED
         ? positiveInteger(options.previewLines, 1)

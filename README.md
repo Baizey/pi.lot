@@ -9,7 +9,7 @@ pi.lot lets Pi work across repositories and absolute paths while mediating the f
 
 ## Requirements
 
-pi.lot currently supports **Linux x86-64 only** and targets Pi `0.99.1`.
+pi.lot currently supports **Linux x86-64 only** and targets Pi `0.99.2`.
 
 The host needs:
 
@@ -29,7 +29,7 @@ See [Installation and setup](docs/installation.md) for distribution packages, ho
 Install and authenticate the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.1
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.2
 pi
 ```
 
@@ -151,7 +151,9 @@ Pilot runs Pi's built-in MCP implementation via `createMcpExtension()`. The [loa
 
 MCP effects are [outside filesystem and network mediation](docs/security.md#mcp). Children require the hard `mcp` grant; see [subagent capability semantics](docs/subagents.md#hard-mechanism-capabilities).
 
-MCP tools retain Pilot's `Ctrl+O` and `/view-full-tool` display. Routine connection notices are quiet; configuration errors, discovery warnings, load failures, command diagnostics, and tool errors still surface. Check `/mcp` for connection state.
+Pi `0.99.2`'s native discovery behavior is preserved: default MCP servers connect without delaying the first prompt, appear in the `mcp_servers` prompt section, and are discovered with `searchTools()` and `describeNamespace()`. Scripts, tool search, and resource tools wait for the servers they need; direct tools still participate in the first-prompt startup wait. Native namespace normalization, collision-safe tool names, `description`, `oauth.clientName`, and provider-token authentication remain owned by Pi. Pilot's documentation is a separate structured prompt section, so it does not force a replacement prompt or defeat MCP's transcript deltas.
+
+MCP tools retain Pilot's `Ctrl+O` and `/view-full-tool` display. MCP and codemode previews limit wrapped visual rows rather than letting a long JSON line fill the screen; Pilot keeps its compact view and tail-oriented output previews. Routine connection notices are quiet; configuration errors, discovery warnings, load failures, command diagnostics, and tool errors still surface. Check `/mcp` for connection state.
 
 ### Web search
 
@@ -182,6 +184,7 @@ pi.lot also provides compact, copy-friendly tool rendering:
 
 - `Ctrl+O` toggles compact and expanded tool views;
 - `/view-full-tool` toggles a full view for one selected call;
+- Pi's native `codemode` uses the same compact, expanded, and per-call full views, including live nested-call status, model-call costs, and output-file hints;
 - active subagent work appears above the editor and in the footer;
 - the chat editor border stays at the theme's `thinkingXhigh` color (Bash mode keeps its own color); and
 - a structured footer groups model and usage into two rows, with the session name right-aligned beside the context/usage row:
@@ -193,9 +196,11 @@ pi.lot also provides compact, copy-friendly tool rendering:
 
 The thinking indicator uses colored cubes: `□□□□□ off`, `■■■□□ medium`, or `■■■■■ xhigh`. Pi's `max` level adds a sixth filled cube. The footer reserves that sixth column and right-pads each level name to the longest label, keeping the indicator aligned when levels change. The bundled `pilot-dark` theme keeps `off` grey and uses a blue-to-purple gradient for active thinking levels: a lighter blue for `minimal`, progressing through blue, periwinkle, and violet to purple at `max`. Select `pilot-dark` in `/settings` to use this palette; other themes retain their own colors. It updates with the model, thinking level, and theme. Context usage follows the thinking palette: `thinkingMinimal` below 20%, `thinkingLow` from 20%, `thinkingMedium` from 40%, `thinkingHigh` from 60%, `thinkingXhigh` from 80%, and `thinkingMax` at 90% and above—including usage over 100%. Unknown usage uses `thinkingOff`; displayed percentages are never capped. Agent activity retains its own colors; labels and separators stay subdued.
 
+Pilot wraps Pi's native codemode registration without changing script execution, tool exposure, storage, or `codemode` settings. It remains inactive by default; enable it with `defaultTools: ["+codemode"]`, `--tools`, or MCP's automatic activation. Add `"-builtin:codemode"` alongside `"-builtin:mcp"` in your `extensions` settings to suppress the duplicate built-in override warning, not the functionality. See [installation](docs/installation.md#install-the-package).
+
 The footer omits the cwd and Git branch. It adapts to terminal width, shortening long session names and collapsing cache details before model/context information. At very narrow widths, the session name is omitted to preserve context usage and agent counts. Wide terminals also show cache read/write totals and the latest assistant cache-hit rate. Usage totals include all session entries, including nested-tool, compaction, and branch-summary usage. Other extensions' statuses appear on a separate row when present.
 
-pi.lot uses Pi's custom-footer slot, so another custom-footer extension can replace it (or be replaced by it, depending on load order). A small Pi `0.99.1` adapter preserves the live auto-compaction indicator through the native footer's public methods; if no native footer is available when pi.lot starts, that indicator is omitted rather than guessed.
+pi.lot uses Pi's custom-footer slot, so another custom-footer extension can replace it (or be replaced by it, depending on load order). A small Pi `0.99.2` adapter preserves the live auto-compaction indicator through the native footer's public methods; if no native footer is available when pi.lot starts, that indicator is omitted rather than guessed.
 
 ## Documentation
 

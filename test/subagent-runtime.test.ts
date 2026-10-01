@@ -157,7 +157,8 @@ test("SDK child registers only granted native MCP discovery helpers without ambi
         assert.ok(!codemodeOnly.registered.some((tool) => tool.name === "tool_search"));
         const deferredOnly = await inspect(request.capabilities, [deferred]);
         assert.ok(deferredOnly.active.includes("tool_search"));
-        assert.ok(!deferredOnly.registered.some((tool) => tool.name === "codemode"));
+        assert.ok(deferredOnly.registered.some((tool) => tool.name === "codemode"));
+        assert.ok(deferredOnly.active.includes("codemode"));
         const hiddenOnly = await inspect(request.capabilities, [hidden]);
         assert.equal(hiddenOnly.extensions, 0);
         assert.ok(!hiddenOnly.active.includes("codemode"));
@@ -193,7 +194,7 @@ test("SDK child executes native MCP proxies through real codemode, search, and n
         const executions: Array<{name: string; cwd: string; value: string}> = [];
         const nativeTool = (name: string, exposure: ToolDefinition<any, any>["exposure"]): ToolDefinition<any, any> => ({
             name, label: name, description: `Find ${name} native echo`, exposure,
-            namespace: {name: "mcp__demo", description: "Child native test server"},
+            namespace: {name: "mcp__demo", description: "Child native test server", instructions: "Use only the granted echo tools."},
             parameters: {type: "object", properties: {value: {type: "string"}}, required: ["value"]},
             async execute(_id, params: {value: string}, _signal, _onUpdate, ctx) {
                 executions.push({name, cwd: ctx.cwd, value: params.value});
@@ -205,7 +206,7 @@ test("SDK child executes native MCP proxies through real codemode, search, and n
         const directName = "mcp__demo__direct";
         const hiddenName = "mcp__demo__hidden";
         for (const [name, exposure] of [
-            [codeName, "codemode"], [searchName, "deferred"],
+            [codeName, "deferred"], [searchName, "deferred"],
             [directName, "direct"], [hiddenName, "hidden"],
         ] as const) registry.register(nativeTool(name, exposure));
         registry.register(nativeTool("list_mcp_resources", "direct"));
@@ -235,6 +236,9 @@ test("SDK child executes native MCP proxies through real codemode, search, and n
         });
         try {
             await session.bindExtensions({});
+            const prompt = await session.extensionRunner.emitBeforeAgentStart("inspect", undefined, {cwd});
+            assert.match(prompt.systemPromptOptions.sections.mcp_servers!, /mcp__demo.*Child native test server/);
+            assert.ok(session.getActiveToolNames().includes("codemode"));
             const nested: string[] = [];
             const unsubscribe = session.subscribe((event) => {
                 if (event.type === "tool_execution_start" && event.parentToolCallId) nested.push(event.toolName);
@@ -266,10 +270,13 @@ test("SDK child executes native MCP proxies through real codemode, search, and n
                 assert.equal(direct.isError, false, JSON.stringify(direct));
                 assert.deepEqual(direct.result.content, [{type: "text", text: "native:direct"}]);
                 const code = await run("codemode", {
-                    code: `const result = await tools.${codeName}({value: "script"}); console.log(JSON.stringify(result));`,
+                    code: `const ns = await describeNamespace("demo");
+                        const result = await tools.${codeName}({value: "script"}); console.log(JSON.stringify({ns, result}));`,
                 });
                 assert.equal(code.isError, false, JSON.stringify(code.result.content));
                 assert.match(JSON.stringify(code.result.content), /native:script/);
+                assert.match(JSON.stringify(code.result.content), /Use only the granted echo tools/);
+                assert.doesNotMatch(JSON.stringify(code.result.content), /mcp__demo__hidden|list_mcp_resources/);
                 const search = await run("tool_search", {query: searchName});
                 assert.equal(search.isError, false, JSON.stringify(search.result.content));
                 assert.ok(session.getActiveToolNames().includes(searchName));

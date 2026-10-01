@@ -146,6 +146,33 @@ test("native MCP calls keep Pilot's copy-safe shell, compact, expanded, and row-
     assert.deepEqual(partial, ["⠋ mcp__demo__echo"]);
 });
 
+test("MCP long-line previews are bounded by wrapped rows and keep a separate full-output hint", () => {
+    const rows = new ToolDisplayRows();
+    let decorated!: ToolDefinition;
+    const registry = new McpToolRegistry({registerTool: (tool) => { decorated = tool as ToolDefinition; }}, rows);
+    registry.startSession();
+    registry.register(definition());
+    const plainTheme = {fg: (_color: string, text: string) => text, bold: (text: string) => text} as unknown as Theme;
+    const text = `START${"x".repeat(1000)}END`;
+    const result = {content: [{type: "text" as const, text}], details: {fullOutputPath: "/tmp/full.json"}};
+    const context = {
+        args: {}, toolCallId: "long", state: {}, invalidate() {}, lastComponent: undefined,
+        cwd: process.cwd(), executionStarted: true, argsComplete: true,
+        isPartial: false, expanded: true, showImages: false, isError: false,
+    };
+    const preview = decorated.renderResult!(result, {expanded: true, isPartial: false}, plainTheme, context).render(40);
+    assert.ok(preview.length <= 8, "five wrapped output rows, fold notice, spacer, and file hint");
+    assert.ok(preview.includes("Full output: /tmp/full.json"));
+    assert.ok(preview.some((line) => line.includes("END")));
+    assert.ok(preview.some((line) => line.includes("earlier lines")));
+    assert.ok(preview.every((line) => displayWidth(line) <= 40));
+    const full = decorated.renderResult!(result, {expanded: false, isPartial: false}, plainTheme,
+        {...context, state: {pilotFullDisplay: true}}).render(40);
+    assert.equal(full.filter((line) => line && !line.startsWith("Full output:")).join(""), text);
+    assert.ok(full.every((line) => !/[ \t]+$/.test(line)));
+    assert.deepEqual(decorated.renderResult!(result, {expanded: false, isPartial: false}, plainTheme, context).render(40), []);
+});
+
 function stripAnsi(value: string): string {
     return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 }

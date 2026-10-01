@@ -17,6 +17,7 @@ import {
     type ToolDefinition,
     type ToolLoadout,
 } from "@earendil-works/pi-coding-agent";
+import {validateToolArguments, type JsonObject} from "@earendil-works/pi-ai";
 import {getCapabilities, setCapabilities} from "@earendil-works/pi-tui";
 import {CodemodeExtension} from "../src/tools/codemode/CodemodeExtension.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
@@ -27,17 +28,36 @@ const plainTheme = {
     bold: (text: string) => text,
 } as unknown as Theme;
 
-test("codemode keeps the native schema, grammar, exposure, defaults, and live loadout settings", () => {
+test("codemode requires a purpose while keeping native exposure, defaults, and live loadout settings", () => {
     const rows = new ToolDisplayRows();
     const {pi, tool, settings} = harness(rows);
     let native!: ToolDefinition;
     createCodemodeExtension()({...pi, registerTool: (definition) => { native = definition as ToolDefinition; }});
-    assert.equal(tool.parameters, native.parameters, "native recognition depends on schema identity");
+    type Schema = ToolDefinition["parameters"] & {properties: Record<string, unknown>; required: string[]};
+    const parameters = tool.parameters as Schema;
+    const nativeParameters = native.parameters as Schema;
+    assert.notEqual(parameters, nativeParameters);
+    assert.equal(parameters.properties.code, nativeParameters.properties.code);
+    assert.deepEqual(nativeParameters.required, ["code"], "the shared native schema must not be mutated");
+    assert.ok(parameters.required.includes("purpose"));
+    assert.equal(CodemodeExtension.nativeMcpTools([tool])[0]!.parameters, native.parameters);
+    const unrelated = {...tool, parameters: {...tool.parameters}};
+    assert.equal(CodemodeExtension.nativeMcpTools([unrelated])[0], unrelated);
+    assert.deepEqual(parameters.properties.purpose, {
+        type: "string",
+        description: "A short, one-line explanation of what the script will achieve",
+        minLength: 1,
+        maxLength: 160,
+        pattern: "^[^\\r\\n]+$",
+    });
     assert.equal(tool.exposure, "model-only");
     assert.equal(tool.defaultActive, false);
     assert.equal(tool.renderShell, "self");
-    assert.deepEqual(tool.constrainedSampling, native.constrainedSampling);
-    assert.deepEqual(tool.promptGuidelines, native.promptGuidelines);
+    assert.deepEqual(tool.constrainedSampling, {type: "json_schema", strict: "prefer"});
+    for (const guideline of native.promptGuidelines ?? []) assert.ok(tool.promptGuidelines?.includes(guideline));
+    assert.ok(tool.promptGuidelines?.some((guideline) => guideline.includes("purpose")));
+    assert.match(tool.description, /purpose/);
+    assert.doesNotMatch(tool.description, /Accepts raw JavaScript source text, not JSON/);
     assert.equal(tool.promptSnippet, native.promptSnippet);
 
     const callable: ToolLoadout["callable"] = [{
@@ -54,9 +74,28 @@ test("codemode keeps the native schema, grammar, exposure, defaults, and live lo
         settings.codemode.mode = mode;
         for (const inlineBudget of [0, 3000]) {
             settings.codemode.inlineBudget = inlineBudget;
-            assert.deepEqual(tool.prepareLoadout!(loadout), native.prepareLoadout!(loadout));
-            assert.deepEqual(tool.prepareLoadout!(loadout)?.hiddenDeclarations, mode === "only" ? ["read"] : []);
+            const prepared = tool.prepareLoadout!(loadout)!;
+            const nativePrepared = native.prepareLoadout!(loadout)!;
+            assert.deepEqual(prepared.hiddenDeclarations, nativePrepared.hiddenDeclarations);
+            assert.equal(prepared.descriptions?.read, nativePrepared.descriptions?.read);
+            assert.match(prepared.descriptions!.codemode!, /purpose/);
+            assert.doesNotMatch(prepared.descriptions!.codemode!, /Accepts raw JavaScript source text, not JSON/);
+            assert.deepEqual(prepared.hiddenDeclarations, mode === "only" ? ["read"] : []);
         }
+    }
+});
+
+test("codemode validates purpose before script execution", () => {
+    const {tool} = harness(new ToolDisplayRows());
+    const validate = (args: JsonObject) => validateToolArguments(tool, {
+        type: "toolCall", id: "script", name: "codemode", arguments: args,
+    });
+    assert.deepEqual(validate({purpose: "Read the fixture", code: "return 1;"}), {
+        purpose: "Read the fixture", code: "return 1;",
+    });
+    assert.throws(() => validate({code: "return 1;"}), /purpose/);
+    for (const purpose of ["", "first\nsecond", "first\rsecond", "x".repeat(161)]) {
+        assert.throws(() => validate({purpose, code: "return 1;"}), /purpose/);
     }
 });
 
@@ -72,7 +111,7 @@ test("codemode uses compact, expanded, and row-local full views with bounded cop
         args: '{"path":"fixture"}', status: "ok", durationMs: 12,
     }));
     const component = new ToolExecutionComponent(
-        "codemode", "script", {code: script.join("\n")}, {}, tool,
+        "codemode", "script", {purpose: "Inspect fixture tools", code: script.join("\n")}, {}, tool,
         {requestRender() {}} as ConstructorParameters<typeof ToolExecutionComponent>[5], process.cwd(),
     );
     component.setArgsComplete();
@@ -83,7 +122,17 @@ test("codemode uses compact, expanded, and row-local full views with bounded cop
         details: {calls, fullOutputPath: "/tmp/full-codemode.txt"},
         isError: false,
     });
-    assert.deepEqual(component.render(120).map(stripAnsi).filter(Boolean), ["  codemode"]);
+    const minimal = component.render(120).map(stripAnsi).filter(Boolean);
+    assert.equal(minimal[0], "  codemode | Inspect fixture tools");
+    assert.ok(minimal.some((line) => line.includes("✓ tool_12")));
+    assert.equal(minimal.some((line) => line.includes("✓ tool_1 ")), false);
+    assert.ok(minimal.some((line) => line.includes("earlier lines")));
+    assert.equal(minimal.some((line) => line.includes("console.log") || line.includes("output ")), false);
+    assert.equal(minimal.some((line) => line.includes("Full output:")), false);
+    assert.ok(minimal.length <= 10);
+    for (const width of [1, 8, 20, 80]) {
+        assert.ok(component.render(width).every((line) => displayWidth(line) <= width));
+    }
     assert.equal(rows.list()[0]!.toolName, "codemode");
 
     component.setExpanded(true);
@@ -116,8 +165,11 @@ test("codemode streams nested statuses and costs, stops its spinner, and retains
     const state = {};
     let invalidations = 0;
     const context = renderContext(state, {isPartial: true, invalidate: () => invalidations++});
-    assert.deepEqual(tool.renderCall!({code: "await tools.read({path: 'fixture'});"}, plainTheme, context).render(120),
-        ["⠋ codemode", "await tools.read({path: 'fixture'});"]);
+    const args = {purpose: "Inspect the fixture", code: "await tools.read({path: 'fixture'});"};
+    assert.deepEqual(tool.renderCall!(args, plainTheme, context).render(120),
+        ["⠋ codemode | Inspect the fixture", "await tools.read({path: 'fixture'});"]);
+    assert.deepEqual(tool.renderCall!(args, plainTheme, {...context, expanded: false}).render(120),
+        ["⠋ codemode | Inspect the fixture"]);
     t.mock.timers.tick(80);
     assert.equal(invalidations, 1);
     const calls: CodemodeToolDetails["calls"] = [
@@ -135,6 +187,8 @@ test("codemode streams nested statuses and costs, stops its spinner, and retains
     assert.ok(partial.includes("⊘ bash {}"));
     assert.ok(partial.includes("Model calls: $0.0030"));
     assert.equal(partial.includes("must not appear while streaming"), false);
+    const minimal = tool.renderResult!(result, {expanded: false, isPartial: true}, plainTheme, context).render(160);
+    assert.deepEqual(minimal, partial, "minimal mode still shows nested activity and costs");
 
     rows.toggle("script");
     const failed = {
@@ -295,14 +349,15 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                 });
                 try {
                     const run = async (id: string, code: string) => {
+                        const args = {purpose: "Exercise nested routing and storage", code};
                         session.agent.state.messages.push({
-                            role: "assistant", content: [{type: "toolCall", id, name: "codemode", arguments: {code}}],
+                            role: "assistant", content: [{type: "toolCall", id, name: "codemode", arguments: args}],
                             api: "openai-completions", provider: "fixture", model: "fixture",
                             usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
                                 cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
                             stopReason: "toolUse", timestamp: Date.now(),
                         });
-                        return tool.execute(id, {code}, undefined, undefined);
+                        return tool.execute(id, args, undefined, undefined);
                     };
                     const first = await run("first", 'const value = await tools.echo({}); store("fixture", value); return value;');
                     assert.equal(first.isError, undefined);

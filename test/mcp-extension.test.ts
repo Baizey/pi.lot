@@ -9,6 +9,8 @@ import {
     type LoadedMcpConfig,
 } from "@earendil-works/pi-coding-agent";
 import {McpExtension} from "../src/mcp/McpExtension.js";
+import {CodemodeExtension} from "../src/tools/codemode/CodemodeExtension.js";
+import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 import {NativeMcpFixture} from "./fixtures/NativeMcpFixture.js";
 
 function config(): LoadedMcpConfig {
@@ -214,9 +216,9 @@ test("native hidden exposure is unreachable even when deferred and codemode disc
     }
 });
 
-test("default MCP servers do not block prompts, activate discovery early, and wait when a script needs them", async () => {
+test("purpose-aware codemode activates before MCP discovery and waits when a script needs servers", async () => {
     const fixture = new NativeMcpFixture();
-    createCodemodeExtension()(fixture.pi);
+    new CodemodeExtension(fixture.pi, new ToolDisplayRows()).register();
     let finishStartup!: () => void;
     fixture.startWait = new Promise<void>((resolve) => { finishStartup = resolve; });
     const extension = createExtension(fixture, {
@@ -235,7 +237,8 @@ test("default MCP servers do not block prompts, activate discovery early, and wa
 
         let completed = false;
         const waiting = fixture.emit("tool_call", {
-            toolCallId: "script", toolName: "codemode", input: {code: "await tools.mcp__demo__echo({});"},
+            toolCallId: "script", toolName: "codemode",
+            input: {purpose: "Read the fixture service", code: "await tools.mcp__demo__echo({});"},
         }).then(() => { completed = true; });
         await new Promise<void>((resolve) => setImmediate(resolve));
         assert.equal(completed, false, "script execution waits for its named server");
@@ -253,9 +256,9 @@ test("default MCP servers do not block prompts, activate discovery early, and wa
     }
 });
 
-test("script waits are namespace-scoped, tool search waits for all servers, and cancellation releases waits", async () => {
+test("purpose-aware scripts preserve namespace-scoped waits, discovery waits, and cancellation", async () => {
     const fixture = new NativeMcpFixture();
-    createCodemodeExtension()(fixture.pi);
+    new CodemodeExtension(fixture.pi, new ToolDisplayRows()).register();
     createToolSearchExtension()(fixture.pi);
     let finishDemo!: () => void;
     let finishOther!: () => void;
@@ -271,7 +274,8 @@ test("script waits are namespace-scoped, tool search waits for all servers, and 
         await extension.startSession(fixture.ctx);
         await fixture.emit("before_agent_start");
         const named = fixture.emit("tool_call", {
-            toolCallId: "named", toolName: "codemode", input: {code: "await tools.mcp__demo__echo({});"},
+            toolCallId: "named", toolName: "codemode",
+            input: {purpose: "Read only the demo service", code: "await tools.mcp__demo__echo({});"},
         });
         finishDemo();
         await named;
@@ -279,7 +283,8 @@ test("script waits are namespace-scoped, tool search waits for all servers, and 
         assert.equal(extension.toolDefinitions().some((tool) => tool.name.startsWith("mcp__other__")), false);
 
         for (const [toolName, input] of [
-            ["codemode", {code: 'await describeNamespace("other");'}],
+            ["codemode", {purpose: "Inspect the other service", code: 'await describeNamespace("other");'}],
+            ["codemode", {purpose: "Discover fixture tools", code: 'await searchTools("fixture");'}],
             ["tool_search", {query: "fixture"}],
             ["list_mcp_resources", {}],
         ] as const) {

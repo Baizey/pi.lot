@@ -12,6 +12,7 @@ import {
     type TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import {McpToolRegistry} from "./McpToolRegistry.js";
+import {CodemodeExtension} from "../tools/codemode/CodemodeExtension.js";
 import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
 
 type NativeEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent
@@ -57,6 +58,7 @@ export class McpExtension implements McpExtensionInterface {
             ...this.pi,
             on,
             registerTool: (definition) => this.registry.register(definition),
+            getAllTools: () => CodemodeExtension.nativeMcpTools(this.pi.getAllTools()),
         });
     }
 

@@ -3,23 +3,35 @@ import {
     type CodemodeToolDetails,
     type ExtensionAPI,
     type Theme,
+    type ToolDefinition,
+    type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import {getCapabilities} from "@earendil-works/pi-tui";
+import type {Type} from "typebox";
 import {ThemeColor} from "../../tui/Color.js";
 import {renderLineFactory, type TextComponent} from "../../tui/terminalText.js";
 import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
-import {ToolArgumentLayout, ToolTextDirection, type ToolResultLike} from "../../tui/tool/ToolPresentation.js";
+import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection, type ToolResultLike} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
 
-/** Pi owns the script sandbox and loadout; Pilot replaces only its presentation. */
+const PURPOSE_GUIDELINE = "Include a concise, one-line purpose describing what each codemode script will achieve.";
+
+type CodemodeInput = {purpose: string; code: string};
+type NativeCodemodeSchema = Type.TObject<{code: Type.TString}>;
+
+/** Pi owns script execution and discovery; Pilot adds purpose and presentation. */
 export class CodemodeExtension {
+    private static readonly nativeSchemas = new WeakMap<object, ToolInfo["parameters"]>();
     private readonly liveRows = new WeakSet<object>();
-    private readonly presentation = new ToolPresentationRenderer<{code: string}>({
+    private readonly presentation = new ToolPresentationRenderer<CodemodeInput>({
         toolName: "codemode",
-        arguments: [{key: "code", layout: ToolArgumentLayout.BLOCK, wrap: true}],
+        arguments: [
+            {key: "purpose", placement: ToolArgumentPlacement.TITLE_PRIMARY, color: ThemeColor.text},
+            {key: "code", layout: ToolArgumentLayout.BLOCK, wrap: true},
+        ],
         result: {direction: ToolTextDirection.TAIL, wrap: true},
     });
     private readonly callsPresentation = new ToolPresentationRenderer({
@@ -33,11 +45,51 @@ export class CodemodeExtension {
         private readonly displayRows: ToolDisplayRows,
     ) {}
 
+    /** Native MCP recognizes scripts by schema identity before waiting for pending servers. */
+    static nativeMcpTools<TTool extends Pick<ToolInfo, "name" | "parameters">>(tools: readonly TTool[]): TTool[] {
+        return tools.map((tool) => {
+            const parameters = tool.name === "codemode" ? this.nativeSchemas.get(tool.parameters) : undefined;
+            return parameters ? {...tool, parameters} : tool;
+        });
+    }
+
     register(): void {
-        createCodemodeExtension()({
-            ...this.pi,
-            registerTool: (definition) => this.pi.registerTool({
+        // The generic registerTool API cannot express this decorator's built-in-only boundary.
+        const registerTool = ((definition: ToolDefinition<NativeCodemodeSchema, CodemodeToolDetails | undefined>) => {
+            const parameters = {
+                ...definition.parameters,
+                properties: {
+                    purpose: {
+                        ...definition.parameters.properties.code,
+                        description: "A short, one-line explanation of what the script will achieve",
+                        minLength: 1,
+                        maxLength: 160,
+                        pattern: "^[^\\r\\n]+$",
+                    },
+                    ...definition.parameters.properties,
+                },
+                required: [...definition.parameters.required, "purpose"] satisfies [
+                    ...typeof definition.parameters.required, "purpose",
+                ],
+            };
+            CodemodeExtension.nativeSchemas.set(parameters, definition.parameters);
+            this.pi.registerTool<typeof parameters, CodemodeToolDetails | undefined>({
                 ...definition,
+                parameters,
+                prepareArguments: undefined,
+                // Pi's raw-source grammar supports exactly one required string, not purpose + code.
+                constrainedSampling: {type: "json_schema", strict: "prefer"},
+                description: this.describePurpose(definition.description),
+                promptGuidelines: [...(definition.promptGuidelines ?? []), PURPOSE_GUIDELINE],
+                prepareLoadout: (loadout) => {
+                    const changes = definition.prepareLoadout?.(loadout);
+                    const description = changes?.descriptions?.codemode;
+                    if (!description) return changes;
+                    return {
+                        ...changes,
+                        descriptions: {...changes.descriptions, codemode: this.describePurpose(description)},
+                    };
+                },
                 renderShell: "self",
                 renderCall: (args, theme, context) => {
                     // Pi 0.99.2's TUI creates rows before execution; HTML exports start with
@@ -46,7 +98,7 @@ export class CodemodeExtension {
                     const live = this.liveRows.has(context.state);
                     if (live) this.displayRows.observe("codemode", args, context);
                     return this.presentation.renderCall(
-                        args as {code: string},
+                        args,
                         theme,
                         resolveToolDisplayMode(context.expanded, context.state),
                         {...context, invalidate: live ? context.invalidate : undefined},
@@ -68,8 +120,19 @@ export class CodemodeExtension {
                         context.showImages,
                     );
                 },
-            }),
-        });
+            });
+        }) as ExtensionAPI["registerTool"];
+        createCodemodeExtension()({...this.pi, registerTool});
+    }
+
+    private describePurpose(description: string): string {
+        return description.replace(
+            "- Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.",
+            "- Pass an object with a concise, one-line `purpose` and JavaScript source in `code`; do not wrap the code in markdown fences.",
+        ).replace(
+            "- You may optionally start the tool input with a first line like",
+            "- You may optionally start `code` with a first line like",
+        );
     }
 
     private renderResult(
@@ -82,17 +145,16 @@ export class CodemodeExtension {
         showImages: boolean,
     ): TextComponent {
         return renderLineFactory((width) => {
-            if (mode === ToolDisplayMode.MINIMAL) return [];
             const calls = details?.calls ?? [];
             const lines = this.callsPresentation.renderResult({
                 content: [{type: "text", text: calls.map((call) => this.formatCall(call, theme, mode)).join("\n")}],
-            }, theme, {}, mode).render(width);
+            }, theme, {}, mode === ToolDisplayMode.MINIMAL ? ToolDisplayMode.TRUNCATED : mode).render(width);
             const priced = calls.filter((call) => call.cost !== undefined);
             if (priced.length > 1) {
                 const total = priced.reduce((sum, call) => sum + (call.cost ?? 0), 0);
                 lines.push(theme.fg(ThemeColor.muted, `Model calls: ${formatCost(total)}`));
             }
-            if (isPartial) return lines;
+            if (isPartial || mode === ToolDisplayMode.MINIMAL) return lines;
 
             const content = result.content ?? [];
             const first = content[0];
@@ -120,7 +182,7 @@ export class CodemodeExtension {
         } as const;
         const [icon, color] = statuses[call.status];
         let line = `${theme.fg(color, icon)} ${theme.fg(ThemeColor.toolTitle, call.name)}`;
-        const args = mode === ToolDisplayMode.TRUNCATED && call.args.length > 80
+        const args = mode !== ToolDisplayMode.FULL && call.args.length > 80
             ? `${call.args.slice(0, 77)}...`
             : call.args;
         if (args) line += ` ${theme.fg(ThemeColor.muted, args)}`;

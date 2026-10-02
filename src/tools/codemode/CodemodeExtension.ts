@@ -1,17 +1,18 @@
 import {
     createCodemodeExtension,
+    type AgentToolResult,
     type CodemodeToolDetails,
     type ExtensionAPI,
     type Theme,
     type ToolDefinition,
     type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import {getCapabilities} from "@earendil-works/pi-tui";
+import {getCapabilities, wrapTextWithAnsi} from "@earendil-works/pi-tui";
 import type {Type} from "typebox";
 import {ThemeColor} from "../../tui/Color.js";
-import {renderLineFactory, type TextComponent} from "../../tui/terminalText.js";
+import {renderLineFactory, sanitizeTerminalLine, type TextComponent} from "../../tui/terminalText.js";
 import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
-import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
+import {ToolDisplayRows, type ToolDisplayState} from "../../tui/tool/ToolDisplayRows.js";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection, type ToolResultLike} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
 
@@ -28,6 +29,8 @@ type NativeCodemodeSchema = Type.TObject<{code: Type.TString}>;
 export class CodemodeExtension {
     private static readonly nativeSchemas = new WeakMap<object, ToolInfo["parameters"]>();
     private readonly liveRows = new WeakSet<object>();
+    // UI-only arguments: leave Pi's bounded transcript metadata and model output unchanged.
+    private readonly callArguments = new WeakMap<CodemodeToolDetails, ReadonlyMap<number, string>>();
     private readonly presentation = new ToolPresentationRenderer<CodemodeInput>({
         toolName: "codemode",
         arguments: [
@@ -35,11 +38,6 @@ export class CodemodeExtension {
             {key: "code", layout: ToolArgumentLayout.BLOCK, wrap: true},
         ],
         result: {direction: ToolTextDirection.TAIL, wrap: true},
-    });
-    private readonly callsPresentation = new ToolPresentationRenderer({
-        toolName: "codemode",
-        arguments: [],
-        result: {direction: ToolTextDirection.TAIL, previewLines: 8, maxFullLines: 100, wrap: true},
     });
 
     constructor(
@@ -92,6 +90,33 @@ export class CodemodeExtension {
                         descriptions: {...changes.descriptions, codemode: this.describePurpose(description)},
                     };
                 },
+                execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+                    const argumentsByCall = new Map<number, string>();
+                    let calls: CodemodeToolDetails["calls"] = [];
+                    const capture = (result: AgentToolResult<CodemodeToolDetails | undefined>) => {
+                        calls = result.details?.calls ?? [];
+                        if (result.details) this.callArguments.set(result.details, argumentsByCall);
+                        return result;
+                    };
+                    const executeTool: typeof ctx.executeTool = (name, args, options) => {
+                        // Native codemode publishes the new running row immediately before
+                        // calling executeTool. Capture by position: running ids are all "?".
+                        const call = calls.at(-1);
+                        if (call?.name === name && call.status === "running") {
+                            try {
+                                argumentsByCall.set(calls.length - 1, JSON.stringify(args) ?? call.args);
+                            } catch {
+                                // Keep Pi's preview when an input cannot be serialized.
+                            }
+                        }
+                        return ctx.executeTool(name, args, options);
+                    };
+                    // Inherit Pi's guarded, non-enumerable tools/context getters; do not spread them.
+                    const toolContext: typeof ctx = Object.create(ctx, {executeTool: {value: executeTool}});
+                    return capture(await definition.execute(toolCallId, params, signal, (update) => {
+                        onUpdate?.(capture(update));
+                    }, toolContext));
+                },
                 renderShell: "self",
                 renderCall: (args, theme, context) => {
                     // Pi's TUI creates rows before execution; HTML exports start with
@@ -120,6 +145,7 @@ export class CodemodeExtension {
                         options.isPartial,
                         context.isError,
                         context.showImages,
+                        context.state,
                     );
                 },
             });
@@ -150,12 +176,18 @@ export class CodemodeExtension {
         isPartial: boolean,
         isError: boolean,
         showImages: boolean,
+        state: ToolDisplayState,
     ): TextComponent {
         return renderLineFactory((width) => {
             const calls = details?.calls ?? [];
-            const lines = this.callsPresentation.renderResult({
-                content: [{type: "text", text: calls.map((call) => this.formatCall(call, theme, mode)).join("\n")}],
-            }, theme, {}, mode === ToolDisplayMode.MINIMAL ? ToolDisplayMode.TRUNCATED : mode).render(width);
+            const argumentsByCall = details ? this.callArguments.get(details) : undefined;
+            const indicator = isPartial ? state.pilotCallSpinner?.frame() : undefined;
+            const lines = calls.length > 0 ? ["", ...calls.flatMap((call, index) => {
+                const text = this.formatCall(call, argumentsByCall?.get(index) ?? call.args, theme, mode, indicator);
+                return text.split("\n").flatMap((line) => Number.isFinite(width) && width >= 1
+                    ? wrapTextWithAnsi(sanitizeTerminalLine(line), Math.floor(width))
+                    : [sanitizeTerminalLine(line)]);
+            })] : [];
             const priced = calls.filter((call) => call.cost !== undefined);
             if (priced.length > 1) {
                 const total = priced.reduce((sum, call) => sum + (call.cost ?? 0), 0);
@@ -180,18 +212,17 @@ export class CodemodeExtension {
         });
     }
 
-    private formatCall(call: CodemodeToolDetails["calls"][number], theme: Theme, mode: ToolDisplayMode): string {
-        const statuses = {
-            running: ["…", ThemeColor.warning],
-            ok: ["✓", ThemeColor.success],
-            error: ["✗", ThemeColor.error],
-            cancelled: ["⊘", ThemeColor.muted],
-        } as const;
-        const [icon, color] = statuses[call.status];
-        let line = `${theme.fg(color, icon)} ${theme.fg(ThemeColor.toolTitle, call.name)}`;
-        const args = mode !== ToolDisplayMode.FULL && call.args.length > 80
-            ? `${call.args.slice(0, 77)}...`
-            : call.args;
+    private formatCall(
+        call: CodemodeToolDetails["calls"][number],
+        args: string,
+        theme: Theme,
+        mode: ToolDisplayMode,
+        indicator: string | undefined,
+    ): string {
+        const status = call.status === "running" && indicator ? theme.fg(ThemeColor.accent, indicator) : " ";
+        const color = call.status === "error" ? ThemeColor.error
+            : call.status === "cancelled" ? ThemeColor.muted : ThemeColor.toolTitle;
+        let line = `${status} ${theme.fg(color, call.name)}`;
         if (args) line += ` ${theme.fg(ThemeColor.muted, args)}`;
         if (call.durationMs !== undefined) {
             const duration = call.durationMs < 1000

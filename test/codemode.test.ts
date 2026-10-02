@@ -11,6 +11,7 @@ import {
     SessionManager,
     SettingsManager,
     ToolExecutionComponent,
+    type AgentToolResult,
     type CodemodeToolDetails,
     type ExtensionAPI,
     type Theme,
@@ -99,7 +100,7 @@ test("codemode validates purpose before script execution", () => {
     }
 });
 
-test("codemode uses compact, expanded, and row-local full views with bounded copy-safe output", (t) => {
+test("codemode keeps complete nested calls in every view with bounded script and output previews", (t) => {
     initTheme("dark");
     const rows = new ToolDisplayRows();
     t.after(() => rows.clear());
@@ -124,12 +125,11 @@ test("codemode uses compact, expanded, and row-local full views with bounded cop
     });
     const minimal = component.render(120).map(stripAnsi).filter(Boolean);
     assert.equal(minimal[0], "  codemode | Inspect fixture tools");
-    assert.ok(minimal.some((line) => line.includes("✓ tool_12")));
-    assert.equal(minimal.some((line) => line.includes("✓ tool_1 ")), false);
-    assert.ok(minimal.some((line) => line.includes("earlier lines")));
+    for (const call of calls) assert.ok(minimal.some((line) => line.includes(`  ${call.name} `)));
+    assert.equal(minimal.some((line) => /[✓✗⊘]|earlier lines/.test(line)), false);
     assert.equal(minimal.some((line) => line.includes("console.log") || line.includes("output ")), false);
     assert.equal(minimal.some((line) => line.includes("Full output:")), false);
-    assert.ok(minimal.length <= 10);
+    assert.equal(minimal.length, calls.length + 1);
     for (const width of [1, 8, 20, 80]) {
         assert.ok(component.render(width).every((line) => displayWidth(line) <= width));
     }
@@ -141,8 +141,7 @@ test("codemode uses compact, expanded, and row-local full views with bounded cop
     assert.equal(expanded.includes(script.at(-1)!), false);
     assert.ok(expanded.includes(output.at(-1)!));
     assert.equal(expanded.includes(output[0]!), false);
-    assert.ok(expanded.some((line) => line.includes("✓ tool_12")));
-    assert.equal(expanded.some((line) => line.includes("✓ tool_1 ")), false);
+    for (const call of calls) assert.ok(expanded.some((line) => line.includes(`  ${call.name} `)));
     assert.ok(expanded.includes("Full output: /tmp/full-codemode.txt"));
     assert.equal(expanded.some((line) => line.includes("Script completed") || line.includes("Wall time")), false);
 
@@ -150,7 +149,7 @@ test("codemode uses compact, expanded, and row-local full views with bounded cop
     component.setExpanded(false);
     const full = component.render(120).map(stripAnsi);
     for (const line of [...script, ...output]) assert.ok(full.includes(line));
-    for (const call of calls) assert.ok(full.some((line) => line.includes(`✓ ${call.name} `)));
+    for (const call of calls) assert.ok(full.some((line) => line.includes(`  ${call.name} `)));
     assert.ok(full.every((line) => !/[ \t]+$/.test(line)));
     for (const width of [1, 8, 20, 80]) {
         assert.ok(component.render(width).every((line) => displayWidth(line) <= width));
@@ -180,15 +179,20 @@ test("codemode streams nested statuses and costs, stops its spinner, and retains
         {id: "script/2", name: "bash", args: "{}", status: "cancelled"},
     ];
     const result = {content: [{type: "text" as const, text: "must not appear while streaming"}], details: {calls}};
-    const partial = tool.renderResult!(result, {expanded: true, isPartial: true}, plainTheme, context).render(160);
-    assert.ok(partial.some((line) => line.startsWith("… read ")));
-    assert.ok(partial.some((line) => line.includes("✓ models.classify demo/model $0.0010")));
-    assert.ok(partial.some((line) => line.includes("✗ models.classify demo/model 1.2s $0.0020")));
-    assert.ok(partial.includes("⊘ bash {}"));
+    const partialComponent = tool.renderResult!(result, {expanded: true, isPartial: true}, plainTheme, context);
+    const partial = partialComponent.render(160);
+    assert.ok(partial.some((line) => line.startsWith("⠙ read ")));
+    assert.ok(partial.includes("  models.classify demo/model $0.0010"));
+    assert.ok(partial.includes("  models.classify demo/model 1.2s $0.0020"));
+    assert.ok(partial.includes("  bash {}"));
+    assert.equal(partial.some((line) => /[✓✗⊘]/.test(line)), false);
     assert.ok(partial.includes("Model calls: $0.0030"));
     assert.equal(partial.includes("must not appear while streaming"), false);
     const minimal = tool.renderResult!(result, {expanded: false, isPartial: true}, plainTheme, context).render(160);
     assert.deepEqual(minimal, partial, "minimal mode still shows nested activity and costs");
+    t.mock.timers.tick(80);
+    assert.equal(invalidations, 2, "nested rows share the parent's single Pi loader");
+    assert.ok(partialComponent.render(160).some((line) => line.startsWith("⠹ read ")));
 
     rows.toggle("script");
     const failed = {
@@ -203,6 +207,7 @@ test("codemode streams nested statuses and costs, stops its spinner, and retains
     assert.ok(full.includes("classifier failed"));
     assert.ok(full.includes("second line"));
     assert.ok(full.includes("nested tool denied"));
+    assert.ok(full.some((line) => line.startsWith("  read ")), "finished parents suppress stale running indicators");
     const colorTheme = {
         ...plainTheme,
         fg: (color: string, text: string) => `\x1b[${color === "error" ? 31 : 37}m${text}\x1b[0m`,
@@ -276,11 +281,30 @@ test("codemode handles missing details, rejected input, images, terminal control
     const calls: CodemodeToolDetails["calls"] = Array.from({length: 500}, (_, index) => ({
         id: `script/${index}`, name: `tool_${index}`, args: "{}", status: "ok",
     }));
-    const bounded = tool.renderResult!({content: [], details: {calls}},
+    const nested = tool.renderResult!({content: [], details: {calls}},
         {expanded: false, isPartial: false}, plainTheme, context).render(120);
-    assert.ok(bounded.length <= 101);
-    assert.ok(bounded.some((line) => line.includes("✓ tool_499")));
-    assert.ok(bounded.some((line) => line.includes("omitted from display")));
+    assert.equal(nested.length, calls.length + 1);
+    assert.ok(nested.some((line) => line.includes("  tool_0 {}")));
+    assert.ok(nested.some((line) => line.includes("  tool_499 {}")));
+    assert.equal(nested.some((line) => line.includes("omitted from display")), false);
+});
+
+test("codemode wraps complete nested arguments without character or visual-row truncation", () => {
+    const {tool} = harness(new ToolDisplayRows());
+    const args = JSON.stringify({command: `START${"界🙂".repeat(150)}END`});
+    const result = {content: [], details: {calls: [
+        {id: "script/1", name: "bash", args, status: "ok" as const, durationMs: 5200},
+    ]}};
+    for (const expanded of [false, true]) {
+        for (const width of [8, 20, 40, 80]) {
+            const lines = tool.renderResult!(result, {expanded, isPartial: false}, plainTheme,
+                renderContext({}, {expanded})).render(width);
+            // Pi's word wrapping consumes separators at line boundaries, but no argument data.
+            assert.equal(lines.join("").replace(/\s/g, ""), `bash${args}5.2s`);
+            assert.ok(lines.every((line) => displayWidth(line) <= width));
+            assert.equal(lines.some((line) => /omitted|earlier lines|\.\.\./.test(line)), false);
+        }
+    }
 });
 
 test("codemode wraps long scripts and output before applying preview limits", () => {
@@ -348,7 +372,7 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                     if (event.type === "tool_execution_start" && event.parentToolCallId) nested.push(event.toolName);
                 });
                 try {
-                    const run = async (id: string, code: string) => {
+                    const run = async (id: string, code: string, onUpdate?: (result: AgentToolResult<unknown>) => void) => {
                         const args = {purpose: "Exercise nested routing and storage", code};
                         session.agent.state.messages.push({
                             role: "assistant", content: [{type: "toolCall", id, name: "codemode", arguments: args}],
@@ -357,7 +381,7 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                                 cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
                             stopReason: "toolUse", timestamp: Date.now(),
                         });
-                        return tool.execute(id, args, undefined, undefined);
+                        return tool.execute(id, args, undefined, onUpdate);
                     };
                     const first = await run("first", 'const value = await tools.echo({}); store("fixture", value); return value;');
                     assert.equal(first.isError, undefined);
@@ -374,6 +398,33 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                     const unknown = await run("unknown", 'return typeof tools.missing;');
                     assert.equal(unknown.isError, true);
                     assert.match(JSON.stringify(unknown.content), /missing/);
+
+                    const displayed = loaded.extensions.find((extension) => extension.tools.has("codemode"))!
+                        .tools.get("codemode")!.definition;
+                    const prefix = "START" + "x".repeat(1000);
+                    const updates: AgentToolResult<unknown>[] = [];
+                    const parallel = await run("parallel", `return await Promise.all([
+                        tools.echo({text: ${JSON.stringify(prefix + "FIRST_END")}}),
+                        tools.echo({text: ${JSON.stringify(prefix + "SECOND_END")}}),
+                    ]);`, (update) => updates.push(update));
+                    assert.equal(parallel.isError, undefined);
+                    const nativeCalls = (parallel.details as CodemodeToolDetails).calls;
+                    assert.equal(nativeCalls.length, 2);
+                    assert.equal(nativeCalls[0]!.args, nativeCalls[1]!.args, "native previews remain identical and bounded");
+                    assert.doesNotMatch(nativeCalls[0]!.args, /FIRST_END|SECOND_END/);
+                    const rendered = displayed.renderResult!(parallel, {expanded: false, isPartial: false},
+                        plainTheme, renderContext({})).render(40);
+                    const text = rendered.join("");
+                    assert.match(text, /FIRST_END/);
+                    assert.match(text, /SECOND_END/);
+                    assert.ok(text.indexOf("FIRST_END") < text.indexOf("SECOND_END"));
+                    assert.ok(rendered.every((line) => displayWidth(line) <= 40));
+                    const streaming = updates.filter((update) => (update.details as CodemodeToolDetails | undefined)
+                        ?.calls.some((call) => call.status === "running"));
+                    assert.ok(streaming.length > 0);
+                    assert.ok(streaming.some((update) => displayed.renderResult!(update,
+                        {expanded: false, isPartial: true}, plainTheme, renderContext({isPartial: true}))
+                        .render(40).join("").includes("FIRST_END")), "live snapshots also retain full arguments");
                 } finally {
                     unsubscribe();
                 }

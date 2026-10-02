@@ -17,7 +17,9 @@ import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.
 
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
 
-const PURPOSE_GUIDELINE = "Include a concise, one-line purpose describing what each codemode script will achieve.";
+const PURPOSE_GUIDELINE = "Call codemode with a JSON object containing a concise, one-line `purpose` (1-160 characters) "
+    + "and JavaScript source in `code`. Native codemode documentation describes `code` and its APIs; "
+    + "its raw-input convention does not apply to this tool.";
 
 type CodemodeInput = {purpose: string; code: string};
 type NativeCodemodeSchema = Type.TObject<{code: Type.TString}>;
@@ -92,7 +94,7 @@ export class CodemodeExtension {
                 },
                 renderShell: "self",
                 renderCall: (args, theme, context) => {
-                    // Pi 0.99.2's TUI creates rows before execution; HTML exports start with
+                    // Pi's TUI creates rows before execution; HTML exports start with
                     // executionStarted=true. Export state must not own live toggles or timers.
                     if (!context.executionStarted) this.liveRows.add(context.state);
                     const live = this.liveRows.has(context.state);
@@ -111,7 +113,7 @@ export class CodemodeExtension {
                     }
                     return this.renderResult(
                         result,
-                        // This callback decorates only Pi 0.99.2's native codemode definition.
+                        // This callback decorates only Pi's native codemode definition.
                         result.details as CodemodeToolDetails | undefined,
                         theme,
                         resolveToolDisplayMode(options.expanded, context.state),
@@ -126,13 +128,18 @@ export class CodemodeExtension {
     }
 
     private describePurpose(description: string): string {
+        // Pi exposes its factory, not the description builder. Preserve its generated guidance
+        // and catalogue; adapt only the raw-input convention that our JSON envelope replaces.
+        const input = /^([^\n]*?)The input is raw JavaScript\s*\([^\n)]*\),\s*run as\s*/;
+        const options = /^- Optional first line:/m;
+        if (!input.test(description) || !options.test(description)) {
+            throw new Error("Unsupported native codemode description: expected script input and options guidance");
+        }
         return description.replace(
-            "- Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.",
-            "- Pass an object with a concise, one-line `purpose` and JavaScript source in `code`; do not wrap the code in markdown fences.",
-        ).replace(
-            "- You may optionally start the tool input with a first line like",
-            "- You may optionally start `code` with a first line like",
-        );
+            input,
+            "$1Pass a JSON object with a concise, one-line `purpose` and JavaScript source in `code` "
+            + "(no code fence). `code` runs as ",
+        ).replace(options, "- Optional first line of `code`:");
     }
 
     private renderResult(

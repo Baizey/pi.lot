@@ -4,7 +4,7 @@ pi.lot is a Pi package for **Linux x86-64**. It overrides Pi's core file and she
 
 ## Requirements
 
-This checkout targets Pi `0.99.2` and requires:
+This checkout targets Pi `1.0.0` and requires:
 
 - Node.js and npm;
 - FUSE 2, including `/dev/fuse` and `fusermount`;
@@ -48,7 +48,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.99.2
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:
@@ -56,6 +56,8 @@ Start Pi and use `/login` to authenticate a subscription or API-key provider:
 ```bash
 pi
 ```
+
+Pi `1.0.0` defaults to fullscreen mode. For the regular terminal UI, set `"tuiMode": "regular"` in Pi settings or start with `pi --tui-mode regular`.
 
 Subagents require at least one authenticated model with normal reasoning support. Provider-native web search requires an authenticated active model that supports native search.
 
@@ -92,9 +94,11 @@ pi -e "$PWD"
 
 The checked-in `.pi/settings.json` also loads the repository root as a project-local package when Pi starts inside the checkout and the project is trusted.
 
-Pilot runs Pi's built-in MCP and codemode implementations via `createMcpExtension()` and `createCodemodeExtension()`, adding its own presentation. Add `"-builtin:mcp"` and `"-builtin:codemode"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. These suppress Pi's separate automatic instances and their override warnings, **not MCP or codemode functionality**: Pilot still runs the built-in implementations. Without these entries, Pi omits the duplicate built-in instances because Pilot registers `/mcp` and `codemode`, and emits override warnings.
+Pilot imports Pi's built-in MCP and codemode implementations through the public factories `createMcpExtension()` and `createCodemodeExtension()`, adding its own presentation. Add `"-builtin:mcp"` and `"-builtin:codemode"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. These suppress Pi's separate automatic instances and their override warnings, **not MCP or codemode functionality**: Pilot still runs the built-in implementations. Without these entries, Pi omits the duplicate built-in instances because Pilot registers `/mcp` and `codemode`, and emits override warnings.
 
-Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools alongside it, or use `--tools` for one invocation. MCP activates it automatically when its tools require scripts. Pi's `codemode.mode` and `codemode.inlineBudget` settings continue to apply.
+Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools alongside it, or use `--tools` for one invocation. MCP activates it automatically when its tools require scripts. Pi's `codemode.mode` and `codemode.inlineBudget` settings continue to apply. Pilot calls remain JSON `{purpose, code}`; [Pi's codemode documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the `code` body and API rather than this wrapper envelope. Root model calls are [outside policy mediation](security.md#codemode-model-calls); child codemode exposes no model globals.
+
+MCP OAuth credentials now belong to a server name plus URL. Pi handles legacy credential migration; multiple differently named servers sharing one URL may require separate `/mcp login <server>` calls afterward.
 
 Installing pi.lot does not modify live user configuration; make this loader setting change yourself.
 

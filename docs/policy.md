@@ -254,4 +254,4 @@ Deleting the configuration file restores the defaults; it does not disable IPC.
 
 ## Boundaries
 
-Policy mediation is not complete host isolation. In particular, MCP and preserved host-service IPC can perform effects outside the Bash filesystem/network gate. Read [Security model and limitations](security.md) before relying on the boundary.
+Policy mediation is not complete host isolation. In particular, MCP and preserved host-service IPC can perform effects outside the Bash filesystem/network gate. Root codemode's `models.classify()` and `models.generateImages()` are authenticated, potentially billable host-side calls outside filesystem/network mediation, not policy-gated tool calls. Child codemode uses `models: false` and exposes no model globals. Read [Security model and limitations](security.md) before relying on the boundary.

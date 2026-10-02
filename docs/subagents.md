@@ -44,10 +44,12 @@ Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always ava
 
 ### Hard mechanism capabilities
 
-- `mcp` supplies child-callable MCP tool definitions from the root session's current native MCP servers at child creation. No ambient MCP configuration is loaded into the child. With Pi `0.99.2`'s background startup, servers still connecting at child creation may contribute no tools to that snapshot; later discovery does not widen the child. Indirect snapshots provide both codemode and tool search, with namespace hints derived only from their granted definitions and instructions available through `describeNamespace()`. Newly exposed tools do not automatically enter an existing child's conversation; calls still check the root's latest hidden state and tool schema at execution. Native aggregate resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) are root-only, not delegated because their server scope is not snapshotted per child.
+- `mcp` supplies child-callable MCP tool definitions from the root session's current native MCP servers at child creation. No ambient MCP configuration is loaded into the child. With Pi's native background startup, servers still connecting at child creation may contribute no tools to that snapshot; later discovery does not widen the child. Indirect snapshots provide both codemode and tool search, with namespace hints derived only from their granted definitions and instructions available through `describeNamespace()`. Newly exposed tools do not automatically enter an existing child's conversation; calls still check the root's latest hidden state and tool schema at execution. Native aggregate resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) are root-only, not delegated because their server scope is not snapshotted per child.
 - `delegate` exposes subagent tools and permits nested delegation.
 
 A child cannot request these mechanisms later. A nested child cannot receive either mechanism unless its parent already has it.
+
+Child codemode uses the public `createCodemodeExtension()` factory with `models: false`: no model globals are exposed, even with an `mcp` grant. Root codemode's authenticated, potentially billable `models.classify()` and `models.generateImages()` calls are [outside filesystem/network mediation](security.md#codemode-model-calls). In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
 
 MCP remains an opaque capability outside filesystem/network mediation. Granting `mcp` does not cause MCP effects to inherit Pilot's path or network policies. See [MCP security boundary](security.md#mcp).
 

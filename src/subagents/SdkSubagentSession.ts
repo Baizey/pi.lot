@@ -132,7 +132,7 @@ export async function createSubagentResourceLoader(
 ): Promise<DefaultResourceLoader> {
     const extensionFactories: InlineExtension[] = [];
     if (request.capabilities.includes(AgentMechanismCapability.mcp)) {
-        // Pi 0.99.2 registers default MCP codemode tools as deferred so their declarations
+        // Pi registers default MCP codemode tools as deferred so their declarations
         // stay out of codemode. Either helper can reach the same granted tool snapshot.
         const codemode = tools.some((tool) => tool.exposure === "codemode" || tool.exposure === "deferred");
         const toolSearch = tools.some((tool) => tool.exposure === "deferred");

@@ -55,9 +55,10 @@ test("codemode requires a purpose while keeping native exposure, defaults, and l
     assert.equal(tool.renderShell, "self");
     assert.deepEqual(tool.constrainedSampling, {type: "json_schema", strict: "prefer"});
     for (const guideline of native.promptGuidelines ?? []) assert.ok(tool.promptGuidelines?.includes(guideline));
-    assert.ok(tool.promptGuidelines?.some((guideline) => guideline.includes("purpose")));
-    assert.match(tool.description, /purpose/);
-    assert.doesNotMatch(tool.description, /Accepts raw JavaScript source text, not JSON/);
+    assert.ok(tool.promptGuidelines?.some((guideline) => guideline.includes("JSON object")
+        && guideline.includes("purpose") && guideline.includes("code")
+        && guideline.includes("raw-input convention does not apply")));
+    assertPurposeDescription(tool.description, native.description);
     assert.equal(tool.promptSnippet, native.promptSnippet);
 
     const callable: ToolLoadout["callable"] = [{
@@ -78,8 +79,7 @@ test("codemode requires a purpose while keeping native exposure, defaults, and l
             const nativePrepared = native.prepareLoadout!(loadout)!;
             assert.deepEqual(prepared.hiddenDeclarations, nativePrepared.hiddenDeclarations);
             assert.equal(prepared.descriptions?.read, nativePrepared.descriptions?.read);
-            assert.match(prepared.descriptions!.codemode!, /purpose/);
-            assert.doesNotMatch(prepared.descriptions!.codemode!, /Accepts raw JavaScript source text, not JSON/);
+            assertPurposeDescription(prepared.descriptions!.codemode!, nativePrepared.descriptions!.codemode!);
             assert.deepEqual(prepared.hiddenDeclarations, mode === "only" ? ["read"] : []);
         }
     }
@@ -367,6 +367,13 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                     assert.match(JSON.stringify(second.content), /nested fixture/);
                     assert.ok(session.sessionManager.getBranch().some((entry) => entry.type === "custom"
                         && entry.customType === "codemode-store"));
+                    const globals = await run("globals", 'return {imageGeneration: typeof models.generateImages, missingTool: "missing" in tools};');
+                    assert.equal(globals.isError, undefined);
+                    assert.match(JSON.stringify(globals.content), /imageGeneration.*function/);
+                    assert.match(JSON.stringify(globals.content), /missingTool.*false/);
+                    const unknown = await run("unknown", 'return typeof tools.missing;');
+                    assert.equal(unknown.isError, true);
+                    assert.match(JSON.stringify(unknown.content), /missing/);
                 } finally {
                     unsubscribe();
                 }
@@ -379,6 +386,16 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
         rmSync(directory, {recursive: true, force: true});
     }
 });
+
+function assertPurposeDescription(description: string, native: string): void {
+    assert.match(description, /JSON object.*`purpose`.*`code`/);
+    assert.match(description, /`code` runs as an async function body/);
+    assert.match(description, /Optional first line of `code`: `\/\/ @options:/);
+    assert.doesNotMatch(description, /The input is raw JavaScript|not JSON|start the tool input/);
+    assert.match(description, /classifiers and image generation\. Read .*codemode\.md first/);
+    // Pi still owns globals, docs references, and the generated tool catalogue verbatim.
+    assert.equal(description.slice(description.indexOf("\n\n")), native.slice(native.indexOf("\n\n")));
+}
 
 function harness(rows: ToolDisplayRows) {
     let tool!: ToolDefinition;

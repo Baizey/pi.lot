@@ -35,6 +35,8 @@ Required contract:
 
 **Transparent-host-access direction to investigate, still requiring explicit acceptance:** enable host writable mappings using handle/call-lifetime authority, accepting that ordinary FUSE callbacks cannot synchronously recheck every mapped store or reliably revoke an already writable mapped page. Keep ordinary syscall I/O live-checked; define mapping-specific authority and failure semantics rather than silently extending all descriptor permissions. Do not simply remove `direct_io`, enable writeback cache, or add modern `FUSE_DIRECT_IO_ALLOW_MMAP`. FUSE3/kernel negotiation improves compatibility, not per-store policy enforcement, backing-lock forwarding, or cross-mount coherence. The bundled implementation is FUSE 2.9 with older protocol headers.
 
+The follow-up [transparent mmap feasibility investigation](transparent-mmap-feasibility.md) compares modern direct-I/O mmap and cached write-through, records mapping-authority and shared-host WAL limits, and recommends a test-only prototype pending approval. No mmap enforcement change was implemented.
+
 Host writable bind mounts are an explicit policy bypass for their subtree, not an invisible compatibility fix.
 
 ### 2. Namespace and device authority

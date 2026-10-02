@@ -25,10 +25,30 @@ async function checkCancellation(
 ): Promise<void> {
     const originalSpawn = ManagedChildProcess.spawn;
     const processes: ManagedChildProcess[] = [];
+    const workerPidOffset = 1_000_000;
+    const namespaceTargets = new Set<number>();
+    let gatewayPid: number | undefined;
     let runtimeDirectory: string | undefined;
     let stageStarted!: () => void;
     const stalled = new Promise<void>((resolve) => { stageStarted = resolve; });
     t.mock.method(ManagedChildProcess, "spawn", (options: ManagedChildProcessOptions) => {
+        if (options.command === "/usr/bin/nsenter") {
+            assert.ok(gatewayPid);
+            const args = options.arguments ?? [];
+            assert.ok(args.includes(`--user=/proc/${gatewayPid}/ns/user`), "trusted helpers must retain gateway namespace authority");
+            assert.equal(args.includes("--user"), false, "worker user namespaces must not select helper authority");
+            assert.ok(args.includes("--preserve-credentials") && args.includes("--keep-caps"));
+            const targetIndex = args.indexOf("--target");
+            assert.ok(targetIndex >= 0);
+            const networkPid = Number(args[targetIndex + 1]);
+            assert.ok(networkPid === gatewayPid || networkPid === gatewayPid + workerPidOffset);
+            namespaceTargets.add(networkPid);
+            if (options.name === "network queue helper" || options.name === "enable worker loopback") {
+                assert.equal(networkPid, gatewayPid + workerPidOffset, "worker helpers must still target the worker network");
+            } else if (options.name === "TCP gateway ingress") {
+                assert.equal(networkPid, gatewayPid);
+            }
+        }
         let script: string | undefined;
         switch (options.name) {
             case "network sandbox worker": {
@@ -38,12 +58,13 @@ async function checkCancellation(
                 assert.ok(privateDev >= 0, "worker must receive a private device filesystem");
                 assert.equal(args[privateDev + 1], "/dev");
                 assert.ok(privateDev < args.indexOf("--ro-bind"), "explicit resource imports must overlay private /dev");
+                assert.equal(args[args.indexOf("--cap-drop") + 1], "ALL", "worker capability restrictions must remain intact");
                 const resolver = args.find((argument) => argument.includes("pilot-network-") && argument.endsWith("/resolv.conf"));
                 assert.ok(resolver);
                 runtimeDirectory = path.dirname(resolver);
                 script = stage === options.name
                     ? 'process.stderr.write("STALLED\\n");setInterval(() => {}, 1000);'
-                    : 'require("node:fs").writeSync(3, JSON.stringify({"child-pid":process.pid,"mnt-namespace":1})+"\\n");'
+                    : `require("node:fs").writeSync(3, JSON.stringify({"child-pid":process.pid+${workerPidOffset},"mnt-namespace":1})+"\\n");`
                         + 'setInterval(() => {}, 1000);';
                 break;
             }
@@ -68,6 +89,10 @@ async function checkCancellation(
             arguments: script === undefined ? ["-c", "while IFS= read -r line; do :; done"] : ["-e", script],
         });
         processes.push(child);
+        if (options.name === "network sandbox worker") {
+            assert.ok(child.pid);
+            gatewayPid = child.pid;
+        }
         if (options.name === stage) {
             child.stderr?.once("data", (data: Buffer) => {
                 assert.match(data.toString(), /STALLED/);
@@ -110,6 +135,10 @@ async function checkCancellation(
         assert.ok(Date.now() - cancelledAt < 6000);
         assert.ok(runtimeDirectory);
         assert.equal(existsSync(runtimeDirectory), false, "runtime files should be removed");
+        if (stage !== "network sandbox worker") {
+            assert.ok(gatewayPid);
+            assert.deepEqual(namespaceTargets, new Set([gatewayPid, gatewayPid + workerPidOffset]));
+        }
         const results = await Promise.all(processes.map((child) => child.waitForExit()));
         assert.ok(results.some((result) => result.signal === "SIGKILL"), "running helpers must be terminated");
         for (const child of processes) {

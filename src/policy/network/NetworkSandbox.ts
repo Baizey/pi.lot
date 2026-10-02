@@ -518,7 +518,7 @@ class NetworkSandboxRunner {
       name: "TCP gateway ingress",
       command: NSENTER_PATH,
       arguments: [
-        ...namespaceArguments(this.gatewayPid()),
+        ...this.namespaceArguments(this.gatewayPid()),
         resolveTcpGatewayAdapter(),
         "10.0.2.2",
         String(this.tcpBroker.port),
@@ -570,7 +570,7 @@ class NetworkSandboxRunner {
       name: "network queue helper",
       command: NSENTER_PATH,
       arguments: [
-        ...namespaceArguments(this.workerPid()),
+        ...this.namespaceArguments(this.workerPid()),
         resolveNetworkQueueAdapter(),
       ],
       spawnOptions: {stdio: ["pipe", "pipe", "pipe"]},
@@ -855,7 +855,7 @@ class NetworkSandboxRunner {
       name: description,
       command: NSENTER_PATH,
       arguments: [
-        ...namespaceArguments(namespacePid),
+        ...this.namespaceArguments(namespacePid),
         executable,
         ...arguments_,
       ],
@@ -967,6 +967,19 @@ class NetworkSandboxRunner {
     if (!pid) throw new Error("worker network namespace has no pid");
     return pid;
   }
+
+  private namespaceArguments(networkPid: number): string[] {
+    // Bubblewrap can move the worker into a restricted child user namespace.
+    // Trusted helpers need authority from the gateway's governing namespace,
+    // independently of which network namespace they are configuring.
+    return [
+      "--target", String(networkPid),
+      `--user=/proc/${this.gatewayPid()}/ns/user`,
+      "--preserve-credentials",
+      "--keep-caps",
+      "--net",
+    ];
+  }
 }
 
 function isLoopbackAddress(address: string): boolean {
@@ -1050,16 +1063,6 @@ function hostHasGlobalIpv6Connectivity(): boolean {
 function isGlobalIpv6Address(address: string): boolean {
   const firstGroup = Number.parseInt(address.split(":", 1)[0]!, 16);
   return Number.isFinite(firstGroup) && (firstGroup & 0xe000) === 0x2000;
-}
-
-function namespaceArguments(pid: number): string[] {
-  return [
-    "--target", String(pid),
-    "--user",
-    "--preserve-credentials",
-    "--keep-caps",
-    "--net",
-  ];
 }
 
 function baseRuleset(dnsProxyPort: number, tcpBrokerPort: number): string {

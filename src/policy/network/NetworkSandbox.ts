@@ -1,5 +1,5 @@
 import {existsSync, readFileSync} from "node:fs";
-import {mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, readlink, realpath, rm, writeFile} from "node:fs/promises";
 import {isIP} from "node:net";
 import {networkInterfaces} from "node:os";
 import path from "node:path";
@@ -878,10 +878,12 @@ class NetworkSandboxRunner {
       await new Promise((resolve) => setTimeout(resolve, 20));
       const detail = stderr.trim() || stdout.trim();
       const outerDetail = this.outerStderr.trim();
+      const namespaces = await this.namespaceDiagnostics(namespacePid);
       throw new Error(
         `${description} failed: ${formatExit(result)}`
         + `${detail ? `: ${detail}` : ""}`
-        + `${outerDetail ? `; worker: ${outerDetail}` : ""}`,
+        + `${outerDetail ? `; worker: ${outerDetail}` : ""}`
+        + `\nNamespace diagnostics: ${namespaces}`,
       );
     }
     return stdout;
@@ -968,18 +970,47 @@ class NetworkSandboxRunner {
     return pid;
   }
 
-  private namespaceArguments(networkPid: number): string[] {
-    // Bubblewrap can move the worker into a restricted child user namespace.
-    // Trusted helpers need authority from the gateway's governing namespace,
-    // independently of which network namespace they are configuring.
-    return [
-      "--target", String(networkPid),
-      `--user=/proc/${this.gatewayPid()}/ns/user`,
-      "--preserve-credentials",
-      "--keep-caps",
-      "--net",
-    ];
-  }
+    private namespaceArguments(networkPid: number): string[] {
+      // Bubblewrap can move the worker into a restricted child user namespace.
+      // Trusted helpers need authority from the gateway's governing namespace,
+      // independently of which network namespace they are configuring. Keep both
+      // selectors explicit: nsenter's pidfd path can otherwise attempt network
+      // entry before the supplied user namespace has granted that authority.
+      return [
+        "--target", String(networkPid),
+        `--user=/proc/${this.gatewayPid()}/ns/user`,
+        "--preserve-credentials",
+        "--keep-caps",
+        `--net=/proc/${networkPid}/ns/net`,
+      ];
+    }
+
+    private async namespaceDiagnostics(networkPid: number): Promise<string> {
+      const inspect = async (label: string, pid: number | undefined): Promise<string> => {
+        if (pid === undefined) return `${label} unavailable: no pid`;
+        try {
+          const base = `/proc/${pid}`;
+          const [user, network, uidMap, status] = await Promise.all([
+            readlink(`${base}/ns/user`),
+            readlink(`${base}/ns/net`),
+            readFile(`${base}/uid_map`, "utf8"),
+            readFile(`${base}/status`, "utf8"),
+          ]);
+          const credentials = status.split("\n").filter((line) => (
+            /^(Uid|Gid|CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs):/.test(line)
+          )).map((line) => line.replace(/\s+/g, " ")).join("; ");
+          return `${label} pid=${pid} user=${user} net=${network} uid_map=${uidMap.trim().replace(/\s+/g, " ")} ${credentials}`;
+        } catch (error) {
+          return `${label} pid=${pid} unavailable: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      };
+      return (await Promise.all([
+        inspect("caller", process.pid),
+        inspect("gateway", this.outerProcess?.pid),
+        inspect("worker", this.workerNamespacePid),
+        inspect("network-target", networkPid),
+      ])).join("\n");
+    }
 }
 
 function isLoopbackAddress(address: string): boolean {

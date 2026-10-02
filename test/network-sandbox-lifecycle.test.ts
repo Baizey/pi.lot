@@ -42,6 +42,8 @@ async function checkCancellation(
             assert.ok(targetIndex >= 0);
             const networkPid = Number(args[targetIndex + 1]);
             assert.ok(networkPid === gatewayPid || networkPid === gatewayPid + workerPidOffset);
+            assert.ok(args.includes(`--net=/proc/${networkPid}/ns/net`));
+            assert.equal(args.includes("--net"), false, "automatic pidfd entry must not precede explicit user-namespace entry");
             namespaceTargets.add(networkPid);
             if (options.name === "network queue helper" || options.name === "enable worker loopback") {
                 assert.equal(networkPid, gatewayPid + workerPidOffset, "worker helpers must still target the worker network");

@@ -314,8 +314,9 @@ class NetworkSandboxRunner {
       "--unshare-pid",
       "--bind", mediatedHostRoot, "/",
       "--proc", "/proc",
+      // Host /dev also exposes shared memory, PTYs, and pathname sockets outside FUSE.
+      "--dev", "/dev",
       ...workerBindMountArguments(workerMounts),
-      "--dev-bind", "/dev", "/dev",
       "--cap-drop", "ALL",
       "--die-with-parent",
       "--new-session",

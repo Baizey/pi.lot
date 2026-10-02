@@ -46,16 +46,22 @@ Subagents have separate model sessions and policy principals but share the trust
 ## Known limitations
 
 - Linux x86-64 only.
-- Host-side FUSE path resolution has pathname time-of-check/time-of-use race windows.
+- Host-side FUSE path resolution has pathname time-of-check/time-of-use race windows. Read, write, and descriptor-truncate callbacks compare the retained descriptor's device/inode with the authorized path, rejecting deterministic path replacement; this does not eliminate concurrent namespace races.
+- Filesystem metadata is not comprehensively mediated: attributes, access probes, and symlink text can be exposed without filesystem-read approval. Content-read policy should not be treated as metadata confidentiality.
+- Hardlink creation requires source read/write and destination write approval. Pre-existing or host-created aliases still share inode contents across different policy paths; policy is not inode-wide.
+- Backing-file POSIX and `flock` locks are not forwarded. Locks do not coordinate with host processes or separate Bash-call mounts. Do not concurrently access shared host databases through these mounts; rollback journaling alone does not make this safe.
 - Filesystem opens and native I/O callbacks check versioned live policy checkpoints. Authorized read-only opens use the per-Bash-call FUSE page cache and support read-only shared `mmap`; cached reads and already-faulted mappings can remain readable after policy revocation or control-channel failure. Cache misses still check policy. Writable opens retain `direct_io` and per-write checks; shared mappings through writable descriptors remain unsupported. Private mappings do not provide per-memory-access policy checks either. Active network-flow revocation is not implemented.
 - Cached file data can become stale when the backing file changes outside the mount. Read-only opens request cache invalidation, but existing handles and mappings are not continuously refreshed.
-- The combined worker's `/dev`, pseudo-filesystem, pathname-socket, and supplementary-group compatibility is incomplete.
+- Workers use a private `/dev`, including private shared-memory paths, rather than exposing all host devices. Explicitly configured socket imports remain available; implicit GPU, serial, host-PTY, and host-shared-memory access does not. Pseudo-filesystem, pathname-socket, and supplementary-group compatibility is incomplete.
+- System V IPC is not placed in a private IPC namespace. Same-user host IPC objects may remain accessible outside pathname policy. Workers also inherit Pi's environment; filesystem denials do not protect secrets already supplied in environment variables.
 - Some DNS, UDP lifecycle, IPv6, HTTP/2, HTTP/3/QUIC, WebSocket, `CONNECT`, private-trust-store, and certificate-pinning behaviour is unsupported or fails closed.
 - Request policy cannot currently distinguish HTTP from HTTPS, query strings, or fragments.
 - A hostname approval is reused across DNS, TCP, UDP, address families, and ports for the remainder of one Bash call.
 - `GLOBAL` network-policy lifetime is not synchronised and currently persists in the same local database as `LOCAL`.
 - The keyless DuckDuckGo backend depends on a public HTML format that may change.
 - Jobs and subagent conversations are not persisted across root-session shutdown.
+
+The [sandbox hardening review](sandbox-hardening-review.md) records the first committee pass, scoped fixes, unverified host tests, and design decisions awaiting approval. It is not an independent security audit.
 
 Unsupported, malformed, cancelled, or incomplete mediated operations are intended to fail closed. That intent is not a substitute for a published threat model, parser fuzzing, independent review, or a security audit.
 

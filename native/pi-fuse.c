@@ -160,6 +160,7 @@ static int evaluate_policy(const native_policy_snapshot_t *snapshot, const char 
 }
 
 static int authorize_path(const char *path, uint8_t access, atomic_ulong *operation_counter);
+static int authorize_file_handle(const char *path, uint8_t access, atomic_ulong *operation_counter, int retained_fd);
 static int authorize_directory_path(const char *path, int *directory_fd);
 static void write_u32(unsigned char *bytes, uint32_t value);
 static void write_u64(unsigned char *bytes, uint64_t value);
@@ -475,6 +476,12 @@ static int benchmark_open(const char *path, struct fuse_file_info *info) {
         : NATIVE_ACCESS_WRITE;
     int authorized = authorize_path(path, access, &filesystem_state()->open_events);
     if (authorized != 0) return authorized;
+    /* Default FUSE dispatch handles truncation separately, but fail closed if
+     * a read-only truncating open reaches this callback directly. */
+    if (access == NATIVE_ACCESS_READ && (info->flags & O_TRUNC) != 0) {
+        authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
+        if (authorized != 0) return authorized;
+    }
     char resolved[PATH_MAX];
     int result = existing_path(path, resolved);
     if (result != 0) return result;
@@ -492,10 +499,15 @@ static int benchmark_open(const char *path, struct fuse_file_info *info) {
 static int benchmark_create(const char *path, mode_t mode, struct fuse_file_info *info) {
     int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
+    /* Read-only created handles enable cached reads, just like open. */
+    if ((info->flags & O_ACCMODE) == O_RDONLY) {
+        authorized = authorize_path(path, NATIVE_ACCESS_READ, NULL);
+        if (authorized != 0) return authorized;
+    }
     char resolved[PATH_MAX];
     int result = destination_path(path, resolved);
     if (result != 0) return result;
-    int descriptor = open(resolved, O_CREAT | O_EXCL | O_RDWR, mode);
+    int descriptor = open(resolved, info->flags | O_CREAT | O_EXCL, mode);
     if (descriptor < 0) return -errno;
     info->fh = (uint64_t) descriptor;
     info->direct_io = (info->flags & O_ACCMODE) != O_RDONLY;
@@ -557,13 +569,13 @@ static int benchmark_setxattr(
     size_t size,
     int flags
 ) {
-    if (flags != 0) return -EINVAL;
+    if ((flags & ~(XATTR_CREATE | XATTR_REPLACE)) != 0) return -EINVAL;
     int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
     char resolved[PATH_MAX];
     int result = existing_path(path, resolved);
     if (result != 0) return result;
-    return setxattr(resolved, name, value, size, 0) == 0 ? 0 : -errno;
+    return setxattr(resolved, name, value, size, flags) == 0 ? 0 : -errno;
 }
 
 static int benchmark_removexattr(const char *path, const char *name) {
@@ -591,7 +603,7 @@ static int benchmark_read(
     off_t offset,
     struct fuse_file_info *info
 ) {
-    int authorized = authorize_path(path, NATIVE_ACCESS_READ, &filesystem_state()->read_events);
+    int authorized = authorize_file_handle(path, NATIVE_ACCESS_READ, &filesystem_state()->read_events, (int) info->fh);
     if (authorized != 0) return authorized;
     ssize_t length = pread((int) info->fh, buffer, size, offset);
     return length < 0 ? -errno : (int) length;
@@ -604,7 +616,7 @@ static int benchmark_write(
     off_t offset,
     struct fuse_file_info *info
 ) {
-    int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
+    int authorized = authorize_file_handle(path, NATIVE_ACCESS_WRITE, NULL, (int) info->fh);
     if (authorized != 0) return authorized;
     ssize_t length = pwrite((int) info->fh, buffer, size, offset);
     return length < 0 ? -errno : (int) length;
@@ -620,7 +632,7 @@ static int benchmark_truncate(const char *path, off_t size) {
 }
 
 static int benchmark_ftruncate(const char *path, off_t size, struct fuse_file_info *info) {
-    int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
+    int authorized = authorize_file_handle(path, NATIVE_ACCESS_WRITE, NULL, (int) info->fh);
     if (authorized != 0) return authorized;
     return ftruncate((int) info->fh, size) == 0 ? 0 : -errno;
 }
@@ -684,6 +696,9 @@ static int benchmark_rename(const char *source, const char *destination) {
 
 static int benchmark_link(const char *source, const char *destination) {
     int authorized = authorize_path(source, NATIVE_ACCESS_READ, NULL);
+    if (authorized != 0) return authorized;
+    /* A hardlink changes source inode metadata and creates a writable alias. */
+    authorized = authorize_path(source, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
     authorized = authorize_path(destination, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
@@ -1203,7 +1218,8 @@ static int authorize_path_internal(
     const char *path,
     uint8_t access,
     atomic_ulong *operation_counter,
-    int *directory_fd
+    int *directory_fd,
+    const int *retained_fd
 ) {
     benchmark_filesystem_t *state = filesystem_state();
     atomic_fetch_add_explicit(&state->policy_events, 1, memory_order_relaxed);
@@ -1277,6 +1293,20 @@ static int authorize_path_internal(
     result = 0;
 
 authorized:
+    if (retained_fd != NULL) {
+        struct stat retained_status;
+        struct stat authorized_status;
+        /* Reject deterministic path replacement without reopening/substituting
+         * the handle. Device/inode identity permits ordinary content changes;
+         * this checkpoint does not eliminate subsequent host pathname races. */
+        if (fstat(*retained_fd, &retained_status) != 0
+            || stat(evaluated_path, &authorized_status) != 0
+            || retained_status.st_dev != authorized_status.st_dev
+            || retained_status.st_ino != authorized_status.st_ino) {
+            result = -EACCES;
+            goto complete;
+        }
+    }
     if (directory_fd != NULL) {
         int descriptor = open(evaluated_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         if (descriptor < 0) {
@@ -1309,7 +1339,11 @@ complete:
 }
 
 static int authorize_path(const char *path, uint8_t access, atomic_ulong *operation_counter) {
-    return authorize_path_internal(path, access, operation_counter, NULL);
+    return authorize_path_internal(path, access, operation_counter, NULL, NULL);
+}
+
+static int authorize_file_handle(const char *path, uint8_t access, atomic_ulong *operation_counter, int retained_fd) {
+    return authorize_path_internal(path, access, operation_counter, NULL, &retained_fd);
 }
 
 static int authorize_directory_path(const char *path, int *directory_fd) {
@@ -1317,7 +1351,8 @@ static int authorize_directory_path(const char *path, int *directory_fd) {
         path,
         NATIVE_ACCESS_READ,
         &filesystem_state()->readdir_events,
-        directory_fd
+        directory_fd,
+        NULL
     );
 }
 

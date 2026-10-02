@@ -33,6 +33,11 @@ async function checkCancellation(
         switch (options.name) {
             case "network sandbox worker": {
                 const args = options.arguments ?? [];
+                assert.equal(args.includes("--dev-bind"), false, "host devices must not bypass FUSE policy");
+                const privateDev = args.indexOf("--dev");
+                assert.ok(privateDev >= 0, "worker must receive a private device filesystem");
+                assert.equal(args[privateDev + 1], "/dev");
+                assert.ok(privateDev < args.indexOf("--ro-bind"), "explicit resource imports must overlay private /dev");
                 const resolver = args.find((argument) => argument.includes("pilot-network-") && argument.endsWith("/resolv.conf"));
                 assert.ok(resolver);
                 runtimeDirectory = path.dirname(resolver);

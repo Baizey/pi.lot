@@ -22,7 +22,8 @@ function stripTrailingPathSeparators(
     pathParser: Pick<typeof path, "parse"> = path,
 ): string {
     const root = pathParser.parse(input).root;
-    const stripped = input.replace(/[\\/]+$/g, "");
+    // Linux treats backslashes as filename characters, not path separators.
+    const stripped = input.replace(/\/+$/g, "");
     return stripped.length < root.length ? root : stripped;
 }
 

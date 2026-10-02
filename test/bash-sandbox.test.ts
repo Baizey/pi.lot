@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {existsSync, mkdtempSync, rmSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import {createServer} from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -17,10 +17,14 @@ import type {ToolCallPathPolicyEvaluator} from "../src/policy/PolicyRuntime.js";
 import type {Policy} from "../src/policy/types.js";
 import {PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse, PolicyResult} from "../src/policy/types.js";
 
-test("one sandbox mediates the complete host filesystem and outbound network", async () => {
+test("one sandbox mediates the complete host filesystem and outbound network", async (t) => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pilot-combined-sandbox-"));
     const deniedFile = path.join(workspace, "blocked.txt");
-    const socketPath = path.join(workspace, "host-agent.sock");
+    const sharedWorkspace = mkdtempSync("/dev/shm/pilot-combined-sandbox-");
+    t.after(() => rmSync(sharedWorkspace, {recursive: true, force: true}));
+    const hostSharedFile = path.join(sharedWorkspace, "host-sentinel.txt");
+    writeFileSync(hostSharedFile, "host sentinel");
+    const socketPath = path.join(sharedWorkspace, "host-agent.sock");
     const server = createServer((socket) => {
         socket.once("data", () => {
             socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
@@ -59,7 +63,10 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
         return policyResult(uri, accessType, status);
     };
     const policyBase = new NativeFilesystemPolicyBase("combined-sandbox-test", () => [{
-        policies: [policy("/", PolicyAccessType.FS_READ, PolicyResponse.ALLOWED)],
+        policies: [
+            policy("/", PolicyAccessType.FS_READ, PolicyResponse.ALLOWED),
+            policy(sharedWorkspace, PolicyAccessType.FS_READ, PolicyResponse.DENIED),
+        ],
         resolutionSource: PolicyResolutionSource.SYSTEM,
     }]);
     const policyView = new NativeFilesystemPolicyView(
@@ -92,6 +99,9 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
                 [
                     "unshare --user --map-current-user --net -- /bin/true || exit 92",
                     "for descriptor in /proc/$$/fd/*; do if [ \"$(readlink \"$descriptor\")\" = /dev/fuse ]; then echo LEAKED_FUSE_FD; exit 91; fi; done",
+                    `if [ -e ${shellQuote(hostSharedFile)} ]; then echo LEAKED_HOST_SHM; exit 93; fi`,
+                    "test -c /dev/null && test -c /dev/zero && test -c /dev/urandom || exit 94",
+                    `mkdir -p ${shellQuote(sharedWorkspace)} && printf private > ${shellQuote(hostSharedFile)} || exit 95`,
                     `printf blocked > ${shellQuote(deniedFile)}`,
                     `curl --noproxy '*' --connect-timeout 2 --max-time 3 --silent --show-error http://10.0.2.2:${address.port} || exit $?`,
                     "curl --unix-socket \"$SSH_AUTH_SOCK\" --connect-timeout 2 --max-time 3 --silent --show-error http://localhost",
@@ -112,6 +122,8 @@ test("one sandbox mediates the complete host filesystem and outbound network", a
 
         assert.equal(result.exitCode, 0, `signal=${result.signal}\n${Buffer.concat(output).toString()}`);
         assert.equal(existsSync(deniedFile), false);
+        assert.equal(readFileSync(hostSharedFile, "utf8"), "host sentinel", "private shared-memory writes must not alter host data");
+        assert.doesNotMatch(Buffer.concat(output).toString(), /LEAKED_HOST_SHM/);
         assert.match(Buffer.concat(output).toString(), /ACCESS DENIED/);
         assert.match(Buffer.concat(output).toString(), /OK/);
         assert.match(Buffer.concat(output).toString(), /AGENT/);

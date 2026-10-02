@@ -59,7 +59,7 @@ Subagents have separate model sessions and policy principals but share the trust
 - A hostname approval is reused across DNS, TCP, UDP, address families, and ports for the remainder of one Bash call.
 - `GLOBAL` network-policy lifetime is not synchronised and currently persists in the same local database as `LOCAL`.
 - The keyless DuckDuckGo backend depends on a public HTML format that may change.
-- Jobs and subagent conversations are not persisted across root-session shutdown.
+- Live jobs and child policy state are not persisted across root-session shutdown. Subagent conversation histories are saved as ordinary Pi sessions when the root is persistent; ephemeral roots keep them in memory. Session files can contain sensitive prompts, reasoning, tool arguments, output, and file contents.
 
 The [sandbox hardening review](sandbox-hardening-review.md) records the first committee pass, scoped fixes, unverified host tests, and design decisions awaiting approval. It is not an independent security audit.
 

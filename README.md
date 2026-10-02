@@ -122,7 +122,7 @@ pi.lot provides retained child-agent conversations through:
 - `subagent_message`; and
 - `subagent_stop`.
 
-Subagents have separate model context and principal-specific policy state. They can remain idle for follow-up turns, receive steering while active, form nested trees, and report activity in the TUI.
+Subagents have separate model context and principal-specific policy state. They can remain idle for follow-up turns, receive steering while active, form nested trees, and report activity in the TUI. With a persistent root, their complete histories are saved as ordinary Pi sessions alongside the root, named `Subagent: <role>` and linked to their immediate parent. `--no-session` keeps children ephemeral too; live jobs and policy grants are not restored from history.
 
 Spawn capabilities have two forms:
 

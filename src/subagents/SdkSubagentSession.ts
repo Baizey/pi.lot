@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
     createAgentSession,
     createCodemodeExtension,
@@ -36,6 +37,7 @@ type AgentSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 
 export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
     private modelRuntime: Promise<ModelRuntime> | undefined;
+    private readonly sessionFiles = new Map<string, string>();
 
     constructor(
         private readonly rootContext: ExtensionContext,
@@ -67,7 +69,7 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         const resourceLoader = await createSubagentResourceLoader(request, getAgentDir(), settingsManager, tools);
         if (signal.aborted) throw abortError();
 
-        const sessionManager = SessionManager.inMemory(request.cwd, {id: request.agentIdentifier});
+        const sessionManager = this.createSessionManager(request);
         const {session} = await createAgentSession({
             cwd: request.cwd,
             model: resolved.model,
@@ -94,6 +96,8 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
             }
             throw error;
         }
+        const sessionFile = sessionManager.getSessionFile();
+        if (sessionFile) this.sessionFiles.set(request.agentIdentifier, sessionFile);
         return new SdkSubagentSession(session, {
             model: `${resolved.model.provider}/${resolved.model.id}`,
             thinkingLevel: resolved.thinkingLevel,
@@ -115,6 +119,32 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
             this.modelRanker,
             this.rootContext.model?.provider,
         ).resolve(reasoningSkill, reasoningAmount, modelPreference, signal);
+    }
+
+    private createSessionManager(request: SubagentSessionRequest): SessionManager {
+        const root = this.rootContext.sessionManager;
+        const rootFile = root.getSessionFile();
+        let sessionManager: SessionManager;
+        if (rootFile) {
+            const parentSession = request.parentAgentIdentifier === root.getSessionId()
+                ? path.resolve(rootFile)
+                : this.sessionFiles.get(request.parentAgentIdentifier);
+            if (!parentSession) {
+                throw new Error(`Parent subagent session is unavailable: ${request.parentAgentIdentifier}`);
+            }
+            // Use the root's resolved directory, including --session-dir or custom storage.
+            sessionManager = SessionManager.create(request.cwd, path.resolve(root.getSessionDir()), {
+                id: request.agentIdentifier,
+                parentSession,
+            });
+        } else {
+            sessionManager = SessionManager.inMemory(request.cwd, {id: request.agentIdentifier});
+        }
+        sessionManager.appendSessionInfo(`Subagent: ${request.role}`);
+        sessionManager.appendCustomEntry("pilot.subagent", {
+            parentAgentIdentifier: request.parentAgentIdentifier,
+        });
+        return sessionManager;
     }
 }
 

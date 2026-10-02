@@ -15,6 +15,14 @@ Jobs move through `queued`, `running`, `idle`, `failed`, `cancelled`, and `timed
 
 Active jobs appear above the TUI editor. Running, queued, idle, and attention counts appear in the footer.
 
+## Session history
+
+With a persistent root session, children save ordinary Pi JSONL sessions in the root's resolved session directory, including custom session-directory configuration. Each session keeps its child working directory and job ID, is named `Subagent: <role>`, and links to its immediate parent session. A `pilot.subagent` custom entry also records the parent agent ID.
+
+Pi records the complete conversation, including system/tool declarations, user tasks and delivered steering/follow-ups, assistant messages, tool calls/results, usage, and compaction entries. The history is not limited to the bounded output shown by `subagent_status`, and remains on disk after the child is stopped or the root session ends. These files can be inspected with Pi's normal session tools. As with normal Pi sessions, setup alone does not create a file; writing begins with the first user or assistant message.
+
+An ephemeral root (`--no-session`) keeps all child histories in memory too. Saving history does not persist live jobs or policy grants, and does not change shutdown or delegation authority.
+
 ## Child context
 
 A child receives:
@@ -120,6 +128,6 @@ Stopping a job stops descendants first. Root-session shutdown aborts all active 
 
 ## Current boundary
 
-Subagents are independent in-memory Pi sessions, not separate operating-system processes. They share the trusted root Pi process and policy runtime while retaining separate model context and principal-specific policy state.
+Subagents are independent Pi SDK sessions, not separate operating-system processes. They share the trusted root Pi process and policy runtime while retaining separate model context and principal-specific policy state.
 
-Jobs are not persisted across root-session shutdown. See [Security model and limitations](security.md).
+Live jobs and policy state are not persisted across root-session shutdown; conversation history follows the [session-storage rules](#session-history) above. See [Security model and limitations](security.md).

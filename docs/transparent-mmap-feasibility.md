@@ -40,7 +40,9 @@ Pinned source bodies were retrieved and inspected:
 - Linux **v6.13**, commit `ffd294d346d185b70e28b1a28abe367bbfe53c04`.
 - libfuse **fuse-3.18.2**, commit `033844748010a3b8265bf1c90b9ae8ffe4cd9ca7`; installed public headers are byte-identical to that tag.
 
-The running kernel reports `7.2.7-ogc1.1.fc44.x86_64`. Its source and actual negotiated/request-routing behavior have **not** been verified. No nested FUSE mounts or sandbox integration tests were run. Build, typecheck, mount-free callback/protocol tests, and source review do not replace prepared-host mapping tests.
+The running kernel reports `7.2.7-ogc1.1.fc44.x86_64`. After the installed package was updated to migration commit `642ae14`, read-only process metadata confirmed that the active native broker maps libfuse 3.18.2. Ordinary production Bash smoke checks passed create/read/write, rename, hardlink shared contents, directory enumeration, chmod, and truncate. Read-only shared mmap succeeded; shared writable mmap through an `O_RDWR` handle was rejected with `ENODEV`, as required by the production default. The smoke check also confirmed that hardlink names can report different frontend inode numbers despite sharing backing contents.
+
+These checks used the existing production tool filesystem, not nested mounts. Running-kernel source, experimental enabled-mmap request routing, revocation/draining, and the full prepared-host integration suite remain **unverified**. Build, typecheck, mount-free callback/protocol tests, source review, and this live smoke check do not replace that mapping test matrix.
 
 The source establishes these prototype constraints:
 

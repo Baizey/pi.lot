@@ -4,6 +4,36 @@
 #undef main
 
 static struct fuse_context probe_context;
+static uint64_t unset_requested_flags;
+
+/* The real helper also updates its enclosing private fuse_session. This
+ * mount-free fixture has no session, so mock only the public flag contract. */
+void fuse_unset_feature_flag(struct fuse_conn_info *connection, uint64_t flag) {
+    unset_requested_flags |= flag;
+    connection->want &= ~(uint32_t) flag;
+    connection->want_ext &= ~flag;
+}
+
+typedef struct {
+    unsigned int entries;
+    off_t offset;
+    bool name_only;
+    bool stopped;
+} probe_directory_t;
+
+static int probe_fill_directory(void *buffer, const char *name, const struct stat *attributes,
+    off_t offset, enum fuse_fill_dir_flags flags) {
+    (void) name;
+    probe_directory_t *directory = buffer;
+    directory->name_only = directory->name_only && attributes == NULL && flags == 0;
+    if (directory->entries == 1 && !directory->stopped) {
+        directory->stopped = true;
+        return 1;
+    }
+    directory->entries++;
+    directory->offset = offset;
+    return 0;
+}
 
 struct fuse_context *fuse_get_context(void) {
     return &probe_context;
@@ -60,7 +90,7 @@ int main(int argc, char **argv) {
             } else if (strcmp(argv[5], "write") == 0) {
                 result = operations.write(argv[4], "X", 1, 0, &info);
             } else {
-                result = operations.ftruncate(argv[4], 2, &info);
+                result = operations.truncate(argv[4], 2, &info);
             }
             if (pread((int) info.fh, retained_value, sizeof(retained_value) - 1, 0) < 0
                 || operations.release(argv[4], &info) != 0) return 65;
@@ -89,12 +119,97 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[6], "write") == 0) {
             result = operations.write(argv[4], "X", 1, 0, &info);
         } else if (strcmp(argv[6], "truncate") == 0) {
-            result = operations.ftruncate(argv[4], 2, &info);
+            result = operations.truncate(argv[4], 2, &info);
         } else return 64;
         if (strcmp(argv[7], "invalid") != 0 && strcmp(argv[7], "closed") != 0) {
             if (pread(retained_fd, retained_value, sizeof(retained_value) - 1, 0) < 0
                 || operations.release(argv[4], &info) != 0) return 65;
         }
+    } else if (strcmp(argv[3], "init") == 0 && argc == 5) {
+        uint64_t forbidden = FUSE_CAP_DIRECT_IO_ALLOW_MMAP | FUSE_CAP_WRITEBACK_CACHE
+            | FUSE_CAP_PASSTHROUGH | FUSE_CAP_ASYNC_DIO | FUSE_CAP_ATOMIC_O_TRUNC
+            | FUSE_CAP_NO_OPEN_SUPPORT | FUSE_CAP_NO_OPENDIR_SUPPORT;
+        uint64_t preserved = FUSE_CAP_ASYNC_READ | (UINT64_C(1) << 40);
+        struct fuse_conn_info connection = {0};
+        connection.capable_ext = strcmp(argv[4], "supported") == 0 ? forbidden | preserved : 0;
+        connection.capable = (uint32_t) connection.capable_ext;
+        connection.want_ext = forbidden | preserved;
+        connection.want = (uint32_t) connection.want_ext;
+        struct fuse_config configuration = {0};
+        configuration.parallel_direct_writes = 1;
+        configuration.nullpath_ok = 1;
+        configuration.direct_io = 1;
+        configuration.kernel_cache = 1;
+        configuration.auto_cache = 1;
+        void *initialized = operations.init(&connection, &configuration);
+        printf("{\"result\":0,\"forbiddenWant\":%u,\"forbiddenWantExt\":%llu,"
+            "\"preservedWant\":%s,\"preservedWantExt\":%s,\"capabilitiesUnchanged\":%s,"
+            "\"parallelDirectWrites\":%d,\"nullpathOk\":%d,\"directIo\":%d,"
+            "\"keepCache\":%d,\"autoCache\":%d,\"stateReturned\":%s,\"disableRequestsComplete\":%s}\n",
+            connection.want & (uint32_t) forbidden,
+            (unsigned long long) (connection.want_ext & forbidden),
+            (connection.want & (uint32_t) preserved) == (uint32_t) preserved ? "true" : "false",
+            (connection.want_ext & preserved) == preserved ? "true" : "false",
+            connection.capable_ext == (strcmp(argv[4], "supported") == 0 ? forbidden | preserved : 0)
+                && connection.capable == (uint32_t) connection.capable_ext ? "true" : "false",
+            configuration.parallel_direct_writes, configuration.nullpath_ok,
+            configuration.direct_io, configuration.kernel_cache, configuration.auto_cache,
+            initialized == &state ? "true" : "false",
+            (unset_requested_flags & forbidden) == forbidden ? "true" : "false");
+        goto complete;
+    } else if (strcmp(argv[3], "getattr") == 0 && argc == 6) {
+        struct stat attributes;
+        bool retained = strcmp(argv[5], "handle") == 0;
+        info.flags = O_RDONLY;
+        if (retained && operations.open(argv[4], &info) != 0) return 65;
+        /* GETATTR_FH contains only fh, not the original open flags. */
+        info.flags = 0;
+        result = operations.getattr(argv[4], &attributes, retained ? &info : NULL);
+        if (retained && operations.release(argv[4], &info) != 0) return 65;
+        printf("{\"result\":%d,\"size\":%lld}\n", result,
+            result == 0 ? (long long) attributes.st_size : -1LL);
+        goto complete;
+    } else if (strcmp(argv[3], "readdir") == 0 && argc == 5) {
+        info.flags = O_RDONLY | O_DIRECTORY;
+        if (operations.opendir(argv[4], &info) != 0) return 65;
+        probe_directory_t directory = {.name_only = true};
+        result = operations.readdir(argv[4], &directory, probe_fill_directory, 0, &info, FUSE_READDIR_PLUS);
+        unsigned int first_entries = directory.entries;
+        if (result == 0) {
+            result = operations.readdir(argv[4], &directory, probe_fill_directory,
+                directory.offset, &info, FUSE_READDIR_PLUS);
+        }
+        struct stat attributes;
+        /* Linux directory GETATTR does not carry a file handle. */
+        int attribute_result = operations.getattr(argv[4], &attributes, NULL);
+        bool directory_attributes = attribute_result == 0 && S_ISDIR(attributes.st_mode);
+        info.flags = 0;
+        int pointer_result = operations.getattr(argv[4], &attributes, &info);
+        if (operations.releasedir(argv[4], &info) != 0) return 65;
+        printf("{\"result\":%d,\"firstEntries\":%u,\"entries\":%u,\"nameOnly\":%s,"
+            "\"directoryAttributes\":%s,\"pointerHandleRejected\":%s}\n",
+            result, first_entries, directory.entries, directory.name_only ? "true" : "false",
+            directory_attributes ? "true" : "false", pointer_result == -EBADF ? "true" : "false");
+        goto complete;
+    } else if (strcmp(argv[3], "truncate") == 0 && argc == 5) {
+        result = operations.truncate(argv[4], 2, NULL);
+    } else if (strcmp(argv[3], "metadata") == 0 && argc == 7) {
+        info.flags = O_RDONLY;
+        if (operations.open(argv[4], &info) != 0 || rename(argv[4], argv[5]) != 0) return 65;
+        int replacement = open(argv[4], O_CREAT | O_EXCL | O_WRONLY, 0600);
+        if (replacement < 0 || write_exact(replacement, "replacement", 11) != 0
+            || close(replacement) != 0) return 65;
+        if (strcmp(argv[6], "chmod") == 0) {
+            result = operations.chmod(argv[4], 0640, &info);
+        } else if (strcmp(argv[6], "chown") == 0) {
+            result = operations.chown(argv[4], getuid(), getgid(), &info);
+        } else if (strcmp(argv[6], "utimens") == 0) {
+            const struct timespec times[2] = {{.tv_sec = 123456789}, {.tv_sec = 123456789}};
+            result = operations.utimens(argv[4], times, &info);
+        } else return 64;
+        if (operations.release(argv[4], &info) != 0) return 65;
+    } else if (strcmp(argv[3], "rename") == 0 && argc == 7) {
+        result = operations.rename(argv[4], argv[5], (unsigned int) strtoul(argv[6], NULL, 10));
     } else if (strcmp(argv[3], "link") == 0 && argc == 6) {
         result = operations.link(argv[4], argv[5]);
     } else if ((strcmp(argv[3], "create") == 0 || strcmp(argv[3], "open") == 0

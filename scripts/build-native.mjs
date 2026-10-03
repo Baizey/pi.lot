@@ -1,70 +1,36 @@
 import {mkdirSync} from "node:fs";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
+import {fuseFlags, netfilterQueueFlags} from "./native-build-flags.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outputDirectory = fileURLToPath(new URL("../build", import.meta.url));
 
+// Resolve SDKs before replacing any helper; a missing SDK must leave the running installation intact.
+const fuseCompilerFlags = fuseFlags();
+const netfilterCompilerFlags = netfilterQueueFlags();
 mkdirSync(outputDirectory, {recursive: true});
 compileNative("pi-exec-clean.c", "pi-exec-clean-native");
-compileNative("pi-fuse.c", "pi-fuse-native", fuseFlags());
-compileNative("pi-network-queue.c", "pi-network-queue-native", netfilterQueueFlags());
+compileNative("pi-fuse.c", "pi-fuse-native", fuseCompilerFlags);
+compileNative("pi-network-queue.c", "pi-network-queue-native", netfilterCompilerFlags);
 compileNative("pi-tcp-gateway.c", "pi-tcp-gateway-native");
 
 function compileNative(sourceName, outputName, extraFlags = []) {
-  const source = fileURLToPath(new URL(`../native/${sourceName}`, import.meta.url));
-  const output = fileURLToPath(new URL(`../build/${outputName}`, import.meta.url));
-  const result = spawnSync("cc", [
-    "-std=c17",
-    "-O2",
-    "-g",
-    "-Wall",
-    "-Wextra",
-    "-Wpedantic",
-    "-o",
-    output,
-    source,
-    ...extraFlags,
-  ], {cwd: root, stdio: "inherit"});
+    const source = fileURLToPath(new URL(`../native/${sourceName}`, import.meta.url));
+    const output = fileURLToPath(new URL(`../build/${outputName}`, import.meta.url));
+    const result = spawnSync("cc", [
+        "-std=c17",
+        "-O2",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-Wpedantic",
+        "-o",
+        output,
+        source,
+        ...extraFlags,
+    ], {cwd: root, stdio: "inherit"});
 
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
-}
-
-function fuseFlags() {
-  const includeDirectory = packageOutput("fuse-shared-library/include");
-  const library = packageOutput("fuse-shared-library/lib");
-  return [`-I${includeDirectory}`, library, "-pthread"];
-}
-
-function packageOutput(moduleName) {
-  const result = spawnSync(process.execPath, ["-e", `require(${JSON.stringify(moduleName)})`], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    process.stderr.write(result.stderr);
-    throw new Error(`Could not resolve native build input from ${moduleName}`);
-  }
-  const output = result.stdout.trim();
-  if (!output) throw new Error(`Native build input from ${moduleName} was empty`);
-  return output;
-}
-
-function netfilterQueueFlags() {
-  const result = spawnSync("pkg-config", ["--cflags", "--libs", "libnetfilter_queue"], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  if (result.error) {
-    throw new Error("pkg-config is required to locate libnetfilter_queue", {cause: result.error});
-  }
-  if (result.status !== 0) {
-    process.stderr.write(result.stderr);
-    throw new Error(
-      "libnetfilter_queue development files are required (Bazzite/Fedora: libnetfilter_queue-devel; Debian/Ubuntu: libnetfilter-queue-dev)",
-    );
-  }
-  return result.stdout.trim().split(/\s+/).filter(Boolean);
+    if (result.error) throw result.error;
+    if (result.status !== 0) process.exit(result.status ?? 1);
 }

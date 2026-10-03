@@ -14,13 +14,13 @@ pi.lot currently supports **Linux x86-64 only** and targets Pi `1.0.0`.
 The host needs:
 
 - Node.js and npm;
-- FUSE 2, including `/dev/fuse` and `fusermount`;
+- system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
 - util-linux (`unshare` and `nsenter`);
 - `slirp4netns` and `xdg-dbus-proxy`;
 - unprivileged user and network namespaces; and
-- a C compiler, `pkg-config`, and `libnetfilter_queue` development files.
+- a C compiler, `pkg-config`, and libfuse3/`libnetfilter_queue` development files.
 
 See [Installation and setup](docs/installation.md) for distribution packages, host checks, and troubleshooting.
 

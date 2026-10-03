@@ -7,38 +7,51 @@ pi.lot is a Pi package for **Linux x86-64**. It overrides Pi's core file and she
 This checkout targets Pi `1.0.0` and requires:
 
 - Node.js and npm;
-- FUSE 2, including `/dev/fuse` and `fusermount`;
+- system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
 - `unshare` and `nsenter` from util-linux;
 - `slirp4netns`;
 - `xdg-dbus-proxy`;
 - unprivileged user and network namespaces;
-- a C compiler and `pkg-config`; and
+- a C compiler and `pkg-config`;
+- libfuse3 development files, version 3.17.3 or newer; and
 - `libnetfilter_queue` development files.
 
-Typical Fedora/Bazzite packages:
+The native helper uses the modern 64-bit capability API (`FUSE_USE_VERSION=317`), including `fuse_unset_feature_flag` exported since libfuse 3.17.3. The build resolves the system `fuse3` SDK with `pkg-config`; the old npm-bundled FUSE 2 library is not used. Avoid libfuse 3.18.0, which briefly used incompatible ELF symbol versions for the capability helpers; rebuild native helpers when upgrading from it. Build and run against matching system library installations. This migration does **not** enable writable shared mmap, writeback cache, or passthrough. The [current security limitations](security.md#known-limitations) still apply; the [mmap feasibility investigation](transparent-mmap-feasibility.md) is not production enablement.
+
+Typical Fedora packages:
 
 ```bash
 sudo dnf install \
   gcc make pkgconf-pkg-config \
-  fuse bubblewrap nftables iproute util-linux \
+  fuse3 fuse3-devel bubblewrap nftables iproute util-linux \
   slirp4netns xdg-dbus-proxy libnetfilter_queue-devel
 ```
 
-Typical Debian/Ubuntu packages:
+On Bazzite, layer missing host packages with `rpm-ostree`, not `dnf`. For example, when the runtime is already installed but the FUSE SDK is missing:
+
+```bash
+sudo rpm-ostree install --apply-live fuse3-devel
+```
+
+If live application is unavailable, reboot into the updated deployment before building. Installing headers only in a container/toolbox does not provide the SDK to a host-side build.
+
+Typical Debian/Ubuntu packages (use a distribution release/repository providing libfuse >= 3.17.3):
 
 ```bash
 sudo apt install \
   build-essential pkg-config \
-  fuse bubblewrap nftables iproute2 util-linux \
+  fuse3 libfuse3-dev bubblewrap nftables iproute2 util-linux \
   slirp4netns xdg-dbus-proxy libnetfilter-queue-dev
 ```
 
 Package names vary by distribution. Verify the host before building:
 
 ```bash
-command -v cc pkg-config bwrap fusermount nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+command -v cc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+pkg-config --atleast-version=3.17.3 fuse3
+pkg-config --cflags --libs fuse3
 pkg-config --exists libnetfilter_queue
 test -r /dev/fuse && test -w /dev/fuse
 ```
@@ -144,9 +157,12 @@ A local Pi package points at the checkout rather than copying it. Update and reb
 ```bash
 cd /path/to/pilot
 git pull
+npm run build:native
 npm install
 npm run build
 ```
+
+For a FUSE2-to-FUSE3 upgrade in a running Pi session, install the host FUSE3 SDK first and successfully compile the new native helper **before** `npm install` or any dependency pruning. Until that succeeds, keep the existing native binary and physical `node_modules/fuse-shared-library*` directories intact; the running installation may still need them. Restart Pi after the upgrade.
 
 ## Development and tests
 
@@ -166,11 +182,23 @@ Do **not** run the sandbox integration suite from inside pi.lot or another restr
 
 ### `/dev/fuse` is unavailable
 
-Ensure FUSE 2 is installed, `/dev/fuse` exists, and the current user can read and write it. Containers and managed development environments may need explicit device access.
+Ensure FUSE 3 is installed, `/usr/bin/fusermount3` and `/dev/fuse` exist, and the current user can read and write `/dev/fuse`. Containers and managed development environments may need explicit device access.
 
 ### Namespace creation is denied
 
 pi.lot needs unprivileged user and network namespaces. Host security policy, container settings, or another outer sandbox can disable them.
+
+### Native build cannot find a supported FUSE3 SDK
+
+The runtime package alone does not supply headers or `fuse3.pc`. Install `fuse3-devel` on Fedora/Bazzite (using `rpm-ostree` on Bazzite), or `libfuse3-dev` on Debian/Ubuntu. The SDK and runtime must be version 3.17.3 or newer; older distribution releases need an appropriate newer package source. Verify:
+
+```bash
+pkg-config --modversion fuse3
+pkg-config --atleast-version=3.17.3 fuse3
+pkg-config --cflags --libs fuse3
+```
+
+For a nonstandard SDK prefix, configure `PKG_CONFIG_PATH` to its pkg-config directory. Do not substitute the old npm FUSE2 headers or library. The builder rejects missing/old SDKs before replacing existing helpers.
 
 ### Native build cannot find NFQUEUE
 

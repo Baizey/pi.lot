@@ -860,7 +860,7 @@ async function unmount(mountpoint: string, tolerateNotMounted: boolean): Promise
     const output = new OutputTail();
     const child = ManagedChildProcess.spawn({
         name: "native FUSE broker unmount",
-        command: "/usr/bin/fusermount",
+        command: "/usr/bin/fusermount3",
         arguments: ["-u", mountpoint],
         spawnOptions: {stdio: ["ignore", "ignore", "pipe"]},
     });

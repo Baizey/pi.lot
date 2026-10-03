@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
-#define FUSE_USE_VERSION 29
+/* Public capability helpers require libfuse >= 3.17.3. */
+#define FUSE_USE_VERSION 317
 
 #include <fuse.h>
 
@@ -167,8 +168,25 @@ static void write_u64(unsigned char *bytes, uint64_t value);
 static int write_exact(int descriptor, const void *buffer, size_t size);
 static int write_control_exact(int descriptor, const void *buffer, size_t size);
 
-static void *benchmark_init(struct fuse_conn_info *connection) {
-    (void) connection;
+static void *benchmark_init(struct fuse_conn_info *connection, struct fuse_config *configuration) {
+    /* Never turn writable direct-I/O handles into mapping/writeback leases or
+     * bypass the live callbacks. Use the public helpers so want and want_ext
+     * remain consistent with libfuse's internal negotiation bookkeeping. */
+    fuse_unset_feature_flag(connection, FUSE_CAP_DIRECT_IO_ALLOW_MMAP);
+    fuse_unset_feature_flag(connection, FUSE_CAP_WRITEBACK_CACHE);
+    fuse_unset_feature_flag(connection, FUSE_CAP_PASSTHROUGH);
+    fuse_unset_feature_flag(connection, FUSE_CAP_ASYNC_DIO);
+    /* FUSE3 defaults to atomic truncating opens; retain separately mediated
+     * truncate dispatch instead of changing the FUSE2 open contract. */
+    fuse_unset_feature_flag(connection, FUSE_CAP_ATOMIC_O_TRUNC);
+    fuse_unset_feature_flag(connection, FUSE_CAP_NO_OPEN_SUPPORT);
+    fuse_unset_feature_flag(connection, FUSE_CAP_NO_OPENDIR_SUPPORT);
+    configuration->parallel_direct_writes = 0;
+    configuration->nullpath_ok = 0;
+    /* Per-handle open/create callbacks own cache decisions. */
+    configuration->direct_io = 0;
+    configuration->kernel_cache = 0;
+    configuration->auto_cache = 0;
     benchmark_filesystem_t *state = filesystem_state();
     if (state->framed_ready) {
         unsigned char ready[24] = {0};
@@ -304,25 +322,20 @@ static int benchmark_access(const char *path, int mode) {
     return access(resolved, mode) == 0 ? 0 : -errno;
 }
 
-static int benchmark_getattr(const char *path, struct stat *attributes) {
-    char resolved[PATH_MAX];
-    int result = node_path(path, resolved);
-    if (result != 0) return result;
-    return lstat(resolved, attributes) == 0 ? 0 : -errno;
-}
-
-static int benchmark_fgetattr(const char *path, struct stat *attributes, struct fuse_file_info *info) {
-    (void) path;
-    if ((info->flags & O_DIRECTORY) == 0) {
-        int descriptor = (int) info->fh;
-        return descriptor >= 0 && fstat(descriptor, attributes) == 0 ? 0 : -errno;
+static int benchmark_getattr(const char *path, struct stat *attributes, struct fuse_file_info *info) {
+    if (info == NULL) {
+        char resolved[PATH_MAX];
+        int result = node_path(path, resolved);
+        if (result != 0) return result;
+        return lstat(resolved, attributes) == 0 ? 0 : -errno;
     }
-    native_directory_handle_t *handle = (native_directory_handle_t *) (uintptr_t) info->fh;
-    if (handle == NULL || pthread_mutex_lock(&handle->mutex) != 0) return -EBADF;
-    int descriptor = handle->directory == NULL ? -1 : dirfd(handle->directory);
-    int result = descriptor < 0 ? -EBADF : (fstat(descriptor, attributes) == 0 ? 0 : -errno);
-    pthread_mutex_unlock(&handle->mutex);
-    return result;
+    /* Linux sends GETATTR_FH only for regular files; directory metadata uses
+     * the pathname branch. GETATTR supplies fh but not open flags, so flags
+     * cannot distinguish raw file descriptors from directory-handle pointers.
+     * Reject non-descriptor handles before narrowing, without dereferencing
+     * them or granting content authority to this metadata-only callback. */
+    if (info->fh > INT_MAX) return -EBADF;
+    return fstat((int) info->fh, attributes) == 0 ? 0 : -errno;
 }
 
 static int benchmark_readlink(const char *path, char *buffer, size_t size) {
@@ -369,8 +382,11 @@ static int benchmark_readdir(
     void *buffer,
     fuse_fill_dir_t filler,
     off_t offset,
-    struct fuse_file_info *info
+    struct fuse_file_info *info,
+    enum fuse_readdir_flags flags
 ) {
+    /* Retain name-only enumeration; do not claim READDIRPLUS attributes. */
+    (void) flags;
     native_directory_handle_t *handle = (native_directory_handle_t *) (uintptr_t) info->fh;
     if (handle == NULL || pthread_mutex_lock(&handle->mutex) != 0) return -EBADF;
     int result = -EACCES;
@@ -436,7 +452,7 @@ static int benchmark_readdir(
         if (same_or_child_path(child, filesystem_state()->hidden_path)) continue;
 
         off_t next_offset = telldir(directory);
-        if (filler(buffer, entry->d_name, NULL, next_offset) != 0) break;
+        if (filler(buffer, entry->d_name, NULL, next_offset, 0) != 0) break;
     }
 
 complete:
@@ -515,7 +531,9 @@ static int benchmark_create(const char *path, mode_t mode, struct fuse_file_info
     return 0;
 }
 
-static int benchmark_utimens(const char *path, const struct timespec times[2]) {
+static int benchmark_utimens(const char *path, const struct timespec times[2], struct fuse_file_info *info) {
+    /* FUSE3 supplies handles here; retain pathname authorization/semantics. */
+    (void) info;
     int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
     char resolved[PATH_MAX];
@@ -524,7 +542,8 @@ static int benchmark_utimens(const char *path, const struct timespec times[2]) {
     return utimensat(AT_FDCWD, resolved, times, AT_SYMLINK_NOFOLLOW) == 0 ? 0 : -errno;
 }
 
-static int benchmark_chmod(const char *path, mode_t mode) {
+static int benchmark_chmod(const char *path, mode_t mode, struct fuse_file_info *info) {
+    (void) info;
     int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
     char resolved[PATH_MAX];
@@ -533,7 +552,8 @@ static int benchmark_chmod(const char *path, mode_t mode) {
     return chmod(resolved, mode) == 0 ? 0 : -errno;
 }
 
-static int benchmark_chown(const char *path, uid_t uid, gid_t gid) {
+static int benchmark_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *info) {
+    (void) info;
     int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
     char resolved[PATH_MAX];
@@ -622,19 +642,18 @@ static int benchmark_write(
     return length < 0 ? -errno : (int) length;
 }
 
-static int benchmark_truncate(const char *path, off_t size) {
+static int benchmark_truncate(const char *path, off_t size, struct fuse_file_info *info) {
+    if (info != NULL) {
+        int authorized = authorize_file_handle(path, NATIVE_ACCESS_WRITE, NULL, (int) info->fh);
+        if (authorized != 0) return authorized;
+        return ftruncate((int) info->fh, size) == 0 ? 0 : -errno;
+    }
     int authorized = authorize_path(path, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
     char resolved[PATH_MAX];
     int result = existing_path(path, resolved);
     if (result != 0) return result;
     return truncate(resolved, size) == 0 ? 0 : -errno;
-}
-
-static int benchmark_ftruncate(const char *path, off_t size, struct fuse_file_info *info) {
-    int authorized = authorize_file_handle(path, NATIVE_ACCESS_WRITE, NULL, (int) info->fh);
-    if (authorized != 0) return authorized;
-    return ftruncate((int) info->fh, size) == 0 ? 0 : -errno;
 }
 
 static int benchmark_flush(const char *path, struct fuse_file_info *info) {
@@ -680,7 +699,9 @@ static int benchmark_unlink(const char *path) {
     return unlink(resolved) == 0 ? 0 : -errno;
 }
 
-static int benchmark_rename(const char *source, const char *destination) {
+static int benchmark_rename(const char *source, const char *destination, unsigned int flags) {
+    /* No renameat2 semantics are implemented; never silently ignore flags. */
+    if (flags != 0) return -EOPNOTSUPP;
     int authorized = authorize_path(source, NATIVE_ACCESS_WRITE, NULL);
     if (authorized != 0) return authorized;
     authorized = authorize_path(destination, NATIVE_ACCESS_WRITE, NULL);
@@ -1426,7 +1447,6 @@ static struct fuse_operations filesystem_operations(void) {
     operations.destroy = benchmark_destroy;
     operations.access = benchmark_access;
     operations.getattr = benchmark_getattr;
-    operations.fgetattr = benchmark_fgetattr;
     operations.readlink = benchmark_readlink;
     operations.statfs = benchmark_statfs;
     operations.opendir = benchmark_opendir;
@@ -1446,7 +1466,6 @@ static struct fuse_operations filesystem_operations(void) {
     operations.read = benchmark_read;
     operations.write = benchmark_write;
     operations.truncate = benchmark_truncate;
-    operations.ftruncate = benchmark_ftruncate;
     operations.flush = benchmark_flush;
     operations.fsync = benchmark_fsync;
     operations.release = benchmark_release;

@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import {spawn, spawnSync} from "node:child_process";
 import {constants} from "node:fs";
-import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {Writable} from "node:stream";
 import test, {after, before} from "node:test";
 import {fileURLToPath} from "node:url";
+import {fuseFlags} from "../scripts/native-build-flags.mjs";
 import {
     decodeNativeFilesystemControlFrames,
     decodeNativeFilesystemPolicyMiss,
@@ -22,24 +23,28 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const errno = os.constants.errno;
 let buildDirectory: string;
 let executable: string;
+let initExecutable: string;
+let initBuildDirectory: string;
 
 before(async () => {
     buildDirectory = await mkdtemp(path.join(os.tmpdir(), "pilot-callback-build-"));
     executable = path.join(buildDirectory, "probe");
-    const packageOutput = (name: string): string => {
-        const result = spawnSync(process.execPath, ["-e", `require(${JSON.stringify(name)})`], {
-            cwd: root, encoding: "utf8",
-        });
-        assert.ifError(result.error);
-        assert.equal(result.status, 0, result.stderr);
-        assert.ok(result.stdout.trim());
-        return result.stdout.trim();
-    };
     const compiled = spawnSync("cc", [
         "-std=c17", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
         "-o", executable, path.join(root, "test/fixtures/native-fuse-callback-probe.c"),
-        `-I${packageOutput("fuse-shared-library/include")}`,
-        packageOutput("fuse-shared-library/lib"), "-pthread",
+        ...fuseFlags(),
+    ], {cwd: root, encoding: "utf8"});
+    assert.ifError(compiled.error);
+    assert.equal(compiled.status, 0, compiled.stderr);
+});
+
+before(async () => {
+    initBuildDirectory = await mkdtemp(path.join(os.tmpdir(), "pilot-init-build-"));
+    initExecutable = path.join(initBuildDirectory, "init-probe");
+    const compiled = spawnSync("cc", [
+        "-std=c17", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
+        "-o", initExecutable, path.join(root, "test/fixtures/native-fuse-init-probe.c"),
+        ...fuseFlags(),
     ], {cwd: root, encoding: "utf8"});
     assert.ifError(compiled.error);
     assert.equal(compiled.status, 0, compiled.stderr);
@@ -47,6 +52,172 @@ before(async () => {
 
 after(async () => {
     if (buildDirectory) await rm(buildDirectory, {recursive: true, force: true});
+    if (initBuildDirectory) await rm(initBuildDirectory, {recursive: true, force: true});
+});
+
+for (const capabilities of ["supported", "unsupported"]) {
+    test(`real mount-free INIT declines forbidden ${capabilities} features in the wire reply`, () => {
+        const executed = spawnSync(initExecutable, [capabilities], {encoding: "utf8", timeout: 5_000});
+        assert.ifError(executed.error);
+        assert.equal(executed.status, 0, executed.stderr);
+        const result = JSON.parse(executed.stdout) as {
+            replyValid: boolean;
+            initCalled: boolean;
+            requestedBeforeInit: boolean;
+            requestedAfterInit: boolean;
+            forbiddenNegotiated: boolean;
+            asyncReadNegotiated: boolean;
+            capabilitiesPreserved: boolean;
+            configurationSafe: boolean;
+            stateReturned: boolean;
+        };
+        assert.equal(result.replyValid, true);
+        assert.equal(result.initCalled, true);
+        assert.equal(result.requestedBeforeInit, capabilities === "supported");
+        assert.equal(result.requestedAfterInit, false);
+        assert.equal(result.forbiddenNegotiated, false);
+        assert.equal(result.asyncReadNegotiated, true);
+        assert.equal(result.capabilitiesPreserved, true);
+        assert.equal(result.configurationSafe, true);
+        assert.equal(result.stateReturned, true);
+    });
+}
+
+for (const capabilities of ["supported", "unsupported"]) {
+    test(`init requests unsafe feature disabling through mocked helpers with ${capabilities} capabilities`, async () => {
+        await withFixture(async (directory) => {
+            const result = await probe(directory, [policy(directory)], "init", capabilities);
+            assert.equal(result.forbiddenWant, 0);
+            assert.equal(result.forbiddenWantExt, 0);
+            assert.equal(result.preservedWant, true);
+            assert.equal(result.preservedWantExt, true);
+            assert.equal(result.capabilitiesUnchanged, true);
+            assert.equal(result.parallelDirectWrites, 0);
+            assert.equal(result.nullpathOk, 0);
+            assert.equal(result.directIo, 0);
+            assert.equal(result.keepCache, 0);
+            assert.equal(result.autoCache, 0);
+            assert.equal(result.stateReturned, true);
+            assert.equal(result.disableRequestsComplete, true);
+        });
+    });
+}
+
+for (const flags of [1, 2, 4, 8, 0xffff_ffff]) {
+    test(`rename rejects unsupported flags ${flags} without changing either name`, async () => {
+        await withFixture(async (directory) => {
+            const source = path.join(directory, "source");
+            const destination = path.join(directory, "destination");
+            await writeFile(source, "source");
+            await writeFile(destination, "destination");
+            const result = await probe(directory, [policy(directory)], "rename", source, destination, String(flags));
+            assert.equal(result.result, -errno.EOPNOTSUPP);
+            assert.equal(await readFile(source, "utf8"), "source");
+            assert.equal(await readFile(destination, "utf8"), "destination");
+        });
+    });
+}
+
+test("rename with zero flags retains source and destination write checkpoints", async () => {
+    await withFixture(async (directory) => {
+        const source = path.join(directory, "source");
+        const destination = path.join(directory, "destination");
+        await writeFile(source, "source");
+        await writeFile(destination, "destination");
+        for (const target of [source, destination]) {
+            const denied = await probe(directory, [policy(directory), policy(target, PolicyResponse.ALLOWED, PolicyResponse.DENIED)],
+                "rename", source, destination, "0");
+            assert.equal(denied.result, -errno.EACCES);
+            assertDenied(denied, target, NativeFilesystemAccess.WRITE);
+            assert.equal(await readFile(source, "utf8"), "source");
+            assert.equal(await readFile(destination, "utf8"), "destination");
+        }
+        const allowed = await probe(directory, [policy(directory)], "rename", source, destination, "0");
+        assert.equal(allowed.result, 0);
+        await assert.rejects(stat(source), {code: "ENOENT"});
+        assert.equal(await readFile(destination, "utf8"), "source");
+    });
+});
+
+test("truncate without a handle retains pathname authorization", async () => {
+    await withFixture(async (directory) => {
+        const target = path.join(directory, "file");
+        await writeFile(target, "original");
+        const denied = await probe(directory, [policy(directory, PolicyResponse.ALLOWED, PolicyResponse.DENIED)], "truncate", target);
+        assert.equal(denied.result, -errno.EACCES);
+        assertDenied(denied, target, NativeFilesystemAccess.WRITE);
+        assert.equal(await readFile(target, "utf8"), "original");
+        assert.equal((await probe(directory, [policy(directory)], "truncate", target)).result, 0);
+        assert.equal(await readFile(target, "utf8"), "or");
+    });
+});
+
+for (const operation of ["chmod", "chown", "utimens"]) {
+    test(`${operation} with a retained handle still acts on the authorized pathname`, async () => {
+        await withFixture(async (directory) => {
+            const target = path.join(directory, "file");
+            const moved = path.join(directory, "moved");
+            await writeFile(target, "original", {mode: 0o600});
+            const original = await stat(target);
+            const result = await probe(directory, [policy(directory), policy(moved, PolicyResponse.DENIED, PolicyResponse.DENIED)],
+                "metadata", target, moved, operation);
+            assert.equal(result.result, 0);
+            assert.equal(await readFile(moved, "utf8"), "original");
+            assert.equal(await readFile(target, "utf8"), "replacement");
+            if (operation === "chmod") {
+                assert.equal((await stat(moved)).mode & 0o777, 0o600);
+                assert.equal((await stat(target)).mode & 0o777, 0o640);
+            } else if (operation === "utimens") {
+                assert.equal((await stat(moved)).mtimeMs, original.mtimeMs);
+                assert.equal((await stat(target)).mtimeMs, 123456789000);
+            }
+        });
+    });
+    test(`${operation} with a retained handle does not bypass pathname write denial`, async () => {
+        await withFixture(async (directory) => {
+            const target = path.join(directory, "file");
+            const moved = path.join(directory, "moved");
+            await writeFile(target, "original");
+            const result = await probe(directory, [policy(directory), policy(target, PolicyResponse.ALLOWED, PolicyResponse.DENIED)],
+                "metadata", target, moved, operation);
+            assert.equal(result.result, -errno.EACCES);
+            assertDenied(result, target, NativeFilesystemAccess.WRITE);
+            assert.equal(await readFile(moved, "utf8"), "original");
+            assert.equal(await readFile(target, "utf8"), "replacement");
+        });
+    });
+}
+
+for (const mode of ["path", "handle"]) {
+    test(`getattr consolidates ${mode} metadata lookup`, async () => {
+        await withFixture(async (directory) => {
+            const target = path.join(directory, "file");
+            await writeFile(target, "original");
+            const result = await probe(directory, [policy(directory)], "getattr", target, mode);
+            assert.equal(result.result, 0);
+            assert.equal(result.size, 8);
+        });
+    });
+}
+
+test("readdir PLUS requests retain name-only filling, offsets and directory getattr", async () => {
+    await withFixture(async (directory) => {
+        const target = path.join(directory, "directory");
+        await mkdir(target);
+        await writeFile(path.join(target, "a"), "a");
+        await writeFile(path.join(target, "b"), "b");
+        const result = await probe(directory, [policy(directory)], "readdir", target);
+        assert.equal(result.result, 0);
+        assert.equal(result.firstEntries, 1);
+        assert.equal(result.entries, 4);
+        assert.equal(result.nameOnly, true);
+        assert.equal(result.directoryAttributes, true);
+        assert.equal(result.pointerHandleRejected, true);
+        const denied = await probe(directory, [policy(directory, PolicyResponse.DENIED)], "readdir", target);
+        assert.equal(denied.result, -errno.EACCES);
+        assertDenied(denied, target, NativeFilesystemAccess.READ);
+        assert.equal(denied.entries, 0);
+    });
 });
 
 test("hardlink requires source write permission and leaves no denied alias", async () => {
@@ -242,6 +413,22 @@ async function withFixture(run: (directory: string) => Promise<void>): Promise<v
 
 type ProbeResult = {
     result: number;
+    forbiddenWant: number;
+    forbiddenWantExt: number;
+    preservedWant: boolean;
+    preservedWantExt: boolean;
+    capabilitiesUnchanged: boolean;
+    parallelDirectWrites: number;
+    nullpathOk: number;
+    autoCache: number;
+    stateReturned: boolean;
+    disableRequestsComplete: boolean;
+    size: number;
+    firstEntries: number;
+    entries: number;
+    nameOnly: boolean;
+    directoryAttributes: boolean;
+    pointerHandleRejected: boolean;
     statusFlags: number;
     directIo: number;
     keepCache: number;

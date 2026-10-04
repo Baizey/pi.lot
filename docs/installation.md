@@ -18,7 +18,9 @@ This checkout targets Pi `1.0.0` and requires:
 - libfuse3 development files, version 3.17.3 or newer; and
 - `libnetfilter_queue` development files.
 
-The native helper uses the modern 64-bit capability API (`FUSE_USE_VERSION=317`), including `fuse_unset_feature_flag` exported since libfuse 3.17.3. The build resolves the system `fuse3` SDK with `pkg-config`; the old npm-bundled FUSE 2 library is not used. Avoid libfuse 3.18.0, which briefly used incompatible ELF symbol versions for the capability helpers; rebuild native helpers when upgrading from it. Build and run against matching system library installations. This migration does **not** enable writable shared mmap, writeback cache, or passthrough. The [current security limitations](security.md#known-limitations) still apply; the [mmap feasibility investigation](transparent-mmap-feasibility.md) is not production enablement.
+The native helper uses the modern 64-bit capability API (`FUSE_USE_VERSION=317`), including `fuse_unset_feature_flag` exported since libfuse 3.17.3. **Why not 3.17.2?** Its headers declare the capability helpers, but its shared library does not export them. Simply lowering the minimum version would therefore cause undefined-reference linker errors. The helper uses these functions to disable mmap, writeback, passthrough, and callback-bypassing capabilities while keeping libfuse's internal negotiation bookkeeping consistent; supporting 3.17.2 would require a separately implemented and tested compatibility path, not just a version-check change.
+
+The build resolves the system `fuse3` SDK with `pkg-config`; the old npm-bundled FUSE 2 library is not used. Avoid libfuse 3.18.0, which briefly used incompatible ELF symbol versions for the capability helpers; rebuild native helpers when upgrading from it. Build and run against matching system library installations. This migration does **not** enable writable shared mmap, writeback cache, or passthrough. The [current security limitations](security.md#known-limitations) still apply; the [mmap feasibility investigation](transparent-mmap-feasibility.md) is not production enablement.
 
 Typical Fedora packages:
 
@@ -197,6 +199,14 @@ pkg-config --modversion fuse3
 pkg-config --atleast-version=3.17.3 fuse3
 pkg-config --cflags --libs fuse3
 ```
+
+On Debian/Ubuntu, if `pkg-config --modversion fuse3` reports `3.17.2`, the development package is installed but is too old for this checkout. Check the available package versions:
+
+```bash
+apt-cache policy fuse3 libfuse3-dev
+```
+
+Use a distribution release or appropriate package source providing a supported SDK **and matching runtime**. Do not bypass the minimum-version check; installing `libfuse3-dev` again from the same older repository will not resolve the missing exported functions.
 
 For a nonstandard SDK prefix, configure `PKG_CONFIG_PATH` to its pkg-config directory. Do not substitute the old npm FUSE2 headers or library. The builder rejects missing/old SDKs before replacing existing helpers.
 

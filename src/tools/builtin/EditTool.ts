@@ -69,7 +69,7 @@ export class EditTool {
     toolDefinition(): ToolDefinition<any, any> {
         if (this.definition) return this.definition;
         const definition = createEditToolDefinition(process.cwd());
-        const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION);
+        const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION, this.displayRows);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const resolvedPath = resolveBuiltinToolPath(params.path, ctx.cwd);
             const result = await this.runtimeProvider().policyRuntime.once(

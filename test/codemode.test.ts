@@ -21,7 +21,17 @@ import {
 import {validateToolArguments, type JsonObject} from "@earendil-works/pi-ai";
 import {getCapabilities, setCapabilities} from "@earendil-works/pi-tui";
 import {CodemodeExtension} from "../src/tools/codemode/CodemodeExtension.js";
+import {BashTool} from "../src/tools/builtin/BashTool.js";
+import {ReadTool} from "../src/tools/builtin/ReadTool.js";
+import {EditTool} from "../src/tools/builtin/EditTool.js";
+import {WriteTool} from "../src/tools/builtin/WriteTool.js";
+import {WebSearchTool} from "../src/tools/web-search/WebSearchTool.js";
+import {SubagentSpawnTool} from "../src/tools/subagent/SubagentSpawnTool.js";
+import {SubagentStatusTool} from "../src/tools/subagent/SubagentStatusTool.js";
+import {SubagentMessageTool} from "../src/tools/subagent/SubagentMessageTool.js";
+import {SubagentStopTool} from "../src/tools/subagent/SubagentStopTool.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
+import {McpToolRegistry} from "../src/mcp/McpToolRegistry.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 
 const plainTheme = {
@@ -100,7 +110,7 @@ test("codemode validates purpose before script execution", () => {
     }
 });
 
-test("codemode keeps complete nested calls in every view with bounded script and output previews", (t) => {
+test("codemode keeps all nested calls in every view with bounded script and output previews", (t) => {
     initTheme("dark");
     const rows = new ToolDisplayRows();
     t.after(() => rows.clear());
@@ -156,6 +166,99 @@ test("codemode keeps complete nested calls in every view with bounded script and
     }
 });
 
+test("nested calls reuse ordinary builtin, web-search, and subagent layouts in every display mode", () => {
+    const rows = new ToolDisplayRows();
+    const {tool, definitions} = harness(rows);
+    const content = Array.from({length: 12}, (_, index) => `content ${index}`).join("\n");
+    const fixtures: [string, Record<string, unknown>][] = [
+        ["bash", {purpose: "Locate integration points", command: "rg -n 'schema' src", timeout: 30}],
+        ["read", {path: "src/schema.ts", offset: 20, limit: 40}],
+        ["read", {path: "src/schema.ts", limit: 10}],
+        ["edit", {path: "src/schema.ts", edits: [{oldText: "old", newText: "new"}]}],
+        ["write", {path: "src/schema.ts", content}],
+        ["web_search", {query: "Pi tool rendering", freshness: "week", maxResults: 3}],
+        ["subagent_spawn", {role: "Review rendering", task: "Inspect the tool layouts", capabilities: ["fs_read"],
+            reasoning_skill: "high", reasoning_amount: "mid"}],
+        ["subagent_status", {jobIds: ["job-1"], waitSeconds: 10}],
+        ["subagent_message", {jobId: "job-1", task: "Review the change"}],
+        ["subagent_stop", {jobId: "job-1"}],
+    ];
+    for (const mode of [{expanded: false}, {expanded: true}, {expanded: false, pilotFullDisplay: true}]) {
+        for (const [name, args] of fixtures) {
+            const definition = definitions.find((entry) => entry.name === name)!;
+            const ordinary = definition.renderCall!(args, plainTheme,
+                renderContext({pilotFullDisplay: mode.pilotFullDisplay}, {...mode, toolCallId: `ordinary/${name}`}))
+                .render(118);
+            const observed = rows.list();
+            const nested = tool.renderResult!({content: [], details: {calls: [
+                {id: "script/1", name, args: JSON.stringify(args), status: "ok"},
+            ]}}, {expanded: mode.expanded, isPartial: false}, plainTheme,
+                renderContext({pilotFullDisplay: mode.pilotFullDisplay}, mode)).render(120);
+            assert.deepEqual(nested, ["", ...ordinary.map((line) => `  ${line}`)], `${name} in ${JSON.stringify(mode)}`);
+            assert.deepEqual(rows.list(), observed, "nested layouts cannot register independent rows");
+        }
+    }
+    rows.clear();
+    const afterClear = tool.renderResult!({content: [], details: {calls: [
+        {id: "script/1", name: "read", args: '{"path":"fixture","offset":3,"limit":5}', status: "ok"},
+    ]}}, {expanded: false, isPartial: false}, plainTheme, renderContext({})).render(120);
+    assert.deepEqual(afterClear, ["", "    read | fixture:3-7"], "row cleanup preserves shared presentations");
+});
+
+test("nested MCP calls use the ordinary generic layout without needing a live registration", () => {
+    const rows = new ToolDisplayRows();
+    const {tool} = harness(rows);
+    let mcp!: ToolDefinition<any, any>;
+    const registry = new McpToolRegistry({registerTool: (definition) => { mcp = definition; }}, rows);
+    registry.startSession();
+    registry.register({
+        name: "mcp__fixture__search", label: "search", description: "Fixture search",
+        parameters: {type: "object", properties: {}},
+        async execute() { return {content: [], details: undefined}; },
+    });
+    const args = {query: "Search fixture", options: {limit: 3}, multiline: "first\nsecond"};
+    for (const expanded of [false, true]) {
+        const normal = mcp.renderCall!(args, plainTheme, renderContext({}, {expanded})).render(118);
+        const nested = tool.renderResult!({content: [], details: {calls: [
+            {id: "script/1", name: mcp.name, args: JSON.stringify(args), status: "ok"},
+        ]}}, {expanded, isPartial: false}, plainTheme, renderContext({}, {expanded})).render(120);
+        assert.deepEqual(nested, ["", ...normal.map((line) => `  ${line}`)]);
+    }
+    registry.stopSession();
+    rows.clear();
+});
+
+test("restored truncated previews and model identifiers retain readable, sanitized fallback summaries", () => {
+    const {tool} = harness(new ToolDisplayRows());
+    const calls: CodemodeToolDetails["calls"] = [
+        {id: "script/1", name: "read", args: '{"path":"fixture...', status: "ok"},
+        {id: "script/2", name: "bash", args: "null", status: "cancelled"},
+        {id: "script/3", name: "unknown", args: '["fixture"]', status: "ok"},
+        {id: "script/4", name: "models.classify", args: "demo/model", status: "ok", cost: 0.001},
+        {id: "script/5", name: "read", args: "\u001b]0;unsafe\u0007fixture...", status: "error"},
+        {id: "script/6", name: "unknown", args: "first\r\n\u001b]0;unsafe\u0007second\rlast\nend", status: "ok"},
+    ];
+    const result = tool.renderResult!({content: [], details: {calls}},
+        {expanded: false, isPartial: false}, plainTheme, renderContext({})).render(120);
+    assert.deepEqual(result, ["", '    read {"path":"fixture...', "    bash null", '    unknown ["fixture"]',
+        "    models.classify demo/model $0.0010", "    read fixture...",
+        "    unknown first", "  second", "  last", "  end"]);
+});
+
+test("schema-invalid nested arguments cannot break rendering of subsequent calls", () => {
+    const {tool} = harness(new ToolDisplayRows());
+    const invalidArgs = '{"path":"fixture","offset":{"toString":null},"limit":1}';
+    const calls: CodemodeToolDetails["calls"] = [
+        {id: "script/1", name: "read", args: invalidArgs, status: "error"},
+        {id: "script/2", name: "read", args: '{"path":"next"}', status: "ok"},
+    ];
+    for (const expanded of [false, true]) {
+        const result = tool.renderResult!({content: [], details: {calls}},
+            {expanded, isPartial: false}, plainTheme, renderContext({}, {expanded})).render(120);
+        assert.deepEqual(result, ["", `    read ${invalidArgs}`, "    read | next"]);
+    }
+});
+
 test("codemode streams nested statuses and costs, stops its spinner, and retains full errors", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const rows = new ToolDisplayRows();
@@ -181,10 +284,10 @@ test("codemode streams nested statuses and costs, stops its spinner, and retains
     const result = {content: [{type: "text" as const, text: "must not appear while streaming"}], details: {calls}};
     const partialComponent = tool.renderResult!(result, {expanded: true, isPartial: true}, plainTheme, context);
     const partial = partialComponent.render(160);
-    assert.ok(partial.some((line) => line.startsWith("⠙ read ")));
-    assert.ok(partial.includes("  models.classify demo/model $0.0010"));
-    assert.ok(partial.includes("  models.classify demo/model 1.2s $0.0020"));
-    assert.ok(partial.includes("  bash {}"));
+    assert.ok(partial.includes("  ⠙ read | fixture"));
+    assert.ok(partial.includes("    models.classify demo/model $0.0010"));
+    assert.ok(partial.includes("    models.classify demo/model 1.2s $0.0020"));
+    assert.ok(partial.includes("    bash"));
     assert.equal(partial.some((line) => /[✓✗⊘]/.test(line)), false);
     assert.ok(partial.includes("Model calls: $0.0030"));
     assert.equal(partial.includes("must not appear while streaming"), false);
@@ -192,7 +295,7 @@ test("codemode streams nested statuses and costs, stops its spinner, and retains
     assert.deepEqual(minimal, partial, "minimal mode still shows nested activity and costs");
     t.mock.timers.tick(80);
     assert.equal(invalidations, 2, "nested rows share the parent's single Pi loader");
-    assert.ok(partialComponent.render(160).some((line) => line.startsWith("⠹ read ")));
+    assert.ok(partialComponent.render(160).some((line) => line.startsWith("  ⠹ read ")));
 
     rows.toggle("script");
     const failed = {
@@ -204,10 +307,10 @@ test("codemode streams nested statuses and costs, stops its spinner, and retains
     assert.deepEqual(tool.renderCall!({code: "throw new Error('denied');"}, plainTheme, completeContext).render(120),
         ["  codemode", "throw new Error('denied');"]);
     const full = tool.renderResult!(failed, {expanded: false, isPartial: false}, plainTheme, completeContext).render(160);
-    assert.ok(full.includes("classifier failed"));
-    assert.ok(full.includes("second line"));
+    assert.ok(full.includes("  classifier failed"));
+    assert.ok(full.includes("  second line"));
     assert.ok(full.includes("nested tool denied"));
-    assert.ok(full.some((line) => line.startsWith("  read ")), "finished parents suppress stale running indicators");
+    assert.ok(full.some((line) => line.startsWith("    read ")), "finished parents suppress stale running indicators");
     const colorTheme = {
         ...plainTheme,
         fg: (color: string, text: string) => `\x1b[${color === "error" ? 31 : 37}m${text}\x1b[0m`,
@@ -284,25 +387,29 @@ test("codemode handles missing details, rejected input, images, terminal control
     const nested = tool.renderResult!({content: [], details: {calls}},
         {expanded: false, isPartial: false}, plainTheme, context).render(120);
     assert.equal(nested.length, calls.length + 1);
-    assert.ok(nested.some((line) => line.includes("  tool_0 {}")));
-    assert.ok(nested.some((line) => line.includes("  tool_499 {}")));
+    assert.ok(nested.includes("    tool_0"));
+    assert.ok(nested.includes("    tool_499"));
     assert.equal(nested.some((line) => line.includes("omitted from display")), false);
 });
 
-test("codemode wraps complete nested arguments without character or visual-row truncation", () => {
+test("codemode wraps nested titles and visible arguments inside their indent without width clipping", () => {
     const {tool} = harness(new ToolDisplayRows());
-    const args = JSON.stringify({command: `START${"界🙂".repeat(150)}END`});
+    const command = `START${"界🙂".repeat(150)}END`;
+    const args = JSON.stringify({purpose: "Inspect fixture", command});
     const result = {content: [], details: {calls: [
         {id: "script/1", name: "bash", args, status: "ok" as const, durationMs: 5200},
     ]}};
-    for (const expanded of [false, true]) {
-        for (const width of [8, 20, 40, 80]) {
-            const lines = tool.renderResult!(result, {expanded, isPartial: false}, plainTheme,
-                renderContext({}, {expanded})).render(width);
-            // Pi's word wrapping consumes separators at line boundaries, but no argument data.
-            assert.equal(lines.join("").replace(/\s/g, ""), `bash${args}5.2s`);
+    for (const mode of [{expanded: false}, {expanded: true}, {expanded: false, pilotFullDisplay: true}]) {
+        for (const width of [1, 2, 8, 20, 40, 80]) {
+            const lines = tool.renderResult!(result, {expanded: mode.expanded, isPartial: false}, plainTheme,
+                renderContext({pilotFullDisplay: mode.pilotFullDisplay}, mode)).render(width);
+            // Pi's word wrapping consumes separators at line boundaries, but no visible argument data.
+            if (width >= 4) {
+                assert.equal(lines.join("").replace(/\s/g, ""),
+                    `bash|Inspectfixture5.2s${mode.expanded || mode.pilotFullDisplay ? command : ""}`);
+                assert.equal(lines.some((line) => /omitted|earlier lines|\.\.\./.test(line)), false);
+            }
             assert.ok(lines.every((line) => displayWidth(line) <= width));
-            assert.equal(lines.some((line) => /omitted|earlier lines|\.\.\./.test(line)), false);
         }
     }
 });
@@ -412,7 +519,7 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                     assert.equal(nativeCalls.length, 2);
                     assert.equal(nativeCalls[0]!.args, nativeCalls[1]!.args, "native previews remain identical and bounded");
                     assert.doesNotMatch(nativeCalls[0]!.args, /FIRST_END|SECOND_END/);
-                    const rendered = displayed.renderResult!(parallel, {expanded: false, isPartial: false},
+                    const rendered = displayed.renderResult!(parallel, {expanded: true, isPartial: false},
                         plainTheme, renderContext({})).render(40);
                     const text = rendered.join("");
                     assert.match(text, /FIRST_END/);
@@ -423,7 +530,7 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                         ?.calls.some((call) => call.status === "running"));
                     assert.ok(streaming.length > 0);
                     assert.ok(streaming.some((update) => displayed.renderResult!(update,
-                        {expanded: false, isPartial: true}, plainTheme, renderContext({isPartial: true}))
+                        {expanded: true, isPartial: true}, plainTheme, renderContext({isPartial: true}))
                         .render(40).join("").includes("FIRST_END")), "live snapshots also retain full arguments");
                 } finally {
                     unsubscribe();
@@ -457,8 +564,20 @@ function harness(rows: ToolDisplayRows) {
         getAllTools: () => [],
         appendEntry() {},
     } as unknown as ExtensionAPI;
+    const unavailable = () => { throw new Error("Rendering must not execute tools"); };
+    const definitions = [
+        new BashTool(pi, unavailable, rows).toolDefinition(),
+        new ReadTool(pi, unavailable, rows).toolDefinition(),
+        new EditTool(pi, unavailable, rows).toolDefinition(),
+        new WriteTool(pi, unavailable, rows).toolDefinition(),
+        new WebSearchTool(pi, unavailable, rows).toolDefinition(),
+        new SubagentSpawnTool(pi, unavailable, unavailable, rows).toolDefinition(),
+        new SubagentStatusTool(pi, unavailable, rows).toolDefinition(),
+        new SubagentMessageTool(pi, unavailable, rows).toolDefinition(),
+        new SubagentStopTool(pi, unavailable, rows).toolDefinition(),
+    ];
     new CodemodeExtension(pi, rows).register();
-    return {pi, tool, settings};
+    return {pi, tool, settings, definitions};
 }
 
 function renderContext(state: object, options: Partial<Parameters<NonNullable<ToolDefinition["renderCall"]>>[2]> = {}) {

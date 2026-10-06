@@ -52,7 +52,7 @@ function createDefinition(
     coordinator: CoordinatorProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
-    const presentation = new ToolPresentationRenderer(STOP_PRESENTATION);
+    const presentation = new ToolPresentationRenderer(STOP_PRESENTATION, displayRows);
     return {
         name: "subagent_stop",
         label: "Stop subagent",

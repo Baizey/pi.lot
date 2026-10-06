@@ -50,7 +50,7 @@ export class WriteTool {
     toolDefinition(): ToolDefinition<any, any> {
         if (this.definition) return this.definition;
         const definition = createWriteToolDefinition(process.cwd());
-        const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION);
+        const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION, this.displayRows);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const resolvedPath = resolveBuiltinToolPath(params.path, ctx.cwd);
             const result = await this.runtimeProvider().policyRuntime.once(

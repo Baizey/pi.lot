@@ -114,7 +114,7 @@ function createDefinition(
     defaults: DefaultsProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
-    const presentation = new ToolPresentationRenderer(SPAWN_PRESENTATION);
+    const presentation = new ToolPresentationRenderer(SPAWN_PRESENTATION, displayRows);
     return {
         name: "subagent_spawn",
         label: "Spawn subagent",

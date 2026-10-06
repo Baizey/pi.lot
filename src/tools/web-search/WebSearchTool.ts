@@ -75,7 +75,7 @@ export class WebSearchTool {
 
     toolDefinition(): ToolDefinition<any, any> {
         if (this.definition) return this.definition;
-        const presentation = new ToolPresentationRenderer(WEB_SEARCH_PRESENTATION);
+        const presentation = new ToolPresentationRenderer(WEB_SEARCH_PRESENTATION, this.displayRows);
         this.definition = {
             name: "web_search",
             label: "Web search",

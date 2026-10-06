@@ -99,7 +99,7 @@ export class BashTool {
             required: [...bashDefinition.parameters.required, "purpose"] satisfies Required,
         };
 
-        const presentation = new ToolPresentationRenderer(BASH_PRESENTATION);
+        const presentation = new ToolPresentationRenderer(BASH_PRESENTATION, this.displayRows);
         const definition = {
             ...bashDefinition,
             description: `${bashDefinition.description} Include a concise, one-line purpose for the command.`,

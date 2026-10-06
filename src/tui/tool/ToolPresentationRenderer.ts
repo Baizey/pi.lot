@@ -20,7 +20,7 @@ import {
 } from "./ToolPresentation.js";
 import {ToolDisplayMode} from "./ToolDisplayMode.js";
 import {ToolCallSpinner} from "./ToolCallSpinner.js";
-import type {ToolDisplayState} from "./ToolDisplayRows.js";
+import type {ToolDisplayRows, ToolDisplayState} from "./ToolDisplayRows.js";
 
 const DEFAULT_ARGUMENT_PREVIEW_LINES = 8;
 const DEFAULT_RESULT_PREVIEW_LINES = 5;
@@ -57,6 +57,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
 
     constructor(
         private readonly presentation: ToolPresentationSpec<TArgs>,
+        displayRows?: ToolDisplayRows,
     ) {
         this.validatePresentation();
         for (const argument of presentation.arguments) {
@@ -65,6 +66,9 @@ export class ToolPresentationRenderer<TArgs extends object> {
             consumedKeys.push(argument.key);
             this.consumedKeysByOwner.set(argument.consumedBy, consumedKeys);
         }
+        displayRows?.registerCallPresentation(presentation.toolName, (args, theme, mode, width, indicator) => (
+            this.renderCallLines(args as Partial<TArgs>, theme, mode, width, indicator)
+        ));
     }
 
     renderCall(
@@ -73,11 +77,21 @@ export class ToolPresentationRenderer<TArgs extends object> {
         mode: ToolDisplayMode,
         options: ToolCallRenderOptions = {},
     ): TextComponent {
-        const normalizedArgs = (args ?? {}) as Partial<TArgs>;
         this.updateCallSpinner(options);
-        return renderLineFactory((width) => this.toolCallLines(
-            normalizedArgs, theme, mode, options.state?.pilotCallSpinner?.frame(), width,
+        return renderLineFactory((width) => this.renderCallLines(
+            args, theme, mode, width, options.state?.pilotCallSpinner?.frame(),
         ));
+    }
+
+    /** Logical lines before width clipping, with no row registration or spinner lifecycle effects. */
+    renderCallLines(
+        args: Partial<TArgs> | undefined,
+        theme: Theme,
+        mode: ToolDisplayMode,
+        width: number,
+        indicator?: string,
+    ): string[] {
+        return this.toolCallLines((args ?? {}) as Partial<TArgs>, theme, mode, indicator, width);
     }
 
     renderResult(

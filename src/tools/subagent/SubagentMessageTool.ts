@@ -63,7 +63,7 @@ function createDefinition(
     coordinator: CoordinatorProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
-    const presentation = new ToolPresentationRenderer(MESSAGE_PRESENTATION);
+    const presentation = new ToolPresentationRenderer(MESSAGE_PRESENTATION, displayRows);
     return {
         name: "subagent_message",
         label: "Message subagent",

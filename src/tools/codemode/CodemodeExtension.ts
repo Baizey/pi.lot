@@ -182,12 +182,17 @@ export class CodemodeExtension {
             const calls = details?.calls ?? [];
             const argumentsByCall = details ? this.callArguments.get(details) : undefined;
             const indicator = isPartial ? state.pilotCallSpinner?.frame() : undefined;
-            const lines = calls.length > 0 ? ["", ...calls.flatMap((call, index) => {
-                const text = this.formatCall(call, argumentsByCall?.get(index) ?? call.args, theme, mode, indicator);
-                return text.split("\n").flatMap((line) => Number.isFinite(width) && width >= 1
-                    ? wrapTextWithAnsi(sanitizeTerminalLine(line), Math.floor(width))
-                    : [sanitizeTerminalLine(line)]);
-            })] : [];
+            // Reserve the indent before laying out or wrapping a nested call. On tiny terminals,
+            // shrink it rather than losing the entire call to indentation.
+            const indent = " ".repeat(Number.isFinite(width) ? Math.max(0, Math.min(2, Math.floor(width) - 1)) : 2);
+            const callWidth = Number.isFinite(width) ? Math.max(1, Math.floor(width) - indent.length) : width;
+            const lines = calls.length > 0 ? ["", ...calls.flatMap((call, index) => (
+                this.callLines(call, argumentsByCall?.get(index) ?? call.args, theme, mode, indicator, callWidth)
+                    .flatMap((line) => Number.isFinite(callWidth)
+                        ? wrapTextWithAnsi(sanitizeTerminalLine(line), callWidth)
+                        : [sanitizeTerminalLine(line)])
+                    .map((line) => `${indent}${line}`)
+            ))] : [];
             const priced = calls.filter((call) => call.cost !== undefined);
             if (priced.length > 1) {
                 const total = priced.reduce((sum, call) => sum + (call.cost ?? 0), 0);
@@ -212,31 +217,67 @@ export class CodemodeExtension {
         });
     }
 
-    private formatCall(
+    private callLines(
         call: CodemodeToolDetails["calls"][number],
         args: string,
         theme: Theme,
         mode: ToolDisplayMode,
         indicator: string | undefined,
-    ): string {
-        const status = call.status === "running" && indicator ? theme.fg(ThemeColor.accent, indicator) : " ";
+        width: number,
+    ): string[] {
+        const runningIndicator = call.status === "running" ? indicator : undefined;
         const color = call.status === "error" ? ThemeColor.error
             : call.status === "cancelled" ? ThemeColor.muted : ThemeColor.toolTitle;
-        let line = `${status} ${theme.fg(color, call.name)}`;
-        if (args) line += ` ${theme.fg(ThemeColor.muted, args)}`;
+        const callTheme: Theme = Object.create(theme, {
+            fg: {value: (token: Parameters<Theme["fg"]>[0], text: string) => (
+                theme.fg(token === ThemeColor.toolTitle ? color : token, text)
+            )},
+        });
+        const parsed = parseCallArguments(args);
+        let lines: string[] | undefined;
+        if (parsed && !call.name.startsWith("models.")) {
+            try {
+                const render = this.displayRows.callPresentation(call.name);
+                lines = render
+                    ? render(parsed, callTheme, mode, width, runningIndicator)
+                    : new ToolPresentationRenderer<Record<string, unknown>>({toolName: call.name, arguments: []})
+                        .renderCallLines(parsed, callTheme, mode, width, runningIndicator);
+            } catch {
+                // Rejected inputs are recorded too. A formatter's schema assumptions must not
+                // let one invalid call hide the rest of the script's activity.
+            }
+        }
+        if (!lines) {
+            // Restored calls can contain Pi's truncated JSON previews. Model calls contain only
+            // a model identifier. Keep these readable without guessing missing arguments.
+            const status = runningIndicator ? theme.fg(ThemeColor.accent, runningIndicator) : " ";
+            const summary = `${status} ${callTheme.fg(ThemeColor.toolTitle, theme.bold(call.name))}`
+                + (args ? ` ${theme.fg(ThemeColor.muted, args)}` : "");
+            lines = summary.replace(/\r\n|\r/g, "\n").split("\n");
+        }
         if (call.durationMs !== undefined) {
             const duration = call.durationMs < 1000
                 ? `${Math.round(call.durationMs)}ms`
                 : `${(call.durationMs / 1000).toFixed(1)}s`;
-            line += ` ${theme.fg(ThemeColor.dim, duration)}`;
+            lines[0] += ` ${theme.fg(ThemeColor.dim, duration)}`;
         }
-        if (call.cost !== undefined) line += ` ${theme.fg(ThemeColor.dim, formatCost(call.cost))}`;
+        if (call.cost !== undefined) lines[0] += ` ${theme.fg(ThemeColor.dim, formatCost(call.cost))}`;
         if (mode === ToolDisplayMode.FULL && call.error) {
-            const error = call.error.replace(/\r\n|\r/g, "\n").split("\n")
-                .map((text) => theme.fg(ThemeColor.error, text));
-            line += `\n${error.join("\n")}`;
+            lines.push(...call.error.replace(/\r\n|\r/g, "\n").split("\n")
+                .map((text) => theme.fg(ThemeColor.error, text)));
         }
-        return line;
+        return lines;
+    }
+}
+
+function parseCallArguments(args: string): Record<string, unknown> | undefined {
+    try {
+        const parsed: unknown = JSON.parse(args);
+        return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : undefined;
+    } catch {
+        return undefined;
     }
 }
 

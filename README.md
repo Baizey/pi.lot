@@ -13,7 +13,7 @@ pi.lot currently supports **Linux x86-64 only** and targets Pi `1.0.0`.
 
 The host needs:
 
-- Node.js and npm;
+- Node.js 22.19.0 or newer and npm;
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
@@ -26,7 +26,21 @@ See [Installation and setup](docs/installation.md) for distribution packages, ho
 
 ## Install and set up
 
-Install and authenticate the compatible Pi release:
+For scripted setup on a supported host:
+
+```bash
+git clone https://github.com/Baizey/pi-sandbox.git pilot
+cd pilot
+./scripts/install-deps.sh --dry-run  # Review package-manager commands
+./scripts/install-deps.sh           # Uses sudo for host packages only
+# On Bazzite/Fedora Atomic, reboot if packages were layered.
+./scripts/setup.sh                  # Run as your normal user, not with sudo
+pi                                 # Use /login to authenticate
+```
+
+`setup.sh` checks prerequisites, installs the compatible Pi release, builds pi.lot, and registers the checkout for your user. Use `--dry-run` to preview it, `--skip-pi` to retain a compatible Pi installation, or `--project /path/to/project` for project-local registration. `./scripts/check-host.sh` runs only the preflight checks; `./scripts/setup.sh update` fast-forwards a clean checkout and rebuilds. Run these scripts on the host, not inside pi.lot or toolbox. They leave authentication, loader settings, and host security policy to you; see [Scripted setup](docs/installation.md#scripted-setup).
+
+For manual setup, install and authenticate the compatible Pi release:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
@@ -153,7 +167,7 @@ MCP effects are [outside filesystem and network mediation](docs/security.md#mcp)
 
 Pi's native discovery behavior is preserved: default MCP servers connect without delaying the first prompt, appear in the `mcp_servers` prompt section, and are discovered with `searchTools()` and `describeNamespace()`. Scripts, tool search, and resource tools wait for the servers they need; direct tools still participate in the first-prompt startup wait. Native namespace normalization, collision-safe tool names, `description`, `oauth.clientName`, and provider-token authentication remain owned by Pi. Pilot's documentation is a separate structured prompt section, so it does not force a replacement prompt or defeat MCP's transcript deltas.
 
-MCP tools retain Pilot's `Ctrl+O` and `/view-full-tool` display. MCP previews and codemode script/output previews limit wrapped visual rows; codemode's nested-call rows instead wrap complete live arguments without clipping calls or adding completion icons. Running nested calls share the parent row's Pi loader animation. Pilot keeps its compact view and tail-oriented output previews. Routine connection notices are quiet; configuration errors, discovery warnings, load failures, command diagnostics, and tool errors still surface. Check `/mcp` for connection state.
+MCP tools retain Pilot's `Ctrl+O` and `/view-full-tool` display. MCP previews and codemode script/output previews limit wrapped visual rows. Codemode's nested calls reuse normal tool-call layouts with a small indent: compact views show titles such as `bash | purpose` and `read | path:range`, while expanded and full views reveal arguments with the usual preview limits. Nested calls wrap within their indent without adding completion icons, and running calls share the parent row's Pi loader animation. Pilot keeps its compact view and tail-oriented output previews. Routine connection notices are quiet; configuration errors, discovery warnings, load failures, command diagnostics, and tool errors still surface. Check `/mcp` for connection state.
 
 ### Web search
 
@@ -186,7 +200,7 @@ pi.lot also provides compact, copy-friendly tool rendering:
 
 - `Ctrl+O` toggles compact and expanded tool views;
 - `/view-full-tool` toggles a full view for one selected call;
-- Pilot's `codemode` requires a concise, one-line `purpose`, shown beside the tool name even in minimal mode; nested calls retain their distinct inline format, with Pi's animated braille loader while running, a blank icon column afterward, and complete live arguments wrapped to terminal width in every view; expanded and per-call full views also reveal the script, output, full errors, and output-file hints;
+- Pilot's `codemode` requires a concise, one-line `purpose`, shown beside the tool name even in minimal mode; nested calls use the same titles, argument layouts, colors, and compact/expanded/full modes as normal calls, indented to show they belong to the script, with Pi's animated braille loader while running and a blank icon column afterward; expanded and per-call full views also reveal the script, output, full errors, and output-file hints;
 - active subagent work appears above the editor and in the footer;
 - the chat editor border stays at the theme's `thinkingXhigh` color (Bash mode keeps its own color); and
 - a structured footer groups model and usage into two rows, with the session name right-aligned beside the context/usage row:
@@ -200,7 +214,7 @@ The thinking indicator uses colored cubes: `□□□□□ off`, `■■■□�
 
 Pilot wraps Pi's native codemode registration through the public `createCodemodeExtension()` factory without changing script execution, tool exposure, storage, or `codemode` settings. Calls remain JSON objects `{purpose, code}` rather than the native raw-source grammar so the required purpose can be validated and displayed before execution. [Pi's codemode documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the `code` body and script API, not Pilot's wrapper envelope. Probe unknown tools with `'name' in tools`, not `typeof tools.name`. Purpose must be non-empty, one line, and at most 160 characters. It remains inactive by default; enable it with `defaultTools: ["+codemode"]`, `--tools`, or MCP's automatic activation. Add `"-builtin:codemode"` alongside `"-builtin:mcp"` in your `extensions` settings to suppress the duplicate built-in override warning, not the functionality. See [installation](docs/installation.md#install-the-package).
 
-Complete nested-tool arguments are retained only in memory for live rendering. Pi's bounded persisted call previews and model-facing output are unchanged, so restored calls may still show the original previews. Model-call rows keep Pi's model identifier rather than exposing prompts or image data.
+Complete nested-tool arguments are retained only in memory for live rendering, subject to the normal argument visibility and display limits. Pi's bounded persisted call previews and model-facing output are unchanged; restored calls with truncated JSON keep a readable inline preview rather than guessing missing arguments. Model-call rows keep Pi's model identifier rather than exposing prompts or image data.
 
 Root codemode's `models.classify()` and `models.generateImages()` make authenticated, potentially billable host-side calls [outside filesystem/network mediation](docs/security.md#codemode-model-calls). Child codemode uses `models: false`, exposing no model globals.
 

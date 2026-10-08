@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
+import {createHash} from "node:crypto";
 import {mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,8 +29,8 @@ else { console.error("Unexpected pkg-config invocation: " + args.join(" ")); pro
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.COMPILER_MARKER, JSON.stringify(args) + "\\n");
-fs.writeFileSync(args[args.indexOf("-o") + 1], "reference binary", {mode: 0o755});
-if (process.env.COMPILER_FAIL && args.some(arg => arg.endsWith(process.env.COMPILER_FAIL))) process.exit(32);
+console.error("Native compilation must be owned by Cargo");
+process.exit(32);
 `, {mode: 0o755});
     writeFileSync(path.join(directory, "cargo"), `#!${process.execPath}
 const fs = require("node:fs");
@@ -86,7 +87,7 @@ test("pkg-config flags preserve quoted/escaped paths and remain literal argument
 for (const mode of ["missing", "old", "unexported"] as const) {
     test(`native builder rejects ${mode} FUSE3 SDK before invoking C or Rust compilers`, () => {
         withBuildTools((_directory, environment) => {
-            const result = build({...environment, SDK_MODE: mode}, ["--all"]);
+            const result = build({...environment, SDK_MODE: mode});
             assert.ifError(result.error);
             assert.notEqual(result.status, 0);
             assert.match(result.stderr, /libfuse >= 3\.17\.3 development files are required/);
@@ -103,7 +104,7 @@ for (const mode of ["missing", "old", "unexported"] as const) {
 
 test("native builder resolves NFQUEUE before invoking C or Rust compilers", () => {
     withBuildTools((_directory, environment) => {
-        const result = build({...environment, SDK_MODE: "missing-netfilter"}, ["--all"]);
+        const result = build({...environment, SDK_MODE: "missing-netfilter"});
         assert.notEqual(result.status, 0);
         assert.match(result.stderr, /libnetfilter_queue development files are required/);
         assert.equal(existsSync(environment.COMPILER_MARKER!), false);
@@ -133,29 +134,31 @@ test("Rust builder locks dependencies, forwards unsplit SDK flags and publishes 
         for (const name of ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native", "libpilot_native.a"]) {
             assert.equal(readFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "utf8"), "rust binary");
         }
+        const receipt = JSON.parse(readFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, "native-rust.json"), "utf8"));
+        const hash = createHash("sha256").update("rust binary").digest("hex");
+        assert.deepEqual(receipt, {version: 1, implementation: "rust", helpers: {
+            "pi-exec-clean-native": hash, "pi-fuse-native": hash, "pi-network-queue-native": hash, "pi-tcp-gateway-native": hash,
+        }});
     });
 });
 
-test("C reference builder forwards SDK flags and keeps reference artifacts separate", () => {
-    withBuildTools((_directory, environment) => {
-        const result = build({...environment, FUSE_FLAGS: String.raw`-I/sdk\ directory/include/fuse3 '-L/sdk directory/lib' -lfuse3 -lpthread`}, ["--reference"]);
-        assert.ifError(result.error);
-        assert.equal(result.status, 0, result.stderr);
-        const calls = readFileSync(environment.COMPILER_MARKER!, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
-        assert.equal(calls.length, 6);
-        const fuseCall = calls.find((args) => args.includes(path.join(root, "native/pi-fuse.c")))!;
-        assert.deepEqual(fuseCall.slice(-4), ["-I/sdk directory/include/fuse3", "-L/sdk directory/lib", "-lfuse3", "-lpthread"]);
-        assert.equal(calls.some((args) => args.some((flag) => flag.includes("fuse-shared-library"))), false);
-        assert.equal(existsSync(environment.CARGO_MARKER!), false);
-        assert.equal(existsSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, "pi-fuse-native")), false);
-        assert.equal(readFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, "native-c/pi-fuse-native"), "utf8"), "reference binary");
+for (const option of ["--reference", "--all", "--unknown"]) {
+    test(`native builder rejects obsolete or unknown option ${option} before compilation`, () => {
+        withBuildTools((_directory, environment) => {
+            const result = build(environment, [option]);
+            assert.ifError(result.error);
+            assert.notEqual(result.status, 0);
+            assert.match(result.stderr, /Usage: node scripts\/build-native.mjs/);
+            assert.equal(existsSync(environment.CARGO_MARKER!), false);
+            assert.equal(existsSync(environment.COMPILER_MARKER!), false);
+        });
     });
-});
+}
 
 for (const flags of ["", "'-Iunterminated", "-Itrailing\\"]) {
     test(`native builder rejects empty/malformed pkg-config output ${JSON.stringify(flags)}`, () => {
         withBuildTools((_directory, environment) => {
-            const result = build({...environment, FUSE_FLAGS: flags}, ["--all"]);
+            const result = build({...environment, FUSE_FLAGS: flags});
             assert.notEqual(result.status, 0);
             assert.match(result.stderr, /no compiler\/linker flags|Malformed pkg-config flags/);
             assert.equal(existsSync(environment.COMPILER_MARKER!), false);
@@ -167,22 +170,22 @@ for (const flags of ["", "'-Iunterminated", "-Itrailing\\"]) {
 test("failed Cargo build leaves all installed helper binaries unchanged", () => {
     withBuildTools((_directory, environment) => {
         mkdirSync(environment.PILOT_NATIVE_BUILD_DIRECTORY!, {recursive: true});
-        const output = path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, "pi-fuse-native");
-        writeFileSync(output, "running installation");
+        const names = ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native", "native-rust.json"];
+        for (const name of names) writeFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "running installation");
         const result = build({...environment, CARGO_FAIL: "1"});
         assert.notEqual(result.status, 0);
-        assert.equal(readFileSync(output, "utf8"), "running installation");
+        for (const name of names) assert.equal(readFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "utf8"), "running installation");
     });
 });
 
 test("missing Rust artifact does not publish a partial build and removes staging files", () => {
     withBuildTools((_directory, environment) => {
         mkdirSync(environment.PILOT_NATIVE_BUILD_DIRECTORY!, {recursive: true});
-        const output = path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, "pi-exec-clean-native");
-        writeFileSync(output, "running installation");
+        const names = ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native", "native-rust.json"];
+        for (const name of names) writeFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "running installation");
         const result = build({...environment, CARGO_OMIT: "pi-fuse-native"});
         assert.notEqual(result.status, 0);
-        assert.equal(readFileSync(output, "utf8"), "running installation");
+        for (const name of names) assert.equal(readFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "utf8"), "running installation");
         assert.equal(readdirSync(environment.PILOT_NATIVE_BUILD_DIRECTORY!).some((name) => name.includes(".tmp-")), false);
     });
 });
@@ -194,18 +197,5 @@ test("missing Cargo reports Rust installation guidance without replacing install
         assert.notEqual(result.status, 0);
         assert.match(result.stderr, /Cargo is required.*Rust helpers/);
         assert.match(result.stderr, /Install Rust >= 1\.85 and Cargo/);
-    });
-});
-
-test("failed C-reference compilation does not replace the failed helper", () => {
-    withBuildTools((_directory, environment) => {
-        const directory = path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, "native-c");
-        mkdirSync(directory, {recursive: true});
-        const output = path.join(directory, "pi-fuse-native");
-        writeFileSync(output, "previous reference");
-        const result = build({...environment, COMPILER_FAIL: "pi-fuse.c"}, ["--reference"]);
-        assert.notEqual(result.status, 0);
-        assert.equal(readFileSync(output, "utf8"), "previous reference");
-        assert.equal(readdirSync(directory).some((name) => name.includes(".tmp-")), false);
     });
 });

@@ -13,6 +13,10 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 libc = "=0.2.189"
 
+[build-dependencies]
+bindgen = { version = "=0.72.1", default-features = false, features = ["runtime"] }
+clang-sys = { version = "=1.9.1", features = ["runtime"] }
+
 [profile.release]
 opt-level = 2
 debug = true

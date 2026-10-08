@@ -19,29 +19,18 @@ The host needs:
 - nftables and iproute2;
 - util-linux (`unshare` and `nsenter`);
 - `slirp4netns` and `xdg-dbus-proxy`;
-- unprivileged user and network namespaces; and
-- Rust 1.85 or newer with Cargo;
-- a C compiler, `pkg-config`, and libfuse3/`libnetfilter_queue` development files (the libfuse ABI shim still needs C).
+- unprivileged user and network namespaces;
+- Rust 1.85 or newer with Cargo and its native linker toolchain;
+- `pkg-config` and libfuse3/`libnetfilter_queue` development files; and
+- the libclang shared library and matching resource headers for build-time FUSE bindings (`clang-libs` plus `clang-resource-files`, or `clang-devel`, on Fedora; `libclang-dev` on Debian/Ubuntu).
+
+The production build no longer compiles C source. Rust still needs a native linker toolchain (normally `cc`/GCC); tests use the C compiler for independent ABI/syscall fixtures.
 
 See [Installation and setup](docs/installation.md) for distribution packages, host checks, and troubleshooting.
 
 ## Install and set up
 
-For scripted setup on a supported host:
-
-```bash
-git clone https://github.com/Baizey/pi-sandbox.git pilot
-cd pilot
-./scripts/install-deps.sh --dry-run  # Review package-manager commands
-./scripts/install-deps.sh           # Uses sudo for host packages only
-# On Bazzite/Fedora Atomic, reboot if packages were layered.
-./scripts/setup.sh                  # Run as your normal user, not with sudo
-pi                                 # Use /login to authenticate
-```
-
-`setup.sh` checks prerequisites, installs the compatible Pi release, builds pi.lot, and registers the checkout for your user. Use `--dry-run` to preview it, `--skip-pi` to retain a compatible Pi installation, or `--project /path/to/project` for project-local registration. `./scripts/check-host.sh` runs only the preflight checks; `./scripts/setup.sh update` fast-forwards a clean checkout and rebuilds. Run these scripts on the host, not inside pi.lot or toolbox. They leave authentication, loader settings, and host security policy to you; see [Scripted setup](docs/installation.md#scripted-setup).
-
-For manual setup, install and authenticate the compatible Pi release:
+Install the [host prerequisites](docs/installation.md#requirements), then install and authenticate the compatible Pi release:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
@@ -251,14 +240,16 @@ npm run build
 npm test
 ```
 
-The four native helpers are implemented in Rust, retaining the system high-level libfuse frontend through a small C ABI shim. The original C helpers remain as an explicit test reference; they are not an automatic runtime fallback.
+The install/build and every native launch use Rust, retaining the system high-level libfuse frontend through the Rust ABI adapter in `native/rust/src/fuse/abi.rs`. `native/rust/src/fuse/bindings.rs` includes bindings generated from the installed FUSE headers by `native/rust/build.rs` using pinned build-time `bindgen` and libclang; no production C shim is compiled. System libfuse and libnetfilter_queue remain external C libraries.
+
+Runtime checks the package-local helpers against a builder-generated SHA-256 receipt, rejecting stale binaries instead of finding another checkout. The receipt is an artifact-consistency check, not a security attestation. Rebuild and restart Pi after upgrading. `npm run build` preserves installed helpers if native compilation fails; destructive cleanup is explicit (`npm run clean`). The four old C implementations and their comparison selector/build have been removed after successful local Linux integration and corrected C/Rust comparison; they remain in Git history.
 
 ```bash
-npm run test:native       # Shared C/Rust contracts and differential tests, without mounts
-npm run test:native:host  # Also run the same mounted/network contracts on both implementations
+npm run test:native       # Rust units, mount-free contracts, build/runtime/install-hook regressions
+npm run test:native:host  # Same suite plus real local FUSE and network integration
 ```
 
-Run the sandbox integration suite directly on a prepared Linux host, not from inside pi.lot or another sandbox. See [Development and tests](docs/installation.md#development-and-tests) and [Native Rust migration and parity](docs/native-rust-migration.md).
+`test:native:integration` and `test:native:integration:host` remain compatibility aliases for these same commands, not additional gates. Run integration directly in a terminal on your normal Linux machine with the listed prerequisites, outside pi.lot's Bash sandbox or any other restrictive sandbox. This is a local Pi extension, not a server deployment; no separate testing host or release rollout is needed. See [Development and tests](docs/installation.md#development-and-tests) and [Native Rust migration](docs/native-rust-migration.md) for coverage and reported results.
 
 ## License
 

@@ -21,6 +21,7 @@ import {
 import {parseTcpGatewayFlow} from "../src/policy/network/tcp-gateway-protocol.js";
 import {TlsCertificateAuthority} from "../src/policy/network/TlsCertificateAuthority.js";
 import {ManagedChildProcess, type ManagedChildProcessOptions} from "../src/runtime/ManagedChildProcess.js";
+import {resolveNativeExecutable} from "../src/runtime/NativeExecutable.js";
 
 const JAVA_TOOLCHAIN_AVAILABLE = ["java", "javac"].every(
   (command) => spawnSync(command, ["-version"], {stdio: "ignore"}).status === 0,
@@ -1708,7 +1709,7 @@ test("cancellation drops a pending queued SYN without a host connection", async 
 
 test("queue helper failure terminates the worker instead of restoring connectivity", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-helper-failure-test-"));
-  const helperPath = path.resolve("build/pi-network-queue-native");
+  const helperPath = resolveNativeExecutable("pi-network-queue-native");
   let ready!: () => void;
   const workerReady = new Promise<void>((resolve) => {
     ready = resolve;
@@ -1736,7 +1737,7 @@ test("queue helper failure terminates the worker instead of restoring connectivi
 
 test("TCP gateway ingress failure terminates the worker instead of restoring direct forwarding", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-gateway-failure-test-"));
-  const helperPath = path.resolve("build/pi-tcp-gateway-native");
+  const helperPath = resolveNativeExecutable("pi-tcp-gateway-native");
   let ready!: () => void;
   const workerReady = new Promise<void>((resolve) => {
     ready = resolve;

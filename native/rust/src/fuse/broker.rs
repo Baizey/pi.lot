@@ -167,7 +167,7 @@ fn run_filesystem(
     let args=[program.to_owned(),cstring(b"-f"),cstring(b"-o"),cstring(b"fsname=pilot-fuse-native,subtype=pilot-fuse-native,auto_unmount,entry_timeout=0.001,attr_timeout=0.001,ac_attr_timeout=0.001"),mountpoint.to_owned()];
     let mut pointers: Vec<*mut libc::c_char> = args.iter().map(|a| a.as_ptr() as *mut _).collect();
     pointers.push(std::ptr::null_mut());
-    unsafe { pilot_fuse_main(5, pointers.as_mut_ptr(), (&mut *state as *mut State).cast()) }
+    unsafe { abi::pilot_fuse_main(5, pointers.as_mut_ptr(), (&mut *state as *mut State).cast()) }
 }
 fn connect_controller(socket_path: &CStr, token: &CStr) -> Result<Fd, i32> {
     unsafe {

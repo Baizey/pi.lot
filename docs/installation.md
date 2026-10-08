@@ -14,10 +14,13 @@ This checkout targets Pi `1.0.0` and requires:
 - `slirp4netns`;
 - `xdg-dbus-proxy`;
 - unprivileged user and network namespaces;
-- Rust 1.85 or newer and Cargo;
-- a C compiler and `pkg-config` (for the narrow libfuse ABI shim);
-- libfuse3 development files, version 3.17.3 or newer; and
-- `libnetfilter_queue` development files.
+- Rust 1.85 or newer, Cargo and a native linker toolchain (normally the `cc`/GCC driver);
+- `pkg-config`;
+- libfuse3 development files, version 3.17.3 or newer;
+- `libnetfilter_queue` development files; and
+- the libclang shared library and matching Clang resource headers for build-time binding generation.
+
+Normal builds no longer compile C source, but Rust still needs its platform linker toolchain. Tests additionally use a C compiler for independent ABI/syscall fixtures.
 
 The native helper uses the modern 64-bit capability API (`FUSE_USE_VERSION=317`), including `fuse_unset_feature_flag` exported since libfuse 3.17.3. **Why not 3.17.2?** Its headers declare the capability helpers, but its shared library does not export them. Simply lowering the minimum version would therefore cause undefined-reference linker errors. The helper uses these functions to disable mmap, writeback, passthrough, and callback-bypassing capabilities while keeping libfuse's internal negotiation bookkeeping consistent; supporting 3.17.2 would require a separately implemented and tested compatibility path, not just a version-check change.
 
@@ -27,7 +30,7 @@ Typical Fedora packages:
 
 ```bash
 sudo dnf install \
-  gcc make pkgconf-pkg-config \
+  gcc pkgconf-pkg-config clang-libs clang-resource-files \
   fuse3 fuse3-devel bubblewrap nftables iproute util-linux \
   slirp4netns xdg-dbus-proxy libnetfilter_queue-devel
 ```
@@ -35,7 +38,7 @@ sudo dnf install \
 On Bazzite, layer missing host packages with `rpm-ostree`, not `dnf`. For example, when the runtime is already installed but the FUSE SDK is missing:
 
 ```bash
-sudo rpm-ostree install --apply-live fuse3-devel
+sudo rpm-ostree install --apply-live fuse3-devel clang-libs clang-resource-files
 ```
 
 If live application is unavailable, reboot into the updated deployment before building. Installing headers only in a container/toolbox does not provide the SDK to a host-side build.
@@ -44,17 +47,19 @@ Typical Debian/Ubuntu packages (use a distribution release/repository providing 
 
 ```bash
 sudo apt install \
-  build-essential pkg-config \
+  build-essential pkg-config libclang-dev \
   fuse3 libfuse3-dev bubblewrap nftables iproute2 util-linux \
   slirp4netns xdg-dbus-proxy libnetfilter-queue-dev
 ```
 
-Install a Rust toolchain providing Rust 1.85 or newer and Cargo using your distribution or rustup. The Rust dependency is pinned in `native/rust/Cargo.lock`; normal builds use `cargo build --locked`. The C compiler remains necessary for libfuse ABI marshalling and the retained C comparison helpers.
+Install a Rust toolchain providing Rust 1.85 or newer and Cargo using your distribution or rustup. Cargo dependencies are pinned in `native/rust/Cargo.lock`; normal builds use `cargo build --locked`. The only runtime Rust crate dependency is `libc`. Build-time dependencies are pinned `bindgen 0.72.1` and `clang-sys 1.9.1`; the latter supports locating the loaded library's matching resource headers. Binding generation loads libclang during compilation, not when running helpers. On Fedora, `clang-devel` is an alternative package providing the libclang development library. For nonstandard LLVM installations, set `LIBCLANG_PATH` to the directory containing `libclang.so` (or its versioned shared library). Installing only the `clang` executable is not sufficient.
+
+Normal native builds generate FUSE bindings and compile Rust; they no longer compile a production C shim. Native tests still need a C compiler (`gcc` on Fedora or `build-essential` on Debian/Ubuntu) for independent ABI/syscall fixtures.
 
 Package names vary by distribution. Verify the host before building:
 
 ```bash
-command -v cargo rustc cc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+command -v cargo rustc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
 rustc --version
 cargo --version
 pkg-config --atleast-version=3.17.3 fuse3
@@ -90,9 +95,13 @@ npm install
 npm run build
 ```
 
-The build compiles four Rust native helpers and the small C/libfuse ABI shim, then type-checks the extension. It retains the existing executable names and protocols. The high-level system-libfuse frontend, capability negotiation and filesystem enforcement semantics are not replaced. See [Native Rust migration and parity](native-rust-migration.md).
+The build generates bindings from the installed system FUSE headers with `bindgen`/libclang, compiles four Rust native helpers, then type-checks the extension. `native/rust/src/fuse/abi.rs` owns the libfuse callback table, configuration and file-info bitfield marshalling; `native/rust/src/fuse/bindings.rs` includes the header bindings generated by `native/rust/build.rs`. No production C shim is compiled. The existing executable names, protocols, high-level system-libfuse frontend, capability negotiation and filesystem enforcement semantics are retained. System libfuse and libnetfilter_queue remain external C libraries. See [Native Rust migration](native-rust-migration.md).
 
-`npm run build:native:reference` separately builds the retained C helpers under `build/native-c/`. They exist for regression comparison, not automatic fallback. Rebuild and restart Pi when switching implementations.
+`npm install`'s install hook and `npm run build` both build Rust helpers. A successful native build publishes `build/native-rust.json` with SHA-256 digests for all four helpers. The production runtime validates that receipt and resolves only this package's `build/`; old C primary binaries, missing receipts and changed binaries are rejected with rebuild guidance. The receipt detects stale local build artifacts, not malicious host modification or unbuilt source changes; it is not a security attestation.
+
+`npm run build` does not delete working helpers before compilation. `npm run clean` is a separate, destructive operation; do not run it on a live installation when attempting a safe update.
+
+The four old C helper implementations, reference build, and implementation selector were removed after successful local Linux integration and corrected C/Rust comparison. The remaining production libfuse C ABI shim has subsequently been replaced by the Rust adapter; independent test-only C probes remain. The old implementations and comparison evidence remain in Git history. The earlier mounted results precede the ABI-adapter replacement and do not validate that new path; see the [ABI replacement verification scope](native-rust-migration.md#remaining-libfuse-c-abi-shim-replaced).
 
 ## Install the package
 
@@ -177,13 +186,15 @@ For a FUSE2-to-FUSE3 upgrade in a running Pi session, install the host FUSE3 SDK
 
 Load the working tree with `pi -e "$PWD"`, or start Pi inside the checkout and use its project-local package setting.
 
-Run the suite only on a suitable host environment:
+Use a terminal on your normal Linux machine with the prerequisites above. pi.lot is a local Pi extension; testing does not require a separate server, testing host, or deployment rollout.
 
 ```bash
 npm test
 ```
 
-Native parity tests additionally require Python 3 for byte-preserving exec, seccomp, and deterministic subreaper launchers. The normal Rust helper build/runtime does not depend on Python.
+This builds/type-checks the extension, runs the canonical mount-free native suite without rebuilding, then runs the runtime suite, which discovers all existing `.test.ts` and `.test.mjs` files. The runtime suite includes real mount/network tests, so run it outside pi.lot's Bash sandbox or any other restrictive sandbox.
+
+Native regression tests additionally require Python 3 for byte-preserving exec, seccomp, and deterministic subreaper launchers, plus a C compiler for ABI/syscall fixtures. The normal Rust helper build/runtime does not depend on Python.
 
 For mount-free native verification:
 
@@ -191,24 +202,25 @@ For mount-free native verification:
 npm run test:native
 ```
 
-This builds both implementations, runs Rust unit tests, runs the identical callback/protocol/policy contracts against C and Rust, and runs direct differential tests with independent expected results. The mount-free FUSE probes exercise production callbacks and real libfuse INIT negotiation; they do not replace kernel/mount integration.
+The canonical runner, `scripts/test-native.mjs`, builds the Rust helpers, runs Rust unit tests, callback/protocol/policy contracts, independent expected-behavior regressions, and build/runtime/source-package integration checks. The mount-free FUSE probes exercise production callbacks and real libfuse INIT negotiation; they do not replace kernel/mount integration.
 
-For complete existing mounted/network contract coverage on **both** implementations:
+The source-package check uses the actual npm install hook to build real Rust ELF helpers with a fresh Cargo target and cached dependencies in Cargo offline mode. It checks package contents, package-local resolution, protocol/exec smoke behavior, and preservation after a failed npm build. It tests the install hook, **not** offline installation of npm dependencies.
+
+For the same suite plus real mounted/network contract coverage:
 
 ```bash
 npm run test:native:host
 ```
 
-This command requires `/dev/fuse` and an unsandboxed prepared host. A mount-free pass is not a passing host-parity suite. `npm test` also runs mount-free parity before the runtime suite, which discovers all existing `.test.ts` and `.test.mjs` files.
+This requires accessible `/dev/fuse` and the local namespace/network prerequisites. A mount-free pass is not a passing mounted/network suite. `test:native:integration` and `test:native:integration:host` are retained compatibility aliases for the same canonical runner without/with `--host`; they are not extra verification gates. The [migration record](native-rust-migration.md#local-linux-integration-and-c-retirement-completed) records the successful user-run integration and pre-retirement C/Rust comparison.
 
-For debugging a specific existing test after building the reference:
+To debug a specific test after building:
 
 ```bash
-PILOT_NATIVE_IMPLEMENTATION=c node --import jiti/register --test test/native-fuse-callbacks.test.ts
-PILOT_NATIVE_IMPLEMENTATION=rust node --import jiti/register --test test/native-fuse-callbacks.test.ts
+node --import jiti/register --test test/native-fuse-callbacks.test.ts
 ```
 
-Do **not** run the sandbox integration suite from inside pi.lot or another restrictive sandbox. The tests create FUSE mounts, Bubblewrap workers, network namespaces, and nftables/NFQUEUE state; nesting those mechanisms produces misleading failures.
+Do **not** run integration from inside pi.lot's Bash sandbox or another restrictive sandbox. The tests create FUSE mounts, Bubblewrap workers, network namespaces, and nftables/NFQUEUE state; nesting those mechanisms produces misleading failures.
 
 `test/network.test.ts` first checks synthetic DNS and IPv4 HTTP forwarding against local fixture servers. Its curl probe has a two-second connection timeout and a three-second total timeout, with a five-second sandbox deadline. A failed preflight stops that file instead of repeating the same gateway failure through every HTTP, HTTPS, Git, and Java test. Other test files still run. The failure includes curl stderr and observed policy events; fix that prerequisite before interpreting the cancelled network tests. Some negative native-protocol tests deliberately exercise five-second fail-closed deadlines.
 
@@ -217,6 +229,10 @@ Do **not** run the sandbox integration suite from inside pi.lot or another restr
 ### `/dev/fuse` is unavailable
 
 Ensure FUSE 3 is installed, `/usr/bin/fusermount3` and `/dev/fuse` exist, and the current user can read and write `/dev/fuse`. Containers and managed development environments may need explicit device access.
+
+### Rust helper is missing or outdated
+
+Run `npm run build:native` from the installed checkout, confirm it succeeds, and restart Pi. Do not copy legacy C executables into the primary `build/` paths or manually manufacture the Rust receipt. The old C comparison selection (`PILOT_NATIVE_IMPLEMENTATION=c`) and reference build no longer exist; remove any obsolete override from your environment.
 
 ### Namespace creation is denied
 
@@ -241,6 +257,20 @@ apt-cache policy fuse3 libfuse3-dev
 Use a distribution release or appropriate package source providing a supported SDK **and matching runtime**. Do not bypass the minimum-version check; installing `libfuse3-dev` again from the same older repository will not resolve the missing exported functions.
 
 For a nonstandard SDK prefix, configure `PKG_CONFIG_PATH` to its pkg-config directory. Do not substitute the old npm FUSE2 headers or library. The builder rejects missing/old SDKs before replacing existing helpers.
+
+### Native build cannot load libclang
+
+Binding generation needs the libclang shared library, not just LLVM headers or a `clang` executable. Install `clang-libs` or `clang-devel` on Fedora/Bazzite, or `libclang-dev` on Debian/Ubuntu. As with the FUSE SDK, the library must be visible to the process building on the host, not only installed inside a toolbox.
+
+If LLVM is installed in a nonstandard location, point `LIBCLANG_PATH` at its library directory before building. For example, if the shared library is `/opt/llvm/lib/libclang.so`:
+
+```bash
+LIBCLANG_PATH=/opt/llvm/lib npm run build:native
+```
+
+`LIBCLANG_PATH` locates LLVM's library; `PKG_CONFIG_PATH` separately locates the FUSE/NFQUEUE SDKs. Keep the installed FUSE headers and runtime matched and do not bypass the libfuse 3.17.3 minimum.
+
+If parsing fails with a missing builtin header such as `stdarg.h`, install the matching Clang resource headers (`clang-resource-files`/`clang-devel` on Fedora, or `libclang-common-<version>-dev` on Debian/Ubuntu). The builder discovers these relative to the loaded library without needing a `clang` executable. For a nonstandard resource location, use `BINDGEN_EXTRA_CLANG_ARGS='-resource-dir=/path/to/lib/clang/<version>'`.
 
 ### Native build cannot find NFQUEUE
 

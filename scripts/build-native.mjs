@@ -1,4 +1,5 @@
-import {copyFileSync, mkdirSync, renameSync, rmSync, writeFileSync} from "node:fs";
+import {copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync} from "node:fs";
+import {createHash} from "node:crypto";
 import path from "node:path";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
@@ -7,18 +8,17 @@ import {fuseFlags, netfilterQueueFlags} from "./native-build-flags.mjs";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outputDirectory = path.resolve(root, process.env.PILOT_NATIVE_BUILD_DIRECTORY ?? "build");
 const targetDirectory = path.resolve(root, process.env.CARGO_TARGET_DIR ?? "native/rust/target");
-const arguments_ = process.argv.slice(2);
-if (arguments_.some((argument) => !["--reference", "--all"].includes(argument)) || arguments_.length > 1) {
-    throw new Error("Usage: node scripts/build-native.mjs [--reference | --all]");
+const rustHelpers = ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native"];
+if (process.argv.length !== 2) {
+    throw new Error("Usage: node scripts/build-native.mjs");
 }
 
 // Resolve every SDK before replacing any helper. A failed preflight must leave
-// a running installation intact, including during the C-to-Rust migration.
+// the extension's existing helpers intact.
 const fuseCompilerFlags = fuseFlags();
 const netfilterCompilerFlags = netfilterQueueFlags();
 mkdirSync(outputDirectory, {recursive: true});
-if (arguments_[0] !== "--reference") buildRust();
-if (arguments_[0] === "--reference" || arguments_[0] === "--all") buildReference();
+buildRust();
 
 function buildRust() {
     const sdkDirectory = path.join(outputDirectory, "native-sdk");
@@ -31,31 +31,7 @@ function buildRust() {
         CARGO_TARGET_DIR: targetDirectory,
         PILOT_NATIVE_SDK_FLAGS: sdkDirectory,
     });
-    publishRustArtifacts(["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native",
-        "pi-network-queue-probe", "pi-tcp-gateway-probe", "libpilot_native.a"]);
-}
-
-function buildReference() {
-    const directory = path.join(outputDirectory, "native-c");
-    mkdirSync(directory, {recursive: true});
-    compileNative("native/pi-exec-clean.c", "pi-exec-clean-native", directory);
-    compileNative("native/pi-fuse.c", "pi-fuse-native", directory, fuseCompilerFlags);
-    compileNative("native/pi-network-queue.c", "pi-network-queue-native", directory, netfilterCompilerFlags);
-    compileNative("native/pi-tcp-gateway.c", "pi-tcp-gateway-native", directory);
-    compileNative("test/fixtures/native-network-queue-probe.c", "pi-network-queue-probe", directory, netfilterCompilerFlags);
-    compileNative("test/fixtures/native-tcp-gateway-probe.c", "pi-tcp-gateway-probe", directory);
-}
-
-function compileNative(sourceName, outputName, directory, extraFlags = []) {
-    const output = path.join(directory, outputName);
-    const temporary = `${output}.tmp-${process.pid}`;
-    try {
-        execute("cc", ["-std=c17", "-O2", "-g", "-Wall", "-Wextra", "-Wpedantic", "-o", temporary,
-            path.join(root, sourceName), ...extraFlags]);
-        renameSync(temporary, output);
-    } finally {
-        rmSync(temporary, {force: true});
-    }
+    publishRustArtifacts([...rustHelpers, "pi-network-queue-probe", "pi-tcp-gateway-probe", "libpilot_native.a"]);
 }
 
 function publishRustArtifacts(names) {
@@ -64,13 +40,21 @@ function publishRustArtifacts(names) {
         output: path.join(outputDirectory, name),
         temporary: path.join(outputDirectory, `${name}.tmp-${process.pid}`),
     }));
+    const receipt = path.join(outputDirectory, "native-rust.json");
+    const stagedReceipt = `${receipt}.tmp-${process.pid}`;
     try {
-        // Stage every artifact before replacing any running helper. Missing
-        // output or a failed copy must not install a partial build.
+        // Stage every artifact and its build receipt before publishing any.
+        // Publishing the receipt last makes stale or partially replaced primary
+        // helpers fail runtime validation rather than silently run old C code.
         for (const artifact of artifacts) copyFileSync(artifact.source, artifact.temporary);
+        const helpers = Object.fromEntries(artifacts.filter((artifact) => rustHelpers.includes(path.basename(artifact.output)))
+            .map((artifact) => [path.basename(artifact.output), createHash("sha256").update(readFileSync(artifact.temporary)).digest("hex")]));
+        writeFileSync(stagedReceipt, JSON.stringify({version: 1, implementation: "rust", helpers}) + "\n");
         for (const artifact of artifacts) renameSync(artifact.temporary, artifact.output);
+        renameSync(stagedReceipt, receipt);
     } finally {
         for (const artifact of artifacts) rmSync(artifact.temporary, {force: true});
+        rmSync(stagedReceipt, {force: true});
     }
 }
 

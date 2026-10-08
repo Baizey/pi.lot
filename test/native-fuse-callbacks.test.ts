@@ -55,6 +55,94 @@ after(async () => {
     if (initBuildDirectory) await rm(initBuildDirectory, {recursive: true, force: true});
 });
 
+for (const option of ["--help", "--version", "--pilot-invalid-option"]) {
+    test(`Rust libfuse entrypoint matches the installed C macro for ${option} without mounting`, () => {
+        const run = (mode: string) => {
+            const result = spawnSync(initExecutable, [mode, option], {encoding: "utf8", timeout: 5_000});
+            assert.ifError(result.error);
+            assert.equal(result.signal, null);
+            return {status: result.status, stdout: result.stdout, stderr: result.stderr};
+        };
+        const expected = run("main-c");
+        // libfuse checks for a mountpoint before processing unknown filesystem
+        // options. The independent C call must therefore report status 2 here.
+        assert.equal(expected.status, option === "--pilot-invalid-option" ? 2 : 0);
+        if (option === "--help") assert.match(expected.stdout, /usage:|options:/i);
+        if (option === "--version") assert.match(expected.stdout, /fuse.*version/i);
+        if (option === "--pilot-invalid-option") assert.match(expected.stderr, /no mount ?point specified/i);
+        assert.deepEqual(run("main-rust"), expected);
+    });
+}
+
+test("Rust operation factory obeys the installed C-header table ABI and rejects wrong sizes without writes", () => {
+    const executed = spawnSync(executable, ["abi-operations"], {encoding: "utf8", timeout: 5_000});
+    assert.ifError(executed.error);
+    assert.equal(executed.status, 0, executed.stderr);
+    const result = JSON.parse(executed.stdout) as {
+        result: number;
+        sizesRejected: boolean;
+        rejectionUntouched: boolean;
+        nullRejected: boolean;
+        guardsPreserved: boolean;
+        callbacksPresent: boolean;
+        unusedSlotsZero: boolean;
+        initExportMatches: boolean;
+    };
+    assert.equal(result.result, 0);
+    assert.equal(result.sizesRejected, true);
+    assert.equal(result.rejectionUntouched, true);
+    assert.equal(result.nullRejected, true);
+    assert.equal(result.guardsPreserved, true);
+    assert.equal(result.callbacksPresent, true);
+    assert.equal(result.unusedSlotsZero, true);
+    assert.equal(result.initExportMatches, true);
+});
+
+for (const operation of ["open", "create"]) {
+    for (const access of [constants.O_RDONLY, constants.O_WRONLY, constants.O_RDWR]) {
+        for (const directIo of [0, 1]) {
+            for (const keepCache of [0, 1]) {
+                test(`${operation} C-header ABI preserves all sentinel fields with access ${access}, direct_io ${directIo}, keep_cache ${keepCache}`, async () => {
+                    await withFixture(async (directory) => {
+                        const target = path.join(directory, "file");
+                        if (operation === "open") await writeFile(target, "original");
+                        const flags = access | constants.O_APPEND | constants.O_NONBLOCK;
+                        const args = [`abi-${operation}`, target, String(flags), String(directIo), String(keepCache)];
+                        const readonly = access === constants.O_RDONLY;
+                        const denied = await probe(directory, [policy(directory,
+                            readonly ? PolicyResponse.DENIED : PolicyResponse.ALLOWED,
+                            readonly ? PolicyResponse.ALLOWED : PolicyResponse.DENIED)], ...args);
+                        assert.equal(denied.result, -errno.EACCES);
+                        assertDenied(denied, target, readonly ? NativeFilesystemAccess.READ : NativeFilesystemAccess.WRITE);
+                        assert.equal(denied.handleAssigned, false);
+                        assert.equal(denied.directIo, directIo);
+                        assert.equal(denied.keepCache, keepCache);
+                        assert.equal(denied.fieldsPreserved, true);
+                        assert.equal(denied.releasePreserved, true);
+                        if (operation === "create") await assert.rejects(stat(target), {code: "ENOENT"});
+                        else assert.equal(await readFile(target, "utf8"), "original");
+                        const allowed = await probe(directory, [policy(directory)], ...args);
+                        assert.equal(allowed.result, 0);
+                        assert.deepEqual(allowed.denials, []);
+                        assert.equal(allowed.handleAssigned, true);
+                        assert.equal(allowed.statusFlags & 3, access);
+                        assert.equal(allowed.statusFlags & constants.O_APPEND, constants.O_APPEND);
+                        assert.equal(allowed.statusFlags & constants.O_NONBLOCK, constants.O_NONBLOCK);
+                        // The supplied flags do not request O_CLOEXEC; marshalling
+                        // must preserve them rather than silently add it.
+                        assert.equal(allowed.descriptorFlags & 1, 0);
+                        assert.equal(allowed.directIo, readonly ? 0 : 1);
+                        assert.equal(allowed.keepCache, 0);
+                        assert.equal(allowed.fieldsPreserved, true);
+                        assert.equal(allowed.releasePreserved, true);
+                        assert.equal(await readFile(target, "utf8"), operation === "open" ? "original" : "");
+                    });
+                });
+            }
+        }
+    }
+}
+
 for (const capabilities of ["supported", "unsupported"]) {
     test(`real mount-free INIT declines forbidden ${capabilities} features in the wire reply`, () => {
         const executed = spawnSync(initExecutable, [capabilities], {encoding: "utf8", timeout: 5_000});
@@ -70,6 +158,8 @@ for (const capabilities of ["supported", "unsupported"]) {
             capabilitiesPreserved: boolean;
             configurationSafe: boolean;
             stateReturned: boolean;
+            connectionFieldsPreserved: boolean;
+            configurationFieldsPreserved: boolean;
         };
         assert.equal(result.replyValid, true);
         assert.equal(result.initCalled, true);
@@ -80,6 +170,8 @@ for (const capabilities of ["supported", "unsupported"]) {
         assert.equal(result.capabilitiesPreserved, true);
         assert.equal(result.configurationSafe, true);
         assert.equal(result.stateReturned, true);
+        assert.equal(result.connectionFieldsPreserved, true);
+        assert.equal(result.configurationFieldsPreserved, true);
     });
 }
 
@@ -99,6 +191,8 @@ for (const capabilities of ["supported", "unsupported"]) {
             assert.equal(result.autoCache, 0);
             assert.equal(result.stateReturned, true);
             assert.equal(result.disableRequestsComplete, true);
+            assert.equal(result.connectionFieldsPreserved, true);
+            assert.equal(result.configurationFieldsPreserved, true);
         });
     });
 }
@@ -423,6 +517,10 @@ type ProbeResult = {
     autoCache: number;
     stateReturned: boolean;
     disableRequestsComplete: boolean;
+    connectionFieldsPreserved: boolean;
+    configurationFieldsPreserved: boolean;
+    fieldsPreserved: boolean;
+    releasePreserved: boolean;
     size: number;
     firstEntries: number;
     entries: number;
@@ -430,6 +528,7 @@ type ProbeResult = {
     directoryAttributes: boolean;
     pointerHandleRejected: boolean;
     statusFlags: number;
+    descriptorFlags: number;
     directIo: number;
     keepCache: number;
     handleAssigned: boolean;

@@ -1,14 +1,18 @@
 #define _GNU_SOURCE
-/* Compile the original source into this fixture: no alternate relay implementation. */
-#define main native_gateway_main
-#include "../../native/pi-tcp-gateway.c"
-#undef main
-
+/* Test-only syscall/ABI launcher and inspector. No production helper implementation. */
+#include <errno.h>
+#include <fcntl.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 static void print_hex(const char *value) {
     for (const unsigned char *byte = (const unsigned char *) value; *byte; byte++) printf("%02x", *byte);
@@ -25,8 +29,8 @@ static int raw_exec(const char *helper, const char *self, int invalid_maximum) {
     return 70;
 }
 
-/* Force both permitted fallback errors and the deliberately fatal close_range error.
- * A small rlimit keeps the original helper's descriptor-by-descriptor fallback cheap. */
+/* Inject close_range/procfs failures and lower the descriptor limit after the
+ * high-descriptor mode opens fd 512, without implementing descriptor cleanup. */
 static int filtered_exec(int argc, char **argv) {
     if (argc < 5) return 64;
     int error = atoi(argv[2]);
@@ -54,58 +58,7 @@ static int filtered_exec(int argc, char **argv) {
     return 70;
 }
 
-static int serve_probe(uint16_t broker_port) {
-    int listener = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener < 0 || set_close_on_exec(listener) < 0) return 1;
-    struct sockaddr_in address = {
-        .sin_family = AF_INET,
-        .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)},
-    };
-    socklen_t length = sizeof(address);
-    if (bind(listener, (struct sockaddr *) &address, length) < 0
-        || getsockname(listener, (struct sockaddr *) &address, &length) < 0
-        || listen(listener, LISTEN_BACKLOG) < 0
-        || install_signal_handlers() < 0
-        || drop_process_privileges() < 0) return 1;
-    printf(PROTOCOL_PREFIX "\tREADY\t%u\n", (unsigned int) ntohs(address.sin_port));
-    if (fflush(stdout) != 0) return 1;
-    while (1) {
-        struct pollfd descriptor = {.fd = listener, .events = POLLIN};
-        if (poll(&descriptor, 1, -1) < 0) {
-            if (errno == EINTR) continue;
-            return 1;
-        }
-        if (descriptor.revents & POLLIN) accept_client(listener, &listener, 1, &address.sin_addr, broker_port);
-        if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) return 1;
-    }
-}
-
 int main(int argc, char **argv) {
-    if (argc >= 2 && strcmp(argv[1], "parse") == 0) {
-        for (int index = 2; index < argc; index++) {
-            uint16_t port = 0;
-            if (parse_port(argv[index], &port) == 0) printf("%u\n", (unsigned int) port);
-            else puts("invalid");
-        }
-        return 0;
-    }
-    if (argc == 2 && strcmp(argv[1], "relay") == 0) return relay_streams(3, 4) == 0 ? 0 : 1;
-    if (argc == 2 && strcmp(argv[1], "privileges") == 0) {
-        if (drop_process_privileges() < 0) return 1;
-        struct __user_cap_header_struct header = {.version = _LINUX_CAPABILITY_VERSION_3, .pid = 0};
-        struct __user_cap_data_struct capabilities[2] = {{0}, {0}};
-        if (syscall(SYS_capget, &header, capabilities) < 0) return 1;
-        printf("dumpable=%d no_new_privs=%d\n", prctl(PR_GET_DUMPABLE), prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0));
-        for (int index = 0; index < 2; index++) {
-            printf("%u:%u:%u\n", capabilities[index].effective, capabilities[index].permitted, capabilities[index].inheritable);
-        }
-        return 0;
-    }
-    if (argc == 3 && strcmp(argv[1], "serve") == 0) {
-        uint16_t port;
-        if (parse_port(argv[2], &port) != 0) return 64;
-        return serve_probe(port);
-    }
     if (argc == 4 && strcmp(argv[1], "exec-raw") == 0) return raw_exec(argv[2], argv[3], 0);
     if (argc == 4 && strcmp(argv[1], "exec-invalid-raw") == 0) return raw_exec(argv[2], argv[3], 1);
     if (argc == 3 && strcmp(argv[1], "inspect-raw") == 0) {
@@ -155,6 +108,6 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc >= 2 && strncmp(argv[1], "filtered-exec", 13) == 0) return filtered_exec(argc, argv);
-    fprintf(stderr, "usage: pi-tcp-gateway-probe parse [PORT...] | relay\n");
+    fprintf(stderr, "usage: native-process-probe EXEC_OR_INSPECT_MODE [ARG...]\n");
     return 64;
 }

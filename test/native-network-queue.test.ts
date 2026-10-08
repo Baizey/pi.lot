@@ -5,12 +5,9 @@ import test from "node:test";
 import {fileURLToPath} from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const probes = [
-    process.env.PILOT_NETWORK_QUEUE_C_PROBE ?? path.join(root, "build/native-c/pi-network-queue-probe"),
-    process.env.PILOT_NETWORK_QUEUE_RUST_PROBE ?? path.join(root, "build/pi-network-queue-probe"),
-];
+const probe = path.join(root, "build/pi-network-queue-probe");
 const prefix = "PI_NETWORK_QUEUE\t3";
-interface Vector { description: string; command: string; expected?: string }
+interface Vector { description: string; command: string; expected: string }
 
 function packetVector(description: string, packet: Uint8Array, expected = "DROP"): Vector {
     return {description, command: `P ${Buffer.from(packet).toString("hex")}`, expected};
@@ -22,22 +19,20 @@ function verdictVector(description: string, sequence: string, dns: boolean, reco
 
 function execute(vectors: readonly Vector[]): void {
     const input = vectors.map(vector => vector.command).join("\n") + "\n";
-    const outputs = probes.map(executable => {
-        const result = spawnSync(executable, [], {input, encoding: "utf8", timeout: 15_000, maxBuffer: 16 * 1024 * 1024});
-        assert.ifError(result.error);
-        assert.equal(result.status, 0, `${executable}: ${result.stderr}`);
-        const lines = result.stdout.split("\n");
-        assert.equal(lines.pop(), "", "probe output must be newline terminated");
-        assert.equal(lines.length, vectors.length, executable);
-        return lines;
-    });
+    const result = spawnSync(probe, [], {input, encoding: "utf8", timeout: 15_000, maxBuffer: 16 * 1024 * 1024});
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    const lines = result.stdout.split("\n");
+    assert.equal(lines.pop(), "", "probe output must be newline terminated");
+    assert.equal(lines.length, vectors.length);
     vectors.forEach((vector, index) => {
-        assert.equal(outputs[1][index], outputs[0][index], `differential: ${vector.description}; ${vector.command}`);
-        if (vector.expected !== undefined) {
-            for (let probe = 0; probe < probes.length; probe++) {
-                assert.equal(outputs[probe][index], vector.expected, `${probes[probe]}: ${vector.description}`);
-            }
-        }
+        const [kind, first, dnsQuery, record] = vector.command.split(" ");
+        const modeled = kind === "P" ? packetOracle(Buffer.from(first, "hex"))
+            : verdictOracle(first, dnsQuery === "1", Buffer.from(record, "hex"));
+        assert.equal(modeled, vector.expected, `oracle: ${vector.description}`);
+        assert.equal(lines[index], vector.expected, `${vector.description}; ${vector.command}`);
     });
 }
 
@@ -102,6 +97,86 @@ function changed(packet: Buffer, offset: number, value: number, width = 1): Buff
 
 function dnsVector(description: string, query: Buffer, expected = "DROP"): Vector {
     return packetVector(description, ipv4(udp(query, 53)), expected);
+}
+
+// Test-side wire specification: no native code or production TS parser is used.
+// Fixed vectors below also check these oracles, so the mutation corpus cannot
+// quietly regress to an oracle that always rejects or omits event fields.
+function packetOracle(bytes: Buffer): string {
+    const word = (buffer: Buffer, offset: number) => offset + 2 <= buffer.length ? buffer.readUInt16BE(offset) : -1;
+    const version = (bytes[0] ?? 0) >>> 4;
+    let start: number;
+    let end: number;
+    let protocol: number;
+    let source: string;
+    let target: string;
+    if (version === 4 && bytes.length >= 20) {
+        start = (bytes[0] & 15) * 4;
+        end = word(bytes, 2);
+        if (start < 20 || end < start || end > bytes.length || (word(bytes, 6) & 0x3fff) !== 0) return "DROP";
+        protocol = bytes[9];
+        source = [...bytes.subarray(12, 16)].join(".");
+        target = [...bytes.subarray(16, 20)].join(".");
+    } else if (version === 6 && bytes.length >= 40) {
+        start = 40;
+        end = start + word(bytes, 4);
+        if (end <= start || end > bytes.length) return "DROP";
+        protocol = bytes[6];
+        source = ipv6Text(bytes.subarray(8, 24));
+        target = ipv6Text(bytes.subarray(24, 40));
+    } else return "DROP";
+    const payload = bytes.subarray(start, end);
+    const transport = protocol === 6 ? "tcp" : protocol === 17 ? "udp" : null;
+    if (transport === "tcp") {
+        const size = (payload[12] ?? 0) >>> 4;
+        if (payload.length < 20 || size < 5 || size * 4 > payload.length || (payload[13] & 0x17) !== 2) return "DROP";
+    } else if (transport === "udp") {
+        const size = word(payload, 4);
+        if (payload.length < 8 || size < 8 || size > payload.length) return "DROP";
+    } else return "DROP";
+    const sourcePort = word(payload, 0);
+    const targetPort = word(payload, 2);
+    if (sourcePort <= 0 || targetPort <= 0) return "DROP";
+    const fields = [prefix, "EVENT", "1", `IPV${version}`, transport, source, String(sourcePort), target, String(targetPort)];
+    if (transport === "udp" && targetPort === 53) {
+        const query = payload.subarray(8, word(payload, 4));
+        if (query.length < 17 || (word(query, 2) & 0xf800) !== 0 || word(query, 4) !== 1) return "DROP";
+        const labels: string[] = [];
+        let cursor = 12;
+        while (cursor < query.length && query[cursor] !== 0) {
+            const size = query[cursor++];
+            if (size > 63 || cursor + size > query.length) return "DROP";
+            const label = query.subarray(cursor, cursor + size).toString("latin1");
+            if (!/^[a-z0-9_-]+$/i.test(label) || label.startsWith("-") || label.endsWith("-")) return "DROP";
+            labels.push(label.toLowerCase());
+            cursor += size;
+        }
+        const name = labels.join(".");
+        // Require the root terminator followed by a complete nonzero IN question.
+        if (query[cursor] !== 0 || !name || name.length > 255 || cursor + 5 > query.length
+            || word(query, cursor + 1) <= 0 || word(query, cursor + 3) !== 1) return "DROP";
+        fields.push("DNS", name, String(word(query, cursor + 1)));
+    }
+    return fields.join("\t");
+}
+
+function ipv6Text(bytes: Buffer): string {
+    const dotted = [...bytes.subarray(12)].join(".");
+    if (bytes.subarray(0, 12).every(byte => byte === 0) && (bytes[12] !== 0 || bytes[13] !== 0)) return `::${dotted}`;
+    if (bytes.subarray(0, 10).every(byte => byte === 0) && bytes[10] === 255 && bytes[11] === 255) return `::ffff:${dotted}`;
+    // The platform URL parser supplies independent RFC 5952 zero compression.
+    const groups = Array.from({length: 8}, (_, index) => bytes.readUInt16BE(index * 2).toString(16));
+    return new URL(`http://[${groups.join(":")}]`).hostname.slice(1, -1);
+}
+
+function verdictOracle(sequence: string, dnsQuery: boolean, bytes: Buffer): string {
+    const newline = bytes.indexOf(10);
+    if (newline < 0 || newline >= 255) return "INVALID";
+    const record = bytes.subarray(0, bytes[newline - 1] === 13 ? newline - 1 : newline);
+    for (const [decision, mark] of [["ALLOW", dnsQuery ? 0x50490004 : 0x50490001], ["DENY", dnsQuery ? 0x50490005 : 0x50490002]] as const) {
+        if (record.equals(Buffer.from(`${prefix}\tVERDICT\t${sequence}\t${decision}`))) return `MARK ${mark}`;
+    }
+    return "INVALID";
 }
 
 test("network queue: IPv4 lengths, options, fragments, versions and padding have independent expectations", () => {
@@ -227,7 +302,7 @@ test("network queue: exact verdict bytes, sequence extremes, CRLF, NUL, EOF and 
     execute(vectors);
 });
 
-test("network queue: deterministic differential mutation corpus exercises real production parsers", () => {
+test("network queue: deterministic mutation corpus matches independent packet and verdict oracles", () => {
     let state = 0x50494c4f;
     const random = (): number => {
         state ^= state << 13;
@@ -244,12 +319,14 @@ test("network queue: deterministic differential mutation corpus exercises real p
         else if (mode === 1) bytes = Buffer.concat([bytes, Buffer.alloc(random() % 24, random() & 255)]);
         const mutations = 1 + random() % 5;
         for (let mutation = 0; mutation < mutations && bytes.length; mutation++) bytes[random() % bytes.length] = random() & 255;
-        vectors.push({description: `seeded mutation ${index}`, command: `P ${bytes.toString("hex")}`});
+        vectors.push(packetVector(`seeded mutation ${index}`, bytes, packetOracle(bytes)));
     }
+    assert.ok(vectors.some(vector => vector.expected === "DROP"), "mutations must include rejected packets");
+    assert.ok(vectors.some(vector => vector.expected.startsWith(`${prefix}\tEVENT\t`)), "mutations must include accepted packets with exact event expectations");
     for (let index = 0; index < 500; index++) {
         const record = Buffer.from(`${prefix}\tVERDICT\t42\tALLOW\n`);
         for (let mutation = 0; mutation < 1 + index % 4; mutation++) record[random() % record.length] = random() & 255;
-        vectors.push({description: `verdict mutation ${index}`, command: `V 42 ${index % 2} ${record.toString("hex")}`});
+        vectors.push(verdictVector(`verdict mutation ${index}`, "42", index % 2 === 1, record, verdictOracle("42", index % 2 === 1, record)));
     }
     execute(vectors);
 });

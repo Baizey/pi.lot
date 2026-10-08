@@ -1,11 +1,5 @@
 /* Exercise real libfuse INIT negotiation through custom I/O, without a mount. */
-#ifdef PILOT_RUST_NATIVE
-#include "../../native/pi-fuse-shim.c"
-#else
-#define main pi_fuse_program_main
-#include "../../native/pi-fuse.c"
-#undef main
-#endif
+#include "native-fuse-probe.h"
 
 #include <fuse_lowlevel.h>
 #include <linux/fuse.h>
@@ -16,6 +10,8 @@ static bool requested_after_init;
 static bool capabilities_preserved;
 static bool configuration_safe;
 static bool state_returned;
+static bool connection_fields_preserved;
+static bool configuration_fields_preserved;
 
 static uint64_t forbidden_capabilities(void) {
     return FUSE_CAP_DIRECT_IO_ALLOW_MMAP | FUSE_CAP_WRITEBACK_CACHE
@@ -42,8 +38,19 @@ static void *probe_init(struct fuse_conn_info *connection, struct fuse_config *c
     configuration->direct_io = 1;
     configuration->kernel_cache = 1;
     configuration->auto_cache = 1;
-    void *state = filesystem_state();
-    void *initialized = benchmark_init(connection, configuration);
+    struct fuse_conn_info expected_connection;
+    memcpy(&expected_connection, connection, sizeof(expected_connection));
+    expected_connection.want &= ~(uint32_t) forbidden_capabilities();
+    expected_connection.want_ext &= ~forbidden_capabilities();
+    struct fuse_config expected_configuration;
+    memcpy(&expected_configuration, configuration, sizeof(expected_configuration));
+    expected_configuration.parallel_direct_writes = 0;
+    expected_configuration.nullpath_ok = 0;
+    expected_configuration.direct_io = 0;
+    expected_configuration.kernel_cache = 0;
+    expected_configuration.auto_cache = 0;
+    void *state = fuse_get_context()->private_data;
+    void *initialized = pilot_fuse_init(connection, configuration);
     /* Do not use fuse_get_feature_flag(): 3.18.2 checks capable_ext, not want_ext. */
     requested_after_init = (connection->want_ext & forbidden_capabilities()) != 0
         || (connection->want & (uint32_t) forbidden_capabilities()) != 0;
@@ -51,6 +58,8 @@ static void *probe_init(struct fuse_conn_info *connection, struct fuse_config *c
     configuration_safe = configuration->parallel_direct_writes == 0 && configuration->nullpath_ok == 0
         && configuration->direct_io == 0 && configuration->kernel_cache == 0 && configuration->auto_cache == 0;
     state_returned = initialized == state;
+    connection_fields_preserved = memcmp(connection, &expected_connection, sizeof(expected_connection)) == 0;
+    configuration_fields_preserved = memcmp(configuration, &expected_configuration, sizeof(expected_configuration)) == 0;
     init_called = true;
     return initialized;
 }
@@ -65,18 +74,8 @@ static ssize_t probe_read(int descriptor, void *buffer, size_t size, void *userd
     return read(descriptor, buffer, size);
 }
 
-int main(int argc, char **argv) {
-    if (argc != 2 || (strcmp(argv[1], "supported") != 0 && strcmp(argv[1], "unsupported") != 0)) return 64;
-    bool supported = strcmp(argv[1], "supported") == 0;
-#ifdef PILOT_RUST_NATIVE
-    struct pilot_fuse_state *state = pilot_fuse_probe_new(NULL, NULL, -1, -1);
-    if (state == NULL) return 65;
+static int probe_negotiation(char **argv, bool supported, struct pilot_fuse_state *state) {
     void *private_state = state;
-#else
-    benchmark_filesystem_t state = {0};
-    state.ready_fd = -1;
-    void *private_state = &state;
-#endif
     struct fuse_operations operations = filesystem_operations();
     operations.init = probe_init;
     /* No backing filesystem or statistics lifecycle is started by this test. */
@@ -132,17 +131,36 @@ int main(int argc, char **argv) {
         && reply.header.error == 0 && reply.init.major == FUSE_KERNEL_VERSION;
     printf("{\"replyValid\":%s,\"initCalled\":%s,\"requestedBeforeInit\":%s,"
         "\"requestedAfterInit\":%s,\"forbiddenNegotiated\":%s,\"asyncReadNegotiated\":%s,"
-        "\"capabilitiesPreserved\":%s,\"configurationSafe\":%s,\"stateReturned\":%s}\n",
+        "\"capabilitiesPreserved\":%s,\"configurationSafe\":%s,\"stateReturned\":%s,"
+        "\"connectionFieldsPreserved\":%s,\"configurationFieldsPreserved\":%s}\n",
         reply_valid ? "true" : "false", init_called ? "true" : "false",
         requested_before_init ? "true" : "false", requested_after_init ? "true" : "false",
         (negotiated & forbidden_flags) != 0 ? "true" : "false",
         (negotiated & FUSE_ASYNC_READ) != 0 ? "true" : "false",
         capabilities_preserved ? "true" : "false", configuration_safe ? "true" : "false",
-        state_returned ? "true" : "false");
+        state_returned ? "true" : "false", connection_fields_preserved ? "true" : "false",
+        configuration_fields_preserved ? "true" : "false");
     close(descriptors[1]);
     fuse_destroy(filesystem);
-#ifdef PILOT_RUST_NATIVE
-    pilot_fuse_probe_free(state);
-#endif
     return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 3 && (strcmp(argv[1], "main-c") == 0 || strcmp(argv[1], "main-rust") == 0)) {
+        if (strcmp(argv[2], "--help") != 0 && strcmp(argv[2], "--version") != 0
+            && strcmp(argv[2], "--pilot-invalid-option") != 0) return 64;
+        char program[] = "pilot-fuse-abi-probe";
+        char *arguments[] = {program, argv[2], NULL};
+        struct fuse_operations operations = filesystem_operations();
+        /* These options return before mounting. Compare Rust with the actual
+         * installed-header macro, not a second handwritten version record. */
+        return strcmp(argv[1], "main-rust") == 0
+            ? pilot_fuse_main(2, arguments, NULL) : fuse_main(2, arguments, &operations, NULL);
+    }
+    if (argc != 2 || (strcmp(argv[1], "supported") != 0 && strcmp(argv[1], "unsupported") != 0)) return 64;
+    struct pilot_fuse_state *state = pilot_fuse_probe_new(NULL, NULL, -1, -1);
+    if (state == NULL) return 65;
+    int result = probe_negotiation(argv, strcmp(argv[1], "supported") == 0, state);
+    pilot_fuse_probe_free(state);
+    return result;
 }

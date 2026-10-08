@@ -1,5 +1,5 @@
-//! High-level libfuse filesystem. The C shim only translates libfuse's ABI;
-//! snapshots, live authorization, backing operations and broker ownership live here.
+//! High-level libfuse filesystem. System-header-generated Rust bindings preserve
+//! its ABI; snapshots, authorization, backing operations and broker ownership live here.
 use std::ffi::{CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{
@@ -7,6 +7,8 @@ use std::sync::{
     Mutex,
 };
 
+mod abi;
+mod bindings;
 mod broker;
 mod callbacks;
 mod control;
@@ -375,9 +377,6 @@ pub unsafe extern "C" fn pilot_fuse_probe_free(state: *mut State) {
     }));
 }
 
-extern "C" {
-    fn pilot_fuse_main(argc: i32, argv: *mut *mut libc::c_char, state: *mut libc::c_void) -> i32;
-}
 pub fn main() -> i32 {
     catch_unwind(AssertUnwindSafe(broker::main)).unwrap_or(1)
 }

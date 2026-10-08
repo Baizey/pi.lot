@@ -3,7 +3,7 @@ import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-// Discover the actual contracts, including new parity tests, rather than keep
+// Discover the actual contracts, including native regressions, rather than keep
 // a hand-maintained list that can omit tests or name nonexistent files.
 const tests = readdirSync(new URL("../test", import.meta.url))
     .filter((name) => /\.test\.(ts|mjs)$/.test(name))

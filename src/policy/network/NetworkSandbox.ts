@@ -1,11 +1,10 @@
-import {existsSync, readFileSync} from "node:fs";
+import {readFileSync} from "node:fs";
 import {mkdtemp, readFile, readlink, realpath, rm, writeFile} from "node:fs/promises";
 import {isIP} from "node:net";
 import {networkInterfaces} from "node:os";
 import path from "node:path";
 import {createInterface} from "node:readline";
 import type {Readable} from "node:stream";
-import {fileURLToPath} from "node:url";
 import {
   formatNetworkQueueVerdict,
   NetworkAddressFamily,
@@ -519,7 +518,7 @@ class NetworkSandboxRunner {
       command: NSENTER_PATH,
       arguments: [
         ...this.namespaceArguments(this.gatewayPid()),
-        resolveTcpGatewayAdapter(),
+        resolveNativeExecutable("pi-tcp-gateway-native"),
         "10.0.2.2",
         String(this.tcpBroker.port),
       ],
@@ -571,7 +570,7 @@ class NetworkSandboxRunner {
       command: NSENTER_PATH,
       arguments: [
         ...this.namespaceArguments(this.workerPid()),
-        resolveNetworkQueueAdapter(),
+        resolveNativeExecutable("pi-network-queue-native"),
       ],
       spawnOptions: {stdio: ["pipe", "pipe", "pipe"]},
       onFailure: failHelper,
@@ -1025,22 +1024,6 @@ function parseUpstreamDnsAddress(resolverConfiguration: string): string {
     if (match?.[1] && isIP(match[1]) !== 0) return match[1];
   }
   throw new Error("host resolver configuration contains no supported nameserver");
-}
-
-function resolveNetworkQueueAdapter(): string {
-  const candidates = [
-    fileURLToPath(new URL("../../build/pi-network-queue-native", import.meta.url)),
-    fileURLToPath(new URL("../../../build/pi-network-queue-native", import.meta.url)),
-  ];
-  return candidates.find(existsSync) ?? candidates[0];
-}
-
-function resolveTcpGatewayAdapter(): string {
-  const candidates = [
-    fileURLToPath(new URL("../../build/pi-tcp-gateway-native", import.meta.url)),
-    fileURLToPath(new URL("../../../build/pi-tcp-gateway-native", import.meta.url)),
-  ];
-  return candidates.find(existsSync) ?? candidates[0];
 }
 
 function parseTcpIngressReady(line: string): number {

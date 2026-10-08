@@ -1,37 +1,29 @@
 use super::*;
 use libc::{c_char, c_void};
 
-// This flat argument record is private to pi-fuse-shim.c. No libfuse layout,
-// bitfields or session internals cross the language boundary.
-#[repr(C)]
+// The ABI adapter supplies an internal argument record; policy and backing I/O
+// do not depend on libfuse's struct layout or bitfield representation.
+#[derive(Default)]
 pub struct Call {
-    path: *const c_char,
-    second: *const c_char,
-    buffer: *mut c_void,
-    size: usize,
-    offset: libc::off_t,
-    fh: u64,
-    flags: i32,
-    mode: libc::mode_t,
-    uid: libc::uid_t,
-    gid: libc::gid_t,
-    device: libc::dev_t,
-    filler: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const c_char,
-            *const libc::stat,
-            libc::off_t,
-            i32,
-        ) -> i32,
-    >,
-    has_info: i32,
-    direct_io: i32,
-    keep_cache: i32,
+    pub(super) path: *const c_char,
+    pub(super) second: *const c_char,
+    pub(super) buffer: *mut c_void,
+    pub(super) size: usize,
+    pub(super) offset: libc::off_t,
+    pub(super) fh: u64,
+    pub(super) flags: i32,
+    pub(super) mode: libc::mode_t,
+    pub(super) uid: libc::uid_t,
+    pub(super) gid: libc::gid_t,
+    pub(super) device: libc::dev_t,
+    pub(super) filler: super::bindings::fuse_fill_dir_t,
+    pub(super) has_info: i32,
+    pub(super) direct_io: i32,
+    pub(super) keep_cache: i32,
 }
 #[repr(u32)]
 #[derive(Clone, Copy)]
-enum Operation {
+pub(super) enum Operation {
     Access = 1,
     Getattr,
     Readlink,
@@ -120,23 +112,18 @@ struct DirectoryHandle {
     inner: Mutex<Directory>,
 }
 
-/// Dispatch a libfuse callback through the private shim argument ABI.
+/// Dispatch a libfuse callback through the internal Rust argument record.
 ///
 /// # Safety
 /// Non-null `state` must point to a live Rust-created mount state throughout the
 /// call. Non-null `call` must be an exclusively borrowed, initialized `Call`
-/// marshalled by the shim. Its operation-specific strings must be readable and
+/// marshalled by the ABI adapter. Its operation-specific strings must be readable and
 /// NUL-terminated; buffer pointers must have the callback's required size,
 /// alignment and read/write access. Directory handles must come from this
 /// mount's opendir callback, and release must not race another handle user.
 /// The filler function and its buffer must remain valid during readdir. The
 /// caller must not free state or referenced storage while this call is active.
-#[no_mangle]
-pub unsafe extern "C" fn pilot_fuse_call(
-    state: *mut State,
-    operation: u32,
-    call: *mut Call,
-) -> i32 {
+pub(super) unsafe fn pilot_fuse_call(state: *mut State, operation: u32, call: *mut Call) -> i32 {
     if state.is_null() || call.is_null() {
         return -libc::EACCES;
     }

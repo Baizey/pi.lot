@@ -3,12 +3,14 @@ import {existsSync} from "node:fs";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
+import {fileURLToPath} from "node:url";
 import {NetworkDecision} from "../src/policy/network/network-queue-protocol.js";
 import {runNetworkSandboxedCommand} from "../src/policy/network/NetworkSandbox.js";
 import {ManagedChildProcess, type ManagedChildProcessOptions} from "../src/runtime/ManagedChildProcess.js";
 
 type StalledStage = "network sandbox worker" | "TCP gateway ingress" | "network queue helper";
 type Cancellation = "abort" | "timeout";
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 for (const stage of ["network sandbox worker", "TCP gateway ingress", "network queue helper"] as const) {
     for (const cancellation of ["abort", "timeout"] as const) {
@@ -17,6 +19,10 @@ for (const stage of ["network sandbox worker", "TCP gateway ingress", "network q
         });
     }
 }
+
+test("network runtime launches all three verified Rust helpers from this extension", async (t) => {
+    await checkCancellation(t, "network queue helper", "abort");
+});
 
 async function checkCancellation(
     t: TestContext,
@@ -32,6 +38,15 @@ async function checkCancellation(
     let stageStarted!: () => void;
     const stalled = new Promise<void>((resolve) => { stageStarted = resolve; });
     t.mock.method(ManagedChildProcess, "spawn", (options: ManagedChildProcessOptions) => {
+        const directory = "build";
+        if (options.name === "network sandbox worker") {
+            assert.equal(options.command, path.join(root, directory, "pi-exec-clean-native"));
+        }
+        if (options.name === "TCP gateway ingress" || options.name === "network queue helper") {
+            const helper = options.name === "TCP gateway ingress" ? "pi-tcp-gateway-native" : "pi-network-queue-native";
+            const executable = options.arguments?.find((argument) => path.basename(argument) === helper);
+            assert.equal(executable, path.join(root, directory, helper), `${options.name} must use the selected implementation`);
+        }
         if (options.command === "/usr/bin/nsenter") {
             assert.ok(gatewayPid);
             const args = options.arguments ?? [];

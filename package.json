@@ -14,17 +14,17 @@
   "scripts": {
     "clean": "node ./scripts/clean.mjs",
     "build:native": "node ./scripts/build-native.mjs",
-    "build:native:reference": "node ./scripts/build-native.mjs --reference",
-    "test:native": "node ./scripts/test-native-parity.mjs",
-    "test:native:host": "node ./scripts/test-native-parity.mjs --host",
+    "test:native": "node ./scripts/test-native.mjs",
+    "test:native:host": "node ./scripts/test-native.mjs --host",
     "test:native:rust": "cargo test --locked --manifest-path native/rust/Cargo.toml",
+    "test:native:integration": "node ./scripts/test-native.mjs",
+    "test:native:integration:host": "node ./scripts/test-native.mjs --host",
     "typecheck": "tsc --noEmit",
-    "build": "npm run clean && npm run build:native && npm run typecheck",
+    "build": "npm run build:native && npm run typecheck",
     "install": "npm run build:native",
-    "test:setup": "node --test ./test/setup-scripts.test.mjs",
     "test:network": "npm run build:native && node --import jiti/register --test ./test/bash-sandbox.test.ts ./test/client-trust.test.ts ./test/host-credential-ipc-config.test.ts ./test/host-credential-ipc.test.ts ./test/network-inspection-command.test.ts ./test/network-policy-authorizer.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network-sandbox-lifecycle.test.ts ./test/network.test.ts",
     "test:runtime": "node ./scripts/test-runtime.mjs",
-    "test": "npm run build && npm run build:native:reference && npm run test:native -- --no-build && npm run test:runtime"
+    "test": "npm run build && npm run test:native -- --no-build && npm run test:runtime"
   },
   "keywords": [],
   "author": "",

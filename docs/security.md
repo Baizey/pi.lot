@@ -63,7 +63,7 @@ Subagents have separate model sessions and policy principals but share the trust
 - The keyless DuckDuckGo backend depends on a public HTML format that may change.
 - Live jobs and child policy state are not persisted across root-session shutdown. Subagent conversation histories are saved as ordinary Pi sessions when the root is persistent; ephemeral roots keep them in memory. Session files can contain sensitive prompts, reasoning, tool arguments, output, and file contents.
 
-The [sandbox hardening review](sandbox-hardening-review.md) records the first committee pass, scoped fixes, unverified host tests, and design decisions awaiting approval. It is not an independent security audit.
+The [sandbox hardening review](sandbox-hardening-review.md) records the first committee pass, scoped fixes, unverified host tests, and design decisions awaiting approval. It is not an independent security audit. The [native Rust migration](native-rust-migration.md) retains the high-level libfuse frontend and existing enforcement contract, documents C/Rust parity coverage, and records proven legacy fixes. Rust-owned logic reduces memory-management risk; the C library/FFI boundaries and the security limitations above remain.
 
 Unsupported, malformed, cancelled, or incomplete mediated operations are intended to fail closed. That intent is not a substitute for a published threat model, parser fuzzing, independent review, or a security audit.
 

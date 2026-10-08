@@ -181,6 +181,96 @@ test("an explicit native DENY dominates an allowing refreshed snapshot", async (
     assert.match(result.stdout, /"decision":"deny"/);
 });
 
+function allowingOnceSnapshot(initialSnapshot: ReturnType<ReturnType<typeof unresolvedPolicyView>["onceSnapshot"]>) {
+    const snapshot = structuredClone(initialSnapshot);
+    snapshot.revision++;
+    snapshot.layers[0]!.policies.push({
+        pattern: TARGET,
+        info: {
+            [PolicyAccessType.FS_READ]: {
+                accessType: PolicyAccessType.FS_READ,
+                lifetime: PolicyLifetime.ONCE,
+                status: PolicyResponse.ALLOWED,
+                reason: "protocol parity fixture",
+            },
+        },
+    });
+    return snapshot;
+}
+
+test("native FUSE applies a valid ONCE grant before returning ALLOW", async () => {
+    const result = await runProtocolCheck((request, responses, initialSnapshot) => {
+        const miss = decodeNativeFilesystemPolicyMiss(request);
+        const allowing = allowingOnceSnapshot(initialSnapshot);
+        responses.end(Buffer.concat([
+            encodeNativeFilesystemOnceSnapshotMessage(allowing),
+            encodeNativeFilesystemResolutionMessage(miss.requestId, Number(miss.baseRevision), allowing.revision, NativeFilesystemDecision.ALLOW),
+        ]));
+    });
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /"onceRevision":1,"decision":"allow"/);
+});
+
+test("native FUSE accepts identical duplicate ONCE revisions", async () => {
+    const result = await runProtocolCheck((request, responses, initialSnapshot) => {
+        const miss = decodeNativeFilesystemPolicyMiss(request);
+        const allowing = allowingOnceSnapshot(initialSnapshot);
+        const update = encodeNativeFilesystemOnceSnapshotMessage(allowing);
+        responses.end(Buffer.concat([update, update,
+            encodeNativeFilesystemResolutionMessage(miss.requestId, Number(miss.baseRevision), allowing.revision, NativeFilesystemDecision.ALLOW),
+        ]));
+    });
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /"decision":"allow"/);
+});
+
+test("native FUSE fails closed on conflicting contents at an equal ONCE revision", async () => {
+    const result = await runProtocolCheck((request, responses, initialSnapshot) => {
+        const miss = decodeNativeFilesystemPolicyMiss(request);
+        const allowing = allowingOnceSnapshot(initialSnapshot);
+        const conflicting = structuredClone(allowing);
+        conflicting.layers[0]!.policies[0]!.info[PolicyAccessType.FS_READ]!.status = PolicyResponse.DENIED;
+        responses.end(Buffer.concat([
+            encodeNativeFilesystemOnceSnapshotMessage(allowing),
+            encodeNativeFilesystemOnceSnapshotMessage(conflicting),
+            encodeNativeFilesystemResolutionMessage(miss.requestId, Number(miss.baseRevision), allowing.revision, NativeFilesystemDecision.ALLOW),
+        ]));
+    });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stdout, /"decision":"deny"/);
+});
+
+for (const invalid of ["request-id", "base-rollback", "base-future", "once-future", "decision", "message-type", "short-payload", "long-payload", "oversized-frame"] as const) {
+    test(`native FUSE rejects invalid resolution ${invalid} after a granting snapshot`, async () => {
+        const result = await runProtocolCheck((request, responses, initialSnapshot) => {
+            const miss = decodeNativeFilesystemPolicyMiss(request);
+            const allowing = allowingOnceSnapshot(initialSnapshot);
+            let resolution = encodeNativeFilesystemResolutionMessage(miss.requestId, Number(miss.baseRevision), allowing.revision, NativeFilesystemDecision.ALLOW);
+            if (invalid === "request-id") resolution.writeBigUInt64LE(miss.requestId + 1n, 8);
+            if (invalid === "base-rollback") resolution.writeBigUInt64LE(miss.baseRevision - 1n, 16);
+            if (invalid === "base-future") resolution.writeBigUInt64LE(miss.baseRevision + 1n, 16);
+            if (invalid === "once-future") resolution.writeBigUInt64LE(BigInt(allowing.revision + 1), 24);
+            if (invalid === "decision") resolution[32] = 3;
+            if (invalid === "message-type") resolution.writeUInt32LE(99, 0);
+            if (invalid === "short-payload") {
+                resolution = resolution.subarray(0, 32);
+                resolution.writeUInt32LE(24, 4);
+            }
+            if (invalid === "long-payload") {
+                resolution = Buffer.concat([resolution, Buffer.of(0)]);
+                resolution.writeUInt32LE(26, 4);
+            }
+            if (invalid === "oversized-frame") {
+                resolution = resolution.subarray(0, 8);
+                resolution.writeUInt32LE(16 * 1024 * 1024 + 1, 4);
+            }
+            responses.end(Buffer.concat([encodeNativeFilesystemOnceSnapshotMessage(allowing), resolution]));
+        });
+        assert.equal(result.exitCode, 2);
+        assert.match(result.stdout, /"decision":"deny"/);
+    });
+}
+
 async function runProtocolCheck(
     respond: (
         request: Buffer,

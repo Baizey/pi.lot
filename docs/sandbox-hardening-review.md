@@ -51,11 +51,17 @@ Descriptor-anchored resolution/operations and an explicit policy model for inode
 
 - **Startup cancellation:** network cancellation/timeouts are installed after runtime preparation. A D-Bus proxy that never signals readiness can strand preparation. Make startup abortable at the proxy owner, transfer ownership deliberately, and drain concurrently started preparation before removal. Racing the entire preparation promise against abort would create late-resource cleanup races.
 - **Broker command backpressure:** START/STOP writes can stall before their timeout-protected waits. Bound writes and propagate broker failure to all active calls.
-- **Same-revision integrity:** conflicting base/ONCE snapshot contents at equal revisions are ignored. Accept only identical duplicate revisions and fail closed on conflicts. Normal publication increments revisions; no worker-controlled exploit was established.
+- **Same-revision integrity — resolved during the [Rust migration](native-rust-migration.md):** the new ONCE regression failed on both original C and Rust (ALLOW instead of DENY after a conflicting equal-revision update). Both implementations now accept only identical parsed authority contents at equal revisions and fail closed on conflicts, for both base and ONCE snapshots. Normal publication increments revisions; no worker-controlled exploit was established.
 - **Metadata boundary:** `benchmark_readlink` returns symlink text without read authorization/control checks; getattr/access metadata is also not comprehensively gated. A dangling symlink can expose text under a read-denied scope. Approve a consistent metadata/traversal contract before changing symlink-resolution behavior, rather than assuming content policy already protects all metadata.
 - **Cache/coherence:** externally changed backing files can leave existing handles/mappings stale. Already-cached/faulted data survives policy revocation. Uncached denied mapping faults may signal `SIGBUS`; characterize this explicitly.
 - **Opaque TCP compatibility:** full inspection rejects SSH/SMTP-style opaque protocols despite generic TCP approval. The policy docs now say inspection must be off for those workflows. Selective opaque forwarding requires an approved enforcement contract.
-- **Conditional FD fallback:** the old-kernel `pi-exec-clean` fallback uses `_SC_OPEN_MAX`; survival of a descriptor above a lowered limit is a conditional hardening concern, not an established production escape.
+- **Conditional FD fallback — resolved during the [Rust migration](native-rust-migration.md):** a seccomp-driven regression proved that both original C and Rust leaked fd 512 after lowering `RLIMIT_NOFILE` to 64 and forcing `close_range` to return `ENOSYS`. Both now enumerate actual `/proc/self/fd` descriptors and abort before exec if enumeration fails. This is a proven cleanup defect, not an established production escape.
+
+## Rust migration follow-up
+
+The [native Rust migration](native-rust-migration.md) retains these enforcement limitations while adding shared C/Rust regression and differential coverage. Besides the two resolved bounded issues above, a deterministic fork-pause/subreaper regression proved the TCP relay's `getppid() == 1` check could miss parent death before `PDEATHSIG` registration. Both implementations now capture the parent PID before fork and reject a changed parent before connecting to the broker. The regression failed on both pre-fix implementations and passes on both corrected implementations.
+
+The verification counts below describe the original committee pass, not the later migration. The user subsequently confirmed successful `test:native:host` completion for both C and Rust; the supplied shared-contract summary was 274 passed with no failures/skips, followed by 88 passing direct differential tests. See the [migration verification record](native-rust-migration.md#prepared-host-verification-user-reported). This validates the existing host contracts, not the additional design investigations below.
 
 ## Verification completed in this session
 
@@ -66,9 +72,9 @@ Descriptor-anchored resolution/operations and an explicit policy model for inode
 - Three corrected filename regressions failed before normalization was fixed and pass afterward; six mocked launch/lifecycle cases pass.
 - Four real mount/network integration files were deliberately excluded: `bash-sandbox.test.ts`, `native-fuse.test.ts`, `native-fuse-session-broker.test.ts`, and `network.test.ts`. This is **not** a passing full `npm test`.
 
-## Host verification still required
+## Further host verification
 
-Run only directly on a prepared host, not inside pi.lot or another sandbox:
+The existing C/Rust host-contract suite has since passed in the user-reported migration run. The additional disposable investigations below remain outstanding. Run only directly on a prepared host, not inside pi.lot or another sandbox:
 
 ```bash
 npm test

@@ -1,7 +1,11 @@
 /* Exercise real libfuse INIT negotiation through custom I/O, without a mount. */
+#ifdef PILOT_RUST_NATIVE
+#include "../../native/pi-fuse-shim.c"
+#else
 #define main pi_fuse_program_main
 #include "../../native/pi-fuse.c"
 #undef main
+#endif
 
 #include <fuse_lowlevel.h>
 #include <linux/fuse.h>
@@ -64,15 +68,22 @@ static ssize_t probe_read(int descriptor, void *buffer, size_t size, void *userd
 int main(int argc, char **argv) {
     if (argc != 2 || (strcmp(argv[1], "supported") != 0 && strcmp(argv[1], "unsupported") != 0)) return 64;
     bool supported = strcmp(argv[1], "supported") == 0;
+#ifdef PILOT_RUST_NATIVE
+    struct pilot_fuse_state *state = pilot_fuse_probe_new(NULL, NULL, -1, -1);
+    if (state == NULL) return 65;
+    void *private_state = state;
+#else
     benchmark_filesystem_t state = {0};
     state.ready_fd = -1;
+    void *private_state = &state;
+#endif
     struct fuse_operations operations = filesystem_operations();
     operations.init = probe_init;
     /* No backing filesystem or statistics lifecycle is started by this test. */
     operations.destroy = NULL;
     char *arguments[] = {argv[0]};
     struct fuse_args args = FUSE_ARGS_INIT(1, arguments);
-    struct fuse *filesystem = fuse_new(&args, &operations, sizeof(operations), &state);
+    struct fuse *filesystem = fuse_new(&args, &operations, sizeof(operations), private_state);
     fuse_opt_free_args(&args);
     if (filesystem == NULL) return 65;
     int descriptors[2];
@@ -130,5 +141,8 @@ int main(int argc, char **argv) {
         state_returned ? "true" : "false");
     close(descriptors[1]);
     fuse_destroy(filesystem);
+#ifdef PILOT_RUST_NATIVE
+    pilot_fuse_probe_free(state);
+#endif
     return 0;
 }

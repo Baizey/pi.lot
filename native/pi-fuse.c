@@ -1030,6 +1030,25 @@ static bool same_snapshot_file(
         && left->st_ctim.tv_nsec == right->st_ctim.tv_nsec;
 }
 
+/* A revision identifies immutable logical policy contents. Reserved wire bytes
+ * are not authority; rule ordering is, because equal-specificity ties use the
+ * first rule. Compare parsed fields rather than serialized padding. */
+static bool same_policy_snapshot(
+    const native_policy_snapshot_t *left,
+    const native_policy_snapshot_t *right
+) {
+    if (left->revision != right->revision || left->rule_count != right->rule_count) return false;
+    for (uint32_t index = 0; index < left->rule_count; index++) {
+        const native_policy_rule_t *left_rule = &left->rules[index];
+        const native_policy_rule_t *right_rule = &right->rules[index];
+        if (left_rule->layer != right_rule->layer
+            || left_rule->access != right_rule->access
+            || left_rule->decision != right_rule->decision
+            || strcmp(left_rule->path, right_rule->path) != 0) return false;
+    }
+    return true;
+}
+
 static int refresh_base_policy_snapshot_file(benchmark_filesystem_t *state) {
     atomic_fetch_add_explicit(&state->base_snapshot_checks, 1, memory_order_relaxed);
     struct stat status;
@@ -1042,7 +1061,9 @@ static int refresh_base_policy_snapshot_file(benchmark_filesystem_t *state) {
     native_policy_snapshot_t replacement = {0};
     struct stat loaded_status;
     if (load_policy_snapshot(state->snapshot_path, &replacement, &loaded_status) != 0) return -1;
-    if (replacement.revision < state->base_snapshot.revision) {
+    if (replacement.revision < state->base_snapshot.revision
+        || (replacement.revision == state->base_snapshot.revision
+            && !same_policy_snapshot(&replacement, &state->base_snapshot))) {
         destroy_policy_snapshot(&replacement);
         errno = EPROTO;
         return -1;
@@ -1101,7 +1122,9 @@ static int apply_once_snapshot_update(
 ) {
     native_policy_snapshot_t replacement = {0};
     if (parse_policy_snapshot(payload, payload_size, &replacement) != 0) return -1;
-    if (replacement.revision < state->once_snapshot.revision) {
+    if (replacement.revision < state->once_snapshot.revision
+        || (replacement.revision == state->once_snapshot.revision
+            && !same_policy_snapshot(&replacement, &state->once_snapshot))) {
         destroy_policy_snapshot(&replacement);
         errno = EPROTO;
         return -1;

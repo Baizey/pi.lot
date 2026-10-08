@@ -7,7 +7,7 @@ import path from "node:path";
 import type {Writable} from "node:stream";
 import test, {after, before} from "node:test";
 import {fileURLToPath} from "node:url";
-import {fuseFlags} from "../scripts/native-build-flags.mjs";
+import {fuseProbeFlags} from "../scripts/native-test-build-flags.mjs";
 import {
     decodeNativeFilesystemControlFrames,
     decodeNativeFilesystemPolicyMiss,
@@ -32,7 +32,7 @@ before(async () => {
     const compiled = spawnSync("cc", [
         "-std=c17", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
         "-o", executable, path.join(root, "test/fixtures/native-fuse-callback-probe.c"),
-        ...fuseFlags(),
+        ...fuseProbeFlags(),
     ], {cwd: root, encoding: "utf8"});
     assert.ifError(compiled.error);
     assert.equal(compiled.status, 0, compiled.stderr);
@@ -44,7 +44,7 @@ before(async () => {
     const compiled = spawnSync("cc", [
         "-std=c17", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
         "-o", initExecutable, path.join(root, "test/fixtures/native-fuse-init-probe.c"),
-        ...fuseFlags(),
+        ...fuseProbeFlags(),
     ], {cwd: root, encoding: "utf8"});
     assert.ifError(compiled.error);
     assert.equal(compiled.status, 0, compiled.stderr);

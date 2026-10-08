@@ -14,7 +14,8 @@ This checkout targets Pi `1.0.0` and requires:
 - `slirp4netns`;
 - `xdg-dbus-proxy`;
 - unprivileged user and network namespaces;
-- a C compiler and `pkg-config`;
+- Rust 1.85 or newer and Cargo;
+- a C compiler and `pkg-config` (for the narrow libfuse ABI shim);
 - libfuse3 development files, version 3.17.3 or newer; and
 - `libnetfilter_queue` development files.
 
@@ -48,10 +49,14 @@ sudo apt install \
   slirp4netns xdg-dbus-proxy libnetfilter-queue-dev
 ```
 
+Install a Rust toolchain providing Rust 1.85 or newer and Cargo using your distribution or rustup. The Rust dependency is pinned in `native/rust/Cargo.lock`; normal builds use `cargo build --locked`. The C compiler remains necessary for libfuse ABI marshalling and the retained C comparison helpers.
+
 Package names vary by distribution. Verify the host before building:
 
 ```bash
-command -v cc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+command -v cargo rustc cc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+rustc --version
+cargo --version
 pkg-config --atleast-version=3.17.3 fuse3
 pkg-config --cflags --libs fuse3
 pkg-config --exists libnetfilter_queue
@@ -85,7 +90,9 @@ npm install
 npm run build
 ```
 
-The build compiles four native helpers and type-checks the extension.
+The build compiles four Rust native helpers and the small C/libfuse ABI shim, then type-checks the extension. It retains the existing executable names and protocols. The high-level system-libfuse frontend, capability negotiation and filesystem enforcement semantics are not replaced. See [Native Rust migration and parity](native-rust-migration.md).
+
+`npm run build:native:reference` separately builds the retained C helpers under `build/native-c/`. They exist for regression comparison, not automatic fallback. Rebuild and restart Pi when switching implementations.
 
 ## Install the package
 
@@ -174,6 +181,31 @@ Run the suite only on a suitable host environment:
 
 ```bash
 npm test
+```
+
+Native parity tests additionally require Python 3 for byte-preserving exec, seccomp, and deterministic subreaper launchers. The normal Rust helper build/runtime does not depend on Python.
+
+For mount-free native verification:
+
+```bash
+npm run test:native
+```
+
+This builds both implementations, runs Rust unit tests, runs the identical callback/protocol/policy contracts against C and Rust, and runs direct differential tests with independent expected results. The mount-free FUSE probes exercise production callbacks and real libfuse INIT negotiation; they do not replace kernel/mount integration.
+
+For complete existing mounted/network contract coverage on **both** implementations:
+
+```bash
+npm run test:native:host
+```
+
+This command requires `/dev/fuse` and an unsandboxed prepared host. A mount-free pass is not a passing host-parity suite. `npm test` also runs mount-free parity before the runtime suite, which discovers all existing `.test.ts` and `.test.mjs` files.
+
+For debugging a specific existing test after building the reference:
+
+```bash
+PILOT_NATIVE_IMPLEMENTATION=c node --import jiti/register --test test/native-fuse-callbacks.test.ts
+PILOT_NATIVE_IMPLEMENTATION=rust node --import jiti/register --test test/native-fuse-callbacks.test.ts
 ```
 
 Do **not** run the sandbox integration suite from inside pi.lot or another restrictive sandbox. The tests create FUSE mounts, Bubblewrap workers, network namespaces, and nftables/NFQUEUE state; nesting those mechanisms produces misleading failures.

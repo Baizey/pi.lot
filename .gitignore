@@ -3,4 +3,5 @@ dist/
 demo-workspace/
 .idea/
 node_modules/
+native/rust/target/
 package-lock.json

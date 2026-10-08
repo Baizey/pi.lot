@@ -20,7 +20,8 @@ The host needs:
 - util-linux (`unshare` and `nsenter`);
 - `slirp4netns` and `xdg-dbus-proxy`;
 - unprivileged user and network namespaces; and
-- a C compiler, `pkg-config`, and libfuse3/`libnetfilter_queue` development files.
+- Rust 1.85 or newer with Cargo;
+- a C compiler, `pkg-config`, and libfuse3/`libnetfilter_queue` development files (the libfuse ABI shim still needs C).
 
 See [Installation and setup](docs/installation.md) for distribution packages, host checks, and troubleshooting.
 
@@ -250,7 +251,14 @@ npm run build
 npm test
 ```
 
-Run the sandbox integration suite directly on a prepared Linux host, not from inside pi.lot or another sandbox. See [Development and tests](docs/installation.md#development-and-tests).
+The four native helpers are implemented in Rust, retaining the system high-level libfuse frontend through a small C ABI shim. The original C helpers remain as an explicit test reference; they are not an automatic runtime fallback.
+
+```bash
+npm run test:native       # Shared C/Rust contracts and differential tests, without mounts
+npm run test:native:host  # Also run the same mounted/network contracts on both implementations
+```
+
+Run the sandbox integration suite directly on a prepared Linux host, not from inside pi.lot or another sandbox. See [Development and tests](docs/installation.md#development-and-tests) and [Native Rust migration and parity](docs/native-rust-migration.md).
 
 ## License
 

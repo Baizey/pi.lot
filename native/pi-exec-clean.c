@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -18,9 +19,40 @@ static void close_descriptors_after(unsigned int maximum_preserved_fd) {
     }
 #endif
 
-    long maximum = sysconf(_SC_OPEN_MAX);
-    if (maximum < 0) maximum = 65536;
-    for (unsigned int fd = first; fd < (unsigned long) maximum; fd++) close((int) fd);
+    /* A lowered RLIMIT_NOFILE does not close descriptors already above its new
+     * value. Enumerate the actual open descriptors rather than trusting that limit. */
+    DIR *directory = opendir("/proc/self/fd");
+    if (!directory) {
+        perror("opendir /proc/self/fd");
+        exit(126);
+    }
+    const int enumeration_fd = dirfd(directory);
+    if (enumeration_fd < 0) {
+        int saved_errno = errno;
+        closedir(directory);
+        errno = saved_errno;
+        perror("dirfd /proc/self/fd");
+        exit(126);
+    }
+    while (1) {
+        /* close and strtoul can change errno between successful readdir calls. */
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) {
+            int saved_errno = errno;
+            closedir(directory);
+            if (saved_errno != 0) {
+                errno = saved_errno;
+                perror("readdir /proc/self/fd");
+                exit(126);
+            }
+            return;
+        }
+        char *end = NULL;
+        unsigned long descriptor = strtoul(entry->d_name, &end, 10);
+        if (end == entry->d_name || *end != '\0' || descriptor > INT_MAX) continue;
+        if (descriptor >= first && (int) descriptor != enumeration_fd) close((int) descriptor);
+    }
 }
 
 int main(int argc, char **argv) {

@@ -1,0 +1,19 @@
+[package]
+name = "pilot-native"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "pilot_native"
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+libc = "=0.2.189"
+
+[profile.release]
+opt-level = 2
+debug = true
+# Callbacks catch unwinding before it reaches C. Do not use panic=abort here.

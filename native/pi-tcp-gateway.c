@@ -385,11 +385,14 @@ static void accept_client(
         close(client);
         return;
     }
+    const pid_t gateway_pid = getpid();
     pid_t child = fork();
     if (child == 0) {
         sigprocmask(SIG_SETMASK, &previous, NULL);
         signal(SIGCHLD, SIG_DFL);
-        if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0 || getppid() == 1) _exit(EXIT_FAILURE);
+        /* The gateway may have died before PDEATHSIG registration and the relay
+         * may have been adopted by a subreaper rather than PID 1. */
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0 || getppid() != gateway_pid) _exit(EXIT_FAILURE);
         for (size_t index = 0; index < listener_count; index++) close(listeners[index]);
         int result = handle_client(client, broker_address, broker_port);
         close(client);

@@ -190,6 +190,7 @@ pi.lot also provides compact, copy-friendly tool rendering:
 
 - `Ctrl+O` toggles compact and expanded tool views;
 - `/view-full-tool` toggles a full view for one selected call;
+- direct `edit` rows show a truncated preview of supplied replacement text while arguments stream and the edit is still working; completed rows return to their configured compact/expanded/full view, and preview rendering does not read the target file before authorization;
 - Pilot's `codemode` requires a concise, one-line `purpose`, shown beside the tool name even in minimal mode; nested calls use the same titles, argument layouts, colors, and compact/expanded/full modes as normal calls, indented to show they belong to the script, with Pi's animated braille loader while running and a blank icon column afterward; expanded and per-call full views also reveal the script, output, full errors, and output-file hints;
 - active subagent work appears above the editor and in the footer;
 - the chat editor border stays at the theme's `thinkingXhigh` color (Bash mode keeps its own color); and

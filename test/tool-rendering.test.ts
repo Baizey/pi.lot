@@ -20,6 +20,7 @@ import {displayWidth} from "../src/tui/terminalText.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 import type {ToolCallSpinnerState} from "../src/tui/tool/ToolCallSpinner.js";
 import {ViewFullToolCommand} from "../src/commands/ViewFullToolCommand.js";
+import {EditTool} from "../src/tools/builtin/EditTool.js";
 
 const plainTheme = {
     fg: (_color: string, text: string) => text,
@@ -652,6 +653,177 @@ test("presentation specifications reject ambiguous argument declarations", () =>
         /must reference an earlier argument: owner/,
     );
 });
+
+test("Pi shows the edit replacement preview throughout argument streaming and execution, then collapses it", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const definition = renderingEditTool(rows);
+    for (const isError of [false, true]) {
+        let renderRequests = 0;
+        const ui = {requestRender() { renderRequests++; }} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
+        const component = new ToolExecutionComponent(
+            "edit", "edit-stream-" + isError, {path: "render-only-missing-file.ts"}, {}, definition, ui, process.cwd(),
+        );
+        const view = () => component.render(120).map(stripAnsi).filter(Boolean);
+        assert.deepEqual(view(), ["⠋ edit | render-only-missing-file.ts"]);
+        component.updateArgs({path: "render-only-missing-file.ts", edits: [{oldText: "old value"}]});
+        assert.equal(view()[0], "⠋ edit | render-only-missing-file.ts (1 replacement)");
+        const args = {path: "render-only-missing-file.ts", edits: [{oldText: "old value", newText: "first line"}]};
+        component.updateArgs(args);
+        assert.ok(view().includes("Requested replacement 1 (preview):"));
+        assert.ok(view().includes("+first line"));
+        const grown = {...args, edits: [{...args.edits[0]!, newText: "first line\n界🙂 second line"}]};
+        const original = structuredClone(grown);
+        component.updateArgs(grown);
+        assert.ok(view().includes("+界🙂 second line"));
+        component.setArgsComplete();
+        assert.ok(view().includes("+界🙂 second line"));
+        component.markExecutionStarted();
+        assert.ok(view().includes("+界🙂 second line"));
+        component.updateResult({content: [{type: "text", text: "still working"}], isError: false}, true);
+        assert.ok(view().includes("still working"));
+        assert.ok(view().includes("+first line"));
+        component.setExpanded(true);
+        component.setExpanded(false);
+        assert.ok(view().includes("+first line"));
+        const beforeTick = renderRequests;
+        t.mock.timers.tick(80);
+        assert.equal(renderRequests, beforeTick + 1);
+        assert.equal(view()[0], "⠙ edit | render-only-missing-file.ts (1 replacement)");
+        for (const width of [1, 2, 10, 30, 80]) {
+            const lines = component.render(width);
+            assert.ok(lines.every((line) => displayWidth(line) <= width));
+            assert.ok(lines.map(stripAnsi).every((line) => !/[ \t]+$/.test(line)));
+        }
+        const result = {
+            content: [{type: "text" as const, text: isError ? "edit failed" : "edit complete"}],
+            details: isError ? undefined : {diff: "-old value\n+applied value", patch: "", firstChangedLine: 1},
+            isError,
+        };
+        component.updateResult(result);
+        assert.deepEqual(view(), ["  edit | render-only-missing-file.ts (1 replacement)"]);
+        const afterCompletion = renderRequests;
+        t.mock.timers.tick(800);
+        assert.equal(renderRequests, afterCompletion);
+        component.setExpanded(true);
+        assert.ok(view().includes(isError ? "edit failed" : "+applied value"));
+        assert.equal(view().includes("Requested replacement 1 (preview):"), false);
+        assert.equal(view().includes("+first line"), false);
+        assert.deepEqual(grown, original, "rendering must not mutate edit arguments");
+    }
+});
+
+test("working edit previews are truncated by default and preserve the row-local full override", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const args = {path: "render-only.ts", edits: [{oldText: numberedLines(50), newText: numberedLines(30)}]};
+    const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
+    const component = new ToolExecutionComponent("edit", "edit-long", args, {}, renderingEditTool(rows), ui, process.cwd());
+    const view = () => component.render(120).map(stripAnsi).filter(Boolean);
+    assert.ok(view().includes("+line 1"), "long old text must not hide the new replacement");
+    assert.equal(view().includes("+line 30"), false);
+    assert.ok(view().some((line) => /more lines/.test(line)));
+    assert.ok(view().length <= 15);
+    component.setExpanded(true);
+    assert.equal(view().includes("+line 30"), false);
+    assert.equal(rows.toggle("edit-long"), true);
+    component.setExpanded(false);
+    assert.ok(view().includes("+line 30"));
+    assert.equal(rows.toggle("edit-long"), false);
+    assert.equal(view().includes("+line 30"), false);
+    rows.toggle("edit-long");
+    component.updateResult({content: [{type: "text", text: "done"}], isError: false});
+    assert.deepEqual(view(), ["  edit | render-only.ts (1 replacement)", "done"]);
+    rows.toggle("edit-long");
+    assert.deepEqual(view(), ["  edit | render-only.ts (1 replacement)"]);
+});
+
+test("working edit previews tolerate missing and partial entries and distinguish deletion", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
+    const component = new ToolExecutionComponent("edit", "edit-partial", {}, {}, renderingEditTool(rows), ui, process.cwd());
+    for (const edits of [undefined, null, "streaming", {}, [], [null, {}, {oldText: "only old"}]]) {
+        component.updateArgs({path: "partial.ts", edits});
+        assert.ok(component.render(120).map(stripAnsi).some((line) => line.includes("edit | partial.ts")));
+    }
+    component.updateArgs({path: "partial.ts", edits: [
+        null, {}, {oldText: "waiting"}, {newText: "available new text"}, {oldText: "remove this", newText: ""},
+    ]});
+    const view = component.render(120).map(stripAnsi);
+    assert.ok(view.includes("Requested replacement 4 (preview):"));
+    assert.ok(view.includes("+available new text"));
+    assert.ok(view.includes("Requested replacement 5 (preview): delete matched text"));
+    assert.equal(view.some((line) => line.includes("Requested replacement 3")), false);
+    component.updateArgs({path: "partial.ts", edits: [{newText: "replacement refreshed"}]});
+    const updated = component.render(120).map(stripAnsi);
+    assert.ok(updated.includes("+replacement refreshed"));
+    assert.equal(updated.includes("+available new text"), false);
+    component.updateResult({content: [{type: "text", text: "cancelled"}], isError: true});
+    assert.deepEqual(component.render(120).map(stripAnsi).filter(Boolean), ["  edit | partial.ts (1 replacement)"]);
+});
+
+test("working edit partial results retain truncation, full override, and completion semantics", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
+    const component = new ToolExecutionComponent("edit", "edit-partial-result", {path: "result.ts"}, {}, renderingEditTool(rows), ui, process.cwd());
+    component.setArgsComplete();
+    component.markExecutionStarted();
+    component.updateResult({content: [{type: "text", text: numberedLines(30)}], isError: false}, true);
+    const view = () => component.render(120).map(stripAnsi).filter(Boolean);
+    assert.ok(view().includes("line 1"));
+    assert.equal(view().includes("line 30"), false);
+    assert.ok(view().some((line) => /more lines/.test(line)));
+    rows.toggle("edit-partial-result");
+    assert.ok(view().includes("line 30"));
+    rows.toggle("edit-partial-result");
+    assert.equal(view().includes("line 30"), false);
+    component.updateResult({content: [{type: "text", text: "complete"}], isError: false});
+    assert.deepEqual(view(), ["  edit | result.ts"]);
+});
+
+test("working edit previews normalize newlines and reuse character and terminal-safety limits", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
+    const component = new ToolExecutionComponent("edit", "edit-safe", {}, {}, renderingEditTool(rows), ui, process.cwd());
+    const args = {path: "safe.ts", edits: [{newText: "alpha\r\nbeta\rgamma\n\tindent\x1b[2J\x1b]0;unsafe-title\x07\x00value"}]};
+    const original = structuredClone(args);
+    component.updateArgs(args);
+    const view = component.render(120).map(stripAnsi);
+    for (const line of ["+alpha", "+beta", "+gamma", "+  indentvalue"]) assert.ok(view.includes(line));
+    assert.equal(view.some((line) => /unsafe-title|[\x00\x07\x1b\r]/.test(line)), false);
+    assert.deepEqual(args, original);
+    component.updateArgs({path: "safe.ts", edits: [{newText: "x".repeat(70 * 1024)}]});
+    assert.ok(component.render(120).map(stripAnsi).includes("[display truncated]"));
+    rows.toggle("edit-safe");
+    assert.ok(component.render(120).map(stripAnsi).includes("[display truncated]"));
+    for (const width of [1, 2, 10, 30, 80]) {
+        const lines = component.render(width);
+        assert.ok(lines.every((line) => displayWidth(line) <= width));
+        assert.ok(lines.length <= 6);
+    }
+    component.updateResult({content: [{type: "text", text: "done"}], isError: false});
+});
+
+function renderingEditTool(rows: ToolDisplayRows): ReturnType<EditTool["toolDefinition"]> {
+    return new EditTool(
+        {} as ExtensionAPI,
+        () => assert.fail("rendering must not access the policy runtime or execute edits"),
+        rows,
+    ).toolDefinition();
+}
 
 function bashPresentation(): ToolPresentationSpec<{
     purpose: string;

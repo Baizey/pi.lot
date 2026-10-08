@@ -5,6 +5,7 @@ import {
     type ExtensionAPI,
     type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import {Container} from "@earendil-works/pi-tui";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
@@ -91,16 +92,23 @@ export class EditTool {
         };
         const renderCall: NonNullable<EditPresentationDefinition["renderCall"]> = (args, theme, context) => {
             this.displayRows.observe("edit", args, context);
-            const mode = resolveToolDisplayMode(context.expanded, context.state);
-            return presentation.renderCall(
-                args,
-                theme,
-                mode,
-                context,
-            );
+            const mode = resolveToolDisplayMode(context.expanded || context.isPartial, context.state);
+            const call = presentation.renderCall(args, theme, mode, context);
+            if (!context.isPartial) return call;
+
+            // Preview only supplied replacement text: reading the target here would
+            // precede the execution path's policy approval.
+            const preview = requestedEditPreview(args?.edits);
+            if (!preview) return call;
+            const component = new Container();
+            component.addChild(call);
+            component.addChild(presentation.renderResult(
+                {content: [{type: "text", text: preview}]}, theme, {}, mode,
+            ));
+            return component;
         };
         const renderResult: NonNullable<EditPresentationDefinition["renderResult"]> = (result, options, theme, context) => {
-            const mode = resolveToolDisplayMode(options.expanded, context.state);
+            const mode = resolveToolDisplayMode(options.expanded || options.isPartial, context.state);
             const diff = !context.isError && typeof result.details?.diff === "string"
                 ? result.details.diff
                 : undefined;
@@ -118,4 +126,17 @@ export class EditTool {
         };
         return this.definition;
     }
+}
+
+function requestedEditPreview(value: unknown): string {
+    if (!Array.isArray(value)) return "";
+    const edits: unknown[] = value;
+    return edits.flatMap((edit, index) => {
+        if (!edit || typeof edit !== "object" || !("newText" in edit) || typeof edit.newText !== "string") {
+            return [];
+        }
+        const heading = `Requested replacement ${index + 1} (preview):`;
+        if (edit.newText === "") return [`${heading} delete matched text`];
+        return [heading, ...edit.newText.replace(/\r\n|\r/g, "\n").split("\n").map((line) => `+${line}`)];
+    }).join("\n");
 }

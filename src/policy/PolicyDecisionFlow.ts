@@ -7,6 +7,7 @@ import {
 } from "./types";
 import type {UiDecision, UiDecisionFlowManager, UiSelectDecisionOption} from "../tui/UiDecisionFlowManager";
 import {UiFlowShortcut} from "../tui/UiDecisionFlowManager";
+import type {UiDecisionContext, UiDecisionField} from "../tui/UiDecisionPrompt.js";
 import {policyScopeHierarchy} from "./PolicyScope.js";
 import type {PolicyApprovalRequestContext} from "./AgentPolicyDecisionFlow.js";
 
@@ -105,20 +106,42 @@ export class PolicyDecisionFlow {
         scopes: string[],
         requestContext?: PolicyApprovalRequestContext,
     ): Record<keyof PolicyApproval, UiDecision<PolicyApproval>> {
-        const target = `${accessType} ${evaluatedPath}${this.requestContextDetails(requestContext)}`;
         const policyKind = this.isFilesystemAccess(accessType) ? "Path" : "Network";
+        const requestingAgent = requestContext?.ancestry.find((agent) => (
+            agent.agentIdentifier === requestContext.requestingAgentIdentifier
+        ));
+        const context = (state: Partial<PolicyApproval>): UiDecisionContext => ({
+            summary: [
+                {label: "Access", value: this.accessLabel(accessType), essential: true},
+                {label: "Target", value: evaluatedPath, essential: true},
+                ...(state.scope ? [{label: "Scope", value: state.scope, essential: true}] : []),
+                ...(state.status ? [{label: "Decision", value: state.status === PolicyResponse.ALLOWED ? "Allow" : "Deny", essential: true}] : []),
+                ...(requestContext ? [{
+                    label: "Requesting agent",
+                    value: `${requestingAgent ? `${boundedText(requestingAgent.role, 120)} ` : ""}[${boundedText(requestContext.requestingAgentIdentifier, 200)}]`,
+                }] : []),
+                ...(requestContext?.toolCall.toolName || requestContext?.toolCall.toolCallId
+                    ? [{label: "Tool", value: boundedText(requestContext.toolCall.toolName ?? "unknown", 120)}]
+                    : []),
+                ...(requestContext?.toolCall.purpose ? [{label: "Purpose", value: boundedText(requestContext.toolCall.purpose, 500)}] : []),
+                ...(requestContext?.toolCall.command ? [{label: "Command", value: boundedText(requestContext.toolCall.command, 8_000), multiline: true}] : []),
+            ],
+            details: this.requestContextDetails(requestContext),
+        });
 
         return {
             scope: {
                 type: "select",
                 key: "scope",
-                title: `${policyKind} policy scope for ${target}\n`,
+                title: `${policyKind} policy scope · 1/3`,
+                context,
                 options: scopes.map((scope) => ({title: scope, value: scope, next: "status"})),
             },
             status: {
                 type: "select",
                 key: "status",
-                title: (state) => `${policyKind} policy decision for ${target}\nScope: ${state.scope}\n`,
+                title: `${policyKind} policy decision · 2/3`,
+                context,
                 options: [
                     {title: "Allow", value: PolicyResponse.ALLOWED, next: "lifetime"},
                     {title: "Deny", value: PolicyResponse.DENIED, next: "lifetime"},
@@ -127,13 +150,15 @@ export class PolicyDecisionFlow {
             lifetime: {
                 type: "select",
                 key: "lifetime",
-                title: (state) => `${policyKind} policy lifetime for ${target}\nDecision: ${state.status}\nScope: ${state.scope}\n`,
+                title: `${policyKind} policy lifetime · 3/3`,
+                context,
                 options: this.lifeTimeOptions(accessType),
             },
             reason: {
                 type: "input",
                 key: "reason",
-                title: (state) => `Reason for denying ${target} (optional)\nScope: ${state.scope}\n`,
+                title: "Reason for denying access (optional)",
+                context,
                 placeholder: (state) => this.defaultReason(state.status ?? PolicyResponse.DENIED, accessType),
                 next: null,
             },
@@ -246,32 +271,27 @@ export class PolicyDecisionFlow {
         return `User selected ${status} for ${accessType}.`;
     }
 
-    private requestContextDetails(context?: PolicyApprovalRequestContext): string {
-        if (!context) return "";
-        const lines = [
-            "",
-            `Policy request: ${boundedText(context.requestId, 200)}`,
-            `Requesting agent: ${boundedText(context.requestingAgentIdentifier, 200)}`,
-            "Authority ancestry:",
-            ...context.ancestry.map((agent) => (
-                `- ${boundedText(agent.role, 120)} [${boundedText(agent.agentIdentifier, 200)}]: ${boundedText(agent.task, 500)}`
-            )),
+    private requestContextDetails(context?: PolicyApprovalRequestContext): UiDecisionField[] {
+        if (!context) return [];
+        return [
+            {label: "Policy request", value: boundedText(context.requestId, 200)},
+            ...(context.toolCall.toolCallId
+                ? [{label: "Tool call", value: boundedText(context.toolCall.toolCallId, 200)}]
+                : []),
+            {
+                label: "Authority ancestry",
+                multiline: true,
+                value: context.ancestry.map((agent) => (
+                    `${boundedText(agent.role, 120)} [${boundedText(agent.agentIdentifier, 200)}]: ${boundedText(agent.task, 500)}`
+                )).join("\n"),
+            },
         ];
-        if (context.toolCall.toolName || context.toolCall.toolCallId) {
-            lines.push(
-                `Tool: ${boundedText(context.toolCall.toolName ?? "unknown", 120)}`
-                + (context.toolCall.toolCallId
-                    ? ` [${boundedText(context.toolCall.toolCallId, 200)}]`
-                    : ""),
-            );
-        }
-        if (context.toolCall.purpose) {
-            lines.push(`Purpose: ${boundedText(context.toolCall.purpose, 500)}`);
-        }
-        if (context.toolCall.command) {
-            lines.push("Command:", boundedText(context.toolCall.command, 8_000));
-        }
-        return `\n${lines.join("\n")}`;
+    }
+
+    private accessLabel(accessType: PolicyAccessType): string {
+        if (accessType === PolicyAccessType.FS_READ) return "Read files (FS_READ)";
+        if (accessType === PolicyAccessType.FS_WRITE) return "Write files (FS_WRITE)";
+        return accessType;
     }
 
     private isFilesystemAccess(accessType: PolicyAccessType): boolean {

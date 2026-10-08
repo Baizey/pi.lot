@@ -113,6 +113,10 @@ An interactive policy miss asks for:
 3. a lifetime; and
 4. an optional reason when denying.
 
+Terminal prompts separate the step heading, operation and target, selected scope/decision, and originating tool context. Long values wrap; the choice list stays bounded and follows the selection. **Tab** opens the full request, including the command, request/tool-call IDs, and ordered agent ancestry. Use **Up/Down** to scroll that view and **Tab** to return to the choices without changing the selection. The displayed hints follow configured keybindings.
+
+On select steps, **Right** allows once and **Left** denies once for the **exact requested target**, even when a broader scope is highlighted or was selected earlier. These shortcuts finish the current approval, not all queued requests. **PageUp/PageDown** retain the deny-once/allow-once aliases; they do not scroll the full request. **Enter** selects the highlighted choice; **Escape** cancels with a once-only denial. RPC clients continue to receive ordinary select/input dialogs with the request context included as plain text.
+
 Lifetimes are:
 
 - **Once** — the current tool call;

@@ -1,6 +1,14 @@
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {wrapTextWithAnsi} from "@earendil-works/pi-tui";
+import {
+    decisionDisplayText,
+    decisionFieldLines,
+    formatUiDecisionPrompt,
+    type UiDecisionContext,
+    type UiDecisionField,
+} from "./UiDecisionPrompt.js";
 import {ThemeColor} from "./Color.js";
-import {truncateToWidth} from "./terminalText.js";
+import {displayWidth, truncateToWidth} from "./terminalText.js";
 import {UiDecisionFlowQueue} from "./UiDecisionFlowQueue.js";
 
 type ValueOrLambda<T, K> = K | ((state: Partial<T>) => K);
@@ -11,13 +19,16 @@ type Component = {
     invalidate(): void;
 };
 
-type ShortcutTui = {requestRender(): void};
+type ShortcutTui = {requestRender(): void; terminal?: {rows: number}};
 type ShortcutTheme = {
     fg?: (name: ThemeColor, text: string) => string;
     bg?: (name: string, text: string) => string;
     bold?: (text: string) => string;
 };
-type ShortcutKeybindings = {matches?: (data: string, key: string) => boolean};
+type ShortcutKeybindings = {
+    matches?: (data: string, key: string) => boolean;
+    getKeys?: (key: string) => readonly string[];
+};
 type ShortcutCustomUi = {
     custom<T>(factory: (tui: ShortcutTui, theme: ShortcutTheme, keybindings: ShortcutKeybindings, done: (value: T) => void) => Component): Promise<T>;
 };
@@ -70,6 +81,7 @@ export type UiDecisionFlowOptions<T> = {
 export type UiSelectDecision<T> = {
     type: "select";
     title: ValueOrLambda<T, string>;
+    context?: ValueOrLambda<T, UiDecisionContext>;
     key: keyof T;
     options: UiSelectDecisionOption<T>[];
 };
@@ -77,6 +89,7 @@ export type UiSelectDecision<T> = {
 export type UiInputDecision<T> = {
     type: "input";
     title: ValueOrLambda<T, string>;
+    context?: ValueOrLambda<T, UiDecisionContext>;
     key: keyof T;
     placeholder: ValueOrLambda<T, string>;
     next: ValueOrLambda<T, keyof T | null>;
@@ -188,12 +201,13 @@ export class UiDecisionFlowManager {
     ): Promise<UiSelectDecisionOption<T> | UiFlowShortcut | null> {
         if (options.signal?.aborted) return null;
         const title = parse(decision.title, state);
+        const context = decision.context ? parse(decision.context, state) : undefined;
 
         switch (decision.type) {
             case "select":
-                return this.resolveSelectDecision(decision, state, title, options);
+                return this.resolveSelectDecision(decision, state, title, context, options);
             case "input":
-                return this.resolveInputDecision(decision, state, title, options.signal);
+                return this.resolveInputDecision(decision, state, formatUiDecisionPrompt(title, context), options.signal);
             default:
                 throw new Error(`Decision type ${(decision as {type: string}).type} not supported.`);
         }
@@ -203,6 +217,7 @@ export class UiDecisionFlowManager {
         decision: UiSelectDecision<T>,
         state: Partial<T>,
         title: string,
+        context: UiDecisionContext | undefined,
         options: UiDecisionFlowOptions<T>,
     ): Promise<UiSelectDecisionOption<T> | UiFlowShortcut | null> {
         const renderedOptions = decision.options.map((option) => renderOptionTitle(option, state));
@@ -211,8 +226,8 @@ export class UiDecisionFlowManager {
         )));
 
         const choice = options.shortcuts?.enabled && hasShortcutUi(this.ctx)
-            ? await shortcutSelect(this.ctx.ui, title, renderedOptions, options.signal)
-            : await this.ctx.ui!.select(title, renderedOptions, {signal: options.signal});
+            ? await shortcutSelect(this.ctx.ui, title, renderedOptions, context, options.signal)
+            : await this.ctx.ui!.select(formatUiDecisionPrompt(title, context), renderedOptions, {signal: options.signal});
 
         if (!choice || options.signal?.aborted) return null;
         if (isUiFlowShortcut(choice)) return choice;
@@ -248,16 +263,19 @@ async function shortcutSelect(
     ui: ShortcutCustomUi,
     title: string,
     options: string[],
+    context: UiDecisionContext | undefined,
     signal?: AbortSignal,
 ): Promise<string | UiFlowShortcut | undefined> {
     return ui.custom<string | UiFlowShortcut | undefined>((tui, theme, keybindings, done) => {
-        return new ShortcutSelectComponent(tui, theme, keybindings, done, title, options, signal);
+        return new ShortcutSelectComponent(tui, theme, keybindings, done, title, options, context, signal);
     });
 }
 
 class ShortcutSelectComponent implements Component {
     private selected = 0;
     private completed = false;
+    private showRequest = false;
+    private requestOffset = 0;
 
     constructor(
         private readonly tui: ShortcutTui,
@@ -266,6 +284,7 @@ class ShortcutSelectComponent implements Component {
         private readonly done: (value: string | UiFlowShortcut | undefined) => void,
         private readonly title: string,
         private readonly options: string[],
+        private readonly context: UiDecisionContext | undefined,
         private readonly signal?: AbortSignal,
     ) {
         if (signal?.aborted) queueMicrotask(() => this.complete(undefined));
@@ -273,17 +292,30 @@ class ShortcutSelectComponent implements Component {
     }
 
     render(width: number): string[] {
-        const titleLines = this.title.split(/\r?\n/).map((line) => this.color(ThemeColor.accent, this.bold(line)));
-        const optionLines = this.options.map((option, index) => this.renderOption(option, index));
-        return [...titleLines, "", ...optionLines].map((line) => truncateToWidth(line, width));
+        width = Math.floor(width);
+        if (!Number.isFinite(width) || width <= 0) return [];
+        const height = Math.max(4, Math.min(28, (this.tui.terminal?.rows ?? 30) - 2));
+        const heading = [this.color(ThemeColor.accent, this.bold(decisionDisplayText(this.title)))];
+        if (height >= 8) heading.push(this.color(ThemeColor.borderMuted, "─".repeat(width)));
+        const lines = this.showRequest
+            ? this.renderRequest(width, height, heading)
+            : this.renderChoices(width, height, heading);
+        return lines.map((line) => truncateToWidth(line, width));
     }
 
     handleInput(data: string): void {
+        if (this.completed) return;
         if (this.isRight(data)) return this.complete(UiFlowShortcut.ALLOW_ALL_ONCE);
         if (this.isLeft(data)) return this.complete(UiFlowShortcut.DENY_ALL_ONCE);
-        if (this.isUp(data)) this.moveSelection(-1);
-        else if (this.isDown(data)) this.moveSelection(1);
-        else if (this.isEnter(data)) return this.complete(this.options[this.selected]);
+        if (this.matches(data, "tui.input.tab") || data === "\t") {
+            this.showRequest = !this.showRequest;
+        } else if (this.isUp(data)) {
+            if (this.showRequest) this.requestOffset = Math.max(0, this.requestOffset - 1);
+            else this.moveSelection(-1);
+        } else if (this.isDown(data)) {
+            if (this.showRequest) this.requestOffset++;
+            else this.moveSelection(1);
+        } else if (this.isEnter(data)) return this.complete(this.options[this.selected]);
         else if (this.isEscape(data)) return this.complete(undefined);
         this.tui.requestRender();
     }
@@ -303,10 +335,97 @@ class ShortcutSelectComponent implements Component {
         this.done(value);
     }
 
-    private renderOption(option: string, index: number): string {
+    private renderChoices(width: number, height: number, heading: string[]): string[] {
+        const footer = this.renderHints(width, false, height - heading.length - 2);
+        const spacing = height >= 12 ? [""] : [];
+        const capacity = height - heading.length - footer.length - spacing.length * 2;
+        const fields = this.context?.summary ?? [];
+        const ordered = [...fields.filter((field) => field.essential), ...fields.filter((field) => !field.essential)];
+        const layout = ordered.map((field) => ({field, lines: this.renderField(field, width, 3)}));
+        const criticalSize = layout.filter(({field}) => field.essential).reduce((size, {lines}) => size + lines.length, 0);
+        if (criticalSize > capacity - 1) {
+            for (const item of layout) {
+                if (item.field.essential) item.lines = this.renderField(item.field, width, 1);
+            }
+        }
+        const preview = layout.flatMap(({lines}) => lines);
+        const criticalRows = layout.filter(({field}) => field.essential).reduce((size, {lines}) => size + lines.length, 0);
+        const preferredSummary = Math.min(preview.length, Math.max(criticalRows, capacity - 6));
+        const count = Math.min(this.options.length, 5, Math.max(1, capacity - preferredSummary - 1));
+        const start = Math.max(0, Math.min(this.selected - Math.floor(count / 2), this.options.length - count));
+        const choices = this.options.slice(start, start + count).map((option, offset) => (
+            this.renderOption(option, start + offset, width)
+        ));
+        if (count < this.options.length && capacity - count > preferredSummary) {
+            choices.push(this.color(ThemeColor.dim, `  ${this.selected + 1}/${this.options.length} · more choices`));
+        }
+        const available = Math.max(0, capacity - choices.length);
+        const summary = preview.slice(0, available);
+        if (preview.length > available && summary.length > 0) {
+            summary[summary.length - 1] = truncateToWidth(`${summary[summary.length - 1]} …`, width);
+        }
+        return [...heading, ...summary, ...spacing, ...choices, ...spacing, ...footer];
+    }
+
+    private renderRequest(width: number, height: number, heading: string[]): string[] {
+        const footer = this.renderHints(width, true, height - heading.length - 2);
+        const spacing = height >= 12 ? [""] : [];
+        const fields: UiDecisionField[] = [
+            {label: "Selected option", value: this.options[this.selected] ?? ""},
+            ...(this.context?.summary ?? []),
+            ...(this.context?.details ?? []),
+        ];
+        const request = fields.flatMap((field) => this.renderField(field, width));
+        const available = Math.max(1, height - heading.length - footer.length - spacing.length - 1);
+        this.requestOffset = Math.min(this.requestOffset, Math.max(0, request.length - available));
+        const visible = request.slice(this.requestOffset, this.requestOffset + available);
+        const position = this.color(ThemeColor.dim, `Request lines ${this.requestOffset + 1}–${this.requestOffset + visible.length}/${request.length}`);
+        return [...heading, ...visible, position, ...spacing, ...footer];
+    }
+
+    private renderField(field: UiDecisionField, width: number, maximum?: number): string[] {
+        const label = this.color(ThemeColor.muted, `${decisionDisplayText(field.label)}: `);
+        const valueLines = decisionFieldLines(field);
+        const lines = valueLines.flatMap((value, index) => (
+            wrapTextWithAnsi(`${index === 0 ? label : "  "}${value}`, width)
+        ));
+        if (maximum === undefined || lines.length <= maximum) return lines;
+        return [...lines.slice(0, maximum - 1), truncateToWidth(`${lines[maximum - 1]} …`, width)];
+    }
+
+    private renderHints(width: number, request: boolean, maximum: number): string[] {
+        const up = this.keyLabel("tui.select.up", "↑");
+        const down = this.keyLabel("tui.select.down", "↓");
+        const enter = this.keyLabel("tui.select.confirm", "enter");
+        const escape = this.keyLabel("tui.select.cancel", "esc");
+        const tab = this.keyLabel("tui.input.tab", "tab");
+        const left = this.keyLabel("tui.editor.cursorLeft", "←");
+        const right = this.keyLabel("tui.editor.cursorRight", "→");
+        const movement = `${up}${down} ${request ? "scroll" : `move ${this.selected + 1}/${this.options.length}`}`;
+        const navigation = `${movement} · ${enter} select · ${escape} cancel`;
+        const review = `${tab} ${request ? "choices" : "full request"}`;
+        const fullShortcuts = `${left} deny once · ${right} allow once`;
+        const shortcuts = displayWidth(fullShortcuts) <= width ? fullShortcuts : `Once ${left}:deny ${right}:allow`;
+        const hints = width >= 60 ? [navigation, `${review} · ${shortcuts}`]
+            : [`${movement} · ${enter} select`, `${escape} cancel · ${tab} ${request ? "choices" : "request"}`, shortcuts];
+        const bounded = hints.length <= maximum ? hints
+            : maximum >= 2 ? [navigation, `${review} · ${shortcuts}`]
+                : [`${review} · ${escape} cancel`];
+        return bounded.map((hint) => this.color(ThemeColor.dim, hint));
+    }
+
+    private keyLabel(action: string, fallback: string): string {
+        const key = this.keybindings.getKeys?.(action)?.[0] ?? fallback;
+        const labels: Record<string, string> = {up: "↑", down: "↓", left: "←", right: "→", escape: "esc"};
+        return labels[key] ?? decisionDisplayText(key);
+    }
+
+    private renderOption(option: string, index: number, width: number): string {
         const prefix = index === this.selected ? "› " : "  ";
-        const line = `${prefix}${option}`;
-        return index === this.selected ? this.bg("selectedBg", this.color(ThemeColor.accent, line)) : line;
+        const line = truncateToWidth(`${prefix}${decisionDisplayText(option)}`, width);
+        if (index !== this.selected) return line;
+        const padded = `${line}${" ".repeat(Math.max(0, width - displayWidth(line)))}`;
+        return this.bg("selectedBg", this.color(ThemeColor.accent, padded));
     }
 
     private moveSelection(delta: -1 | 1): void {

@@ -165,7 +165,10 @@ test("Bash always routes through a native filesystem policy view", async () => {
         hasUI: false,
         mode: "print",
         ui: {},
-        sessionManager: {getSessionId: () => "extension-test-agent"},
+        sessionManager: {
+            getSessionId: () => "extension-test-agent",
+            getSessionFile: () => undefined,
+        },
     } as unknown as ExtensionContext;
     const sentinel = new Error("native broker routing sentinel");
     let brokerCalls = 0;
@@ -240,6 +243,7 @@ test("the production extension adds routed documentation without forcing or repl
     const sections: Record<string, string> = {mcp_servers: "NATIVE_MCP_SERVERS"};
     const event = {
         type: "before_agent_start",
+        messageType: "user",
         prompt: "Help me configure MCP",
         systemPrompt: "BASE_SYSTEM_PROMPT",
         systemPromptOptions: {sections},
@@ -260,6 +264,66 @@ test("the production extension adds routed documentation without forcing or repl
     for (const filename of ["installation.md", "policy.md", "subagents.md", "web-search.md", "security.md"]) {
         assert.match(systemPrompt, new RegExp(escapeRegex(`docs/${filename}`)));
         assert.doesNotThrow(() => readFileSync(path.join(documentationDirectory, filename), "utf8"));
+    }
+});
+
+test("custom-message starts keep the user's policy task while still adding Pilot documentation", async () => {
+    const harness = extensionHarness();
+    const ctx = {
+        cwd: process.cwd(),
+        hasUI: false,
+        mode: "print",
+        ui: {},
+        sessionManager: {getSessionId: () => "extension-test-agent"},
+    } as unknown as ExtensionContext;
+    const tasks: string[] = [];
+
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        createSessionRuntime(runtimeContext) {
+            const policyRuntime = createPolicyRuntime(runtimeContext);
+            const update = policyRuntime.updatePolicyPrincipalContext.bind(policyRuntime);
+            policyRuntime.updatePolicyPrincipalContext = (id, context) => {
+                assert.ok(typeof context.task === "string");
+                tasks.push(context.task);
+                update(id, context);
+            };
+            return {
+                policyRuntime,
+                decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                fullNetworkInspection: true,
+                setFullNetworkInspection() {},
+                beginShutdown() {},
+                close() {},
+            };
+        },
+    }).register();
+
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+    try {
+        await harness.beforeAgentStart()({
+            type: "before_agent_start",
+            messageType: "user",
+            prompt: "Review the dependency upgrade",
+            systemPrompt: "BASE",
+            systemPromptOptions: {sections: {}},
+        } as BeforeAgentStartEvent, ctx);
+        const sections: Record<string, string> = {mcp_servers: "NATIVE_MCP_SERVERS"};
+        await harness.beforeAgentStart()({
+            type: "before_agent_start",
+            messageType: "custom",
+            message: {
+                role: "custom", customType: "test-continuation",
+                content: "Continue reviewing", display: false, timestamp: Date.now(),
+            },
+            systemPrompt: "BASE",
+            systemPromptOptions: {sections},
+        } as BeforeAgentStartEvent, ctx);
+        assert.deepEqual(tasks, ["Review the dependency upgrade"]);
+        assert.equal(sections.mcp_servers, "NATIVE_MCP_SERVERS");
+        assert.match(sections.pilot_docs!, /pi\.lot documentation/);
+    } finally {
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     }
 });
 

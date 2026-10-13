@@ -117,10 +117,12 @@ export class PilotExtension {
 
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
         this.pi.on("before_agent_start", (event, ctx) => {
-            this.sessionRuntime?.policyRuntime.updatePolicyPrincipalContext(
-                ctx.sessionManager.getSessionId(),
-                {task: event.prompt},
-            );
+            if (event.messageType === "user") {
+                this.sessionRuntime?.policyRuntime.updatePolicyPrincipalContext(
+                    ctx.sessionManager.getSessionId(),
+                    {task: event.prompt},
+                );
+            }
             event.systemPromptOptions.sections.pilot_docs = this.documentation.routingPrompt();
         });
         this.pi.on("thinking_level_select", () => this.thinkingLevelUiRuntime.update());

@@ -32,10 +32,12 @@ export type ToolCallRenderOptions = {
     isError?: boolean;
     state?: ToolDisplayState;
     invalidate?: () => void;
+    outputPad?: number;
 };
 
 export type ToolResultRenderOptions = {
     isError?: boolean;
+    outputPad?: number;
 };
 
 type ResolvedArgument<TArgs extends object> = {
@@ -80,7 +82,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         this.updateCallSpinner(options);
         return renderLineFactory((width) => this.renderCallLines(
             args, theme, mode, width, options.state?.pilotCallSpinner?.frame(),
-        ));
+        ), options.outputPad);
     }
 
     /** Logical lines before width clipping, with no row registration or spinner lifecycle effects. */
@@ -100,7 +102,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         options: ToolResultRenderOptions,
         mode: ToolDisplayMode,
     ): TextComponent {
-        return renderLineFactory((width) => this.toolResultLines(result, theme, options, mode, width));
+        return renderLineFactory((width) => this.toolResultLines(result, theme, options, mode, width), options.outputPad);
     }
 
     private updateCallSpinner(options: ToolCallRenderOptions): void {

@@ -109,7 +109,7 @@ test("native MCP calls keep Pilot's copy-safe shell, compact, expanded, and row-
     const output = Array.from({length: 12}, (_, index) => `result ${index + 1} 界🙂`);
     const args = {value: "symbol → 界🙂"};
     const component = new ToolExecutionComponent(
-        decorated.name, "mcp-call", args, {}, decorated,
+        decorated.name, "mcp-call", args, {outputPad: 0}, decorated,
         {requestRender() {}} as any, process.cwd(),
     );
     component.setArgsComplete();
@@ -159,6 +159,7 @@ test("MCP long-line previews are bounded by wrapped rows and keep a separate ful
         args: {}, toolCallId: "long", state: {}, invalidate() {}, lastComponent: undefined,
         cwd: process.cwd(), executionStarted: true, argsComplete: true,
         isPartial: false, expanded: true, showImages: false, isError: false,
+        durationMs: undefined, outputPad: 0,
     };
     const preview = decorated.renderResult!(result, {expanded: true, isPartial: false}, plainTheme, context).render(40);
     assert.ok(preview.length <= 8, "five wrapped output rows, fold notice, spacer, and file hint");

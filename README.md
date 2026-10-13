@@ -9,7 +9,7 @@ pi.lot lets Pi work across repositories and absolute paths while mediating the f
 
 ## Requirements
 
-pi.lot currently supports **Linux x86-64 only** and targets Pi `1.0.0`.
+pi.lot currently supports **Linux x86-64 only** and targets Pi `1.2.0`.
 
 The host needs:
 
@@ -33,7 +33,7 @@ See [Installation and setup](docs/installation.md) for distribution packages, ho
 Install the [host prerequisites](docs/installation.md#requirements), then install and authenticate the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.2.0
 pi
 ```
 
@@ -158,7 +158,7 @@ MCP effects are [outside filesystem and network mediation](docs/security.md#mcp)
 
 Pi's native discovery behavior is preserved: default MCP servers connect without delaying the first prompt, appear in the `mcp_servers` prompt section, and are discovered with `searchTools()` and `describeNamespace()`. Scripts, tool search, and resource tools wait for the servers they need; direct tools still participate in the first-prompt startup wait. Native namespace normalization, collision-safe tool names, `description`, `oauth.clientName`, and provider-token authentication remain owned by Pi. Pilot's documentation is a separate structured prompt section, so it does not force a replacement prompt or defeat MCP's transcript deltas.
 
-MCP tools retain Pilot's `Ctrl+O` and `/view-full-tool` display. MCP previews and codemode script/output previews limit wrapped visual rows. Codemode's nested calls reuse normal tool-call layouts with a small indent: compact views show titles such as `bash | purpose` and `read | path:range`, while expanded and full views reveal arguments with the usual preview limits. Nested calls wrap within their indent without adding completion icons, and running calls share the parent row's Pi loader animation. Pilot keeps its compact view and tail-oriented output previews. Routine connection notices are quiet; configuration errors, discovery warnings, load failures, command diagnostics, and tool errors still surface. Check `/mcp` for connection state.
+MCP tools retain Pilot's `Ctrl+O` and `/view-full-tool` display, including resumed calls before their server connects. MCP previews and codemode script/output previews limit wrapped visual rows. Codemode's nested calls reuse normal tool-call layouts with a small indent: compact views show titles such as `bash | purpose` and `read | path:range`, while expanded and full views reveal arguments with the usual preview limits. Nested calls wrap within their indent without adding completion icons, and running calls share the parent row's Pi loader animation. Pilot keeps its compact view and tail-oriented output previews. Routine connection notices are quiet; configuration errors, discovery warnings, load failures, command diagnostics, and tool errors still surface. Check `/mcp` for connection state.
 
 ### Web search
 
@@ -185,14 +185,15 @@ Read [Web search](docs/web-search.md) for configuration, provider availability, 
 
 ### Tool display
 
-Pi `1.0.0` defaults to fullscreen mode. Set `"tuiMode": "regular"` in Pi settings, or use `pi --tui-mode regular`, for the regular terminal UI.
+Pi defaults to fullscreen mode. Set `"tuiMode": "regular"` in Pi settings, or use `pi --tui-mode regular`, for the regular terminal UI.
 
 pi.lot also provides compact, copy-friendly tool rendering:
 
 - `Ctrl+O` toggles compact and expanded tool views;
+- Pi's `outputPad` setting controls tool-row margins without adding trailing whitespace to copied output;
 - `/view-full-tool` toggles a full view for one selected call;
 - direct `edit` rows show a truncated preview of supplied replacement text while arguments stream and the edit is still working; completed rows return to their configured compact/expanded/full view, and preview rendering does not read the target file before authorization;
-- Pilot's `codemode` requires a concise, one-line `purpose`, shown beside the tool name even in minimal mode; nested calls use the same titles, argument layouts, colors, and compact/expanded/full modes as normal calls, indented to show they belong to the script, with Pi's animated braille loader while running and a blank icon column afterward; expanded and per-call full views also reveal the script, output, full errors, and output-file hints;
+- Pilot's `codemode` requires a concise, one-line `purpose`, shown beside the tool name even in minimal mode; nested calls use the same titles, argument layouts, colors, and compact/expanded/full modes as normal calls, indented to show they belong to the script, with Pi's animated braille loader while running and a blank icon column afterward; expanded and per-call full views also reveal the script, output, full errors, output-file hints, and elapsed or recorded execution time;
 - active subagent work appears above the editor and in the footer;
 - the chat editor border stays at the theme's `thinkingXhigh` color (Bash mode keeps its own color); and
 - a structured footer groups model and usage into two rows, with the session name right-aligned beside the context/usage row:

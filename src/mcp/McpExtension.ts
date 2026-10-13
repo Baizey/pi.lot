@@ -12,7 +12,6 @@ import {
     type TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import {McpToolRegistry} from "./McpToolRegistry.js";
-import {CodemodeExtension} from "../tools/codemode/CodemodeExtension.js";
 import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
 
 type NativeEvent = SessionStartEvent | SessionShutdownEvent | BeforeAgentStartEvent
@@ -58,7 +57,12 @@ export class McpExtension implements McpExtensionInterface {
             ...this.pi,
             on,
             registerTool: (definition) => this.registry.register(definition),
-            getAllTools: () => CodemodeExtension.nativeMcpTools(this.pi.getAllTools()),
+            // Preserve native lookup/fallback selection, but keep Pilot's shell even for
+            // resumed MCP rows whose server has not connected (or never connects).
+            registerToolRenderer: (resolve) => this.pi.registerToolRenderer((name, next) => {
+                const renderers = resolve(name, next);
+                return renderers && name.startsWith("mcp__") ? this.registry.renderers(name) : renderers;
+            }),
         });
     }
 

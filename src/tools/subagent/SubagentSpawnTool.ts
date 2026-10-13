@@ -179,7 +179,7 @@ function createDefinition(
         renderResult: (result, options, theme, context) => presentation.renderResult(
             result,
             theme,
-            {isError: context.isError},
+            {isError: context.isError, outputPad: context.outputPad},
             resolveToolDisplayMode(options.expanded, context.state),
         ),
     };

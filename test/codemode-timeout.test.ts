@@ -106,6 +106,7 @@ test("codemode rejects malformed source/options before native execution", async 
         '// @options: {"timeout_ms":0}\nreturn 1;', '// @options: {"timeout_ms":1.5}\nreturn 1;',
         '// @options: {"timeout_ms":2147483648}\nreturn 1;',
         '// @options: {"max_output_tokens":-1,"timeout_ms":100}\nreturn 1;',
+        'text("must not run");\n// @options: {"timeout_ms":100}\nreturn 1;',
     ]) {
         await assert.rejects(execute("invalid", {code}, undefined, undefined, context), CodemodeSourceError);
     }
@@ -246,6 +247,25 @@ test("timeout normalization edits only a trailing native diagnostic, not matchin
     assert.equal(result.content.at(-1)?.type, "text");
 });
 
+test("timeout normalization preserves printed diagnostics when Pi joins output and native errors", async (t) => {
+    const tick = clock(t);
+    let printed = "";
+    const execute = withApprovalAwareCodemodeTimeout(async (_id, _params, signal) => {
+        const pending = waitForAbort(signal!);
+        tick(100);
+        const native = await pending;
+        const diagnostic = native.content.at(-1)!;
+        assert.equal(diagnostic.type, "text");
+        printed = `before\n${diagnostic.text}\nafter\n`;
+        return {...native, content: [native.content[0]!, {type: "text", text: printed + diagnostic.text}]};
+    });
+    const result = await execute("joined", {code: '// @options: {"timeout_ms":100}\nreturn 1;'}, undefined, undefined, context);
+    const diagnostic = result.content.at(-1)!;
+    assert.equal(diagnostic.type, "text");
+    assert.ok(diagnostic.text.startsWith(printed), "script output must stay byte-for-byte unchanged");
+    assert.match(diagnostic.text.slice(printed.length), /^Script error:\nScript timed out:/);
+});
+
 test("timeout reporting leaves spilled native output and its file untouched", async (t) => {
     const tick = clock(t);
     let nativeResult!: Result;
@@ -290,6 +310,8 @@ test("real main and child codemode enforce a finite timeout for a script with no
         const fixture = await sessionFixture(child, child ? [unusedTool] : []);
         try {
             assert.equal((await fixture.run("return 1;")).isError, undefined);
+            // Initialization belongs to the execution budget, so cancellation may precede
+            // the script body under parallel load. Printed diagnostics are covered separately.
             const result = await fixture.run('// @options: {"timeout_ms":150}\nwhile (true) {}');
             assert.equal(result.isError, true);
             assert.match(resultText(result), /Script failed/);
@@ -498,7 +520,7 @@ class PolicyCodemodeHierarchy {
         this.runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_user);
         const placeholder: ToolDefinition = {
             name: "mcp__policy__write", label: "policy write", description: "Request write policy", exposure: "codemode",
-            namespace: {name: "mcp__policy", description: "Granted policy fixture"},
+            namespace: {name: "mcp__policy", aliases: ["policy"], description: "Granted policy fixture"},
             parameters: {type: "object", properties: {path: {type: "string"}}, required: ["path"]},
             async execute() { throw new Error("Child factory must bind its policy principal"); },
         };

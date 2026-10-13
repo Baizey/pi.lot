@@ -92,7 +92,7 @@ export class ReadTool {
         };
         const renderResult: NonNullable<typeof definition.renderResult> = (result, options, theme, context) => {
             const mode = resolveToolDisplayMode(options.expanded, context.state);
-            return presentation.renderResult(result, theme, {isError: context.isError}, mode);
+            return presentation.renderResult(result, theme, {isError: context.isError, outputPad: context.outputPad}, mode);
         };
         this.definition = {
             ...definition,

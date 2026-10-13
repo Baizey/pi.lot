@@ -3,6 +3,7 @@ import test from "node:test";
 import {visibleWidth as piVisibleWidth} from "@earendil-works/pi-tui";
 import {
     displayWidth,
+    renderLineFactory,
     renderLines,
     sanitizeTerminalLine,
     truncateToWidth,
@@ -56,6 +57,24 @@ test("terminal text removes non-display terminal controls before measuring", () 
     assert.equal(sanitized, "left right  visible\x1b[31mred\x1b[0m");
     assert.equal(sanitized.includes("forbidden title"), false);
     assert.equal(/[\r\n\t\x01\x07]/.test(sanitized), false);
+});
+
+test("output padding reserves margins without filling lines or indenting blanks", () => {
+    let contentWidth = -1;
+    const component = renderLineFactory((width) => {
+        contentWidth = width;
+        return ["界🙂e\u0301 → value", "", "\x1b[31mstyled\x1b[0m"];
+    }, 2);
+    assert.deepEqual(component.render(40), ["  界🙂e\u0301 → value", "", "  \x1b[31mstyled"]);
+    assert.equal(contentWidth, 36);
+    for (const width of [0, 1, 3, 4, 5, 7.9, 20, 40]) {
+        const lines = component.render(width);
+        assert.equal(contentWidth, Math.max(0, Math.floor(width) - 4));
+        assert.equal(lines.every((line) => piVisibleWidth(line) <= Math.floor(width)), true);
+        assert.equal(lines.every((line) => !/[ \t]+$/.test(line)), true);
+        assert.equal(lines[1], "");
+    }
+    assert.equal(component.render(Number.POSITIVE_INFINITY)[0], "  界🙂e\u0301 → value");
 });
 
 test("invalid render widths fail closed", () => {

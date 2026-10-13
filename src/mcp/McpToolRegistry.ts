@@ -1,4 +1,4 @@
-import type {ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI, ToolDefinition, ToolRenderers} from "@earendil-works/pi-coding-agent";
 import {getCapabilities} from "@earendil-works/pi-tui";
 import {ThemeColor} from "../tui/Color.js";
 import {renderLineFactory} from "../tui/terminalText.js";
@@ -47,30 +47,17 @@ export class McpToolRegistry {
             .map((definition) => this.decorate(definition));
     }
 
-    private decorate(definition: McpDefinition): McpDefinition {
-        const generation = this.generation;
+    /** Presentation also works before native discovery, without granting execution authority. */
+    renderers(name: string): ToolRenderers {
         const presentation = new ToolPresentationRenderer<Record<string, unknown>>({
-            toolName: definition.name,
+            toolName: name,
             arguments: [],
             result: {direction: ToolTextDirection.TAIL, wrap: true},
         });
         return {
-            ...definition,
             renderShell: "self",
-            execute: (toolCallId, params, signal, onUpdate, ctx) => {
-                const current = this.definitions.get(definition.name);
-                if (!this.active || generation !== this.generation || !current || current.exposure === "hidden") {
-                    throw new Error(`MCP tool is no longer exposed: ${definition.name}`);
-                }
-                if (JSON.stringify(current.parameters) !== JSON.stringify(definition.parameters)) {
-                    throw new Error(`MCP tool schema changed; reload the tool or spawn a new child: ${definition.name}`);
-                }
-                // A retained child must not execute a stale closure after native withdrawal/reconnect.
-                // Use its own context and signal, not the root session's execution pipeline.
-                return current.execute(toolCallId, params, signal, onUpdate, ctx);
-            },
             renderCall: (args, theme, context) => {
-                this.displayRows.observe(definition.name, args, context);
+                this.displayRows.observe(name, args, context);
                 return presentation.renderCall(
                     args as Record<string, unknown>,
                     theme,
@@ -93,7 +80,27 @@ export class McpToolRegistry {
                         lines.push(theme.fg(ThemeColor.muted, `Full output: ${result.details.fullOutputPath}`));
                     }
                     return lines;
-                });
+                }, context.outputPad);
+            },
+        };
+    }
+
+    private decorate(definition: McpDefinition): McpDefinition {
+        const generation = this.generation;
+        return {
+            ...definition,
+            ...this.renderers(definition.name),
+            execute: (toolCallId, params, signal, onUpdate, ctx) => {
+                const current = this.definitions.get(definition.name);
+                if (!this.active || generation !== this.generation || !current || current.exposure === "hidden") {
+                    throw new Error(`MCP tool is no longer exposed: ${definition.name}`);
+                }
+                if (JSON.stringify(current.parameters) !== JSON.stringify(definition.parameters)) {
+                    throw new Error(`MCP tool schema changed; reload the tool or spawn a new child: ${definition.name}`);
+                }
+                // A retained child must not execute a stale closure after native withdrawal/reconnect.
+                // Use its own context and signal, not the root session's execution pipeline.
+                return current.execute(toolCallId, params, signal, onUpdate, ctx);
             },
         };
     }

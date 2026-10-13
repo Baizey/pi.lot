@@ -6,6 +6,8 @@ import type {
     McpServerConfig,
     McpTransportFactory,
     ToolDefinition,
+    ToolRendererResolver,
+    ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 
 type Transport = ReturnType<McpTransportFactory>;
@@ -15,6 +17,7 @@ type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 export class NativeMcpFixture {
     readonly tools = new Map<string, ToolDefinition>();
     readonly commands = new Map<string, Command>();
+    readonly rendererResolvers: ToolRendererResolver[] = [];
     readonly notifications: Array<{message: string; type?: string}> = [];
     readonly handlers = new Map<string, Set<ExtensionHandler<ExtensionEvent, unknown>>>();
     readonly calls: Array<{method: string; params: unknown}> = [];
@@ -55,6 +58,7 @@ export class NativeMcpFixture {
                 this.active = [...new Set([...this.active, tool.name])];
             }
         },
+        registerToolRenderer: (resolver: ToolRendererResolver) => { this.rendererResolvers.push(resolver); },
         registerCommand: (name: string, command: Command) => { this.commands.set(name, command); },
         getMcpServers: () => [...this.registeredServers].map(([name, config]) => ({name, config, extensionPath: "fixture-extension"})),
         getAllTools: () => [...this.tools.values()],
@@ -133,6 +137,14 @@ export class NativeMcpFixture {
             ...fields,
         } as ExtensionEvent;
         for (const handler of this.handlers.get(name) ?? []) await handler(event, ctx);
+    }
+
+    renderers(name: string): ToolRenderers | undefined {
+        const resolve = (index: number): ToolRenderers | undefined => {
+            const resolver = this.rendererResolvers[index];
+            return resolver ? resolver(name, () => resolve(index + 1)) : this.tools.get(name);
+        };
+        return resolve(0);
     }
 
     async changeTools(names: string[]): Promise<void> {

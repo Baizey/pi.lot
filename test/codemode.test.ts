@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {mkdtempSync, rmSync} from "node:fs";
+import {mkdtempSync, readFileSync, rmSync, statSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -51,9 +51,11 @@ test("codemode requires a purpose while keeping native exposure, defaults, and l
     assert.equal(parameters.properties.code, nativeParameters.properties.code);
     assert.deepEqual(nativeParameters.required, ["code"], "the shared native schema must not be mutated");
     assert.ok(parameters.required.includes("purpose"));
-    assert.equal(CodemodeExtension.nativeMcpTools([tool])[0]!.parameters, native.parameters);
-    const unrelated = {...tool, parameters: {...tool.parameters}};
-    assert.equal(CodemodeExtension.nativeMcpTools([unrelated])[0], unrelated);
+    assert.equal(typeof tool.reachesTools, "function", "MCP readiness uses native reach metadata, not schema identity");
+    assert.deepEqual(tool.reachesTools!({code: "return ALL_TOOLS;"}), native.reachesTools!({code: "return ALL_TOOLS;"}));
+    assert.deepEqual(tool.reachesTools!({purpose: "ALL_TOOLS", code: "await tools.mcp__demo__echo({});"}),
+        ["await", "tools", "mcp__demo__echo"]);
+    assert.equal(tool.reachesTools!({purpose: "Discover tools", code: "return ALL_TOOLS;"}), "all");
     assert.deepEqual(parameters.properties.purpose, {
         type: "string",
         description: "A short, one-line explanation of what the script will achieve",
@@ -81,6 +83,7 @@ test("codemode requires a purpose while keeping native exposure, defaults, and l
         declared: callable, callable, registered: callable,
         getExposure: () => "direct",
         getNamespace: () => undefined,
+        getPromptGuidelines: () => ["Keep fixture reads policy-mediated."],
     };
     for (const mode of ["on", "only"] as const) {
         settings.codemode.mode = mode;
@@ -91,6 +94,9 @@ test("codemode requires a purpose while keeping native exposure, defaults, and l
             assert.deepEqual(prepared.hiddenDeclarations, nativePrepared.hiddenDeclarations);
             assert.equal(prepared.descriptions?.read, nativePrepared.descriptions?.read);
             assertPurposeDescription(prepared.descriptions!.codemode!, nativePrepared.descriptions!.codemode!);
+            if (inlineBudget > 0 && mode === "only") {
+                assert.match(prepared.descriptions!.codemode!, /Keep fixture reads policy-mediated/);
+            }
             assert.deepEqual(prepared.hiddenDeclarations, mode === "only" ? ["read"] : []);
         }
     }
@@ -122,7 +128,7 @@ test("codemode keeps all nested calls in every view with bounded script and outp
         args: '{"path":"fixture"}', status: "ok", durationMs: 12,
     }));
     const component = new ToolExecutionComponent(
-        "codemode", "script", {purpose: "Inspect fixture tools", code: script.join("\n")}, {}, tool,
+        "codemode", "script", {purpose: "Inspect fixture tools", code: script.join("\n")}, {outputPad: 0}, tool,
         {requestRender() {}} as ConstructorParameters<typeof ToolExecutionComponent>[5], process.cwd(),
     );
     component.setArgsComplete();
@@ -462,6 +468,7 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                 noTools: "builtin",
                 customTools: [{
                     name: "echo", label: "echo", description: "Fixture echo", exposure: "codemode",
+                    promptGuidelines: ["Use only approved fixture requests."],
                     parameters: {type: "object", properties: {}},
                     async execute(_id, _params, _signal, _onUpdate, ctx) {
                         assert.equal(ctx.cwd, directory);
@@ -502,6 +509,33 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                     assert.equal(globals.isError, undefined);
                     assert.match(JSON.stringify(globals.content), /imageGeneration.*function/);
                     assert.match(JSON.stringify(globals.content), /missingTool.*false/);
+                    const discovery = await run("guidelines", 'return {description: await describeTool("echo"), all: ALL_TOOLS};');
+                    assert.equal(discovery.isError, undefined);
+                    assert.match(JSON.stringify(discovery.content), /Use only approved fixture requests/);
+                    const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=";
+                    const pictured = await run("image", `image("data:image/png;base64,${imageData}");`);
+                    assert.equal(pictured.isError, undefined);
+                    const label = pictured.content.find((part) => part.type === "text" && part.text.includes("Image saved to"));
+                    assert.ok(label?.type === "text");
+                    const imagePath = /Image saved to (.+?) \(image\/png,/.exec(label.text)?.[1];
+                    assert.ok(imagePath);
+                    try {
+                        assert.deepEqual(readFileSync(imagePath), Buffer.from(imageData, "base64"));
+                        assert.equal(statSync(imagePath).mode & 0o777, 0o600);
+                        assert.ok(pictured.content.some((part) => part.type === "image" && part.data === imageData));
+                    } finally {
+                        rmSync(imagePath, {force: true});
+                    }
+                    const output = await run("output", 'text("first"); console.log("logged"); text("second"); console.warn("warned"); return "last";');
+                    assert.equal(output.isError, undefined);
+                    assert.deepEqual(output.content.slice(1), [{type: "text", text:
+                        '==> text 1/3 <==\nfirst\n==> text 2/3 <==\nsecond\n==> text 3/3 <==\nlast\n<console_output>\nlogged\nwarned\n</console_output>'}]);
+                    const failedOutput = await run("failed-output", 'text("kept"); console.log("logged failure"); throw new Error("fixture failure");');
+                    assert.equal(failedOutput.isError, true);
+                    const failedText = JSON.stringify(failedOutput.content);
+                    assert.match(failedText, /kept/);
+                    assert.match(failedText, /<console_output>/);
+                    assert.match(failedText, /Script error:/);
                     const unknown = await run("unknown", 'return typeof tools.missing;');
                     assert.equal(unknown.isError, true);
                     assert.match(JSON.stringify(unknown.content), /missing/);
@@ -545,6 +579,37 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
     }
 });
 
+test("codemode timing uses the live spinner lifecycle and recorded durations, with padded output", (t) => {
+    t.mock.timers.enable({apis: ["Date", "setInterval"], now: 1000});
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const {tool} = harness(rows);
+    const state = {};
+    let redraws = 0;
+    const context = renderContext(state, {expanded: true, isPartial: true, outputPad: 2,
+        invalidate: () => { redraws++; }});
+    const args = {purpose: "Inspect timing", code: 'return "output";'};
+    tool.renderCall!(args, plainTheme, context);
+    tool.renderCall!(args, plainTheme, {...context, executionStarted: true});
+    const partial = tool.renderResult!({content: [], details: {calls: []}},
+        {expanded: true, isPartial: true}, plainTheme, context);
+    t.mock.timers.tick(1200);
+    assert.ok(partial.render(30).includes("  Elapsed 1.2s"));
+    assert.ok(redraws > 0);
+    const restored = tool.renderResult!({content: [{type: "text", text: "native output"}], details: {calls: []}},
+        {expanded: true, isPartial: false}, plainTheme, {...context, isPartial: false, durationMs: 5300});
+    const lines = restored.render(30);
+    assert.ok(lines.includes("  native output"));
+    assert.ok(lines.includes("  Took 5.3s"), "recorded duration wins over the render clock");
+    assert.ok(lines.every((line) => !line || line.startsWith("  ")));
+    assert.ok(lines.every((line) => displayWidth(line) <= 28 && !/[ \t]+$/.test(line)));
+    const after = redraws;
+    t.mock.timers.tick(5000);
+    assert.equal(redraws, after, "final results stop redraws without owning an extra timer");
+    assert.deepEqual(tool.renderResult!({content: [], details: undefined}, {expanded: false, isPartial: false},
+        plainTheme, renderContext({}, {expanded: false, durationMs: 5300})).render(30), [], "compact mode remains activity-only");
+});
+
 function assertPurposeDescription(description: string, native: string): void {
     assert.match(description, /JSON object.*`purpose`.*`code`/);
     assert.match(description, /`code` runs as an async function body/);
@@ -585,6 +650,7 @@ function renderContext(state: object, options: Partial<Parameters<NonNullable<To
         args: {}, toolCallId: "script", state, invalidate() {}, lastComponent: undefined,
         cwd: process.cwd(), executionStarted: false, argsComplete: true,
         isPartial: false, expanded: true, showImages: false, isError: false,
+        durationMs: undefined, outputPad: 0,
         ...options,
     };
 }

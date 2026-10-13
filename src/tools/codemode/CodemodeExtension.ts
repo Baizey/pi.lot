@@ -4,7 +4,6 @@ import {
     type CodemodeToolDetails,
     type ExtensionAPI,
     type Theme,
-    type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import {getCapabilities, wrapTextWithAnsi} from "@earendil-works/pi-tui";
 import {ThemeColor} from "../../tui/Color.js";
@@ -25,8 +24,8 @@ type CodemodeInput = {purpose: string; code: string};
 
 /** Pi owns script execution and discovery; Pilot adds purpose and presentation. */
 export class CodemodeExtension {
-    private static readonly nativeSchemas = new WeakMap<object, ToolInfo["parameters"]>();
     private readonly liveRows = new WeakSet<object>();
+    private readonly timing = new WeakMap<object, {startedAt: number; endedAt?: number}>();
     // UI-only arguments: leave Pi's bounded transcript metadata and model output unchanged.
     private readonly callArguments = new WeakMap<CodemodeToolDetails, ReadonlyMap<number, string>>();
     private readonly presentation = new ToolPresentationRenderer<CodemodeInput>({
@@ -42,14 +41,6 @@ export class CodemodeExtension {
         private readonly pi: ExtensionAPI,
         private readonly displayRows: ToolDisplayRows,
     ) {}
-
-    /** Native MCP recognizes scripts by schema identity before waiting for pending servers. */
-    static nativeMcpTools<TTool extends Pick<ToolInfo, "name" | "parameters">>(tools: readonly TTool[]): TTool[] {
-        return tools.map((tool) => {
-            const parameters = tool.name === "codemode" ? this.nativeSchemas.get(tool.parameters) : undefined;
-            return parameters ? {...tool, parameters} : tool;
-        });
-    }
 
     register(): void {
         // The generic registerTool API cannot express this decorator's built-in-only boundary.
@@ -71,7 +62,6 @@ export class CodemodeExtension {
                     ...typeof definition.parameters.required, "purpose",
                 ],
             };
-            CodemodeExtension.nativeSchemas.set(parameters, definition.parameters);
             this.pi.registerTool<typeof parameters, CodemodeToolDetails | undefined>({
                 ...definition,
                 parameters,
@@ -122,7 +112,12 @@ export class CodemodeExtension {
                     // executionStarted=true. Export state must not own live toggles or timers.
                     if (!context.executionStarted) this.liveRows.add(context.state);
                     const live = this.liveRows.has(context.state);
-                    if (live) this.displayRows.observe("codemode", args, context);
+                    if (live) {
+                        this.displayRows.observe("codemode", args, context);
+                        if (context.executionStarted && !this.timing.has(context.state)) {
+                            this.timing.set(context.state, {startedAt: Date.now()});
+                        }
+                    }
                     return this.presentation.renderCall(
                         args,
                         theme,
@@ -131,7 +126,9 @@ export class CodemodeExtension {
                     );
                 },
                 renderResult: (result, options, theme, context) => {
+                    const timing = this.timing.get(context.state);
                     if (!options.isPartial) {
+                        if (timing) timing.endedAt ??= Date.now();
                         context.state.pilotCallSpinner?.stop();
                         context.state.pilotCallSpinner = null;
                     }
@@ -145,6 +142,8 @@ export class CodemodeExtension {
                         context.isError,
                         context.showImages,
                         context.state,
+                        context.outputPad,
+                        context.durationMs,
                     );
                 },
             });
@@ -176,6 +175,8 @@ export class CodemodeExtension {
         isError: boolean,
         showImages: boolean,
         state: ToolDisplayState,
+        outputPad: number,
+        durationMs: number | undefined,
     ): TextComponent {
         return renderLineFactory((width) => {
             const calls = details?.calls ?? [];
@@ -197,7 +198,15 @@ export class CodemodeExtension {
                 const total = priced.reduce((sum, call) => sum + (call.cost ?? 0), 0);
                 lines.push(theme.fg(ThemeColor.muted, `Model calls: ${formatCost(total)}`));
             }
-            if (isPartial || mode === ToolDisplayMode.MINIMAL) return lines;
+            // The existing call spinner redraws live rows; do not add native renderer intervals
+            // that would outlive Pilot's row cleanup. Compact mode keeps its activity-only layout.
+            const timing = this.timing.get(state);
+            const elapsed = !isPartial && durationMs !== undefined ? durationMs
+                : timing ? (timing.endedAt ?? Date.now()) - timing.startedAt : undefined;
+            const timerText = elapsed === undefined ? undefined
+                : theme.fg(ThemeColor.muted, `${isPartial ? "Elapsed" : "Took"} ${(elapsed / 1000).toFixed(1)}s`);
+            if (mode === ToolDisplayMode.MINIMAL) return lines;
+            if (isPartial) return timerText ? [...lines, "", timerText] : lines;
 
             const content = result.content ?? [];
             const first = content[0];
@@ -212,8 +221,9 @@ export class CodemodeExtension {
             if (details?.fullOutputPath) {
                 lines.push(theme.fg(ThemeColor.muted, `Full output: ${details.fullOutputPath}`));
             }
+            if (timerText) lines.push("", timerText);
             return lines;
-        });
+        }, outputPad);
     }
 
     private callLines(

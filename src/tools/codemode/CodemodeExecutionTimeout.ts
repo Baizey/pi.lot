@@ -45,14 +45,22 @@ export function withApprovalAwareCodemodeTimeout(execute: NativeCodemodeExecute)
                     }
                     const aborted = `Script error:\nScript aborted: ${timeout.message}\n\n`;
                     const diagnostic = result.content.at(-1);
-                    // Native appends its error after script output. Do not edit matching text
-                    // printed by the script, or guess when a native postscript follows the error.
-                    if (diagnostic?.type !== "text" || !diagnostic.text.startsWith(aborted)) return result;
+                    // Pi 1.2 joins adjacent text items: partial output and the native diagnostic
+                    // can share a block. Match only the exact trailing diagnostic and call summary,
+                    // never text printed by the script or an error followed by a native postscript.
+                    if (diagnostic?.type !== "text") return result;
+                    const calls = result.details?.calls ?? [];
+                    const summary = calls.length === 0 ? "No tool calls were made."
+                        : `Tool calls made before the failure (they are not undone): ${calls.map((call) => `${call.name} (${call.status})`).join(", ")}`;
+                    const suffix = `${aborted}${summary}`;
+                    if (!diagnostic.text.endsWith(suffix)) return result;
+                    const offset = diagnostic.text.length - suffix.length;
+                    if (offset > 0 && diagnostic.text[offset - 1] !== "\n") return result;
                     return {
                         ...result,
                         content: [
                             ...result.content.slice(0, -1),
-                            {...diagnostic, text: `Script error:\nScript timed out: ${timeout.message}\n\n${diagnostic.text.slice(aborted.length)}`},
+                            {...diagnostic, text: `${diagnostic.text.slice(0, offset)}Script error:\nScript timed out: ${timeout.message}\n\n${summary}`},
                         ],
                     };
                 } finally {

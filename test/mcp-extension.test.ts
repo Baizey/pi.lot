@@ -7,6 +7,7 @@ import {
     type ExtensionContext,
     type ExtensionToolContext,
     type LoadedMcpConfig,
+    type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {McpExtension} from "../src/mcp/McpExtension.js";
 import {CodemodeExtension} from "../src/tools/codemode/CodemodeExtension.js";
@@ -123,8 +124,9 @@ test("shutdown during native startup cannot register tools into the stopped sess
     try {
         await extension.startSession(fixture.ctx);
         await new Promise<void>((resolve) => setImmediate(resolve));
-        await extension.stopSession();
+        const shutdown = extension.stopSession();
         finishStartup();
+        await shutdown;
         for (let attempt = 0; attempt < 20 && fixture.closes === 0; attempt++) {
             await new Promise<void>((resolve) => setImmediate(resolve));
         }
@@ -323,7 +325,7 @@ test("native normalized names preserve distinct colliding tools and separate nam
         for (const tool of tools) {
             assert.match(tool.name, /^mcp__prod_api__read_file_[a-f0-9]{8}$/);
             assert.deepEqual(tool.namespace, {
-                name: "mcp__prod_api", description: "Production search service", instructions: "Fixture namespace instructions",
+                name: "mcp__prod_api", aliases: ["prod-api"], description: "Production search service", instructions: "Fixture namespace instructions",
             });
             await tool.execute("call", {}, undefined, undefined, fixture.ctx as ExtensionToolContext);
         }
@@ -332,6 +334,52 @@ test("native normalized names preserve distinct colliding tools and separate nam
             return {name: params.name, arguments: params.arguments};
         });
         assert.deepEqual(calls, [{name: "read-file", arguments: {}}, {name: "read_file", arguments: {}}]);
+    } finally {
+        await extension.stopSession();
+        await fixture.close();
+    }
+});
+
+test("resumed MCP calls retain Pilot rendering before discovery without granting tool authority", () => {
+    const fixture = new NativeMcpFixture();
+    const rows = new ToolDisplayRows();
+    const extension = new McpExtension(fixture.pi, {displayRows: rows});
+    extension.register();
+    const name = "mcp__never_connected__echo";
+    const renderers = fixture.renderers(name)!;
+    assert.equal(renderers.renderShell, "self");
+    assert.equal(fixture.renderers("not_an_mcp_tool"), undefined);
+    assert.equal(fixture.tools.has(name), false);
+    assert.deepEqual(extension.toolDefinitions(), []);
+    const theme = {fg: (_color: string, text: string) => text, bold: (text: string) => text} as unknown as Theme;
+    const context = {args: {value: "fixture"}, toolCallId: "resumed", state: {}, invalidate() {},
+        lastComponent: undefined, cwd: process.cwd(), executionStarted: true, argsComplete: true,
+        isPartial: false, expanded: true, showImages: false, isError: false, durationMs: undefined, outputPad: 2};
+    try {
+        assert.deepEqual(renderers.renderCall!({value: "fixture"}, theme, context).render(80),
+            ["    mcp__never_connected__echo", "  fixture"]);
+        assert.deepEqual(renderers.renderResult!({content: [{type: "text", text: "saved output"}], details: undefined},
+            {expanded: true, isPartial: false}, theme, context).render(80), ["", "  saved output"]);
+    } finally {
+        rows.clear();
+    }
+});
+
+test("native MCP preserves arbitrary structured content and drops server-only metadata", async () => {
+    const fixture = new NativeMcpFixture();
+    const extension = createExtension(fixture);
+    extension.register();
+    try {
+        await extension.startSession(fixture.ctx);
+        await fixture.emit("before_agent_start");
+        const tool = extension.toolDefinitions()[0]!;
+        for (const structuredContent of [["array", 1], null, true, 42, "text"]) {
+            fixture.callResult = {content: [{type: "text", text: "fixture result"}], structuredContent,
+                _meta: {private: "server only"}};
+            const result = await tool.execute("call", {}, undefined, undefined, fixture.ctx as ExtensionToolContext);
+            assert.deepEqual(result.structuredContent, {content: [{type: "text", text: "fixture result"}], structuredContent});
+            assert.equal(result.isError, undefined);
+        }
     } finally {
         await extension.stopSession();
         await fixture.close();

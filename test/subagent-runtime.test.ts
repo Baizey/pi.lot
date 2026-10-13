@@ -194,7 +194,7 @@ test("SDK child executes native MCP proxies through real codemode, search, and n
         const executions: Array<{name: string; cwd: string; value: string}> = [];
         const nativeTool = (name: string, exposure: ToolDefinition<any, any>["exposure"]): ToolDefinition<any, any> => ({
             name, label: name, description: `Find ${name} native echo`, exposure,
-            namespace: {name: "mcp__demo", description: "Child native test server", instructions: "Use only the granted echo tools."},
+            namespace: {name: "mcp__demo", aliases: ["demo"], description: "Child native test server", instructions: "Use only the granted echo tools."},
             parameters: {type: "object", properties: {value: {type: "string"}}, required: ["value"]},
             async execute(_id, params: {value: string}, _signal, _onUpdate, ctx) {
                 executions.push({name, cwd: ctx.cwd, value: params.value});
@@ -236,7 +236,7 @@ test("SDK child executes native MCP proxies through real codemode, search, and n
         });
         try {
             await session.bindExtensions({});
-            const prompt = await session.extensionRunner.emitBeforeAgentStart("inspect", undefined, {cwd});
+            const prompt = await session.extensionRunner.emitBeforeAgentStart({messageType: "user", prompt: "inspect"}, {cwd});
             assert.match(prompt.systemPromptOptions.sections.mcp_servers!, /mcp__demo.*Child native test server/);
             assert.ok(session.getActiveToolNames().includes("codemode"));
             const nested: string[] = [];

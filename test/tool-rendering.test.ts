@@ -127,7 +127,7 @@ test("self-shell composition keeps symbolic content free of fill-to-width whites
         definition.name,
         "symbol-call",
         args,
-        {},
+        {outputPad: 0},
         definition,
         {requestRender() {}} as any,
         process.cwd(),
@@ -144,6 +144,32 @@ test("self-shell composition keeps symbolic content free of fill-to-width whites
     assert.equal(plainLines.includes("family 👨‍👩‍👧‍👦 · math ∑"), true);
     assert.equal(plainLines.every((line) => !/[ \t]+$/.test(line)), true);
     assert.equal(plainLines.some((line) => /^\s+界/.test(line)), false);
+});
+
+test("tool padding applies once to calls and results and controls their wrapping width", () => {
+    const renderer = new ToolPresentationRenderer({
+        toolName: "padded_tool",
+        arguments: [{key: "code", layout: ToolArgumentLayout.BLOCK, wrap: true}],
+        result: {wrap: true},
+    } satisfies ToolPresentationSpec<{code: string}>);
+    const args = {code: "abcdefghij ".repeat(8).trimEnd()};
+    const result = {content: [{type: "text", text: "klmnopqrst ".repeat(8).trimEnd()}]};
+    for (const mode of [ToolDisplayMode.MINIMAL, ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL]) {
+        for (const outputPad of [0, 1, 3]) {
+            const width = 32;
+            const indent = " ".repeat(outputPad);
+            const expectedCall = renderer.renderCall(args, plainTheme, mode).render(width - 2 * outputPad)
+                .map((line) => line ? indent + line : line);
+            const expectedResult = renderer.renderResult(result, plainTheme, {}, mode).render(width - 2 * outputPad)
+                .map((line) => line ? indent + line : line);
+            const call = renderer.renderCall(args, plainTheme, mode, {outputPad}).render(width);
+            const output = renderer.renderResult(result, plainTheme, {outputPad}, mode).render(width);
+            assert.deepEqual(call, expectedCall);
+            assert.deepEqual(output, expectedResult);
+            assert.equal([...call, ...output].every((line) => displayWidth(line) <= width - outputPad), true);
+            assert.equal([...call, ...output].every((line) => !/[ \t]+$/.test(line)), true);
+        }
+    }
 });
 
 test("global expansion selects truncated display while the row-local override selects full display", () => {
@@ -264,7 +290,7 @@ test("Pi tool execution keeps the spinner through streaming and expansion and st
     for (const isError of [false, true]) {
         let renderRequests = 0;
         const component = new ToolExecutionComponent(
-            "bash", `stream-${isError}`, args, {}, definition,
+            "bash", `stream-${isError}`, args, {outputPad: 0}, definition,
             {requestRender() { renderRequests++; }} as any, process.cwd(),
         );
         component.setArgsComplete();
@@ -664,7 +690,7 @@ test("Pi shows the edit replacement preview throughout argument streaming and ex
         let renderRequests = 0;
         const ui = {requestRender() { renderRequests++; }} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
         const component = new ToolExecutionComponent(
-            "edit", "edit-stream-" + isError, {path: "render-only-missing-file.ts"}, {}, definition, ui, process.cwd(),
+            "edit", "edit-stream-" + isError, {path: "render-only-missing-file.ts"}, {outputPad: 0}, definition, ui, process.cwd(),
         );
         const view = () => component.render(120).map(stripAnsi).filter(Boolean);
         assert.deepEqual(view(), ["⠋ edit | render-only-missing-file.ts"]);
@@ -722,7 +748,7 @@ test("working edit previews are truncated by default and preserve the row-local 
     t.after(() => rows.clear());
     const args = {path: "render-only.ts", edits: [{oldText: numberedLines(50), newText: numberedLines(30)}]};
     const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
-    const component = new ToolExecutionComponent("edit", "edit-long", args, {}, renderingEditTool(rows), ui, process.cwd());
+    const component = new ToolExecutionComponent("edit", "edit-long", args, {outputPad: 0}, renderingEditTool(rows), ui, process.cwd());
     const view = () => component.render(120).map(stripAnsi).filter(Boolean);
     assert.ok(view().includes("+line 1"), "long old text must not hide the new replacement");
     assert.equal(view().includes("+line 30"), false);
@@ -748,7 +774,7 @@ test("working edit previews tolerate missing and partial entries and distinguish
     const rows = new ToolDisplayRows();
     t.after(() => rows.clear());
     const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
-    const component = new ToolExecutionComponent("edit", "edit-partial", {}, {}, renderingEditTool(rows), ui, process.cwd());
+    const component = new ToolExecutionComponent("edit", "edit-partial", {}, {outputPad: 0}, renderingEditTool(rows), ui, process.cwd());
     for (const edits of [undefined, null, "streaming", {}, [], [null, {}, {oldText: "only old"}]]) {
         component.updateArgs({path: "partial.ts", edits});
         assert.ok(component.render(120).map(stripAnsi).some((line) => line.includes("edit | partial.ts")));
@@ -775,7 +801,7 @@ test("working edit partial results retain truncation, full override, and complet
     const rows = new ToolDisplayRows();
     t.after(() => rows.clear());
     const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
-    const component = new ToolExecutionComponent("edit", "edit-partial-result", {path: "result.ts"}, {}, renderingEditTool(rows), ui, process.cwd());
+    const component = new ToolExecutionComponent("edit", "edit-partial-result", {path: "result.ts"}, {outputPad: 0}, renderingEditTool(rows), ui, process.cwd());
     component.setArgsComplete();
     component.markExecutionStarted();
     component.updateResult({content: [{type: "text", text: numberedLines(30)}], isError: false}, true);
@@ -797,7 +823,7 @@ test("working edit previews normalize newlines and reuse character and terminal-
     const rows = new ToolDisplayRows();
     t.after(() => rows.clear());
     const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
-    const component = new ToolExecutionComponent("edit", "edit-safe", {}, {}, renderingEditTool(rows), ui, process.cwd());
+    const component = new ToolExecutionComponent("edit", "edit-safe", {}, {outputPad: 0}, renderingEditTool(rows), ui, process.cwd());
     const args = {path: "safe.ts", edits: [{newText: "alpha\r\nbeta\rgamma\n\tindent\x1b[2J\x1b]0;unsafe-title\x07\x00value"}]};
     const original = structuredClone(args);
     component.updateArgs(args);

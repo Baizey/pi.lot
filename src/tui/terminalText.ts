@@ -31,12 +31,23 @@ export function renderLines(lines: readonly string[]): TextComponent {
 }
 
 /** Rebuilds logical lines for each render instead of caching derived content. */
-export function renderLineFactory(buildLines: (width: number) => readonly string[]): TextComponent {
+export function renderLineFactory(
+    buildLines: (width: number) => readonly string[],
+    outputPad = 0,
+): TextComponent {
     return {
         render(width: number): string[] {
-            // Pi resets SGR state after each rendered line. A redundant trailing
-            // full reset can interfere with styling applied by an outer component.
-            return buildLines(width).map((line) => withoutTrailingFullReset(truncateToWidth(line, width)));
+            const padding = Math.max(0, Math.floor(outputPad));
+            const contentWidth = Math.max(0, renderWidth(width) - 2 * padding);
+            // Reserve both margins but add only the left one: filling the right
+            // margin would reintroduce trailing whitespace in copied tool output.
+            const indent = " ".repeat(padding);
+            return buildLines(contentWidth).map((line) => {
+                // Pi resets SGR state after each rendered line. A redundant trailing
+                // full reset can interfere with styling applied by an outer component.
+                const bounded = withoutTrailingFullReset(truncateToWidth(line, contentWidth));
+                return displayWidth(bounded) > 0 ? `${indent}${bounded}` : bounded;
+            });
         },
         invalidate(): void {
             // No cache: the next render rebuilds the logical lines.

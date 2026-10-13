@@ -103,7 +103,7 @@ export class EditTool {
             const component = new Container();
             component.addChild(call);
             component.addChild(presentation.renderResult(
-                {content: [{type: "text", text: preview}]}, theme, {}, mode,
+                {content: [{type: "text", text: preview}]}, theme, {outputPad: context.outputPad}, mode,
             ));
             return component;
         };
@@ -115,7 +115,7 @@ export class EditTool {
             const displayedResult = diff
                 ? {...result, content: [{type: "text" as const, text: diff}]}
                 : result;
-            return presentation.renderResult(displayedResult, theme, {isError: context.isError}, mode);
+            return presentation.renderResult(displayedResult, theme, {isError: context.isError, outputPad: context.outputPad}, mode);
         };
         this.definition = {
             ...definition,

@@ -1,5 +1,5 @@
 import type {BashOperations, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
-import {createBashTool, createBashToolDefinition} from "@earendil-works/pi-coding-agent";
+import {createBashToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {ToolCallPathPolicyEvaluator} from "../../policy/PolicyRuntime";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
@@ -123,17 +123,17 @@ export class BashTool {
                 const policy = async (...args: Parameters<ToolCallPathPolicyEvaluator>) => (
                     await nativePolicyView.evaluate(...args)
                 ).result;
-                const sandboxedBash = createBashTool(ctx.cwd, {
-                    operations: this.createOperations(
-                        policy,
-                        runtime.fullNetworkInspection,
-                        runtime.hostCredentialIpc,
-                        nativePolicyView,
-                        runtime.nativeFuseSessionBroker,
-                    ),
-                });
                 try {
-                    return await sandboxedBash.execute(id, params, signal, onUpdate);
+                    const sandboxedBash = createBashToolDefinition(ctx.cwd, {
+                        operations: this.createOperations(
+                            policy,
+                            runtime.fullNetworkInspection,
+                            runtime.hostCredentialIpc,
+                            nativePolicyView,
+                            runtime.nativeFuseSessionBroker,
+                        ),
+                    });
+                    return await sandboxedBash.execute(id, params, signal, onUpdate, ctx);
                 } finally {
                     nativePolicyView.close();
                 }
@@ -152,7 +152,7 @@ export class BashTool {
             renderResult: (result, options, theme, context) => presentation.renderResult(
                 result,
                 theme,
-                {isError: context.isError},
+                {isError: context.isError, outputPad: context.outputPad},
                 resolveToolDisplayMode(options.expanded, context.state),
             ),
 

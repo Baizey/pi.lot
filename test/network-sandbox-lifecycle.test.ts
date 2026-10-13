@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import {existsSync} from "node:fs";
 import {tmpdir} from "node:os";
 import path from "node:path";
+import {performance} from "node:perf_hooks";
 import test, {type TestContext} from "node:test";
 import {fileURLToPath} from "node:url";
 import {NetworkDecision} from "../src/policy/network/network-queue-protocol.js";
 import {runNetworkSandboxedCommand} from "../src/policy/network/NetworkSandbox.js";
 import {ManagedChildProcess, type ManagedChildProcessOptions} from "../src/runtime/ManagedChildProcess.js";
+import {ApprovalWaitScope} from "../src/runtime/ApprovalWaitScope.js";
 
 type StalledStage = "network sandbox worker" | "TCP gateway ingress" | "network queue helper";
 type Cancellation = "abort" | "timeout";
@@ -24,10 +26,17 @@ test("network runtime launches all three verified Rust helpers from this extensi
     await checkCancellation(t, "network queue helper", "abort");
 });
 
+for (const cancellation of ["abort", "timeout"] as const) {
+    test(`network execution preserves its remaining budget during approval and still supports ${cancellation}`, async (t) => {
+        await checkCancellation(t, "network sandbox worker", cancellation, true);
+    });
+}
+
 async function checkCancellation(
     t: TestContext,
     stage: StalledStage,
     cancellation: Cancellation,
+    approvalWait = false,
 ): Promise<void> {
     const originalSpawn = ManagedChildProcess.spawn;
     const processes: ManagedChildProcess[] = [];
@@ -122,14 +131,27 @@ async function checkCancellation(
     const controller = new AbortController();
     const realSetTimeout = setTimeout;
     const realClearTimeout = clearTimeout;
-    if (cancellation === "timeout") t.mock.timers.enable({apis: ["setTimeout"]});
+    let now = 0;
+    const virtualTime = cancellation === "timeout" || approvalWait;
+    if (virtualTime) {
+        t.mock.timers.enable({apis: ["setTimeout"]});
+        t.mock.method(performance, "now", () => now);
+    }
+    const advance = (milliseconds: number) => {
+        now += milliseconds;
+        t.mock.timers.tick(milliseconds);
+    };
+    const approvalWaitScope = new ApprovalWaitScope();
     const running = runNetworkSandboxedCommand({
         command: ["/bin/true"],
         cwd: tmpdir(),
         signal: controller.signal,
         timeoutSeconds: cancellation === "timeout" ? 4 : 10,
+        approvalWaitScope,
         decide: () => NetworkDecision.DENY,
     });
+    let finished = false;
+    void running.then(() => { finished = true; }, () => { finished = true; });
     let deadline: NodeJS.Timeout | undefined;
     try {
         await Promise.race([
@@ -141,8 +163,23 @@ async function checkCancellation(
         ]);
         if (deadline) realClearTimeout(deadline);
         const cancelledAt = Date.now();
-        if (cancellation === "abort") controller.abort();
-        else t.mock.timers.tick(4000);
+        if (approvalWait) {
+            advance(1_000);
+            const release = approvalWaitScope.beginWait();
+            advance(30_000);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            assert.equal(finished, false, "approval waiting must not expire the worker budget");
+            assert.ok(processes.every((child) => !child.pid || isRunning(child.pid)));
+            if (cancellation === "abort") controller.abort();
+            release();
+            if (cancellation === "timeout") {
+                advance(2_999);
+                await new Promise<void>((resolve) => setImmediate(resolve));
+                assert.equal(finished, false, "resume must preserve the original remaining budget");
+                advance(1);
+            }
+        } else if (cancellation === "abort") controller.abort();
+        else advance(4000);
         await assert.rejects(Promise.race([
             running,
             new Promise<never>((_, reject) => {
@@ -166,7 +203,8 @@ async function checkCancellation(
         controller.abort();
         for (const child of processes) child.terminate();
         await Promise.all(processes.map((child) => child.waitForExit()));
-        if (cancellation === "timeout") t.mock.timers.reset();
+        approvalWaitScope.close();
+        if (virtualTime) t.mock.timers.reset();
     }
 }
 

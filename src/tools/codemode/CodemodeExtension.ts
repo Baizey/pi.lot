@@ -4,17 +4,16 @@ import {
     type CodemodeToolDetails,
     type ExtensionAPI,
     type Theme,
-    type ToolDefinition,
     type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import {getCapabilities, wrapTextWithAnsi} from "@earendil-works/pi-tui";
-import type {Type} from "typebox";
 import {ThemeColor} from "../../tui/Color.js";
 import {renderLineFactory, sanitizeTerminalLine, type TextComponent} from "../../tui/terminalText.js";
 import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows, type ToolDisplayState} from "../../tui/tool/ToolDisplayRows.js";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection, type ToolResultLike} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
+import {withApprovalAwareCodemodeTimeout, type NativeCodemodeDefinition} from "./CodemodeExecutionTimeout.js";
 
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
 
@@ -23,7 +22,6 @@ const PURPOSE_GUIDELINE = "Call codemode with a JSON object containing a concise
     + "its raw-input convention does not apply to this tool.";
 
 type CodemodeInput = {purpose: string; code: string};
-type NativeCodemodeSchema = Type.TObject<{code: Type.TString}>;
 
 /** Pi owns script execution and discovery; Pilot adds purpose and presentation. */
 export class CodemodeExtension {
@@ -55,7 +53,8 @@ export class CodemodeExtension {
 
     register(): void {
         // The generic registerTool API cannot express this decorator's built-in-only boundary.
-        const registerTool = ((definition: ToolDefinition<NativeCodemodeSchema, CodemodeToolDetails | undefined>) => {
+        const registerTool = ((definition: NativeCodemodeDefinition) => {
+            const execute = withApprovalAwareCodemodeTimeout(definition.execute);
             const parameters = {
                 ...definition.parameters,
                 properties: {
@@ -113,7 +112,7 @@ export class CodemodeExtension {
                     };
                     // Inherit Pi's guarded, non-enumerable tools/context getters; do not spread them.
                     const toolContext: typeof ctx = Object.create(ctx, {executeTool: {value: executeTool}});
-                    return capture(await definition.execute(toolCallId, params, signal, (update) => {
+                    return capture(await execute(toolCallId, params, signal, (update) => {
                         onUpdate?.(capture(update));
                     }, toolContext));
                 },

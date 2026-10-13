@@ -76,7 +76,7 @@ function createDefinition(
                 stringSchema("Subagent job id"),
                 "Jobs to inspect; omit for the invoking agent's scoped descendant tree",
             ),
-            waitSeconds: numberSchema("Maximum time to wait for selected jobs", 0, 3_600, 0),
+            waitSeconds: numberSchema("Maximum time to wait for selected jobs, excluding their policy approval waits", 0, 3_600, 0),
         }),
         async execute(_id, params, signal, onUpdate): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as StatusToolInput;

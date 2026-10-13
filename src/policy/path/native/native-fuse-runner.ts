@@ -259,7 +259,7 @@ async function runWorker(
     options.signal?.addEventListener("abort", onAbort, {once: true});
     const timeout = options.timeoutSeconds === undefined
         ? undefined
-        : setTimeout(() => {
+        : options.policyView.approvalWaitScope.setTimeout(() => {
             timedOut = true;
             child.terminate();
         }, options.timeoutSeconds * 1000);
@@ -269,7 +269,7 @@ async function runWorker(
         if (timedOut) throw new Error(`timeout:${options.timeoutSeconds}`);
         return result;
     } finally {
-        if (timeout) clearTimeout(timeout);
+        timeout?.dispose();
         options.signal?.removeEventListener("abort", onAbort);
     }
 }

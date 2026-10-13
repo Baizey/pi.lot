@@ -38,6 +38,7 @@ import {
 import type {WorkerBindMount, WorkerRuntimeResource} from "./worker/WorkerRuntimeResource.js";
 import {resolveNativeExecutable} from "../../runtime/NativeExecutable.js";
 import {ManagedChildProcess} from "../../runtime/ManagedChildProcess.js";
+import {ApprovalWaitScope} from "../../runtime/ApprovalWaitScope.js";
 
 export {
   NetworkAddressFamily,
@@ -104,6 +105,7 @@ export type NetworkRunOptions = {
   globalIpv6Available?: boolean;
   signal?: AbortSignal;
   timeoutSeconds?: number;
+  approvalWaitScope?: ApprovalWaitScope;
   onStdout?: (data: Buffer) => void;
   onStderr?: (data: Buffer) => void;
   onDecisionError?: (error: unknown) => void;
@@ -154,7 +156,7 @@ class NetworkSandboxRunner {
   private stopping = false;
   private aborted = false;
   private timedOut = false;
-  private timeout: NodeJS.Timeout | undefined;
+  private timeout: {dispose(): void} | undefined;
   private onAbort: (() => void) | undefined;
   private temporaryDirectory: string | undefined;
   private resolverFile: string | undefined;
@@ -898,7 +900,8 @@ class NetworkSandboxRunner {
     if (this.options.signal?.aborted) this.onAbort();
 
     if (this.options.timeoutSeconds !== undefined) {
-      this.timeout = setTimeout(() => {
+      const scope = this.options.approvalWaitScope ?? ApprovalWaitScope.current() ?? new ApprovalWaitScope();
+      this.timeout = scope.setTimeout(() => {
         this.timedOut = true;
         this.decisionAbort.abort();
         this.terminate();
@@ -923,7 +926,8 @@ class NetworkSandboxRunner {
   private async cleanup(): Promise<void> {
     this.stopping = true;
     this.decisionAbort.abort();
-    if (this.timeout) clearTimeout(this.timeout);
+    this.timeout?.dispose();
+    this.timeout = undefined;
     if (this.onAbort) this.options.signal?.removeEventListener("abort", this.onAbort);
     this.onAbort = undefined;
     this.queueLines?.close();

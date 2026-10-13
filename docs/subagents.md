@@ -120,6 +120,14 @@ In summary:
 
 Policy reviewers receive bounded task and operation context and have only a structured decision tool. Failure or stale authority denies the pending operation.
 
+## Turn and wait budgets
+
+`timeoutSeconds` is an execution budget for **each turn**, not a wall-clock lifetime for the retained conversation. A follow-up gets a fresh budget. Time spent waiting for user or model policy approval is excluded, and the clock resumes with its previous remainder after approval finishes. Both ancestor-authority review and the `ask_llm` fallback count as approval waits. Each approval still has its own independent [300-second deadline](policy.md#approval-waits-and-execution-budgets); user approval includes time queued behind other prompts and all prompt steps.
+
+`subagent_status` with `waitSeconds` pauses its wait budget while any **selected active job** has pending approval. If an invoking parent is waiting on those selected jobs, the same approval wait pauses that parent's turn budget too. Approval time does not reset either budget, and stopping a job or aborting a status call remains immediate.
+
+Each child turn owns a separate clock. Spawning a background descendant does not automatically pause the parent, and an unselected sibling's approval does not extend a status wait. Independent model transport, application, subprocess, and server deadlines remain active; pausing Pilot's source budget does not freeze all work or guarantee that an external operation survives the wait.
+
 ## Work-tree visibility
 
 The root agent can inspect and manage the whole tree. A child can inspect, message, and stop only its descendants; it cannot manage itself, ancestors, siblings, or unrelated jobs.

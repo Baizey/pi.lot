@@ -8,10 +8,12 @@ import {
     ModelRuntime,
     SessionManager,
     SettingsManager,
+    type ExtensionAPI,
     type ExtensionContext,
     type InlineExtension,
     type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import {withApprovalAwareCodemodeTimeout, type NativeCodemodeDefinition} from "../tools/codemode/CodemodeExecutionTimeout.js";
 import type {
     SubagentChildSession,
     SubagentChildSessionFactory,
@@ -166,7 +168,14 @@ export async function createSubagentResourceLoader(
         // stay out of codemode. Either helper can reach the same granted tool snapshot.
         const codemode = tools.some((tool) => tool.exposure === "codemode" || tool.exposure === "deferred");
         const toolSearch = tools.some((tool) => tool.exposure === "deferred");
-        if (codemode) extensionFactories.push(createCodemodeExtension({mode: "on", models: false}));
+        if (codemode) extensionFactories.push((pi) => {
+            // This registration boundary receives only Pi's native codemode definition.
+            const registerTool = ((definition: NativeCodemodeDefinition) => pi.registerTool({
+                ...definition,
+                execute: withApprovalAwareCodemodeTimeout(definition.execute),
+            })) as ExtensionAPI["registerTool"];
+            return createCodemodeExtension({mode: "on", models: false})({...pi, registerTool});
+        });
         if (toolSearch) extensionFactories.push(createToolSearchExtension());
         if (codemode || toolSearch) {
             const namespaceSection = subagentMcpServersSection(tools);

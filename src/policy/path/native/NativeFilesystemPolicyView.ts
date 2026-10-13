@@ -1,4 +1,5 @@
 import {isDeepStrictEqual} from "node:util";
+import {ApprovalWaitScope} from "../../../runtime/ApprovalWaitScope.js";
 import type {ToolCallPathPolicyEvaluator} from "../../PolicyRuntime.js";
 import {policyScopeCovers} from "../../PolicyScope.js";
 import {
@@ -118,6 +119,7 @@ export class NativeFilesystemPolicyView {
         private readonly evaluator: ToolCallPathPolicyEvaluator,
         private readonly oncePolicyLayer: () => NativeFilesystemPolicyLayer,
         private readonly removeFromRuntime: (view: NativeFilesystemPolicyView) => void,
+        readonly approvalWaitScope: ApprovalWaitScope = new ApprovalWaitScope(),
     ) {
     }
 
@@ -201,9 +203,13 @@ export class NativeFilesystemPolicyView {
                 // Every native mount must receive tool-view closure independently.
             }
         }
-        this.onceListeners.clear();
-        this.closeListeners.clear();
-        this.removeFromRuntime(this);
+        try {
+            this.approvalWaitScope.close();
+        } finally {
+            this.onceListeners.clear();
+            this.closeListeners.clear();
+            this.removeFromRuntime(this);
+        }
     }
 
     private currentOnceSnapshot(

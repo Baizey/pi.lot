@@ -196,6 +196,7 @@ export class BashTool {
                     hostCredentialIpc,
                     signal: filesystemSignal ?? signal,
                     timeoutSeconds: timeout,
+                    approvalWaitScope: nativePolicyView.approvalWaitScope,
                     onStdout: onData,
                     onStderr: onData,
                     onDecisionError: (error) => {

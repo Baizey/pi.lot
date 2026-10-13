@@ -1,5 +1,6 @@
 import {AsyncLocalStorage} from "node:async_hooks";
 import crypto from "node:crypto";
+import {ApprovalWaitScope} from "../runtime/ApprovalWaitScope.js";
 import type {PolicyPrincipalRegistry} from "../policy/PolicyRuntime.js";
 import {
     AgentCapabilitySet,
@@ -56,6 +57,7 @@ type SubagentJob = {
     resolvedThinkingLevel?: SubagentJobSnapshot["resolvedThinkingLevel"];
     modelSelectionSource?: string;
     controller?: AbortController;
+    approvalWaitScope?: ApprovalWaitScope;
     runPromise?: Promise<void>;
     abortPromise?: Promise<void>;
     abortFailure?: string;
@@ -163,25 +165,57 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         if (waitSeconds <= 0 || jobs.every((job) => !isActive(job.status))) return jobs.map(snapshot);
         if (signal?.aborted) throw abortError();
 
+        const scope = new ApprovalWaitScope(ApprovalWaitScope.current());
         await new Promise<void>((resolve, reject) => {
             let settled = false;
+            let timeout: {dispose(): void} | undefined;
+            let waitingForApproval = false;
+            let releaseApprovalWait: (() => void) | undefined;
+            let updatingApprovalWait = false;
+            const updateApprovalWait = () => {
+                if (updatingApprovalWait) return;
+                updatingApprovalWait = true;
+                try {
+                    // Propagating or releasing a wait can publish another job change. Reconcile
+                    // after each transition so a reentrant approval cannot overwrite its token.
+                    while (!settled) {
+                        const waiting = jobs.some((job) => job.approvalWaitScope?.waiting);
+                        if (waiting === waitingForApproval) break;
+                        waitingForApproval = waiting;
+                        if (waiting) {
+                            const release = scope.beginWait();
+                            if (settled) release();
+                            else releaseApprovalWait = release;
+                        } else {
+                            const release = releaseApprovalWait;
+                            releaseApprovalWait = undefined;
+                            release?.();
+                        }
+                    }
+                } finally {
+                    updatingApprovalWait = false;
+                }
+            };
             const finish = (error?: Error) => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(timeout);
+                timeout?.dispose();
                 this.changes.delete(changed);
                 signal?.removeEventListener("abort", aborted);
+                scope.close();
                 error ? reject(error) : resolve();
             };
             const changed = () => {
+                if (settled) return;
+                updateApprovalWait();
                 onUpdate?.(jobs.map(snapshot));
                 if (jobs.every((job) => !isActive(job.status))) finish();
             };
             const aborted = () => finish(abortError());
-            const timeout = setTimeout(() => finish(), Math.max(0, waitSeconds) * 1000);
-            timeout.unref();
             this.changes.add(changed);
             signal?.addEventListener("abort", aborted, {once: true});
+            timeout = scope.setTimeout(() => finish(), waitSeconds * 1000, {unref: true});
+            updateApprovalWait();
         });
         return jobs.map(snapshot);
     }
@@ -334,22 +368,26 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         job.abortFailure = undefined;
         const controller = new AbortController();
         job.controller = controller;
-        const timeout = setTimeout(() => {
+        // A retained background child must not inherit its spawning parent's execution budget.
+        const approvalWaitScope = new ApprovalWaitScope();
+        job.approvalWaitScope = approvalWaitScope;
+        const timeout = approvalWaitScope.setTimeout(() => {
             job.timedOut = true;
             job.latestLine = "Timed out; stopping";
             this.requestAbort(job);
             this.notify(job);
-        }, job.request.timeoutSeconds * 1000);
-        timeout.unref();
+        }, job.request.timeoutSeconds * 1000, {unref: true});
+        const unsubscribeWait = approvalWaitScope.subscribe(() => this.notify(job));
         this.notify(job);
 
         try {
+            this.policyPrincipals.setPolicyApprovalWaitScope?.(job.agentIdentifier, approvalWaitScope);
             const tools = this.tools.resolve(job.capabilities);
             if (!job.session) {
-                job.session = await this.sessionFactory.create({
+                job.session = await approvalWaitScope.run(() => this.sessionFactory.create({
                     ...job.request,
                     agentIdentifier: job.agentIdentifier,
-                }, tools, controller.signal);
+                }, tools, controller.signal));
                 job.resolvedModel = job.session.modelSelection?.model;
                 job.resolvedThinkingLevel = job.session.modelSelection?.thinkingLevel;
                 job.modelSelectionSource = job.session.modelSelection?.source;
@@ -359,7 +397,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                 this.requestAbort(job);
                 throw abortError();
             }
-            const output = await this.delegationContext.run({
+            const output = await approvalWaitScope.run(() => this.delegationContext.run({
                 jobId: job.id,
                 agentIdentifier: job.agentIdentifier,
                 depth: job.depth,
@@ -376,7 +414,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                     if (!accepted[index]) job.queuedTasks.push(steering[index]!);
                 }
                 return prompting;
-            });
+            }));
             if (controller.signal.aborted) throw abortError();
             job.output = boundedOutput(output);
             job.latestLine = lastMeaningfulLine(output);
@@ -410,7 +448,11 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                     : SubagentJobStatus.FAILED;
             job.latestLine = job.error;
         } finally {
-            clearTimeout(timeout);
+            timeout.dispose();
+            unsubscribeWait();
+            approvalWaitScope.close();
+            job.approvalWaitScope = undefined;
+            this.policyPrincipals.setPolicyApprovalWaitScope?.(job.agentIdentifier, undefined);
             job.controller = undefined;
             const retainedConversation = job.status === SubagentJobStatus.IDLE
                 || job.status === SubagentJobStatus.QUEUED;
@@ -519,6 +561,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
     }
 
     private requestAbort(job: SubagentJob): void {
+        job.approvalWaitScope?.close();
         job.controller?.abort();
         const session = job.session;
         if (!session || job.abortPromise) return;

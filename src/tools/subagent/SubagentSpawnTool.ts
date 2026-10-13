@@ -130,7 +130,7 @@ function createDefinition(
                 [],
             ),
             cwd: stringSchema("Child working directory; relative paths resolve from the current tool context"),
-            timeoutSeconds: numberSchema("Timeout for each child turn", 1, 3_600, DEFAULT_TIMEOUT_SECONDS),
+            timeoutSeconds: numberSchema("Execution timeout for each child turn, excluding policy approval waits", 1, 3_600, DEFAULT_TIMEOUT_SECONDS),
             reasoning_skill: enumSchema(
                 Object.values(SubagentReasoningSkill),
                 "Model reasoning skill; min favors cost and max favors estimated performance",

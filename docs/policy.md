@@ -143,6 +143,25 @@ When a child requests an operation it does not hold:
 
 A derived approval cannot exceed the ancestor's scope or lifetime. Session grants are installed only along the requesting ancestry and do not leak to siblings.
 
+## Approval waits and execution budgets
+
+Actual user and model approval waits pause the originating operation's execution budget. This includes ancestor-authority reviews and the `ask_llm` fallback, not just interactive prompts. Covered budgets include Bash's configured timeout, subagent turn deadlines, finite codemode execution timeouts, and `subagent_status` waits for selected jobs. The budget resumes with the time it had left; approval does not reset it. Overlapping approvals keep the source paused until the last pending approval finishes. Ordinary policy lookups and already-authorized operations do not pause these clocks.
+
+Approvals have their own independent deadlines:
+
+- **User approval: 300 seconds per request**, starting when it enters the user approval route. Time queued behind other prompts and every scope, decision, lifetime, and reason step share this single budget. Opening a prompt or moving to another step does not restart it.
+- **Model approval: 300 seconds per review**, including reviewer setup and prompting. Pausing the source does not pause this reviewer watchdog.
+
+Expiry fails the pending operation closed and installs no policy grant. Late replies cannot authorize an expired request. Explicit cancellation and shutdown still work while execution budgets are paused. A queued request rechecks policy before opening its prompt, so a covering decision from earlier queued work can resolve it without asking again.
+
+This is execution-budget accounting, not suspension of the whole process. Other work can continue, and independent transport, application, subprocess, or server deadlines are not extended. In particular, a network request or a program's own timeout can still fail during an approval wait. Background descendants do not automatically pause their ancestors; see [Subagent turn and wait budgets](subagents.md#turn-and-wait-budgets).
+
+### Finite codemode timeouts
+
+When a codemode script specifies a finite native `timeout_ms` option, Pilot moves that timeout to an approval-aware outer execution budget and retains the other native options, including output limits. Omitting `timeout_ms` keeps native no-timeout behavior. The script API, discovery, tool exposure, and storage remain native-owned.
+
+The public native execution API has no VM-start or finalization hooks: the outer budget includes initialization and can fire during work after the VM has already finalized. It requests cancellation through the public abort signal, which interrupts and terminates the native script's worker VM, including a script spinning without tool calls. Host-side tool effects remain cooperatively cancellable: non-cooperating work may continue, and effects already performed are not undone. A finalized success is not retroactively converted into a timeout. Ordinary inline native abort errors caused by this budget are labelled as timeouts; native-owned spilled output can still say `Script aborted` with the timeout reason. Parent cancellation is not relabelled as a script timeout.
+
 ## Audit logs
 
 User, ancestor-authority, and `ask_llm` approval outcomes are appended as JSON lines under:

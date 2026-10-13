@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import {ApprovalWaitScope} from "../runtime/ApprovalWaitScope.js";
 import {
     PolicyApprovalReviewSource,
     type AgentPolicyApprovalRequest,
@@ -62,6 +63,8 @@ export interface PolicyPrincipalRegistry {
     ): void;
 
     removePolicyPrincipal(agentIdentifier: string): void;
+
+    setPolicyApprovalWaitScope?(agentIdentifier: string, scope: ApprovalWaitScope | undefined): void;
 }
 
 type PolicyPrincipal = {
@@ -72,6 +75,7 @@ type PolicyPrincipal = {
     policyRevision: number;
     context: PolicyPrincipalContext;
     contextRevision: number;
+    approvalWaitScope?: ApprovalWaitScope;
 };
 
 type PrincipalPathSnapshot = {
@@ -99,6 +103,14 @@ type AncestorResolution =
 const MAX_AGENT_POLICY_SCOPES = 32;
 const MAX_AGENT_POLICY_SCOPE_CHARS = 32_000;
 const MAX_POLICY_URI_CHARS = 16_000;
+const USER_APPROVAL_TIMEOUT_MILLISECONDS = 300_000;
+
+class UserPolicyApprovalTimeoutError extends Error {
+    constructor() {
+        super(`User policy approval timed out after ${USER_APPROVAL_TIMEOUT_MILLISECONDS / 1_000} seconds.`);
+        this.name = "TimeoutError";
+    }
+}
 
 const ROOT_AGENT_CONTEXT: PolicyPrincipalContext = Object.freeze({
     role: "Root agent",
@@ -170,17 +182,25 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         const context = normalizedToolCallContext(toolCall);
         const policyBase = this.nativeFilesystemPolicyBases.get(agentIdentifier);
         if (!policyBase) throw new Error(`Native filesystem policy base is unavailable: ${agentIdentifier}`);
+        const approvalWaitScope = new ApprovalWaitScope(
+            ApprovalWaitScope.current() ?? principal.approvalWaitScope,
+        );
         const view = new NativeFilesystemPolicyView(
             policyBase,
-            this.toolCallEvaluator(principal, oncePolicies, context),
+            this.toolCallEvaluator(principal, oncePolicies, context, approvalWaitScope),
             () => ({
                 policies: filesystemPolicies(oncePolicies.allPolicies()),
                 resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY,
             }),
             (closed) => this.nativeFilesystemViews.delete(closed),
+            approvalWaitScope,
         );
         this.nativeFilesystemViews.add(view);
         return view;
+    }
+
+    setPolicyApprovalWaitScope(agentIdentifier: string, scope: ApprovalWaitScope | undefined): void {
+        this.requirePrincipal(agentIdentifier).approvalWaitScope = scope;
     }
 
     setAgentDecisionFlow(flow: AgentPolicyDecisionFlow | undefined): void {
@@ -271,7 +291,15 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         principal: PolicyPrincipal,
         oncePolicies: PolicyEngine,
         context: PolicyToolCallContext,
+        approvalWaitScope = ApprovalWaitScope.current() ?? principal.approvalWaitScope,
     ): ToolCallPathPolicyEvaluator {
+        // Capture both owners: native callbacks can lose context, and retained transports can
+        // carry an older async scope even while this principal has a fresh turn budget.
+        const approvalWaitScopes = [...new Set(
+            [approvalWaitScope, principal.approvalWaitScope].filter(
+                (scope): scope is ApprovalWaitScope => scope !== undefined,
+            ),
+        )];
         return (path, accessType, signal) => this.evaluate(
             principal,
             path,
@@ -279,6 +307,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             oncePolicies,
             context,
             signal,
+            approvalWaitScopes,
         );
     }
 
@@ -318,6 +347,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         oncePolicies: PolicyEngine,
         toolCall: PolicyToolCallContext,
         signal?: AbortSignal,
+        approvalWaitScopes: readonly ApprovalWaitScope[] = [],
     ): Promise<PolicyResult> {
         if (inputUri.length > MAX_POLICY_URI_CHARS) {
             return failedClosedResult(
@@ -344,7 +374,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         const ancestor = this.resolveAncestorAuthority(principal, uri, accessType);
         if (ancestor.kind === "denied") return ancestor.result;
         if (ancestor.kind === "authority") {
-            return this.askAuthorizedAncestor(
+            return this.evaluateApproval(approvalWaitScopes, () => this.askAuthorizedAncestor(
                 principal,
                 ancestor.value,
                 uri,
@@ -352,28 +382,51 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
                 oncePolicies,
                 toolCall,
                 signal,
-            );
+            ));
         }
 
         const fallback = this.defaultResponses[policyAreaForAccessType(accessType)];
         if (fallback === PolicyFallbackResponse.ask_llm) {
-            return this.askLlmFallback(
+            return this.evaluateApproval(approvalWaitScopes, () => this.askLlmFallback(
                 principal,
                 uri,
                 accessType,
                 oncePolicies,
                 toolCall,
                 signal,
-            );
+            ));
         }
         if (fallback === PolicyFallbackResponse.ask_user) {
-            return this.askUser(principal, uri, accessType, oncePolicies, toolCall, signal);
+            return this.evaluateApproval(approvalWaitScopes, () => (
+                this.askUser(principal, uri, accessType, oncePolicies, toolCall, signal)
+            ));
         }
         return failedClosedResult(
             uri,
             accessType,
             `Policy fallback ${fallback} had no matching automated policy.`,
         );
+    }
+
+    private async evaluateApproval(
+        scopes: readonly ApprovalWaitScope[],
+        evaluate: () => Promise<PolicyResult>,
+    ): Promise<PolicyResult> {
+        const releases: (() => void)[] = [];
+        try {
+            for (const scope of scopes) releases.push(scope.beginWait());
+            return await evaluate();
+        } finally {
+            const errors: unknown[] = [];
+            for (const release of releases.reverse()) {
+                try {
+                    release();
+                } catch (error) {
+                    errors.push(error);
+                }
+            }
+            if (errors.length > 0) throw new AggregateError(errors, "Policy approval wait cleanup failed");
+        }
     }
 
     private resolveAncestorAuthority(
@@ -859,6 +912,28 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         toolCall: PolicyToolCallContext,
         signal?: AbortSignal,
     ): Promise<PolicyResult> {
+        const controller = new AbortController();
+        const approvalSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+        // This watchdog is deliberately independent of the paused source execution budget.
+        const timeout = setTimeout(() => controller.abort(new UserPolicyApprovalTimeoutError()),
+            USER_APPROVAL_TIMEOUT_MILLISECONDS);
+        try {
+            return await this.resolveUserApproval(
+                requester, uri, accessType, oncePolicies, toolCall, approvalSignal,
+            );
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    private async resolveUserApproval(
+        requester: PolicyPrincipal,
+        uri: string,
+        accessType: PolicyAccessType,
+        oncePolicies: PolicyEngine,
+        toolCall: PolicyToolCallContext,
+        signal: AbortSignal,
+    ): Promise<PolicyResult> {
         const path = this.pathToRoot(requester);
         const pathSnapshot = this.principalPathSnapshot(path);
         const fallback = this.fallbackSnapshot(accessType);
@@ -918,7 +993,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         signal?: AbortSignal,
     ): PolicyResult | undefined {
         if (signal?.aborted || this.closing || !this.isActivePrincipalPath(path)) {
-            return failedClosedResult(uri, accessType, "User policy approval is no longer active.");
+            return failedClosedResult(uri, accessType, userApprovalInactiveReason(signal));
         }
 
         const local = requester.policies.evaluate(uri, accessType);
@@ -960,7 +1035,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             || !this.isUnchangedFallback(fallback)
             || this.defaultResponses[fallback.area] !== PolicyFallbackResponse.ask_user
         ) {
-            const result = failedClosedResult(uri, accessType, "User policy approval is no longer active.");
+            const result = failedClosedResult(uri, accessType, userApprovalInactiveReason(signal));
             this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
             return result;
         }
@@ -1186,6 +1261,12 @@ function failedClosedResult(
         matchedStatus: PolicyResponse.DENIED,
         matchedReason: reason,
     });
+}
+
+function userApprovalInactiveReason(signal?: AbortSignal): string {
+    return signal?.reason instanceof UserPolicyApprovalTimeoutError
+        ? signal.reason.message
+        : "User policy approval is no longer active.";
 }
 
 function deniedChoice(

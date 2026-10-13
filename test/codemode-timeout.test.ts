@@ -279,23 +279,32 @@ test("thrown native execution closes approval scope and disposes timeout", async
     assert.equal(signal.aborted, false);
 });
 
-test("real main codemode enforces a finite timeout for a script with no nested tools", {timeout: 10_000}, async () => {
-    const fixture = await sessionFixture(false);
-    try {
-        assert.equal((await fixture.run("return 1;")).isError, undefined);
-        const result = await fixture.run('// @options: {"timeout_ms":150}\nwhile (true) {}');
-        assert.equal(result.isError, true);
-        assert.match(resultText(result), /Script failed/);
-        assert.match(resultText(result), /Script timed out: Execution timed out after 150 ms/);
-        assert.deepEqual((result.details as CodemodeToolDetails).calls, []);
-    } finally {
-        fixture.close();
+test("real main and child codemode enforce a finite timeout for a script with no nested tools", {timeout: 10_000}, async () => {
+    // Child sessions expose codemode only when their catalog contains a codemode tool.
+    const unusedTool: ToolDefinition = {
+        name: "mcp__fixture__unused", label: "unused", description: "Never called by the no-tool spin", exposure: "codemode",
+        parameters: {type: "object", properties: {}},
+        async execute() { throw new Error("The no-tool script must not execute tools"); },
+    };
+    for (const child of [false, true]) {
+        const fixture = await sessionFixture(child, child ? [unusedTool] : []);
+        try {
+            assert.equal((await fixture.run("return 1;")).isError, undefined);
+            const result = await fixture.run('// @options: {"timeout_ms":150}\nwhile (true) {}');
+            assert.equal(result.isError, true);
+            assert.match(resultText(result), /Script failed/);
+            assert.match(resultText(result), /Script timed out: Execution timed out after 150 ms/);
+            assert.deepEqual((result.details as CodemodeToolDetails).calls, []);
+        } finally {
+            fixture.close();
+        }
     }
 });
 
-test("real main and child codemode suspend nested approval waits and keep native context/output behavior", {timeout: 15_000}, async () => {
+test("real main and child codemode suspend nested approval waits and keep native context/output behavior", {timeout: 15_000}, async (t) => {
+    const tick = clock(t);
     for (const child of [false, true]) {
-        const entered = deferred<void>();
+        let entered = false;
         const approved = deferred<void>();
         let scope!: ApprovalWaitScope;
         let nestedSignal!: AbortSignal;
@@ -312,7 +321,7 @@ test("real main and child codemode suspend nested approval waits and keep native
                 nestedCwd = ctx.cwd;
                 releaseFirst = scope.beginWait();
                 releaseSecond = scope.beginWait();
-                entered.resolve();
+                entered = true;
                 try {
                     await approved.promise;
                     return {content: [{type: "text", text: "approved"}], details: undefined};
@@ -324,17 +333,19 @@ test("real main and child codemode suspend nested approval waits and keep native
         };
         const fixture = await sessionFixture(child, [approval]);
         try {
-            // Warm native lazy initialization before testing an approval exceeding the budget.
+            // Check global discovery with real native execution; initialization consumes no virtual budget.
             const globals = await fixture.run('return typeof models;');
             assert.equal(globals.isError, undefined);
             assert.match(resultText(globals), child ? /undefined/ : /object/);
             const pending = fixture.run('// @options: {"timeout_ms":500,"max_output_tokens":100}\ntext("before approval"); await tools.mcp__fixture__approval({}); return "after approval";');
-            await entered.promise;
+            await waitUntil(() => entered, pending, `${child ? "child" : "main"} nested approval`);
             assert.equal(nestedCwd, fixture.directory);
-            await delay(600);
+            tick(1400);
+            await nativeTurn();
             assert.equal(nestedSignal.aborted, false);
             releaseFirst();
-            await delay(100);
+            tick(800);
+            await nativeTurn();
             assert.equal(scope.waiting, true);
             assert.equal(nestedSignal.aborted, false);
             releaseSecond();
@@ -357,11 +368,6 @@ test("real main and child codemode suspend nested approval waits and keep native
             } finally {
                 rmSync(outputPath, {force: true});
             }
-            if (child) {
-                const timedOut = await fixture.run('// @options: {"timeout_ms":150}\nwhile (true) {}');
-                assert.equal(timedOut.isError, true);
-                assert.match(resultText(timedOut), /Script timed out:/);
-            }
         } finally {
             approved.resolve();
             releaseFirst?.();
@@ -372,20 +378,26 @@ test("real main and child codemode suspend nested approval waits and keep native
 });
 
 test("real policy capture pauses child codemode, job, status wait, and outer native codemode through queued approvals", {timeout: 15_000}, async (t) => {
+    const tick = clock(t);
     const fixture = await PolicyCodemodeHierarchy.create(t, true);
     const pending = fixture.run();
-    await waitUntil(() => fixture.dialogs.length === 1 && fixture.policyCalls === 2);
+    await fixture.waitForProgress(() => fixture.dialogs.length === 1 && fixture.policyCalls === 2
+        && fixture.policyScope?.waiting === true && fixture.sourceScope?.waiting === true, "both queued approvals and status bridge");
     assert.ok(fixture.policyScope?.waiting);
     assert.ok(fixture.sourceScope?.waiting, "status bridges the detached child's approval into its waiting native caller");
     assert.match(fixture.dialogs[0]!.title, /Policy native child/);
-    await delay(1400); // Exceeds both 600ms codemode budgets, 500ms status wait, and 1s job budget.
+    // Advance only after native initialization and the status bridge. A missed pause now expires
+    // both 600ms codemode budgets, the 500ms status wait, and the 1s job budget deterministically.
+    tick(1400);
+    await nativeTurn();
     fixture.assertRunning();
     await fixture.allowCurrent("Once");
-    await waitUntil(() => fixture.dialogs.length === 4);
+    await fixture.waitForProgress(() => fixture.dialogs.length === 4, "second queued approval");
     assert.equal(fixture.policyResults.length, 1);
     assert.ok(fixture.policyScope?.waiting, "the queued second approval still holds the inner source");
     assert.ok(fixture.sourceScope?.waiting);
-    await delay(800);
+    tick(800);
+    await nativeTurn();
     fixture.assertRunning();
     await fixture.allowCurrent("Once");
     const result = await pending;
@@ -402,11 +414,14 @@ test("real policy capture pauses child codemode, job, status wait, and outer nat
 });
 
 test("stopping the real source job aborts paused native codemode and a late user lifetime choice installs no grant", {timeout: 15_000}, async (t) => {
+    const tick = clock(t);
     const fixture = await PolicyCodemodeHierarchy.create(t, false);
     const pending = fixture.run();
-    await waitUntil(() => fixture.dialogs.length === 1);
+    await fixture.waitForProgress(() => fixture.dialogs.length === 1
+        && fixture.policyScope?.waiting === true && fixture.sourceScope?.waiting === true, "approval and status bridge");
     const lifetime = await fixture.toLifetime();
-    await delay(1400);
+    tick(1400);
+    await nativeTurn();
     fixture.assertRunning();
     const stopped = await fixture.coordinator.stop(fixture.coordinator.list()[0]!.id);
     assert.equal(stopped.status, SubagentJobStatus.CANCELLED);
@@ -424,7 +439,7 @@ test("stopping the real source job aborts paused native codemode and a late user
     assert.deepEqual(fixture.policyResults, [PolicyResponse.DENIED]);
 
     lifetime.answer("Always on this computer"); // UI deliberately ignores cancellation until this late response.
-    await delay(20);
+    await fixture.drainUi();
     assert.equal(fixture.dialogs.length, 3, "late completion cannot advance another prompt");
     assert.equal(fixture.persisted.length, 0, "late LOCAL choices must not write the DAO");
     const view = fixture.runtime.beginNativeFilesystemToolCall(PolicyCodemodeHierarchy.rootId);
@@ -458,6 +473,7 @@ class PolicyCodemodeHierarchy {
     jobSignal?: AbortSignal;
     childResult?: AgentToolResult<unknown>;
     private root!: Awaited<ReturnType<typeof sessionFixture>>;
+    private execution?: Promise<AgentToolResult<unknown>>;
     private readonly rows = new ToolDisplayRows();
     private readonly queue = new UiDecisionFlowQueue();
     // Created outside source.run(): model a shared broker callback's detached async context.
@@ -557,11 +573,27 @@ class PolicyCodemodeHierarchy {
     }
 
     run(): Promise<AgentToolResult<unknown>> {
-        return this.root.run('// @options: {"timeout_ms":600}\n'
+        this.execution = this.root.run('// @options: {"timeout_ms":600}\n'
             + 'const spawned = await tools.subagent_spawn({task:"Request policy",role:"Policy native child",capabilities:["mcp"],'
             + 'timeoutSeconds:1,reasoning_skill:"mid",reasoning_amount:"mid"}); '
             + 'const id = spawned.match(/\\((subagent-[^)]+)\\)/)[1]; '
             + 'return await tools.subagent_status({jobIds:[id],waitSeconds:0.5});');
+        return this.execution;
+    }
+
+    async waitForProgress(predicate: () => boolean, progress: string): Promise<void> {
+        assert.ok(this.execution);
+        await waitUntil(predicate, this.execution, progress, () => JSON.stringify({
+            jobs: this.coordinator.list(),
+            childResult: this.childResult,
+            policyCalls: this.policyCalls,
+            dialogs: this.dialogs.map((dialog) => dialog.title),
+        }));
+    }
+
+    async drainUi(): Promise<void> {
+        // A queue barrier observes the entire late flow, not just the UI promise resolving.
+        await this.queue.enqueue(async () => {});
     }
 
     assertRunning(): void {
@@ -581,11 +613,11 @@ class PolicyCodemodeHierarchy {
         const scope = this.dialogs.at(-1)!;
         assert.match(scope.title, /^Path policy scope/);
         scope.answer(scope.options[0]);
-        await waitUntil(() => this.dialogs.length === count + 1);
+        await this.waitForProgress(() => this.dialogs.length === count + 1, "policy decision prompt");
         const status = this.dialogs.at(-1)!;
         assert.match(status.title, /^Path policy decision/);
         status.answer("Allow");
-        await waitUntil(() => this.dialogs.length === count + 2);
+        await this.waitForProgress(() => this.dialogs.length === count + 2, "policy lifetime prompt");
         const lifetime = this.dialogs.at(-1)!;
         assert.match(lifetime.title, /^Path policy lifetime/);
         return lifetime;
@@ -602,12 +634,39 @@ class PolicyCodemodeHierarchy {
     }
 }
 
-async function waitUntil(predicate: () => boolean): Promise<void> {
+async function waitUntil(
+    predicate: () => boolean,
+    execution: Promise<AgentToolResult<unknown>>,
+    progress: string,
+    diagnostics: () => string = () => "",
+): Promise<void> {
+    // Date and setImmediate stay real: worker progress must not depend on advancing budget timers.
     const deadline = Date.now() + 5000;
-    while (!predicate()) {
-        assert.ok(Date.now() < deadline, "timed out waiting for native/policy fixture progress");
-        await delay(5);
+    const completed = execution.then(
+        (result) => `execution completed: ${JSON.stringify(result)}`,
+        (error: unknown) => `execution rejected: ${String(error)}`,
+    );
+    let stopped = false;
+    const poll = async () => {
+        while (!predicate() && !stopped) {
+            if (Date.now() >= deadline) {
+                assert.fail(`timed out waiting for ${progress}; ${diagnostics()}`);
+            }
+            await nativeTurn();
+        }
+    };
+    try {
+        const outcome = await Promise.race([poll().then(() => undefined), completed]);
+        if (outcome !== undefined && !predicate()) {
+            assert.fail(`waiting for ${progress}; ${outcome}; ${diagnostics()}`);
+        }
+    } finally {
+        stopped = true;
     }
+}
+
+function nativeTurn(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
 }
 
 function clock(t: TestContext): (milliseconds: number) => void {
@@ -643,10 +702,6 @@ function deferred<T>(): {promise: Promise<T>; resolve: (value: T) => void} {
     let resolve!: (value: T) => void;
     const promise = new Promise<T>((accept) => { resolve = accept; });
     return {promise, resolve};
-}
-
-function delay(milliseconds: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function sessionFixture(child: boolean, tools: ToolDefinition[] = [], sessionId?: string) {

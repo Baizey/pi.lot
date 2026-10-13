@@ -6,6 +6,7 @@ import {
     type AgentPolicyDecisionFlow,
 } from "../policy/AgentPolicyDecisionFlow.js";
 import type {PolicyChoice} from "../policy/PolicyDecisionFlow.js";
+import {DEFAULT_POLICY_APPROVAL_TIMEOUT_MILLISECONDS, PolicyApprovalDeadline} from "../policy/PolicyApprovalDeadline.js";
 import {
     PolicyLifetime,
     PolicyResponse,
@@ -22,7 +23,6 @@ import type {
 } from "./types.js";
 
 const MAX_PENDING_APPROVALS = 100;
-const DEFAULT_APPROVAL_TIMEOUT_MILLISECONDS = 300_000;
 const MAX_APPROVAL_PROMPT_BYTES = 128_000;
 
 export type SubagentPolicyDecisionFlowOptions = {
@@ -37,7 +37,7 @@ type PolicyDecisionToolInput = {
 };
 
 type PendingApproval = {
-    controller: AbortController;
+    deadline: PolicyApprovalDeadline;
     settled: Promise<void>;
     resolveSettled(): void;
     session?: SubagentChildSession;
@@ -56,7 +56,7 @@ export class SubagentPolicyDecisionFlow implements AgentPolicyDecisionFlow {
     ) {
         this.timeoutMilliseconds = Math.max(
             1,
-            Math.floor(options.timeoutMilliseconds ?? DEFAULT_APPROVAL_TIMEOUT_MILLISECONDS),
+            Math.floor(options.timeoutMilliseconds ?? DEFAULT_POLICY_APPROVAL_TIMEOUT_MILLISECONDS),
         );
     }
 
@@ -71,26 +71,29 @@ export class SubagentPolicyDecisionFlow implements AgentPolicyDecisionFlow {
         }
 
         const id = `policy-approver-${crypto.randomUUID()}`;
-        const controller = new AbortController();
+        const deadline = new PolicyApprovalDeadline(this.timeoutMilliseconds, {
+            signal,
+            subject: "Agent policy approval",
+        });
+        const approvalSignal = deadline.signal;
         let resolveSettled!: () => void;
         const settled = new Promise<void>((resolve) => {
             resolveSettled = resolve;
         });
-        const pending: PendingApproval = {controller, settled, resolveSettled};
+        const pending: PendingApproval = {deadline, settled, resolveSettled};
         this.pending.set(id, pending);
-        const abort = () => controller.abort();
-        signal?.addEventListener("abort", abort, {once: true});
-        const timeout = setTimeout(() => controller.abort(), this.timeoutMilliseconds);
+        let rejectCancelled!: () => void;
         const cancelled = new Promise<never>((_resolve, reject) => {
-            const rejectCancelled = () => reject(abortError());
-            if (controller.signal.aborted) rejectCancelled();
-            else controller.signal.addEventListener("abort", rejectCancelled, {once: true});
+            rejectCancelled = () => reject(abortError());
+            if (approvalSignal.aborted) rejectCancelled();
+            else approvalSignal.addEventListener("abort", rejectCancelled, {once: true});
         });
         let choice: PolicyChoice | undefined;
 
         try {
             const prompt = this.approvalPrompt(request);
             const decisionTool = this.decisionTool(request, (decision) => {
+                this.assertApprovalActive(deadline);
                 if (choice) throw new Error("A policy approval decision was already submitted");
                 choice = decision;
             });
@@ -120,21 +123,27 @@ export class SubagentPolicyDecisionFlow implements AgentPolicyDecisionFlow {
                     "You may choose only values exposed by that tool. Prefer the narrowest sufficient scope and lifetime.",
                     "Deny when the request is unnecessary, ambiguous, suspicious, or cannot be evaluated safely.",
                 ].join("\n"),
-            }, [decisionTool], controller.signal);
-            void creating.then((lateSession) => {
-                if (controller.signal.aborted && pending.session !== lateSession) lateSession.dispose();
+            }, [decisionTool], approvalSignal);
+            void creating.then(async (createdSession) => {
+                // Finalization owns adopted sessions; only unadopted late creations need this cleanup.
+                await pending.settled;
+                if (pending.session !== createdSession) createdSession.dispose();
             }).catch(() => undefined);
             const session = await Promise.race([creating, cancelled]);
             pending.session = session;
+            this.assertApprovalActive(deadline);
             await Promise.race([
-                session.prompt(prompt, controller.signal),
+                session.prompt(prompt, approvalSignal),
                 cancelled,
             ]);
+            this.assertApprovalActive(deadline);
             if (!choice) throw new Error("Policy approval reviewer returned without a structured decision.");
             return choice;
         } finally {
-            clearTimeout(timeout);
-            signal?.removeEventListener("abort", abort);
+            approvalSignal.removeEventListener("abort", rejectCancelled);
+            // Synchronous setup can fail before a race observes an already-rejected cancellation.
+            void cancelled.catch(() => undefined);
+            deadline.dispose();
             try {
                 pending.session?.dispose();
             } finally {
@@ -154,12 +163,17 @@ export class SubagentPolicyDecisionFlow implements AgentPolicyDecisionFlow {
     private async closePendingApprovals(): Promise<void> {
         const approvals = [...this.pending.values()];
         for (const approval of approvals) {
-            approval.controller.abort();
+            approval.deadline.cancel();
             void Promise.resolve()
                 .then(() => approval.session?.abort())
                 .catch(() => undefined);
         }
         await Promise.allSettled(approvals.map((approval) => approval.settled));
+    }
+
+    private assertApprovalActive(deadline: PolicyApprovalDeadline): void {
+        deadline.expireIfOverdue();
+        if (deadline.signal.aborted) throw abortError();
     }
 
     private decisionTool(

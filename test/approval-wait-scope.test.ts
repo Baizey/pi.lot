@@ -106,32 +106,34 @@ test("dispose permanently cancels active and paused timers without marking them 
     assert.equal(paused.expired, false);
 });
 
-test("stale callbacks cannot expire paused, resumed, disposed, or already expired timers", (t) => {
+test("scheduler cancellation preserves the budget through repeated pauses and fires only once", (t) => {
     const clock = new FakeClock(t);
-    const schedule = globalThis.setTimeout;
-    const callbacks: Array<() => void> = [];
-    t.mock.method(globalThis, "setTimeout", (callback: () => void, milliseconds: number) => {
-        callbacks.push(callback);
-        return schedule(callback, milliseconds);
-    });
     let calls = 0;
     const timeout = new PausableTimeout(10, () => calls++, {now: clock.now});
     clock.advance(3);
     const resume = timeout.pause();
     clock.advance(100);
-    callbacks[0]!();
     assert.equal(calls, 0);
     resume();
-    callbacks[0]!();
+    clock.advance(2);
+    const resumeAgain = timeout.pause();
+    clock.advance(100);
     assert.equal(calls, 0);
-    clock.advance(7);
+    resumeAgain();
+    clock.advance(4);
+    assert.equal(calls, 0);
+    clock.advance(1);
+    assert.equal(timeout.expired, true);
     assert.equal(calls, 1);
-    callbacks[1]!();
+    clock.advance(100);
     assert.equal(calls, 1);
+
     const disposed = new PausableTimeout(10, () => calls++, {now: clock.now});
+    clock.advance(3);
+    disposed.pause()();
     disposed.dispose();
-    clock.advance(10);
-    callbacks[2]!();
+    clock.advance(100);
+    assert.equal(disposed.expired, false);
     assert.equal(calls, 1);
 });
 

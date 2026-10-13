@@ -144,11 +144,12 @@ for (const operation of ["open", "create"]) {
 }
 
 for (const capabilities of ["supported", "unsupported"]) {
-    test(`real mount-free INIT declines forbidden ${capabilities} features in the wire reply`, () => {
+    test(`real mount-free INIT declines forbidden ${capabilities} features in the wire reply`, (context) => {
         const executed = spawnSync(initExecutable, [capabilities], {encoding: "utf8", timeout: 5_000});
         assert.ifError(executed.error);
         assert.equal(executed.status, 0, executed.stderr);
-        const result = JSON.parse(executed.stdout) as {
+        const result = JSON.parse(executed.stdout) as {customIoSupported: false} | {
+            customIoSupported: true;
             replyValid: boolean;
             initCalled: boolean;
             requestedBeforeInit: boolean;
@@ -161,6 +162,11 @@ for (const capabilities of ["supported", "unsupported"]) {
             connectionFieldsPreserved: boolean;
             configurationFieldsPreserved: boolean;
         };
+        if (result.customIoSupported === false) {
+            context.skip("Installed libfuse was built without custom I/O; real mount-free INIT negotiation requires -Denable-custom-io=true");
+            return;
+        }
+        assert.equal(result.customIoSupported, true);
         assert.equal(result.replyValid, true);
         assert.equal(result.initCalled, true);
         assert.equal(result.requestedBeforeInit, capabilities === "supported");

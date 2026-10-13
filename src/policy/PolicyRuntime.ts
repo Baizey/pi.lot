@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import {ApprovalWaitScope} from "../runtime/ApprovalWaitScope.js";
 import {
+    DEFAULT_POLICY_APPROVAL_TIMEOUT_MILLISECONDS,
+    PolicyApprovalDeadline,
+    PolicyApprovalTimeoutError,
+} from "./PolicyApprovalDeadline.js";
+import {
     PolicyApprovalReviewSource,
     type AgentPolicyApprovalRequest,
     AgentPolicyDecisionFlow,
@@ -49,6 +54,11 @@ export type ToolCallPathPolicyEvaluator = (
     signal?: AbortSignal,
 ) => Promise<PolicyResult>;
 
+/** Internal construction settings; not exposed through session or user configuration. */
+export type PolicyRuntimeOptions = {
+    userApprovalTimeoutMilliseconds?: number;
+};
+
 export interface PolicyPrincipalRegistry {
     registerPolicyPrincipal(
         agentIdentifier: string,
@@ -64,7 +74,7 @@ export interface PolicyPrincipalRegistry {
 
     removePolicyPrincipal(agentIdentifier: string): void;
 
-    setPolicyApprovalWaitScope?(agentIdentifier: string, scope: ApprovalWaitScope | undefined): void;
+    setPolicyApprovalWaitScope(agentIdentifier: string, scope: ApprovalWaitScope | undefined): void;
 }
 
 type PolicyPrincipal = {
@@ -103,15 +113,6 @@ type AncestorResolution =
 const MAX_AGENT_POLICY_SCOPES = 32;
 const MAX_AGENT_POLICY_SCOPE_CHARS = 32_000;
 const MAX_POLICY_URI_CHARS = 16_000;
-const USER_APPROVAL_TIMEOUT_MILLISECONDS = 300_000;
-
-class UserPolicyApprovalTimeoutError extends Error {
-    constructor() {
-        super(`User policy approval timed out after ${USER_APPROVAL_TIMEOUT_MILLISECONDS / 1_000} seconds.`);
-        this.name = "TimeoutError";
-    }
-}
-
 const ROOT_AGENT_CONTEXT: PolicyPrincipalContext = Object.freeze({
     role: "Root agent",
     task: "Active root orchestration session",
@@ -126,6 +127,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
     private readonly nativeFilesystemViews = new Set<NativeFilesystemPolicyView>();
     private readonly nativeFilesystemPolicyBases = new Map<string, NativeFilesystemPolicyBase>();
     private closing = false;
+    private readonly userApprovalTimeoutMilliseconds: number;
     readonly defaultResponses: ResponseDefaults;
 
     constructor(
@@ -135,7 +137,15 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         private readonly defaultsStore?: PolicyDefaultJsonStorageInterface,
         rootContext: PolicyPrincipalContext = ROOT_AGENT_CONTEXT,
         private readonly approvalAudit?: PolicyApprovalAuditLogInterface,
+        options: PolicyRuntimeOptions = {},
     ) {
+        this.userApprovalTimeoutMilliseconds = options.userApprovalTimeoutMilliseconds
+            ?? DEFAULT_POLICY_APPROVAL_TIMEOUT_MILLISECONDS;
+        if (!Number.isInteger(this.userApprovalTimeoutMilliseconds)
+            || this.userApprovalTimeoutMilliseconds < 1
+            || this.userApprovalTimeoutMilliseconds > 2_147_483_647) {
+            throw new RangeError("User policy approval timeout must be an integer between 1 and 2147483647 milliseconds.");
+        }
         this.rootAgentIdentifier = agentIdentifier;
         this.principals.set(agentIdentifier, {
             agentIdentifier,
@@ -912,17 +922,16 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         toolCall: PolicyToolCallContext,
         signal?: AbortSignal,
     ): Promise<PolicyResult> {
-        const controller = new AbortController();
-        const approvalSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-        // This watchdog is deliberately independent of the paused source execution budget.
-        const timeout = setTimeout(() => controller.abort(new UserPolicyApprovalTimeoutError()),
-            USER_APPROVAL_TIMEOUT_MILLISECONDS);
+        const deadline = new PolicyApprovalDeadline(this.userApprovalTimeoutMilliseconds, {
+            signal,
+            subject: "User policy approval",
+        });
         try {
             return await this.resolveUserApproval(
-                requester, uri, accessType, oncePolicies, toolCall, approvalSignal,
+                requester, uri, accessType, oncePolicies, toolCall, deadline,
             );
         } finally {
-            clearTimeout(timeout);
+            deadline.dispose();
         }
     }
 
@@ -932,8 +941,9 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         accessType: PolicyAccessType,
         oncePolicies: PolicyEngine,
         toolCall: PolicyToolCallContext,
-        signal: AbortSignal,
+        deadline: PolicyApprovalDeadline,
     ): Promise<PolicyResult> {
+        const signal = deadline.signal;
         const path = this.pathToRoot(requester);
         const pathSnapshot = this.principalPathSnapshot(path);
         const fallback = this.fallbackSnapshot(accessType);
@@ -943,34 +953,40 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             path,
             toolCall,
         );
-        const complete = (choice: PolicyChoice) => this.completeUserApproval(
-            requester,
-            uri,
-            accessType,
-            oncePolicies,
-            path,
-            pathSnapshot,
-            fallback,
-            requestContext,
-            choice,
-            signal,
-        );
+        const complete = (choice: PolicyChoice) => {
+            deadline.expireIfOverdue();
+            return this.completeUserApproval(
+                requester,
+                uri,
+                accessType,
+                oncePolicies,
+                path,
+                pathSnapshot,
+                fallback,
+                requestContext,
+                choice,
+                signal,
+            );
+        };
 
         if (typeof this.decisionFlow.resolveQueuedPolicy === "function") {
             return this.decisionFlow.resolveQueuedPolicy(
                 uri,
                 accessType,
                 {
-                    beforePrompt: () => this.queuedUserApprovalResolution(
-                        requester,
-                        uri,
-                        accessType,
-                        oncePolicies,
-                        path,
-                        pathSnapshot,
-                        fallback,
-                        signal,
-                    ),
+                    beforePrompt: () => {
+                        deadline.expireIfOverdue();
+                        return this.queuedUserApprovalResolution(
+                            requester,
+                            uri,
+                            accessType,
+                            oncePolicies,
+                            path,
+                            pathSnapshot,
+                            fallback,
+                            signal,
+                        );
+                    },
                     complete,
                 },
                 signal,
@@ -1264,7 +1280,7 @@ function failedClosedResult(
 }
 
 function userApprovalInactiveReason(signal?: AbortSignal): string {
-    return signal?.reason instanceof UserPolicyApprovalTimeoutError
+    return signal?.reason instanceof PolicyApprovalTimeoutError
         ? signal.reason.message
         : "User policy approval is no longer active.";
 }

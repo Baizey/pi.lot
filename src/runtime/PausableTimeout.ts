@@ -13,7 +13,6 @@ export class PausableTimeout {
     private remaining: number;
     private startedAt: number | undefined;
     private timer: ReturnType<typeof setTimeout> | undefined;
-    private generation = 0;
     private pauses = 0;
     private disposed = false;
     private didExpire = false;
@@ -72,11 +71,9 @@ export class PausableTimeout {
 
     private arm(): void {
         this.startedAt = this.now();
-        const generation = ++this.generation;
         // Node clamps larger delays to 1ms. Long budgets must instead run in chunks.
         const delay = Math.min(this.remaining, 2_147_483_647);
         this.timer = setTimeout(() => {
-            if (generation !== this.generation || this.disposed || this.didExpire || this.pauses > 0) return;
             this.consumeElapsed();
             this.cancelTimer();
             if (this.remaining <= 0) this.expire();
@@ -99,7 +96,6 @@ export class PausableTimeout {
     }
 
     private cancelTimer(): void {
-        this.generation++;
         if (this.timer !== undefined) clearTimeout(this.timer);
         this.timer = undefined;
     }

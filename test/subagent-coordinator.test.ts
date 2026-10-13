@@ -3,6 +3,7 @@ import test from "node:test";
 import type {ToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
 import {PolicyArea} from "../src/policy/types.js";
+import {ApprovalWaitScope} from "../src/runtime/ApprovalWaitScope.js";
 import {AgentMechanismCapability} from "../src/subagents/AgentCapability.js";
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
@@ -214,14 +215,33 @@ test("jobs obey the concurrency bound and status waits on state changes", async 
     await coordinator.close();
 });
 
-test("conversation jobs retain one real child session and policy principal across messages", async () => {
+test("retained conversations keep their session and principal but receive fresh, cleared scopes per turn", async () => {
     let creations = 0;
     const prompts: string[] = [];
+    const turnScopes: ApprovalWaitScope[] = [];
+    const lateReleases: Array<() => void> = [];
     const principals = new FakePolicyPrincipals();
     const factory: SubagentChildSessionFactory = {
-        async create() {
+        async create(childRequest) {
             creations++;
+            assert.equal(
+                principals.approvalWaitScopes.get(childRequest.agentIdentifier),
+                ApprovalWaitScope.current(),
+            );
             return new FakeSession(async (task) => {
+                const scope = ApprovalWaitScope.current();
+                assert.ok(scope);
+                assert.equal(principals.approvalWaitScopes.get(childRequest.agentIdentifier), scope);
+                assert.equal(scope.waiting, false);
+                for (const previous of turnScopes) {
+                    assert.notEqual(scope, previous);
+                    previous.beginWait()();
+                    assert.equal(previous.waiting, false);
+                    assert.throws(() => previous.setTimeout(() => {}, 10), /closed/);
+                }
+                turnScopes.push(scope);
+                // Turn cleanup must release an outstanding wait, even in a retained session.
+                lateReleases.push(scope.beginWait());
                 prompts.push(task);
                 return `answer ${prompts.length}`;
             });
@@ -233,6 +253,8 @@ test("conversation jobs retain one real child session and policy principal acros
     assert.equal(job?.status, SubagentJobStatus.IDLE);
     assert.equal(job?.output, "answer 1");
     assert.equal(principals.active.size, 1);
+    assert.equal(principals.approvalWaitScopes.size, 0);
+    assert.equal(turnScopes[0]?.waiting, false);
 
     await coordinator.message(spawned.job.id, "check one more thing");
     [job] = await coordinator.status([spawned.job.id], 2);
@@ -241,6 +263,14 @@ test("conversation jobs retain one real child session and policy principal acros
     assert.equal(job?.turns, 2);
     assert.equal(creations, 1);
     assert.deepEqual(prompts, ["inspect the change", "check one more thing"]);
+    assert.equal(turnScopes.length, 2);
+    assert.equal(principals.approvalWaitScopes.size, 0);
+    for (const scope of turnScopes) {
+        scope.beginWait()();
+        assert.equal(scope.waiting, false);
+        assert.throws(() => scope.setTimeout(() => {}, 10), /closed/);
+    }
+    for (const release of lateReleases) release();
 
     const stopped = await coordinator.stop(spawned.job.id);
     assert.equal(stopped.status, SubagentJobStatus.CANCELLED);
@@ -517,16 +547,13 @@ test("abort rejection is contained and reported with job context", async () => {
     await coordinator.close();
 });
 
-test("synchronous cleanup failures are contained and retained on the terminal snapshot", async () => {
+test("synchronous cleanup failures are contained and retained on the terminal snapshot", async (t) => {
     let releaseAttempts = 0;
-    const principals: PolicyPrincipalRegistry = {
-        registerPolicyPrincipal() {
-        },
-        removePolicyPrincipal() {
-            releaseAttempts++;
-            throw new Error("principal registry unavailable");
-        },
-    };
+    const principals = new FakePolicyPrincipals();
+    t.mock.method(principals, "removePolicyPrincipal", () => {
+        releaseAttempts++;
+        throw new Error("principal registry unavailable");
+    });
     const coordinator = new SubagentCoordinator(
         {
             async create() {
@@ -555,6 +582,7 @@ test("synchronous cleanup failures are contained and retained on the terminal sn
     assert.match(failed?.error ?? "", /session dispose failed: dispose failed/);
     assert.match(failed?.error ?? "", /policy-principal release failed: principal registry unavailable/);
     assert.equal(releaseAttempts >= 1, true);
+    assert.equal(principals.approvalWaitScopes.size, 0);
     await coordinator.close();
 });
 
@@ -580,6 +608,7 @@ test("coordinator shutdown aborts all running children and releases their princi
     assert.equal(coordinator.list([second.job.id])[0]?.status, SubagentJobStatus.CANCELLED);
     assert.equal(sessions.every((session) => session.disposed), true);
     assert.equal(principals.active.size, 0);
+    assert.equal(principals.approvalWaitScopes.size, 0);
 });
 
 test("delegating agents can manage only their own descendants", async () => {
@@ -678,6 +707,7 @@ test("nested delegation gates mechanisms but may snapshot any policy area the pa
 
 class FakePolicyPrincipals implements PolicyPrincipalRegistry {
     readonly active = new Set<string>();
+    readonly approvalWaitScopes = new Map<string, ApprovalWaitScope>();
     readonly contextUpdates: Array<{id: string; task?: string}> = [];
     readonly registrations: Array<{
         id: string;
@@ -695,8 +725,14 @@ class FakePolicyPrincipals implements PolicyPrincipalRegistry {
         this.contextUpdates.push({id, ...context});
     }
 
+    setPolicyApprovalWaitScope(id: string, scope: ApprovalWaitScope | undefined): void {
+        if (scope) this.approvalWaitScopes.set(id, scope);
+        else this.approvalWaitScopes.delete(id);
+    }
+
     removePolicyPrincipal(id: string): void {
         if (!this.active.delete(id)) throw new Error(`unknown principal: ${id}`);
+        this.approvalWaitScopes.delete(id);
     }
 }
 

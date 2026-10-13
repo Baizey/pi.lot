@@ -4,6 +4,7 @@ import type {ExtensionContext, ExtensionToolContext, Theme, ToolDefinition} from
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
 import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
+import {ApprovalWaitScope} from "../src/runtime/ApprovalWaitScope.js";
 import {
     SubagentReasoningAmount,
     SubagentReasoningSkill,
@@ -119,6 +120,9 @@ test("each subagent tool registers independently and delegates only to the coord
         /session is not available/,
     );
 
+    const activePrincipals = new Set<string>();
+    const approvalWaitScopes = new Map<string, ApprovalWaitScope>();
+    const turnScopes: ApprovalWaitScope[] = [];
     const factory: SubagentChildSessionFactory = {
         async create(request) {
             assert.equal(request.parentAgentIdentifier, "subagent-tool-test-agent");
@@ -127,6 +131,15 @@ test("each subagent tool registers independently and delegates only to the coord
             assert.equal(request.modelPreference, "provider/default-mid");
             return {
                 async prompt(task) {
+                    const scope = ApprovalWaitScope.current();
+                    assert.ok(scope);
+                    assert.equal(approvalWaitScopes.get(request.agentIdentifier), scope);
+                    assert.equal(activePrincipals.has(request.agentIdentifier), true);
+                    for (const previous of turnScopes) {
+                        assert.notEqual(scope, previous);
+                        assert.throws(() => previous.setTimeout(() => {}, 10), /closed/);
+                    }
+                    turnScopes.push(scope);
                     return `completed: ${task}`;
                 },
                 async steer() {
@@ -140,9 +153,16 @@ test("each subagent tool registers independently and delegates only to the coord
         },
     };
     const policyPrincipals: PolicyPrincipalRegistry = {
-        registerPolicyPrincipal() {
+        registerPolicyPrincipal(id) {
+            activePrincipals.add(id);
         },
-        removePolicyPrincipal() {
+        setPolicyApprovalWaitScope(id, scope) {
+            if (scope) approvalWaitScopes.set(id, scope);
+            else approvalWaitScopes.delete(id);
+        },
+        removePolicyPrincipal(id) {
+            activePrincipals.delete(id);
+            approvalWaitScopes.delete(id);
         },
     };
     coordinator = new SubagentCoordinator(
@@ -155,6 +175,7 @@ test("each subagent tool registers independently and delegates only to the coord
     const [settled] = await coordinator.status([jobId], 2);
     assert.equal(settled?.output, "completed: work");
     assert.equal(settled?.status, "idle");
+    assert.equal(approvalWaitScopes.size, 0);
 
     const allStatus = textResult(await invoke(registered[1]!, {}));
     assert.match(allStatus, /Subagent tree:\n○ reviewer \(subagent-/);
@@ -162,7 +183,20 @@ test("each subagent tool registers independently and delegates only to the coord
     const selectedStatus = textResult(await invoke(registered[1]!, {jobIds: [jobId]}));
     assert.doesNotMatch(selectedStatus, /Subagent tree:/);
 
+    await invoke(registered[2]!, {jobId, task: "follow-up work"});
+    const [followup] = await coordinator.status([jobId], 2);
+    assert.equal(followup?.output, "completed: follow-up work");
+    assert.equal(followup?.turns, 2);
+    assert.equal(turnScopes.length, 2);
+    assert.equal(approvalWaitScopes.size, 0);
+    assert.equal(activePrincipals.size, 1);
+    for (const scope of turnScopes) {
+        assert.throws(() => scope.setTimeout(() => {}, 10), /closed/);
+    }
+
     await coordinator.close();
+    assert.equal(activePrincipals.size, 0);
+    assert.equal(approvalWaitScopes.size, 0);
 });
 
 function plainTheme(): Theme {

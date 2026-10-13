@@ -204,6 +204,8 @@ npm run test:native
 
 The canonical runner, `scripts/test-native.mjs`, builds the Rust helpers, runs Rust unit tests, callback/protocol/policy contracts, independent expected-behavior regressions, and build/runtime/source-package integration checks. The mount-free FUSE probes exercise production callbacks and real libfuse INIT negotiation; they do not replace kernel/mount integration.
 
+The two real mount-free INIT wire-negotiation cases additionally need libfuse built with `-Denable-custom-io=true`. Some distribution builds disable this optional transport even though their version and headers meet the requirements above. When the API reports `-ENOTSUP`, only those two cases are explicitly skipped; callback/ABI contracts still run, and other probe errors still fail. Custom I/O is not required for production mounts or mounted integration. To run the wire-negotiation cases without skips, use a matching libfuse SDK/runtime built with custom I/O enabled.
+
 The source-package check uses the actual npm install hook to build real Rust ELF helpers with a fresh Cargo target and cached dependencies in Cargo offline mode. It checks package contents, package-local resolution, protocol/exec smoke behavior, and preservation after a failed npm build. It tests the install hook, **not** offline installation of npm dependencies.
 
 For the same suite plus real mounted/network contract coverage:

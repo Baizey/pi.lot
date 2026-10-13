@@ -142,6 +142,7 @@ async function checkCancellation(
         t.mock.timers.tick(milliseconds);
     };
     const approvalWaitScope = new ApprovalWaitScope();
+    let releaseApprovalWait: (() => void) | undefined;
     const running = runNetworkSandboxedCommand({
         command: ["/bin/true"],
         cwd: tmpdir(),
@@ -165,14 +166,15 @@ async function checkCancellation(
         const cancelledAt = Date.now();
         if (approvalWait) {
             advance(1_000);
-            const release = approvalWaitScope.beginWait();
+            releaseApprovalWait = approvalWaitScope.beginWait();
             advance(30_000);
             await new Promise<void>((resolve) => setImmediate(resolve));
             assert.equal(finished, false, "approval waiting must not expire the worker budget");
             assert.ok(processes.every((child) => !child.pid || isRunning(child.pid)));
             if (cancellation === "abort") controller.abort();
-            release();
-            if (cancellation === "timeout") {
+            else {
+                releaseApprovalWait();
+                releaseApprovalWait = undefined;
                 advance(2_999);
                 await new Promise<void>((resolve) => setImmediate(resolve));
                 assert.equal(finished, false, "resume must preserve the original remaining budget");
@@ -203,6 +205,7 @@ async function checkCancellation(
         controller.abort();
         for (const child of processes) child.terminate();
         await Promise.all(processes.map((child) => child.waitForExit()));
+        releaseApprovalWait?.();
         approvalWaitScope.close();
         if (virtualTime) t.mock.timers.reset();
     }

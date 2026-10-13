@@ -464,7 +464,12 @@ test("native FUSE aborts a pending policy miss and leaves the filesystem unchang
     const pendingFlow = {
         askForPolicy: () => new Promise<PolicyChoice>(() => undefined),
     } as unknown as PolicyDecisionFlow;
-    const runtime = new PolicyRuntime(AGENT, policyDao(), pendingFlow);
+    // This deliberately non-cooperative flow outlives source cancellation. Keep its real
+    // watchdog short so the test process does not wait for the production 300-second deadline.
+    const runtime = new PolicyRuntime(
+        AGENT, policyDao(), pendingFlow, undefined, undefined, undefined,
+        {userApprovalTimeoutMilliseconds: 1_000},
+    );
     const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-fuse-test"});
     const controller = new AbortController();
     const started = performance.now();

@@ -381,7 +381,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         this.notify(job);
 
         try {
-            this.policyPrincipals.setPolicyApprovalWaitScope?.(job.agentIdentifier, approvalWaitScope);
+            this.policyPrincipals.setPolicyApprovalWaitScope(job.agentIdentifier, approvalWaitScope);
             const tools = this.tools.resolve(job.capabilities);
             if (!job.session) {
                 job.session = await approvalWaitScope.run(() => this.sessionFactory.create({
@@ -452,7 +452,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             unsubscribeWait();
             approvalWaitScope.close();
             job.approvalWaitScope = undefined;
-            this.policyPrincipals.setPolicyApprovalWaitScope?.(job.agentIdentifier, undefined);
+            this.policyPrincipals.setPolicyApprovalWaitScope(job.agentIdentifier, undefined);
             job.controller = undefined;
             const retainedConversation = job.status === SubagentJobStatus.IDLE
                 || job.status === SubagentJobStatus.QUEUED;

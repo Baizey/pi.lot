@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import {AsyncResource} from "node:async_hooks";
+import {spawnSync} from "node:child_process";
+import {getEventListeners} from "node:events";
 import {performance} from "node:perf_hooks";
 import test, {type TestContext} from "node:test";
-import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {fileURLToPath} from "node:url";
+import type {ExtensionContext, ExtensionToolContext} from "@earendil-works/pi-coding-agent";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
 import {PolicyEngine} from "../src/policy/PolicyEngine.js";
-import {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
+import {PolicyRuntime, type PolicyRuntimeOptions} from "../src/policy/PolicyRuntime.js";
 import {
     PolicyAccessType,
     PolicyArea,
@@ -47,6 +50,10 @@ class VirtualClock {
         context.mock.method(performance, "now", () => Date.now());
     }
 
+    elapse(milliseconds: number): void {
+        this.context.mock.timers.setTime(Date.now() + milliseconds);
+    }
+
     async advance(milliseconds: number): Promise<void> {
         this.context.mock.timers.tick(milliseconds);
         await flush();
@@ -66,7 +73,7 @@ class ApprovalFixture {
     readonly queue = new UiDecisionFlowQueue();
     readonly runtime: PolicyRuntime;
 
-    constructor(context: TestContext, initialPolicies: Policy[] = []) {
+    constructor(context: TestContext, initialPolicies: Policy[] = [], options: PolicyRuntimeOptions = {}) {
         const ui = {
             select: async (title: string, options: string[], config?: {signal?: AbortSignal}) => {
                 const answer = deferred<string | undefined>();
@@ -84,7 +91,7 @@ class ApprovalFixture {
         };
         this.runtime = new PolicyRuntime(ROOT, dao, new PolicyDecisionFlow({
             decisionFlows: new UiDecisionFlowManager(extensionContext, this.queue),
-        }));
+        }), undefined, undefined, undefined, options);
         this.runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_user);
         context.after(() => {
             this.runtime.beginShutdown();
@@ -127,6 +134,68 @@ class ApprovalFixture {
     }
 }
 
+for (const lifetime of ["Once", "This session", "Always on this computer"]) {
+    test(`overdue ${lifetime} approval cannot grant authority before the watchdog callback runs`, async (t) => {
+        const clock = new VirtualClock(t);
+        const fixture = new ApprovalFixture(t);
+        const evaluate = fixture.runtime.beginToolCall(ROOT);
+        const pending = evaluate(TARGET, PolicyAccessType.FS_WRITE);
+        await flush();
+        fixture.dialogs.at(-1)!.answer(TARGET);
+        await flush();
+        fixture.dialogs.at(-1)!.answer("Allow");
+        await flush();
+
+        // Model a busy event loop: elapsed time advances, but queued timers have not run.
+        clock.elapse(USER_TIMEOUT + 1);
+        assert.equal(fixture.dialogs.at(-1)!.signal?.aborted, false, "the watchdog callback has not run");
+        fixture.dialogs.at(-1)!.answer(lifetime);
+        const result = await pending;
+        assertUserTimedOut(result);
+        assert.equal(fixture.persisted.length, 0);
+
+        const fresh = observe(evaluate(TARGET, PolicyAccessType.FS_WRITE));
+        await flush();
+        assert.equal(fresh.settled, false, "the expired decision must install no tool-call or session rule");
+        await fixture.allow();
+        assert.equal((await fresh.promise).matchedStatus, PolicyResponse.ALLOWED);
+    });
+}
+
+for (const elapsed of [USER_TIMEOUT - 1, USER_TIMEOUT]) {
+    test(`user completion at ${elapsed} ms observes the absolute approval deadline`, async (t) => {
+        const clock = new VirtualClock(t);
+        const fixture = new ApprovalFixture(t);
+        const pending = fixture.evaluate();
+        await flush();
+        clock.elapse(elapsed);
+        assert.equal(fixture.dialogs[0]!.signal?.aborted, false);
+        await fixture.allow(TARGET, "This session");
+        const result = await pending;
+        if (elapsed < USER_TIMEOUT) {
+            assert.equal(result.matchedStatus, PolicyResponse.ALLOWED);
+            assert.equal(result.matchedLifetime, PolicyLifetime.SESSION);
+        } else assertUserTimedOut(result);
+        assert.equal(fixture.persisted.length, 0);
+    });
+}
+
+test("an overdue queued approval cannot open a prompt before its watchdog callback runs", async (t) => {
+    const clock = new VirtualClock(t);
+    const fixture = new ApprovalFixture(t);
+    const first = fixture.evaluate();
+    const second = observe(fixture.evaluate(OTHER_TARGET));
+    await flush();
+    clock.elapse(USER_TIMEOUT + 1);
+    fixture.dialogs[0]!.answer(undefined);
+    await first;
+    await flush();
+    assert.equal(second.settled, true, "queued expiry must be checked without waiting for timer delivery");
+    assertUserTimedOut(await second.promise);
+    assert.equal(fixture.dialogs.length, 1);
+    assert.equal(fixture.persisted.length, 0);
+});
+
 test("active user approval expires at 300 seconds, aborts only its own signal, and ignores a late allow", async (t) => {
     const clock = new VirtualClock(t);
     const fixture = new ApprovalFixture(t);
@@ -142,7 +211,7 @@ test("active user approval expires at 300 seconds, aborts only its own signal, a
     assert.equal(pending.settled, false);
     await clock.advance(1);
     assert.equal(pending.settled, true, "an uncooperative UI must not prevent timeout settlement");
-    assertFailedClosed(await pending.promise);
+    assertUserTimedOut(await pending.promise);
     assert.equal(dialog.signal?.aborted, true);
     assert.equal(caller.signal.aborted, false);
     assert.equal(scope.waiting, false);
@@ -171,13 +240,13 @@ test("queued user approval has its own entry-time deadline even behind a stuck e
 
     await clock.advance(250_000);
     assert.equal(active.settled, true);
-    assertFailedClosed(await active.promise);
+    assertUserTimedOut(await active.promise);
     assert.equal(queued.settled, false);
     await clock.advance(49_999);
     assert.equal(queued.settled, false);
     await clock.advance(1);
     assert.equal(queued.settled, true, "queue residence counts towards this request's 300 seconds");
-    assertFailedClosed(await queued.promise);
+    assertUserTimedOut(await queued.promise);
     fixture.dialogs[0]!.answer(TARGET);
     await flush();
     assert.equal(fixture.dialogs.length, 1, "expired queued work must never open a redundant prompt");
@@ -207,7 +276,7 @@ test("user prompt steps share one budget and a late lifetime selection cannot in
     assert.equal(pending.settled, false);
     await clock.advance(1);
     assert.equal(pending.settled, true, "each prompt step must not reset the watchdog");
-    assertFailedClosed(await pending.promise);
+    assertUserTimedOut(await pending.promise);
     lifetime.answer("Always on this computer");
     await flush();
     assert.equal(fixture.persisted.length, 0);
@@ -235,7 +304,7 @@ test("a queued request opening later receives only its remaining approval budget
     assert.equal(second.settled, false);
     await clock.advance(1);
     assert.equal(second.settled, true);
-    assertFailedClosed(await second.promise);
+    assertUserTimedOut(await second.promise);
 });
 
 test("a covering session grant supersedes queued review without another prompt", async (t) => {
@@ -324,6 +393,91 @@ test("native policy views capture their own child scope for callbacks outside th
     assert.equal(sourceExpired, false, "closing a view must not dispose its parent's watchdog");
     await clock.advance(1);
     assert.equal(sourceExpired, true);
+});
+
+test("an internal user approval timeout override retains fail-closed deadline enforcement", async (t) => {
+    const clock = new VirtualClock(t);
+    const fixture = new ApprovalFixture(t, [], {userApprovalTimeoutMilliseconds: 2_500});
+    const pending = observe(fixture.evaluate());
+    await flush();
+    fixture.dialogs.at(-1)!.answer(TARGET);
+    await flush();
+    fixture.dialogs.at(-1)!.answer("Allow");
+    await flush();
+    const lifetime = fixture.dialogs.at(-1)!;
+    assert.match(lifetime.title, /^Path policy lifetime/);
+    await clock.advance(2_499);
+    assert.equal(pending.settled, false);
+    await clock.advance(1);
+    assert.equal(pending.settled, true, "the internal override must replace the default deadline");
+    const result = await pending.promise;
+    assert.equal(result.matchedStatus, PolicyResponse.DENIED);
+    assert.equal(result.resolutionSource, PolicyResolutionSource.SYSTEM);
+    assert.equal(result.matchedReason, "User policy approval timed out after 2.5 seconds.");
+    lifetime.answer("Always on this computer");
+    await flush();
+    assert.equal(fixture.persisted.length, 0, "a late choice must not install a durable grant");
+    const fresh = observe(fixture.evaluate());
+    await flush();
+    assert.equal(fresh.settled, false, "the expired choice must install no grant");
+    await fixture.allow();
+    assert.equal((await fresh.promise).matchedStatus, PolicyResponse.ALLOWED);
+});
+
+test("internal user approval timeout overrides reject invalid timer budgets", (t) => {
+    for (const milliseconds of [0, -1, 1.5, NaN, Infinity, 2 ** 31]) {
+        assert.throws(() => new ApprovalFixture(t, [], {
+            userApprovalTimeoutMilliseconds: milliseconds,
+        }), /User policy approval timeout must be/);
+    }
+});
+
+test("a short internal user approval deadline lets a cancelled non-cooperative native fixture exit", () => {
+    // Match the mounted abort test's never-settling decision flow without needing a mount.
+    // The child must exit naturally when its real watchdog fires, not through unref or process.exit().
+    const script = `
+        const runtimeModule = await import("./src/policy/PolicyRuntime.ts");
+        const {PolicyRuntime} = runtimeModule.default ?? runtimeModule;
+        const typesModule = await import("./src/policy/types.ts");
+        const {PolicyAccessType} = typesModule.default ?? typesModule;
+        const dao = {initializeSchema() {}, loadPolicies: () => [], upsertPolicies() {}, deletePolicy() {}};
+        let approvalRequested = false;
+        const pendingFlow = {askForPolicy() {
+            approvalRequested = true;
+            return new Promise(() => undefined);
+        }};
+        const runtime = new PolicyRuntime("native-fuse-test", dao, pendingFlow,
+            undefined, undefined, undefined, {userApprovalTimeoutMilliseconds: 50});
+        const view = runtime.beginNativeFilesystemToolCall("native-fuse-test");
+        const controller = new AbortController();
+        void view.evaluate(${JSON.stringify(TARGET)}, PolicyAccessType.FS_WRITE, controller.signal).catch(() => {});
+        controller.abort();
+        view.close();
+        console.log(JSON.stringify({
+            approvalRequested,
+            callerAborted: controller.signal.aborted,
+            watchdogActive: process.getActiveResourcesInfo().includes("Timeout"),
+        }));
+    `;
+    const result = spawnSync(process.execPath, ["--import", "jiti/register", "--input-type=module", "--eval", script], {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {...process.env, JITI_FS_CACHE: "false"},
+        encoding: "utf8",
+        timeout: 5_000,
+        killSignal: "SIGKILL",
+    });
+    assert.equal(
+        result.error,
+        undefined,
+        `Approval fixture did not exit naturally: ${result.error?.message}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    );
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+        approvalRequested: true,
+        callerAborted: true,
+        watchdogActive: true,
+    });
 });
 
 test("completed user approvals clear their watchdog instead of aborting later work", async (t) => {
@@ -508,13 +662,222 @@ test("explicit stop and status abort remain immediate while approval clocks are 
     assert.equal((await stopped.promise).status, SubagentJobStatus.CANCELLED);
     assert.equal(sourceAborted, true);
     assertFailedClosed(decision!);
+    assert.doesNotMatch(decision!.matchedReason, /timed out/i, "explicit cancellation is not approval expiry");
     assert.equal(fixture.dialogs[0]!.signal?.aborted, true);
     fixture.dialogs[0]!.answer(TARGET);
     await flush();
     assert.equal(fixture.persisted.length, 0);
 });
 
+for (const lifecycle of ["caller abort", "flow close"]) {
+    for (const ordering of ["same turn", "after cancellation settles"]) {
+        test(`reviewer creation resolved ${ordering} around ${lifecycle} has exactly one cleanup owner`, async (t) => {
+            new VirtualClock(t);
+            const fixture = new ApprovalFixture(t);
+            fixture.runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_llm);
+            const creating = deferred<SubagentChildSession>();
+            const caller = new AbortController();
+            let creationStarted = false;
+            let prompts = 0;
+            let disposals = 0;
+            const reviewFlow = new SubagentPolicyDecisionFlow({
+                create() {
+                    creationStarted = true;
+                    // Return the gate directly: resolving before abort must queue creation first.
+                    return creating.promise;
+                },
+            }, () => initialSubagentDefaults);
+            t.after(() => reviewFlow.close());
+            fixture.runtime.setAgentDecisionFlow(reviewFlow);
+            const pending = fixture.evaluate(TARGET, caller.signal);
+            await flush();
+            assert.equal(creationStarted, true);
+            const session: SubagentChildSession = {
+                prompt: async () => { prompts++; return "unexpected prompt"; },
+                steer: async () => false,
+                abort: async () => {},
+                dispose: () => { disposals++; },
+            };
+            if (ordering === "same turn") creating.resolve(session);
+            if (lifecycle === "caller abort") caller.abort();
+            else await reviewFlow.close();
+            const result = await pending;
+            if (ordering === "after cancellation settles") creating.resolve(session);
+            await flush();
+            assert.equal(result.matchedStatus, PolicyResponse.DENIED);
+            assert.equal(result.matchedLifetime, PolicyLifetime.ONCE);
+            assert.equal(prompts, 0, "a cancelled creation must never prompt");
+            assert.equal(disposals, 1, "exactly one owner must dispose each created session");
+            assert.equal(caller.signal.aborted, lifecycle === "caller abort");
+            assert.equal(fixture.persisted.length, 0);
+        });
+    }
+}
+
+for (const cancellation of ["after setup failure", "during setup"]) {
+    test(`reviewer cancellation ${cancellation} leaves no stranded rejection or listener`, async (t) => {
+        new VirtualClock(t);
+        const fixture = new ApprovalFixture(t);
+        fixture.runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_llm);
+        const caller = new AbortController();
+        let reviewerSignal: AbortSignal | undefined;
+        const reviewFlow = new SubagentPolicyDecisionFlow({
+            create(_request, _tools, signal) {
+                reviewerSignal = signal;
+                if (cancellation === "during setup") caller.abort();
+                throw new Error("Reviewer setup failed");
+            },
+        }, () => initialSubagentDefaults);
+        t.after(() => reviewFlow.close());
+        fixture.runtime.setAgentDecisionFlow(reviewFlow);
+        const result = await fixture.evaluate(TARGET, caller.signal);
+        assert.equal(result.matchedStatus, PolicyResponse.DENIED);
+        assert.equal(result.matchedLifetime, PolicyLifetime.ONCE);
+        assert.ok(reviewerSignal);
+        assert.equal(getEventListeners(reviewerSignal, "abort").length, 0, "finalization must detach its cancellation listener");
+        if (cancellation === "after setup failure") caller.abort();
+        await flush(); // Also lets Node detect any cancellation rejected before a race could observe it.
+        assert.equal(reviewerSignal.aborted, true, "parent cancellation still propagates to the review signal");
+        assert.equal(fixture.persisted.length, 0);
+    });
+}
+
 for (const route of ["ask_llm", "ancestor"] as const) {
+    test(`overdue ${route} decisions fail closed before the reviewer watchdog callback runs`, async (t) => {
+        const clock = new VirtualClock(t);
+        const authority: Policy[] = route === "ancestor" ? [{
+            pattern: WORKSPACE,
+            info: {[PolicyAccessType.FS_WRITE]: PolicyEngine.createStatus(
+                PolicyAccessType.FS_WRITE, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "Root authority",
+            )},
+        }] : [];
+        const fixture = new ApprovalFixture(t, authority);
+        fixture.runtime.registerPolicyPrincipal("child", ROOT, []);
+        if (route === "ask_llm") fixture.runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_llm);
+        const finishReview = deferred<void>();
+        let creations = 0;
+        let reviewerDisposed = false;
+        let reviewerSignal: AbortSignal | undefined;
+        const reviewFlow = new SubagentPolicyDecisionFlow({
+            async create(_request, tools, signal) {
+                creations++;
+                reviewerSignal = signal;
+                return {
+                    async prompt() {
+                        if (creations > 1) return new Promise<string>(() => {});
+                        await finishReview.promise;
+                        await tools[0]!.execute("decision", {
+                            scope: TARGET,
+                            status: PolicyResponse.ALLOWED,
+                            lifetime: PolicyLifetime.SESSION,
+                            reason: "Allow this delegated operation",
+                        }, signal, undefined, {} as ExtensionToolContext);
+                        return "decided";
+                    },
+                    steer: async () => false,
+                    abort: async () => {},
+                    dispose: () => reviewerDisposed = true,
+                } satisfies SubagentChildSession;
+            },
+        }, () => initialSubagentDefaults);
+        t.after(() => reviewFlow.close());
+        fixture.runtime.setAgentDecisionFlow(reviewFlow);
+        const evaluate = fixture.runtime.beginToolCall("child");
+        const pending = evaluate(TARGET, PolicyAccessType.FS_WRITE);
+        await flush();
+        clock.elapse(USER_TIMEOUT + 1);
+        assert.equal(reviewerSignal?.aborted, false, "the watchdog callback has not run");
+        finishReview.resolve();
+        const result = await pending;
+        assert.equal(result.matchedStatus, PolicyResponse.DENIED);
+        assert.equal(result.matchedLifetime, PolicyLifetime.ONCE);
+        assert.equal(reviewerSignal?.aborted, true);
+        assert.equal(reviewerDisposed, true);
+        assert.equal(fixture.persisted.length, 0);
+        const fresh = observe(evaluate(TARGET, PolicyAccessType.FS_WRITE));
+        await flush();
+        assert.equal(creations, 2, "an expired review must install no tool-call or session rule");
+        assert.equal(fresh.settled, false);
+    });
+
+    for (const {phase, elapsed} of [
+        {phase: "setup", elapsed: USER_TIMEOUT + 1},
+        {phase: "prompt completion", elapsed: USER_TIMEOUT - 1},
+        {phase: "prompt completion", elapsed: USER_TIMEOUT},
+        {phase: "prompt completion", elapsed: USER_TIMEOUT + 1},
+    ]) {
+        test(`${route} ${phase} at ${elapsed} ms observes the independent approval deadline`, async (t) => {
+            const clock = new VirtualClock(t);
+            const authority: Policy[] = route === "ancestor" ? [{
+                pattern: WORKSPACE,
+                info: {[PolicyAccessType.FS_WRITE]: PolicyEngine.createStatus(
+                    PolicyAccessType.FS_WRITE, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "Root authority",
+                )},
+            }] : [];
+            const fixture = new ApprovalFixture(t, authority);
+            fixture.runtime.registerPolicyPrincipal("child", ROOT, []);
+            if (route === "ask_llm") fixture.runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_llm);
+            const finishReview = deferred<void>();
+            const caller = new AbortController();
+            let creations = 0;
+            let prompts = 0;
+            let decisions = 0;
+            let disposals = 0;
+            let reviewerSignal: AbortSignal | undefined;
+            const reviewFlow = new SubagentPolicyDecisionFlow({
+                async create(_request, tools, signal) {
+                    creations++;
+                    reviewerSignal = signal;
+                    if (phase === "setup") await finishReview.promise;
+                    return {
+                        async prompt() {
+                            prompts++;
+                            await tools[0]!.execute("decision", {
+                                scope: TARGET,
+                                status: PolicyResponse.ALLOWED,
+                                lifetime: PolicyLifetime.SESSION,
+                                reason: "Allow this delegated operation",
+                            }, signal, undefined, {} as ExtensionToolContext);
+                            decisions++;
+                            await finishReview.promise;
+                            return "decided";
+                        },
+                        steer: async () => false,
+                        abort: async () => {},
+                        dispose: () => { disposals++; },
+                    } satisfies SubagentChildSession;
+                },
+            }, () => initialSubagentDefaults);
+            t.after(() => reviewFlow.close());
+            fixture.runtime.setAgentDecisionFlow(reviewFlow);
+            const evaluate = fixture.runtime.beginToolCall("child");
+            const pending = evaluate(TARGET, PolicyAccessType.FS_WRITE, caller.signal);
+            await flush();
+            assert.equal(creations, 1);
+            assert.equal(decisions, phase === "setup" ? 0 : 1, "a prompt-completion test must submit its choice before expiry");
+            clock.elapse(elapsed);
+            assert.equal(reviewerSignal?.aborted, false, "the watchdog callback has not run");
+            finishReview.resolve();
+            const result = await pending;
+            assert.equal(disposals, 1);
+            assert.equal(caller.signal.aborted, false, "review expiry must not cancel the source");
+            assert.equal(fixture.persisted.length, 0);
+            if (elapsed < USER_TIMEOUT) {
+                assert.equal(result.matchedStatus, PolicyResponse.ALLOWED);
+                assert.equal(result.matchedLifetime, PolicyLifetime.SESSION);
+                assert.equal(reviewerSignal?.aborted, false);
+            } else {
+                assert.equal(result.matchedStatus, PolicyResponse.DENIED);
+                assert.equal(result.matchedLifetime, PolicyLifetime.ONCE);
+                assert.equal(reviewerSignal?.aborted, true);
+                assert.equal(prompts, phase === "setup" ? 0 : 1, "overdue setup must never prompt");
+                const fresh = await evaluate(TARGET, PolicyAccessType.FS_WRITE, caller.signal);
+                assert.equal(creations, 2, "expired review must leave neither a tool-call nor a session grant");
+                assert.equal(fresh.matchedStatus, PolicyResponse.ALLOWED, "a fresh timely review remains valid");
+            }
+        });
+    }
+
     test(`${route} review pauses the source but its independent 300-second watchdog still expires`, async (t) => {
         const clock = new VirtualClock(t);
         const authority: Policy[] = route === "ancestor" ? [{
@@ -887,6 +1250,11 @@ function assertFailedClosed(result: PolicyResult): void {
     assert.equal(result.resolutionSource, PolicyResolutionSource.SYSTEM);
 }
 
+function assertUserTimedOut(result: PolicyResult): void {
+    assertFailedClosed(result);
+    assert.equal(result.matchedReason, "User policy approval timed out after 300 seconds.");
+}
+
 function deferred<T>(): {promise: Promise<T>; resolve(value: T): void} {
     let resolve!: (value: T) => void;
     const promise = new Promise<T>((complete) => resolve = complete);
@@ -909,6 +1277,6 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 async function flush(): Promise<void> {
-    // Drain the real policy/UI/coordinator promise chain without advancing virtual time.
-    for (let index = 0; index < 80; index++) await Promise.resolve();
+    // The next event-loop turn follows the queued promise chain without advancing fake timers.
+    await new Promise<void>((resolve) => setImmediate(resolve));
 }

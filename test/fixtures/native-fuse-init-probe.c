@@ -92,10 +92,17 @@ static int probe_negotiation(char **argv, bool supported, struct pilot_fuse_stat
     }
     struct fuse_session *session = fuse_get_session(filesystem);
     const struct fuse_custom_io io = {.writev = probe_writev, .read = probe_read};
-    if (fuse_session_custom_io(session, &io, sizeof(io), descriptors[0]) != 0) {
+    int custom_io_result = fuse_session_custom_io(session, &io, sizeof(io), descriptors[0]);
+    if (custom_io_result != 0) {
         close(descriptors[0]);
         close(descriptors[1]);
         fuse_destroy(filesystem);
+        if (custom_io_result == -ENOTSUP) {
+            /* Custom transport is an optional libfuse build feature, not a mount requirement. */
+            puts("{\"customIoSupported\":false}");
+            return 0;
+        }
+        fprintf(stderr, "fuse_session_custom_io failed: %s\n", strerror(-custom_io_result));
         return 65;
     }
 
@@ -129,7 +136,7 @@ static int probe_negotiation(char **argv, bool supported, struct pilot_fuse_stat
     bool reply_valid = received == (ssize_t) sizeof(reply)
         && reply.header.len == (uint32_t) received && reply.header.unique == 1
         && reply.header.error == 0 && reply.init.major == FUSE_KERNEL_VERSION;
-    printf("{\"replyValid\":%s,\"initCalled\":%s,\"requestedBeforeInit\":%s,"
+    printf("{\"customIoSupported\":true,\"replyValid\":%s,\"initCalled\":%s,\"requestedBeforeInit\":%s,"
         "\"requestedAfterInit\":%s,\"forbiddenNegotiated\":%s,\"asyncReadNegotiated\":%s,"
         "\"capabilitiesPreserved\":%s,\"configurationSafe\":%s,\"stateReturned\":%s,"
         "\"connectionFieldsPreserved\":%s,\"configurationFieldsPreserved\":%s}\n",

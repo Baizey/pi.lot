@@ -19,7 +19,6 @@ import {ThemeColor} from "../src/tui/Color.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 import type {ToolCallSpinnerState} from "../src/tui/tool/ToolCallSpinner.js";
-import {ViewFullToolCommand} from "../src/commands/ViewFullToolCommand.js";
 import {EditTool} from "../src/tools/builtin/EditTool.js";
 
 const plainTheme = {
@@ -27,10 +26,10 @@ const plainTheme = {
     bold: (text: string) => text,
 } as unknown as Theme;
 
-test("view-full-tool bounds the chronological window and toggles rows without closing", async () => {
+test("tool rows retain full-display toggles and invalidate only the selected call", () => {
     const rows = new ToolDisplayRows();
-    const states = Array.from({length: 20}, () => ({} as {pilotFullDisplay?: boolean}));
-    const invalidations = Array.from({length: 20}, () => 0);
+    const states = Array.from({length: 3}, () => ({} as {pilotFullDisplay?: boolean}));
+    const invalidations = Array.from({length: 3}, () => 0);
     for (let index = 0; index < states.length; index++) {
         rows.observe("bash", {purpose: `Call ${index + 1}`}, {
             toolCallId: `call-${index + 1}`,
@@ -39,54 +38,27 @@ test("view-full-tool bounds the chronological window and toggles rows without cl
         });
     }
 
-    let command: {handler(args: string, ctx: any): Promise<void>} | undefined;
-    new ViewFullToolCommand({
-        registerCommand(_name, options) {
-            command = options as typeof command;
-        },
-    } as ExtensionAPI, rows).register();
-    assert.ok(command);
+    assert.deepEqual(rows.list().map((row) => row.sequence), [1, 2, 3]);
+    assert.equal(rows.toggle("call-2"), true);
+    assert.equal(states[1]!.pilotFullDisplay, true);
+    assert.equal(resolveToolDisplayMode(false, states[1]), ToolDisplayMode.FULL);
+    assert.deepEqual(rows.list().map((row) => row.full), [false, true, false]);
+    assert.deepEqual(invalidations, [0, 1, 0]);
+    assert.equal(states[0]!.pilotFullDisplay, undefined);
+    assert.equal(states[2]!.pilotFullDisplay, undefined);
 
-    await command.handler("", {
-        ui: {
-            async custom(factory: any) {
-                let closed = false;
-                const component = factory(
-                    {requestRender() {}},
-                    plainTheme,
-                    {
-                        matches(data: string, keybinding: string) {
-                            return (data === "\r" && keybinding === "tui.select.confirm")
-                                || (data === "\x1b" && keybinding === "tui.select.cancel");
-                        },
-                    },
-                    () => closed = true,
-                );
-                const optionLines = component.render(120)
-                    .filter((line: string) => line.includes("○") || line.includes("●"));
-                assert.equal(optionLines.length, 6);
-                assert.match(optionLines[0]!, /15\. bash — Call 15/);
-                assert.match(optionLines.at(-1)!, /^→ ○ 20\. bash — Call 20/);
-                assert.equal(optionLines.some((line: string) => /14\. bash — Call 14/.test(line)), false);
+    assert.equal(rows.toggle("call-2"), false);
+    assert.equal(states[1]!.pilotFullDisplay, false);
+    assert.equal(resolveToolDisplayMode(false, states[1]), ToolDisplayMode.MINIMAL);
+    assert.equal(resolveToolDisplayMode(true, states[1]), ToolDisplayMode.TRUNCATED);
+    assert.deepEqual(rows.list().map((row) => row.full), [false, false, false]);
+    assert.deepEqual(invalidations, [0, 2, 0]);
 
-                component.handleInput("\r");
-                assert.equal(closed, false);
-                assert.match(
-                    component.render(120).find((line: string) => line.startsWith("→"))!,
-                    /^→ ● 20\. bash — Call 20/,
-                );
-
-                component.handleInput("\x1b");
-                assert.equal(closed, true);
-            },
-            notify() {},
-        },
-    });
-
-    assert.equal(states[19]!.pilotFullDisplay, true);
-    assert.equal(states.slice(0, -1).every((state) => state.pilotFullDisplay === undefined), true);
-    assert.equal(invalidations[19], 1);
-    assert.equal(invalidations.slice(0, -1).every((count) => count === 0), true);
+    assert.equal(rows.toggle("unknown-call"), undefined);
+    rows.clear();
+    assert.deepEqual(rows.list(), []);
+    assert.equal(rows.toggle("call-2"), undefined);
+    assert.deepEqual(invalidations, [0, 2, 0]);
 });
 
 test("self-shell composition keeps symbolic content free of fill-to-width whitespace", () => {

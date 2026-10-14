@@ -17,7 +17,6 @@ import {SubagentStatusTool} from "./tools/subagent/SubagentStatusTool";
 import {SubagentMessageTool} from "./tools/subagent/SubagentMessageTool";
 import {SubagentStopTool} from "./tools/subagent/SubagentStopTool";
 import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
-import {ViewFullToolCommand} from "./commands/ViewFullToolCommand.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
 import {ThinkingLevelUiRuntime} from "./tui/ThinkingLevelUiRuntime.js";
@@ -106,7 +105,6 @@ export class PilotExtension {
             () => this.subagentRuntime.availableModels(),
             (level) => this.subagentRuntime.resolveAutomaticModel(level),
         ).register();
-        new ViewFullToolCommand(this.pi, this.displayRows).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         new CodemodeExtension(this.pi, this.displayRows).register();
         this.mcpExtension.register();

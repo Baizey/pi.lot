@@ -149,7 +149,6 @@ Confirm these commands are available:
 /subagent-defaults
 /mcp
 /network-inspection
-/view-full-tool
 ```
 
 Then inspect the initial state:

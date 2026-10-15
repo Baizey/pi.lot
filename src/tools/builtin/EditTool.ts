@@ -12,7 +12,7 @@ import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer"
 import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
-import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
+import {ToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {resolveBuiltinToolPath} from "./resolveBuiltinToolPath.js";
 
@@ -40,7 +40,7 @@ const EDIT_PRESENTATION = {
         },
     ],
     result: {
-        direction: ToolTextDirection.HEAD,
+        direction: ToolTextDirection.TAIL,
         previewLines: 12,
         color: (line) => {
             if (line.startsWith("+")) return ThemeColor.toolDiffAdded;
@@ -92,9 +92,11 @@ export class EditTool {
         };
         const renderCall: NonNullable<EditPresentationDefinition["renderCall"]> = (args, theme, context) => {
             this.displayRows.observe("edit", args, context);
-            const mode = resolveToolDisplayMode(context.expanded || context.isPartial, context.state);
+            const selected = this.displayRows.resolveMode(context.expanded, context.state);
+            const mode = context.isPartial && selected === ToolDisplayMode.MINIMAL
+                ? ToolDisplayMode.TRUNCATED : selected;
             const call = presentation.renderCall(args, theme, mode, context);
-            if (!context.isPartial) return call;
+            if (!context.isPartial || mode === ToolDisplayMode.HIDDEN) return call;
 
             // Preview only supplied replacement text: reading the target here would
             // precede the execution path's policy approval.
@@ -108,7 +110,9 @@ export class EditTool {
             return component;
         };
         const renderResult: NonNullable<EditPresentationDefinition["renderResult"]> = (result, options, theme, context) => {
-            const mode = resolveToolDisplayMode(options.expanded || options.isPartial, context.state);
+            const selected = this.displayRows.resolveMode(options.expanded, context.state);
+            const mode = options.isPartial && selected === ToolDisplayMode.MINIMAL
+                ? ToolDisplayMode.TRUNCATED : selected;
             const diff = !context.isError && typeof result.details?.diff === "string"
                 ? result.details.diff
                 : undefined;

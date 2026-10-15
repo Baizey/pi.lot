@@ -17,6 +17,8 @@ import {SubagentStatusTool} from "./tools/subagent/SubagentStatusTool";
 import {SubagentMessageTool} from "./tools/subagent/SubagentMessageTool";
 import {SubagentStopTool} from "./tools/subagent/SubagentStopTool";
 import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
+import type {ToolDisplayViews} from "./tui/tool/ToolDisplayMode.js";
+import {TranscriptDisplayRuntime} from "./tui/TranscriptDisplayRuntime.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
 import {ThinkingLevelUiRuntime} from "./tui/ThinkingLevelUiRuntime.js";
@@ -28,6 +30,7 @@ export type PilotExtensionOptions = {
     createMcpExtension?: (pi: ExtensionAPI, displayRows: ToolDisplayRows) => McpExtensionInterface;
     subagentModelRanker?: SubagentModelPerformanceRanker;
     subagentDefaultsStore?: SubagentDefaultsStore;
+    toolDisplayViews?: ToolDisplayViews;
 };
 
 // noinspection JSUnusedGlobalSymbols
@@ -39,7 +42,8 @@ export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     private readonly displayRows = new ToolDisplayRows();
     private readonly documentation = new PilotDocumentation();
-    private readonly thinkingLevelUiRuntime = new ThinkingLevelUiRuntime();
+    private readonly transcriptDisplayRuntime: TranscriptDisplayRuntime;
+    private readonly thinkingLevelUiRuntime: ThinkingLevelUiRuntime;
     private readonly bashTool: BashTool;
     private readonly webSearchTool: WebSearchTool;
     private readonly readTool: ReadTool;
@@ -60,6 +64,11 @@ export class PilotExtension {
         options: PilotExtensionOptions = {},
     ) {
         this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
+        if (options.toolDisplayViews) {
+            this.displayRows.modes.setViews(options.toolDisplayViews.primary, options.toolDisplayViews.alternate);
+        }
+        this.transcriptDisplayRuntime = new TranscriptDisplayRuntime(pi, this.displayRows.modes);
+        this.thinkingLevelUiRuntime = new ThinkingLevelUiRuntime((tui) => this.transcriptDisplayRuntime.attach(tui));
         const runtimeProvider = () => this.requireSessionRuntime();
         this.bashTool = new BashTool(pi, runtimeProvider, this.displayRows);
         this.webSearchTool = new WebSearchTool(pi, runtimeProvider, this.displayRows);
@@ -93,6 +102,7 @@ export class PilotExtension {
         this.registered = true;
 
         const runtimeProvider = () => this.requireSessionRuntime();
+        this.transcriptDisplayRuntime.register();
         this.bashTool.register();
         this.webSearchTool.register();
         this.readTool.register();
@@ -158,15 +168,21 @@ export class PilotExtension {
         await this.mcpExtension.startSession(ctx);
         await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
         await this.subagentUiRuntime.startSession(ctx, this.subagentRuntime.coordinator());
+        this.transcriptDisplayRuntime.startSession(ctx);
         this.thinkingLevelUiRuntime.startSession(ctx);
     }
 
     private async stopOwnedExtensions(): Promise<void> {
         let firstError: unknown;
         try {
-            this.thinkingLevelUiRuntime.stopSession();
+            this.transcriptDisplayRuntime.stopSession();
         } catch (error) {
             firstError = error;
+        }
+        try {
+            this.thinkingLevelUiRuntime.stopSession();
+        } catch (error) {
+            firstError ??= error;
         }
         try {
             await this.subagentUiRuntime.stopSession();

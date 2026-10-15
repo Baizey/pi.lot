@@ -3,7 +3,7 @@ import {
     type ExtensionContext,
     type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
-import type {EditorComponent} from "@earendil-works/pi-tui";
+import type {EditorComponent, TUI} from "@earendil-works/pi-tui";
 import {ThemeColor} from "./Color.js";
 import {NativeFooterAutoCompaction} from "./NativeFooterAutoCompaction.js";
 import {PilotFooter} from "./PilotFooter.js";
@@ -23,6 +23,8 @@ export class ThinkingLevelUiRuntime {
     private autoCompaction: NativeFooterAutoCompaction | undefined;
     private footer: PilotFooter | undefined;
 
+    constructor(private readonly attachTranscript?: (tui: TUI) => void) {}
+
     startSession(ctx: ExtensionContext): void {
         if (this.session) throw new Error("Thinking-level UI session is already started");
         const session = {context: ctx};
@@ -34,6 +36,7 @@ export class ThinkingLevelUiRuntime {
         const autoCompaction = new NativeFooterAutoCompaction();
         this.autoCompaction = autoCompaction;
         this.editorFactory = (tui, theme, keybindings) => {
+            this.attachTranscript?.(tui);
             autoCompaction.attach(tui);
             return this.decorateEditor(
                 previous?.(tui, theme, keybindings)

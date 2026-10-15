@@ -8,7 +8,7 @@ import {
 import {getCapabilities, wrapTextWithAnsi} from "@earendil-works/pi-tui";
 import {ThemeColor} from "../../tui/Color.js";
 import {renderLineFactory, sanitizeTerminalLine, type TextComponent} from "../../tui/terminalText.js";
-import {resolveToolDisplayMode, ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
+import {ToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows, type ToolDisplayState} from "../../tui/tool/ToolDisplayRows.js";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection, type ToolResultLike} from "../../tui/tool/ToolPresentation.js";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer.js";
@@ -121,7 +121,7 @@ export class CodemodeExtension {
                     return this.presentation.renderCall(
                         args,
                         theme,
-                        resolveToolDisplayMode(context.expanded, context.state),
+                        this.displayRows.resolveMode(context.expanded, context.state),
                         {...context, invalidate: live ? context.invalidate : undefined},
                     );
                 },
@@ -137,7 +137,7 @@ export class CodemodeExtension {
                         // This callback decorates only Pi's native codemode definition.
                         result.details as CodemodeToolDetails | undefined,
                         theme,
-                        resolveToolDisplayMode(options.expanded, context.state),
+                        this.displayRows.resolveMode(options.expanded, context.state),
                         options.isPartial,
                         context.isError,
                         context.showImages,
@@ -179,6 +179,7 @@ export class CodemodeExtension {
         durationMs: number | undefined,
     ): TextComponent {
         return renderLineFactory((width) => {
+            if (mode === ToolDisplayMode.HIDDEN && !isPartial) return [];
             const calls = details?.calls ?? [];
             const argumentsByCall = details ? this.callArguments.get(details) : undefined;
             const indicator = isPartial ? state.pilotCallSpinner?.frame() : undefined;
@@ -186,13 +187,18 @@ export class CodemodeExtension {
             // shrink it rather than losing the entire call to indentation.
             const indent = " ".repeat(Number.isFinite(width) ? Math.max(0, Math.min(2, Math.floor(width) - 1)) : 2);
             const callWidth = Number.isFinite(width) ? Math.max(1, Math.floor(width) - indent.length) : width;
-            const lines = calls.length > 0 ? ["", ...calls.flatMap((call, index) => (
-                this.callLines(call, argumentsByCall?.get(index) ?? call.args, theme, mode, indicator, callWidth)
-                    .flatMap((line) => Number.isFinite(callWidth)
-                        ? wrapTextWithAnsi(sanitizeTerminalLine(line), callWidth)
-                        : [sanitizeTerminalLine(line)])
-                    .map((line) => `${indent}${line}`)
-            ))] : [];
+            const activity = calls.flatMap((call, index) => {
+                if (mode === ToolDisplayMode.HIDDEN && call.status !== "running") return [];
+                return this.callLines(
+                    call, argumentsByCall?.get(index) ?? call.args, theme,
+                    mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.MINIMAL : mode, indicator, callWidth,
+                ).flatMap((line) => Number.isFinite(callWidth)
+                    ? wrapTextWithAnsi(sanitizeTerminalLine(line), callWidth)
+                    : [sanitizeTerminalLine(line)])
+                    .map((line) => `${indent}${line}`);
+            });
+            const lines = activity.length > 0 ? ["", ...activity] : [];
+            if (mode === ToolDisplayMode.HIDDEN) return lines;
             const priced = calls.filter((call) => call.cost !== undefined);
             if (priced.length > 1) {
                 const total = priced.reduce((sum, call) => sum + (call.cost ?? 0), 0);

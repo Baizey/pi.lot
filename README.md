@@ -191,7 +191,7 @@ pi.lot also provides compact, copy-friendly tool rendering:
 
 - `Ctrl+O` toggles compact and expanded tool views;
 - Pi's `outputPad` setting controls tool-row margins without adding trailing whitespace to copied output;
-- direct `edit` rows show a truncated preview of supplied replacement text while arguments stream and the edit is still working; completed rows return to their configured compact/expanded/full view, and preview rendering does not read the target file before authorization;
+- direct `edit` rows show a truncated tail preview of supplied replacement text while arguments stream and the edit is still working; expanded completed diffs also show their latest lines; completed rows return to their configured compact/expanded/full view, and preview rendering does not read the target file before authorization;
 - Pilot's `codemode` requires a concise, one-line `purpose`, shown beside the tool name even in minimal mode; nested calls use the same titles, argument layouts, colors, and compact/expanded/full modes as normal calls, indented to show they belong to the script, with Pi's animated braille loader while running and a blank icon column afterward; expanded and per-call full views also reveal the script, output, full errors, output-file hints, and elapsed or recorded execution time;
 - active subagent work appears above the editor and in the footer;
 - the chat editor border stays at the theme's `thinkingXhigh` color (Bash mode keeps its own color); and
@@ -201,6 +201,8 @@ pi.lot also provides compact, copy-friendly tool rendering:
   provider/model                                            Thinking ■■■■□ high
   Context 42.0% / 272k (auto) · ↑12k ↓3k · $0.120    agents ●2 ○1 · session name
   ```
+
+The rendering layer also supports an activity-only **hidden** view: in-progress tools retain compact headers, codemode shows only running nested calls, and current thinking is reduced to a small indicator. Completed tool rows, tool-result images, thoughts, and internal compaction/branch summaries disappear without removing conversation text or altering session history. Important notifications and approval dialogs remain visible. Hidden mode is groundwork for view configuration; there is no selection command yet, and `Ctrl+O` still defaults to minimal ↔ truncated.
 
 The thinking indicator uses colored cubes: `□□□□□ off`, `■■■□□ medium`, or `■■■■■ xhigh`. Pi's `max` level adds a sixth filled cube. The footer reserves that sixth column and right-pads each level name to the longest label, keeping the indicator aligned when levels change. The bundled `pilot-dark` theme keeps `off` grey and uses a blue-to-purple gradient for active thinking levels: a lighter blue for `minimal`, progressing through blue, periwinkle, and violet to purple at `max`. Select `pilot-dark` in `/settings` to use this palette; other themes retain their own colors. It updates with the model, thinking level, and theme. Context usage follows the thinking palette: `thinkingMinimal` below 20%, `thinkingLow` from 20%, `thinkingMedium` from 40%, `thinkingHigh` from 60%, `thinkingXhigh` from 80%, and `thinkingMax` at 90% and above—including usage over 100%. Unknown usage uses `thinkingOff`; displayed percentages are never capped. Agent activity retains its own colors; labels and separators stay subdued.
 

@@ -17,7 +17,6 @@ import {
     type WebSearchProviderId,
     type WebSearchResult,
 } from "../../web-search/SearchProvider.js";
-import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
 import {
     ToolArgumentPlacement,
@@ -121,7 +120,7 @@ export class WebSearchTool {
                 return presentation.renderCall(
                     args as WebSearchInput,
                     theme,
-                    resolveToolDisplayMode(context.expanded, context.state),
+                    this.displayRows.resolveMode(context.expanded, context.state),
                     context,
                 );
             },
@@ -129,7 +128,7 @@ export class WebSearchTool {
                 result,
                 theme,
                 {isError: context.isError, outputPad: context.outputPad},
-                resolveToolDisplayMode(options.expanded, context.state),
+                this.displayRows.resolveMode(options.expanded, context.state),
             ),
         } as ToolDefinition<any, any>;
         return this.definition;

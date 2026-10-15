@@ -11,7 +11,6 @@ import {
     ToolArgumentPlacement,
     ToolTextDirection,
 } from "../../tui/tool/ToolPresentation";
-import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {ThemeColor} from "../../tui/Color";
@@ -82,7 +81,7 @@ function createDefinition(
             return presentation.renderCall(
                 args as MessageToolInput,
                 theme,
-                resolveToolDisplayMode(context.expanded, context.state),
+                displayRows.resolveMode(context.expanded, context.state),
                 context,
             );
         },
@@ -90,7 +89,7 @@ function createDefinition(
             result,
             theme,
             {isError: context.isError, outputPad: context.outputPad},
-            resolveToolDisplayMode(options.expanded, context.state),
+            displayRows.resolveMode(options.expanded, context.state),
         ),
     };
 }

@@ -861,6 +861,8 @@ function extensionHarness(): ExtensionHarness {
         },
         registerCommand() {
         },
+        registerToolRenderer() {
+        },
         on(event: string, handler: unknown) {
             registeredEventNames.push(event);
             if (event === "session_start") startHandler = handler as SessionStartHandler;

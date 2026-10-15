@@ -219,9 +219,14 @@ test("tool headers animate Pi's spinner and keep its blank slot after success or
             const completed = renderer.renderCall(args, plainTheme, mode, {
                 ...options, isPartial: false, isError,
             });
-            const header = completed.render(120)[0]!;
-            assert.equal(header, "  bash | Check lifecycle");
-            assert.equal(header.indexOf("bash"), runningTitleColumn, "completion must not shift the title");
+            const lines = completed.render(120);
+            if (mode === ToolDisplayMode.HIDDEN) {
+                assert.deepEqual(lines, []);
+            } else {
+                const header = lines[0]!;
+                assert.equal(header, "  bash | Check lifecycle");
+                assert.equal(header.indexOf("bash"), runningTitleColumn, "completion must not shift the title");
+            }
         }
         assert.deepEqual(call.render(120), ["  bash | Check lifecycle"]);
         assert.equal(state.pilotCallSpinner, null);
@@ -360,7 +365,7 @@ test("minimal presentation shows title arguments and hides successful or failed 
     );
 });
 
-test("every display mode formats the same header once and only expanded modes format the body", () => {
+test("display modes skip hidden rows and only expanded modes format body arguments", () => {
     type Args = {block: string; path: string; range: string; note: string};
     const formatted: string[] = [];
     const format = (key: string, value: unknown): string => {
@@ -381,6 +386,11 @@ test("every display mode formats the same header once and only expanded modes fo
     for (const mode of Object.values(ToolDisplayMode)) {
         formatted.length = 0;
         const lines = renderer.renderCall(args, plainTheme, mode, {isError: true}).render(120);
+        if (mode === ToolDisplayMode.HIDDEN) {
+            assert.deepEqual(lines, []);
+            assert.deepEqual(formatted, []);
+            continue;
+        }
         assert.deepEqual(lines, mode === ToolDisplayMode.MINIMAL
             ? ["  mixed | file.txt:2"]
             : ["  mixed | file.txt:2", "note: first", "block:", "line 1", "line 2"]);
@@ -722,17 +732,22 @@ test("working edit previews are truncated by default and preserve the row-local 
     const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
     const component = new ToolExecutionComponent("edit", "edit-long", args, {outputPad: 0}, renderingEditTool(rows), ui, process.cwd());
     const view = () => component.render(120).map(stripAnsi).filter(Boolean);
-    assert.ok(view().includes("+line 1"), "long old text must not hide the new replacement");
-    assert.equal(view().includes("+line 30"), false);
-    assert.ok(view().some((line) => /more lines/.test(line)));
+    assert.deepEqual(view().slice(-12), numberedLines(30).split("\n").slice(-12).map((line) => `+${line}`));
+    assert.equal(view().includes("+line 1"), false);
+    assert.ok(view().some((line) => /19 earlier lines/.test(line)));
     assert.ok(view().length <= 15);
+    component.updateArgs({...args, edits: [{...args.edits[0]!, newText: numberedLines(45)}]});
+    assert.deepEqual(view().slice(-12), numberedLines(45).split("\n").slice(-12).map((line) => `+${line}`));
+    assert.equal(view().includes("+line 30"), false, "older lines must leave the preview as replacement text grows");
     component.setExpanded(true);
-    assert.equal(view().includes("+line 30"), false);
+    assert.equal(view().includes("+line 1"), false);
     assert.equal(rows.toggle("edit-long"), true);
     component.setExpanded(false);
-    assert.ok(view().includes("+line 30"));
+    assert.ok(view().includes("+line 1"));
+    assert.ok(view().includes("+line 45"));
     assert.equal(rows.toggle("edit-long"), false);
-    assert.equal(view().includes("+line 30"), false);
+    assert.equal(view().includes("+line 1"), false);
+    assert.ok(view().includes("+line 45"));
     rows.toggle("edit-long");
     component.updateResult({content: [{type: "text", text: "done"}], isError: false});
     assert.deepEqual(view(), ["  edit | render-only.ts (1 replacement)", "done"]);
@@ -778,15 +793,52 @@ test("working edit partial results retain truncation, full override, and complet
     component.markExecutionStarted();
     component.updateResult({content: [{type: "text", text: numberedLines(30)}], isError: false}, true);
     const view = () => component.render(120).map(stripAnsi).filter(Boolean);
+    assert.deepEqual(view().slice(-12), numberedLines(30).split("\n").slice(-12));
+    assert.equal(view().includes("line 1"), false);
+    assert.ok(view().some((line) => /18 earlier lines/.test(line)));
+    component.updateResult({content: [{type: "text", text: numberedLines(45)}], isError: false}, true);
+    assert.deepEqual(view().slice(-12), numberedLines(45).split("\n").slice(-12));
+    assert.equal(view().includes("line 30"), false, "partial results must follow the latest streamed lines");
+    rows.toggle("edit-partial-result");
     assert.ok(view().includes("line 1"));
-    assert.equal(view().includes("line 30"), false);
-    assert.ok(view().some((line) => /more lines/.test(line)));
+    assert.ok(view().includes("line 45"));
     rows.toggle("edit-partial-result");
-    assert.ok(view().includes("line 30"));
-    rows.toggle("edit-partial-result");
-    assert.equal(view().includes("line 30"), false);
+    assert.equal(view().includes("line 1"), false);
+    assert.ok(view().includes("line 45"));
     component.updateResult({content: [{type: "text", text: "complete"}], isError: false});
     assert.deepEqual(view(), ["  edit | result.ts"]);
+});
+
+test("completed edit diffs show the tail when expanded and retain minimal and full display", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const ui = {requestRender() {}} as NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[5]>;
+    const args = {path: "diff.ts", edits: [{oldText: "old value", newText: "requested value"}]};
+    const component = new ToolExecutionComponent("edit", "edit-diff", args, {outputPad: 0}, renderingEditTool(rows), ui, process.cwd());
+    component.setArgsComplete();
+    component.markExecutionStarted();
+    const diffLines = ["-old value", ...numberedLines(30).split("\n").map((line) => `+${line}`)];
+    component.updateResult({
+        content: [{type: "text", text: "edit complete"}],
+        details: {diff: diffLines.join("\n"), patch: "", firstChangedLine: 1},
+        isError: false,
+    });
+    const view = () => component.render(120).map(stripAnsi).filter(Boolean);
+    const header = "  edit | diff.ts (1 replacement)";
+    assert.deepEqual(view(), [header]);
+    component.setExpanded(true);
+    assert.deepEqual(view().slice(-12), diffLines.slice(-12));
+    assert.equal(view().includes("+line 1"), false);
+    assert.ok(view().some((line) => /19 earlier lines/.test(line)));
+    assert.equal(view().includes("edit complete"), false, "completed previews must use the applied diff");
+    assert.equal(view().includes("+requested value"), false);
+    rows.toggle("edit-diff");
+    component.setExpanded(false);
+    assert.deepEqual(view(), [header, ...diffLines]);
+    rows.toggle("edit-diff");
+    assert.deepEqual(view(), [header]);
 });
 
 test("working edit previews normalize newlines and reuse character and terminal-safety limits", (t) => {

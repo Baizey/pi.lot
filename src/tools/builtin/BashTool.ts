@@ -11,7 +11,6 @@ import {DEFAULT_NETWORK_POLICY_GRANULARITY, NetworkDecisionCoordinator} from "..
 import {NetworkPolicyAuthorizer} from "../../policy/network/NetworkPolicyAuthorizer";
 import {NetworkDecision} from "../../policy/network/network-queue-protocol";
 import type {HostCredentialIpcOptions} from "../../policy/network/ipc/HostCredentialIpc";
-import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import type {NativeFilesystemPolicyView} from "../../policy/path/native/NativeFilesystemPolicyView.js";
 import {withNativeFuseFilesystem} from "../../policy/path/native/native-fuse-runner.js";
@@ -144,7 +143,7 @@ export class BashTool {
                 return presentation.renderCall(
                     args,
                     theme,
-                    resolveToolDisplayMode(context.expanded, context.state),
+                    this.displayRows.resolveMode(context.expanded, context.state),
                     context,
                 );
             },
@@ -153,7 +152,7 @@ export class BashTool {
                 result,
                 theme,
                 {isError: context.isError, outputPad: context.outputPad},
-                resolveToolDisplayMode(options.expanded, context.state),
+                this.displayRows.resolveMode(options.expanded, context.state),
             ),
 
         } as const satisfies ToolDefinition<typeof parameters, any>;

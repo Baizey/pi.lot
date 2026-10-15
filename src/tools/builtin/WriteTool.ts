@@ -10,7 +10,6 @@ import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer"
 import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
-import {resolveToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {resolveBuiltinToolPath} from "./resolveBuiltinToolPath.js";
 
@@ -72,7 +71,7 @@ export class WriteTool {
         };
         const renderCall: NonNullable<typeof definition.renderCall> = (args, theme, context) => {
             this.displayRows.observe("write", args, context);
-            const mode = resolveToolDisplayMode(context.expanded, context.state);
+            const mode = this.displayRows.resolveMode(context.expanded, context.state);
             return presentation.renderCall(
                 args,
                 theme,
@@ -81,7 +80,7 @@ export class WriteTool {
             );
         };
         const renderResult: NonNullable<typeof definition.renderResult> = (result, options, theme, context) => {
-            const mode = resolveToolDisplayMode(options.expanded, context.state);
+            const mode = this.displayRows.resolveMode(options.expanded, context.state);
             return presentation.renderResult(result, theme, {isError: context.isError, outputPad: context.outputPad}, mode);
         };
         this.definition = {

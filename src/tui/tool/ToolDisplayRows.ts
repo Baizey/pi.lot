@@ -1,6 +1,7 @@
 import type {Theme} from "@earendil-works/pi-coding-agent";
 import type {ToolCallSpinnerState} from "./ToolCallSpinner.js";
 import type {ToolDisplayMode} from "./ToolDisplayMode.js";
+import {ToolDisplayModes} from "./ToolDisplayModes.js";
 
 /** Stateless call layout: nested calls must not own rows, toggles, or animation timers. */
 export type ToolCallPresentation = (
@@ -40,6 +41,16 @@ export class ToolDisplayRows {
     // Layouts outlive observed rows: cached definitions do not re-register after tree/compaction cleanup.
     private readonly callPresentations = new Map<string, ToolCallPresentation>();
     private nextSequence = 1;
+
+    constructor(readonly modes = new ToolDisplayModes()) {
+        modes.subscribe(() => {
+            for (const row of this.rows.values()) row.invalidate();
+        });
+    }
+
+    resolveMode(expanded: boolean, state?: {pilotFullDisplay?: boolean}): ToolDisplayMode {
+        return this.modes.resolve(expanded, state);
+    }
 
     registerCallPresentation(toolName: string, render: ToolCallPresentation): void {
         this.callPresentations.set(toolName, render);

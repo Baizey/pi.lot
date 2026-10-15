@@ -80,9 +80,13 @@ export class ToolPresentationRenderer<TArgs extends object> {
         options: ToolCallRenderOptions = {},
     ): TextComponent {
         this.updateCallSpinner(options);
-        return renderLineFactory((width) => this.renderCallLines(
-            args, theme, mode, width, options.state?.pilotCallSpinner?.frame(),
-        ), options.outputPad);
+        return renderLineFactory((width) => {
+            if (mode === ToolDisplayMode.HIDDEN && !options.isPartial) return [];
+            return this.renderCallLines(
+                args, theme, mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.MINIMAL : mode,
+                width, options.state?.pilotCallSpinner?.frame(),
+            );
+        }, options.outputPad);
     }
 
     /** Logical lines before width clipping, with no row registration or spinner lifecycle effects. */
@@ -93,6 +97,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         width: number,
         indicator?: string,
     ): string[] {
+        if (mode === ToolDisplayMode.HIDDEN) return [];
         return this.toolCallLines((args ?? {}) as Partial<TArgs>, theme, mode, indicator, width);
     }
 
@@ -150,7 +155,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         mode: ToolDisplayMode,
         width: number,
     ): string[] {
-        if (mode === ToolDisplayMode.MINIMAL) return [];
+        if (mode === ToolDisplayMode.HIDDEN || mode === ToolDisplayMode.MINIMAL) return [];
 
         const text = collectResultText(result);
         if (!text) return [];

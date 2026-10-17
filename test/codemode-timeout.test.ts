@@ -299,6 +299,44 @@ test("thrown native execution closes approval scope and disposes timeout", async
     assert.equal(signal.aborted, false);
 });
 
+test("main and child codemode share Pi's two-worker limit and reject excess scripts before tool execution", {timeout: 15_000}, async () => {
+    const released = deferred<void>();
+    let entered = 0;
+    const hold: ToolDefinition = {
+        name: "mcp__fixture__hold", label: "hold", description: "Keep a worker occupied", exposure: "codemode",
+        parameters: {type: "object", properties: {}},
+        async execute() {
+            entered++;
+            await released.promise;
+            return {content: [{type: "text", text: "released"}], details: undefined};
+        },
+    };
+    const sessions: Awaited<ReturnType<typeof sessionFixture>>[] = [];
+    const running: Promise<AgentToolResult<unknown>>[] = [];
+    try {
+        for (const child of [false, true, false]) sessions.push(await sessionFixture(child, [hold]));
+        for (const index of [0, 1]) {
+            const pending = sessions[index]!.run("return await tools.mcp__fixture__hold({});");
+            running.push(pending);
+            await waitUntil(() => entered === index + 1, pending, `worker ${index + 1} fixture call`);
+        }
+        const result = await sessions[2]!.run('// @options: {"timeout_ms":1000}\nreturn await tools.mcp__fixture__hold({});');
+        assert.equal(result.isError, true, resultText(result));
+        assert.match(resultText(result), /Codemode worker limit reached/);
+        assert.equal(entered, 2, "an excess script cannot execute any nested tool");
+        assert.deepEqual((result.details as CodemodeToolDetails).calls, []);
+        released.resolve();
+        for (const result of await Promise.all(running)) {
+            assert.equal(result.isError, undefined, resultText(result));
+            assert.match(resultText(result), /released/);
+        }
+    } finally {
+        released.resolve();
+        await Promise.allSettled(running);
+        for (const session of sessions.reverse()) session.close();
+    }
+});
+
 test("real main and child codemode enforce a finite timeout for a script with no nested tools", {timeout: 10_000}, async () => {
     // Child sessions expose codemode only when their catalog contains a codemode tool.
     const unusedTool: ToolDefinition = {

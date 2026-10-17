@@ -13,6 +13,7 @@ import {
     type ExtensionAPI,
     type ExtensionToolContext,
     type Theme,
+    type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {PolicyAccessType, PolicyResponse} from "../src/policy/types.js";
 import type {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime.js";
@@ -20,6 +21,7 @@ import {BashTool} from "../src/tools/builtin/BashTool.js";
 import {EditTool} from "../src/tools/builtin/EditTool.js";
 import {ReadTool} from "../src/tools/builtin/ReadTool.js";
 import {WriteTool} from "../src/tools/builtin/WriteTool.js";
+import {ToolDisplayMode} from "../src/tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 
 const plainTheme = {
@@ -55,7 +57,7 @@ test("builtin overrides retain upstream descriptions, schemas, prompt metadata a
             assert.deepEqual(pilot.parameters, upstream.parameters);
         }
     }
-    assert.ok(fixture.read.outputSchema, "Pi 1.2 read must advertise its structured output");
+    assert.ok(fixture.read.outputSchema, "Pi read must advertise its structured output");
 });
 
 test("Bash purpose remains required, bounded and single-line at the argument validation boundary", (t) => {
@@ -71,7 +73,7 @@ test("Bash purpose remains required, bounded and single-line at the argument val
     }
 });
 
-test("authorized reads preserve Pi 1.2 text, continuation and image structured outputs", async (t) => {
+test("authorized reads preserve Pi text, continuation and image structured outputs", async (t) => {
     const fixture = new BuiltinFixture(t);
     writeFileSync(path.join(fixture.cwd, "text.txt"), Array.from({length: 2101}, (_, i) => `line ${i + 1}`).join("\n"));
     const result = await fixture.read.execute("read-text", {path: "text.txt"}, undefined, undefined, fixture.context());
@@ -93,6 +95,50 @@ test("authorized reads preserve Pi 1.2 text, continuation and image structured o
     assert.deepEqual(fixture.authorizations.map((call) => call.access), [
         PolicyAccessType.FS_READ, PolicyAccessType.FS_READ, PolicyAccessType.FS_READ,
     ]);
+});
+
+test("direct and nested read labels preserve Pi's numeric-string, null and malformed range handling", () => {
+    const rows = new ToolDisplayRows();
+    const definition = new ReadTool({} as ExtensionAPI, () => {
+        throw new Error("Rendering must not access the policy runtime");
+    }, rows).toolDefinition();
+    assert.ok(definition.renderCall);
+    const nested = rows.callPresentation("read");
+    assert.ok(nested);
+    const cases: Array<[Record<string, unknown>, string]> = [
+        [{}, ""],
+        [{offset: 2, limit: 3}, ":2-4"],
+        [{offset: "2", limit: "3"}, ":2-4"],
+        [{offset: " 2 ", limit: " 3 "}, ":2-4"],
+        [{offset: null, limit: "3"}, ":1-3"],
+        [{limit: "3"}, ":1-3"],
+        [{offset: "2", limit: null}, ":2"],
+        [{offset: "2"}, ":2"],
+        [{offset: null, limit: null}, ""],
+        [{offset: null}, ""],
+        [{limit: null}, ""],
+        [{offset: "bad", limit: 3}, ""],
+        [{offset: 2, limit: "bad"}, ""],
+        [{offset: "", limit: 3}, ""],
+        [{offset: false, limit: 3}, ""],
+        [{offset: {toString: null}, limit: 3}, ""],
+        [{offset: Infinity, limit: 3}, ""],
+        [{offset: 2, limit: NaN}, ""],
+    ];
+    for (const [range, suffix] of cases) {
+        const args = {path: "file.txt", ...range};
+        const expected = [`  read | file.txt${suffix}`];
+        for (const mode of [ToolDisplayMode.MINIMAL, ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL]) {
+            const context = {
+                args, toolCallId: "read-range", state: {pilotFullDisplay: mode === ToolDisplayMode.FULL},
+                invalidate() {}, lastComponent: undefined, cwd: process.cwd(), executionStarted: false,
+                argsComplete: true, isPartial: false, expanded: mode === ToolDisplayMode.TRUNCATED,
+                showImages: false, isError: false, durationMs: undefined, outputPad: 0,
+            } satisfies Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
+            assert.deepEqual(definition.renderCall(args, plainTheme, context).render(120), expected);
+            assert.deepEqual(nested(args, plainTheme, mode, 120), expected);
+        }
+    }
 });
 
 test("denied and aborted file calls cannot read or mutate before authorization", async (t) => {

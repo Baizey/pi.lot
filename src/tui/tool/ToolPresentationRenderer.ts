@@ -280,7 +280,10 @@ export class ToolPresentationRenderer<TArgs extends object> {
         block: boolean,
     ): string {
         const formatted = argument.presentation?.format?.(argument.value, args);
-        if (formatted !== undefined) return formatted || "\"\"";
+        if (formatted !== undefined) {
+            if (argument.placement === ToolArgumentPlacement.TITLE_SECONDARY) return formatted;
+            return formatted || "\"\"";
+        }
         return block ? formatBlockValue(argument.value) : formatInlineValue(argument.value);
     }
 

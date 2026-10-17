@@ -4,7 +4,7 @@ pi.lot is a Pi package for **Linux x86-64**. It overrides Pi's core file and she
 
 ## Requirements
 
-This checkout targets Pi `1.2.0` and requires:
+This checkout targets Pi `1.3.0` and requires:
 
 - Node.js and npm;
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
@@ -73,7 +73,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.2.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:

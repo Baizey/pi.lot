@@ -59,6 +59,8 @@ A child cannot request these mechanisms later. A nested child cannot receive eit
 
 Child codemode uses the public `createCodemodeExtension()` factory with `models: false`: no model globals are exposed, even with an `mcp` grant. Root codemode's authenticated, potentially billable `models.classify()` and `models.generateImages()` calls are [outside filesystem/network mediation](security.md#codemode-model-calls). In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
 
+Root and child codemode share Pi 1.3's process-wide limit of two live workers. A parent script waiting for a child still counts, and cancelled workers count until they actually exit. Further scripts fail immediately at capacity; retained subagent conversations themselves are not limited to two. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
+
 MCP remains an opaque capability outside filesystem/network mediation. Granting `mcp` does not cause MCP effects to inherit Pilot's path or network policies. See [MCP security boundary](security.md#mcp).
 
 ## Reasoning and model selection

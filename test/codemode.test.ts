@@ -251,17 +251,20 @@ test("restored truncated previews and model identifiers retain readable, sanitiz
         "    unknown first", "  second", "  last", "  end"]);
 });
 
-test("schema-invalid nested arguments cannot break rendering of subsequent calls", () => {
-    const {tool} = harness(new ToolDisplayRows());
+test("invalid read ranges and failing nested renderers cannot break subsequent calls", () => {
+    const rows = new ToolDisplayRows();
+    const {tool} = harness(rows);
+    rows.registerCallPresentation("broken", () => { throw new Error("Renderer failure"); });
     const invalidArgs = '{"path":"fixture","offset":{"toString":null},"limit":1}';
     const calls: CodemodeToolDetails["calls"] = [
         {id: "script/1", name: "read", args: invalidArgs, status: "error"},
-        {id: "script/2", name: "read", args: '{"path":"next"}', status: "ok"},
+        {id: "script/2", name: "broken", args: '{"value":"fixture"}', status: "error"},
+        {id: "script/3", name: "read", args: '{"path":"next"}', status: "ok"},
     ];
     for (const expanded of [false, true]) {
         const result = tool.renderResult!({content: [], details: {calls}},
             {expanded, isPartial: false}, plainTheme, renderContext({}, {expanded})).render(120);
-        assert.deepEqual(result, ["", `    read ${invalidArgs}`, "    read | next"]);
+        assert.deepEqual(result, ["", "    read | fixture", '    broken {"value":"fixture"}', "    read | next"]);
     }
 });
 

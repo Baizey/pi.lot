@@ -1,5 +1,6 @@
 import {
     createReadToolDefinition,
+    formatReadLineRange,
     type ExtensionAPI,
     type ReadToolInput,
     type ToolDefinition,
@@ -25,11 +26,7 @@ const READ_PRESENTATION = {
             key: "offset",
             placement: ToolArgumentPlacement.TITLE_SECONDARY,
             color: ThemeColor.warning,
-            format: (_, args) => {
-                const from = args.offset ?? 1;
-                if (args.limit === undefined) return `:${from}`;
-                return `:${from}-${from + args.limit - 1}`;
-            },
+            format: (_, args) => formatReadLineRange(args.offset, args.limit),
         },
         {
             key: "limit",

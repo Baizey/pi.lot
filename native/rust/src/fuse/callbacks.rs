@@ -3,7 +3,6 @@ use libc::{c_char, c_void};
 
 // The ABI adapter supplies an internal argument record; policy and backing I/O
 // do not depend on libfuse's struct layout or bitfield representation.
-#[derive(Default)]
 pub struct Call {
     pub(super) path: *const c_char,
     pub(super) second: *const c_char,
@@ -20,6 +19,27 @@ pub struct Call {
     pub(super) has_info: i32,
     pub(super) direct_io: i32,
     pub(super) keep_cache: i32,
+}
+impl Default for Call {
+    fn default() -> Self {
+        Self {
+            path: std::ptr::null(),
+            second: std::ptr::null(),
+            buffer: std::ptr::null_mut(),
+            size: 0,
+            offset: 0,
+            fh: 0,
+            flags: 0,
+            mode: 0,
+            uid: 0,
+            gid: 0,
+            device: 0,
+            filler: None,
+            has_info: 0,
+            direct_io: 0,
+            keep_cache: 0,
+        }
+    }
 }
 #[repr(u32)]
 #[derive(Clone, Copy)]

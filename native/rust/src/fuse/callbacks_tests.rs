@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn default_call_has_null_pointers_zero_scalars_and_no_filler() {
+    let call = Call::default();
+    assert!(call.path.is_null());
+    assert!(call.second.is_null());
+    assert!(call.buffer.is_null());
+    assert_eq!(call.size, 0);
+    assert_eq!(call.offset, 0);
+    assert_eq!(call.fh, 0);
+    assert_eq!(call.flags, 0);
+    assert_eq!(call.mode, 0);
+    assert_eq!(call.uid, 0);
+    assert_eq!(call.gid, 0);
+    assert_eq!(call.device, 0);
+    assert!(call.filler.is_none());
+    assert_eq!(call.has_info, 0);
+    assert_eq!(call.direct_io, 0);
+    assert_eq!(call.keep_cache, 0);
+}
+
+#[test]
 fn panicked_mount_releases_file_and_poisoned_directory_handles() {
     unsafe {
         let file = Stdio(libc::tmpfile());

@@ -183,6 +183,36 @@ Provider requests and redirects receive HTTP policy checks before host-side HTTP
 
 Read [Web search](docs/web-search.md) for configuration, provider availability, fallback semantics, native search, filtering, and policy boundaries.
 
+### Server connection
+
+Configure a pi.server connection manually:
+
+```text
+/server
+/server login
+/server logout
+```
+
+`/server login` asks for the server URL and API key in separate input dialogs, then saves
+only `url` and `apiKey` to `~/.pilot/server.json`, alongside other Pilot-owned
+configuration and independently of Pi's configured agent directory. Credentials are
+plaintext in a private, mode-0600 file.
+Use an HTTP or HTTPS origin without a path, embedded credentials, query, or fragment.
+HTTP sends the API key unencrypted; choose HTTPS when transport encryption is needed.
+Canceling either input leaves existing configuration unchanged. Do not pass credentials
+as command arguments.
+
+`/server` displays the saved configuration **including the API key**, then the result of
+a `GET /v1/version` check using the `x-apikey` header. A successful status requires an exact match
+with pi.lot's internally required server release (currently `0.1.1`); that version is not
+a configuration field. Missing configuration makes no network request. Checks have a
+bounded deadline and response size, reject redirects, and retain normal HTTPS certificate
+verification. A new command/logout cancels an older outstanding check.
+
+Login and logout remain local-only. `/server logout` removes only the connection JSON;
+it does not delete sessions or revoke the server token. These commands do not synchronize
+sessions yet. There is no `/server update` or automatic startup/shutdown synchronization.
+
 ### Tool display
 
 Pi defaults to fullscreen mode. Set `"tuiMode": "regular"` in Pi settings, or use `pi --tui-mode regular`, for the regular terminal UI.
@@ -230,6 +260,7 @@ The extension appends this topic map, using absolute package paths, to the root 
 
 | Path | Purpose |
 | --- | --- |
+| `~/.pilot/server.json` | Local pi.server URL and API key |
 | `~/.pilot/pilot.sqlite` | Locally persisted policy rules |
 | `~/.pilot/policy-defaults.json` | Saved policy-area fallbacks |
 | `~/.pilot/subagent-defaults.json` | Saved reasoning-skill model mappings |

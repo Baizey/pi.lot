@@ -113,6 +113,7 @@ type ExtensionHarness = {
     pi: ExtensionAPI;
     registeredTools: RegisteredTool[];
     registeredToolNames: string[];
+    registeredCommandNames: string[];
     hasShortcut: (key: string) => boolean;
     registeredEventNames: string[];
     sessionStart: () => SessionStartHandler;
@@ -129,6 +130,7 @@ test("the production extension installs built-in overrides immediately but defer
     }).register();
 
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
+    assert.ok(harness.registeredCommandNames.includes("server"));
     assert.equal(harness.registeredTools.every((tool) => tool.renderShell === "self"), true);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
@@ -847,6 +849,7 @@ function extensionHarness(): ExtensionHarness {
     const registeredEventNames: string[] = [];
     const registeredTools: RegisteredTool[] = [];
     const registeredToolNames: string[] = [];
+    const registeredCommandNames: string[] = [];
     const shortcuts = new Map<string, ShortcutHandler>();
     let startHandler: SessionStartHandler | undefined;
     let shutdownHandler: SessionShutdownHandler | undefined;
@@ -859,7 +862,8 @@ function extensionHarness(): ExtensionHarness {
         registerShortcut(key: string, options: { handler: ShortcutHandler }) {
             shortcuts.set(key, options.handler);
         },
-        registerCommand() {
+        registerCommand(name: string) {
+            registeredCommandNames.push(name);
         },
         registerToolRenderer() {
         },
@@ -875,6 +879,7 @@ function extensionHarness(): ExtensionHarness {
         pi,
         registeredTools,
         registeredToolNames,
+        registeredCommandNames,
         registeredEventNames,
         hasShortcut(key) {
             return shortcuts.has(key);

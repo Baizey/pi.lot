@@ -7,6 +7,7 @@ import {WriteTool} from "./tools/builtin/WriteTool";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {SubagentDefaultsCommand} from "./commands/SubagentDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
+import {ServerCommand} from "./commands/ServerCommand.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
 import type {SubagentToolProviders} from "./subagents/SubagentToolCatalog.js";
@@ -116,6 +117,7 @@ export class PilotExtension {
             (level) => this.subagentRuntime.resolveAutomaticModel(level),
         ).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
+        new ServerCommand(this.pi).register();
         new CodemodeExtension(this.pi, this.displayRows).register();
         this.mcpExtension.register();
         this.subagentSpawnTool.register();

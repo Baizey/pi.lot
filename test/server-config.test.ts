@@ -3,7 +3,7 @@ import {chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, r
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {REQUIRED_SERVER_VERSION, ServerConfigError, ServerConfigStore} from "../src/server/ServerConfig.js";
+import {ServerConfigError, ServerConfigStore} from "../src/server/ServerConfig.js";
 
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-test-api-key"};
 
@@ -18,7 +18,6 @@ test("server config belongs to .pilot independently of the Pi agent directory", 
     try {
         process.env.PI_CODING_AGENT_DIR = path.join(os.tmpdir(), "unrelated-pi-agent");
         assert.equal(new ServerConfigStore().file, path.join(os.homedir(), ".pilot", "server.json"));
-        assert.equal(REQUIRED_SERVER_VERSION, "0.1.1");
     } finally {
         if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
         else process.env.PI_CODING_AGENT_DIR = previous;

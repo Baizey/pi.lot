@@ -5,10 +5,11 @@ import path from "node:path";
 import test, {type TestContext} from "node:test";
 import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
 import {ServerCommand} from "../src/commands/ServerCommand.js";
-import {ServerConfigStore, type ServerConfig} from "../src/server/ServerConfig.js";
+import {REQUIRED_SERVER_VERSION, ServerConfigStore, type ServerConfig} from "../src/server/ServerConfig.js";
 import type {ServerStatus} from "../src/server/ServerConnection.js";
 
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-command-test-key"};
+const OTHER_VERSION = `${REQUIRED_SERVER_VERSION}-test`;
 type RegisteredCommand = Parameters<ExtensionAPI["registerCommand"]>[1];
 type VersionCheck = NonNullable<ConstructorParameters<typeof ServerCommand>[2]>;
 
@@ -16,7 +17,7 @@ function harness(
     t: TestContext,
     answers: Array<string | undefined> = [],
     hasUI = true,
-    checkVersion: VersionCheck = async () => ({kind: "compatible", version: "0.1.1"}),
+    checkVersion: VersionCheck = async () => ({kind: "compatible", version: REQUIRED_SERVER_VERSION}),
 ) {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-server-command-"));
     t.after(() => rmSync(directory, {recursive: true, force: true}));
@@ -76,7 +77,7 @@ test("login stores inputs locally; bare server shows the complete config and che
     await command.handler("", ctx);
     assert.deepEqual(checks.map((check) => check.config), [CONFIG]);
     assert.deepEqual(notifications.at(-1), {
-        message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: Connected (pi.server 0.1.1; compatible).`,
+        message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: Connected (pi.server ${REQUIRED_SERVER_VERSION}; compatible).`,
         type: "info",
     });
     assert.equal(notifications.at(-1)?.message.includes("Usage:"), false);
@@ -92,7 +93,7 @@ test("login accepts an explicitly configured HTTP server outside loopback withou
 
 test("checked status reports incompatible versions and failures without changing the config", async (t) => {
     const cases: Array<{status: ServerStatus; message: string; type: string}> = [
-        {status: {kind: "incompatible", version: "0.1.2"}, message: "Incompatible: server 0.1.2; required 0.1.1.", type: "warning"},
+        {status: {kind: "incompatible", version: OTHER_VERSION}, message: `Incompatible: server ${OTHER_VERSION}; required ${REQUIRED_SERVER_VERSION}.`, type: "warning"},
         {status: {kind: "failure", message: "Authentication rejected (HTTP 401)."}, message: "Authentication rejected (HTTP 401).", type: "error"},
         {status: {kind: "failure", message: "Server connection failed."}, message: "Server connection failed.", type: "error"},
     ];
@@ -215,7 +216,7 @@ test("logout cancels an outstanding status check and suppresses its stale config
     assert.equal(checks.length, 1);
     await command.handler("logout", ctx);
     assert.equal(checks[0]?.signal?.aborted, true);
-    finish({kind: "compatible", version: "0.1.1"});
+    finish({kind: "compatible", version: REQUIRED_SERVER_VERSION});
     await pending;
     assert.equal(notifications.length, 1);
     assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
@@ -229,12 +230,12 @@ test("a newer status check supersedes an older response", async (t) => {
         calls++;
         return calls === 1
             ? new Promise((resolve) => { finish = resolve; })
-            : Promise.resolve({kind: "compatible", version: "0.1.1"});
+            : Promise.resolve({kind: "compatible", version: REQUIRED_SERVER_VERSION});
     });
     store.save(CONFIG);
     const older = command.handler("", ctx);
     await command.handler("", ctx);
-    finish({kind: "incompatible", version: "0.1.2"});
+    finish({kind: "incompatible", version: OTHER_VERSION});
     await older;
     assert.equal(checks[0]?.signal?.aborted, true);
     assert.equal(notifications.length, 1);

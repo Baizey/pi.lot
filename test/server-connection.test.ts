@@ -10,7 +10,6 @@ function failure(status: ServerStatus): string {
     assert.equal(status.kind, "failure");
     assert.ok("message" in status);
     assert.equal(status.message.includes(CONFIG.apiKey), false);
-    assert.equal(status.message.includes(CONFIG.url), false);
     return status.message;
 }
 
@@ -52,16 +51,15 @@ test("version check sends one authenticated GET with native TLS defaults and ref
         assert.deepEqual(Object.keys(init).sort(), ["headers", "method", "redirect", "signal"]);
         return Response.json({version: REQUIRED_SERVER_VERSION});
     });
-    assert.equal(REQUIRED_SERVER_VERSION, "0.1.1");
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: "0.1.1"});
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
     assert.equal(fetch.mock.callCount(), 1);
     assert.deepEqual(CONFIG, {url: "https://sessions.example.com", apiKey: "private-connection-test-key"});
 });
 
 test("HTTP and HTTPS origins on non-loopback configured hosts are accepted", async (t) => {
-    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: "0.1.1"}));
+    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: REQUIRED_SERVER_VERSION}));
     for (const url of ["http://sessions.example.com:8080", "https://sessions.example.com:8443"]) {
-        assert.deepEqual(await checkServerVersion({...CONFIG, url}), {kind: "compatible", version: "0.1.1"});
+        assert.deepEqual(await checkServerVersion({...CONFIG, url}), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
         assert.equal(String(fetch.mock.calls.at(-1)?.arguments[0]), `${url}/v1/version`);
     }
 });
@@ -69,7 +67,8 @@ test("HTTP and HTTPS origins on non-loopback configured hosts are accepted", asy
 test("well-formed versions other than the exact required string are incompatible", async (t) => {
     let version = "";
     const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version}));
-    const versions = ["0.1.0", "0.1.2", "1.0.0", "0.1.1-rc.1", "0.1.1+build.7", `1.2.3+${"a".repeat(122)}`];
+    const versions = ["0.1.0", "0.1.1", "1.0.0", "0.1.1-rc.1", "0.1.1+build.7", `1.2.3+${"a".repeat(122)}`]
+        .filter((candidate) => candidate !== REQUIRED_SERVER_VERSION);
     for (version of versions) {
         assert.deepEqual(await checkServerVersion(CONFIG), {kind: "incompatible", version});
     }
@@ -114,21 +113,21 @@ test("invalid UTF-8 is not silently replaced before JSON validation", async (t) 
 });
 
 test("JSON may be chunked at any byte boundary, including across multibyte characters", async (t) => {
-    const bytes = encoder.encode(JSON.stringify({version: "0.1.1", extra: "é"}));
+    const bytes = encoder.encode(JSON.stringify({version: REQUIRED_SERVER_VERSION, extra: "é"}));
     const stream = streamResponse(Array.from(bytes, (byte) => Uint8Array.of(byte)));
     t.mock.method(globalThis, "fetch", async () => stream.response);
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: "0.1.1"});
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
     assert.equal(stream.body.locked, false);
     assert.equal(stream.reads(), bytes.length + 1);
 });
 
 test("a valid response of exactly 4 KiB is accepted without trusting Content-Length", async (t) => {
-    const json = JSON.stringify({version: "0.1.1"});
+    const json = JSON.stringify({version: REQUIRED_SERVER_VERSION});
     const stream = streamResponse([encoder.encode(json), encoder.encode(" ".repeat(4096 - json.length))], {
         headers: {"Content-Length": "99999999"},
     });
     t.mock.method(globalThis, "fetch", async () => stream.response);
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: "0.1.1"});
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
     assert.equal(stream.body.locked, false);
 });
 
@@ -159,43 +158,63 @@ test("the response bound counts bytes rather than decoded characters", async (t)
     assert.equal(stream.cancellations(), 1);
 });
 
-test("401 and 403 report authentication rejection and cancel bodies without reading them", async (t) => {
+test("401 decodes the known authentication error; a 403 proxy response is unexpected", async (t) => {
     let response: Response;
     const fetch = t.mock.method(globalThis, "fetch", async () => response);
     for (const status of [401, 403]) {
-        const stream = streamResponse([encoder.encode(CONFIG.apiKey)], {status, close: false});
+        const stream = streamResponse([encoder.encode(JSON.stringify({error: {
+            code: "unauthorized", retryable: false, publication_outcome: "unconfirmed",
+        }}))], {status});
         response = stream.response;
         const message = failure(await checkServerVersion(CONFIG));
-        assert.match(message, /authentication rejected/i);
-        assert.match(message, new RegExp(String(status)));
-        assert.equal(stream.reads(), 0);
-        assert.equal(stream.cancellations(), 1);
+        assert.match(message, status === 401 ? /unauthorized/ : /Unexpected server response/);
+        assert.match(message, new RegExp(`HTTP ${status}`));
+        assert.ok(stream.reads() > 0);
         assert.equal(stream.body.locked, false);
     }
     assert.equal(fetch.mock.callCount(), 2);
 });
 
-test("429 reports the rate limit and a numeric Retry-After without reflecting other header content", async (t) => {
+test("429 decodes rate_limited and a numeric Retry-After without reflecting other header content", async (t) => {
     let retryAfter = "900";
-    t.mock.method(globalThis, "fetch", async () => new Response(null, {status: 429, headers: {"Retry-After": retryAfter}}));
-    assert.equal(failure(await checkServerVersion(CONFIG)), "Server rate limit reached (HTTP 429). Retry after 900 seconds.");
+    t.mock.method(globalThis, "fetch", async () => Response.json({error: {
+        code: "rate_limited", retryable: true, publication_outcome: "unconfirmed",
+    }}, {status: 429, headers: {"Retry-After": retryAfter}}));
+    const message = failure(await checkServerVersion(CONFIG));
+    assert.match(message, /rate_limited.*HTTP 429|HTTP 429.*rate_limited/);
+    assert.match(message, /900 seconds/);
     retryAfter = CONFIG.apiKey;
-    assert.equal(failure(await checkServerVersion(CONFIG)), "Server rate limit reached (HTTP 429).");
+    assert.doesNotMatch(failure(await checkServerVersion(CONFIG)), /Retry after/);
 });
 
-test("other non-200 statuses are reported without reading or reflecting response data", async (t) => {
+test("known server failures are decoded by code, including distinct errors sharing HTTP 503", async (t) => {
+    let response: Response;
+    t.mock.method(globalThis, "fetch", async () => response);
+    for (const [code, status, retryable] of [
+        ["invalid_request", 400, false], ["not_found", 404, false], ["internal", 500, false],
+        ["overloaded", 503, true], ["uncertain_commit", 503, true], ["capacity", 507, true],
+    ] as const) {
+        response = Response.json({error: {code, retryable, publication_outcome: "unconfirmed"}} , {status});
+        const message = failure(await checkServerVersion(CONFIG));
+        assert.ok(message.includes(code));
+        assert.match(message, new RegExp(`HTTP ${status}`));
+        assert.doesNotMatch(message, /Unexpected server response/);
+    }
+});
+
+test("non-protocol errors are explicitly unexpected without reflecting arbitrary response text", async (t) => {
     let response: Response;
     t.mock.method(globalThis, "fetch", async () => response);
     for (const status of [201, 400, 404, 418, 500, 503]) {
-        const stream = streamResponse([encoder.encode(CONFIG.apiKey)], {status, close: false});
+        const stream = streamResponse([encoder.encode(CONFIG.apiKey)], {status});
         response = stream.response;
-        assert.match(failure(await checkServerVersion(CONFIG)), new RegExp(`HTTP ${status}`));
-        assert.equal(stream.reads(), 0);
-        assert.equal(stream.cancellations(), 1);
+        const message = failure(await checkServerVersion(CONFIG));
+        assert.match(message, /Unexpected server response/);
+        assert.match(message, new RegExp(`HTTP ${status}`));
         assert.equal(stream.body.locked, false);
     }
     response = new Response(null, {status: 204});
-    assert.match(failure(await checkServerVersion(CONFIG)), /HTTP 204/);
+    assert.match(failure(await checkServerVersion(CONFIG)), /Unexpected server response.*HTTP 204/);
 });
 
 test("redirects are refused without exposing Location or following another request", async (t) => {
@@ -226,12 +245,73 @@ test("connection and TLS exceptions are sanitized and never retried or logged", 
     for (const log of logs) assert.equal(log.mock.callCount(), 0);
 });
 
-test("a body read error is sanitized and its lock is released", async (t) => {
+test("network and TLS causes retain the real code/message and provide relevant hints", async (t) => {
+    let error: unknown;
+    const fetch = t.mock.method(globalThis, "fetch", async () => { throw error; });
+    const cases = [
+        {code: "ECONNREFUSED", detail: "connect ECONNREFUSED 192.0.2.10:9696", hint: /listening.*container port/},
+        {code: "EHOSTUNREACH", detail: "connect EHOSTUNREACH 192.0.2.10:9696", hint: /routing.*VPN.*firewall/},
+        {code: "ENETUNREACH", detail: "network unreachable", hint: /routing.*VPN.*firewall/},
+        {code: "ENOTFOUND", detail: "getaddrinfo ENOTFOUND example.invalid", hint: /hostname.*DNS/},
+        {code: "ECONNRESET", detail: "socket hang up", hint: /closed unexpectedly.*HTTP or HTTPS/},
+        {code: "EPERM", detail: "operation not permitted", hint: /permission or network policy/},
+        {code: "UND_ERR_CONNECT_TIMEOUT", detail: "Connect Timeout Error", hint: /timed out.*firewall/},
+        {code: "ERR_SSL_WRONG_VERSION_NUMBER", detail: "wrong version number", hint: /plain HTTP rather than HTTPS/},
+        {code: "ERR_TLS_CERT_ALTNAME_INVALID", detail: "IP address is not in the cert list", hint: /does not match the certificate/},
+        {code: "SELF_SIGNED_CERT_IN_CHAIN", detail: "self-signed certificate in chain", hint: /not trusted by Node/},
+        {code: "HPE_INVALID_CONSTANT", detail: "Expected HTTP/", hint: /valid HTTP response/},
+        {code: "CUSTOM_PROXY_ERROR", detail: "Unexpected local proxy configuration", hint: /Unexpected local proxy configuration/},
+    ];
+    for (const {code, detail, hint} of cases) {
+        error = new TypeError("fetch failed", {cause: Object.assign(new Error(detail), {code})});
+        const message = failure(await checkServerVersion(CONFIG));
+        assert.ok(message.includes(code));
+        assert.ok(message.includes(detail));
+        assert.match(message, hint);
+        assert.equal(message.includes("fetch failed"), false);
+    }
+    assert.equal(fetch.mock.callCount(), cases.length);
+});
+
+test("dual-stack aggregate failures retain both socket errors without repeating the fetch wrapper", async (t) => {
+    const errors = [
+        Object.assign(new Error("connect ECONNREFUSED ::1:9696"), {code: "ECONNREFUSED"}),
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:9696"), {code: "ECONNREFUSED"}),
+    ];
+    t.mock.method(globalThis, "fetch", async () => {
+        throw new TypeError("fetch failed", {cause: new AggregateError(errors)});
+    });
+    const message = failure(await checkServerVersion(CONFIG));
+    assert.match(message, /::1:9696/);
+    assert.match(message, /127.0.0.1:9696/);
+    assert.equal(message.includes("fetch failed"), false);
+});
+
+test("diagnostics bound causal chains, tolerate cycles, redact credentials and remove terminal controls", async (t) => {
+    let error: unknown;
+    t.mock.method(globalThis, "fetch", async () => { throw error; });
+    const cyclic = Object.assign(new Error(`socket closed ${CONFIG.apiKey} ${CONFIG.url}\u001b[31m`), {code: "ECONNRESET"});
+    cyclic.cause = cyclic;
+    error = new TypeError("fetch failed", {cause: cyclic});
+    const message = failure(await checkServerVersion(CONFIG));
+    assert.match(message, /ECONNRESET/);
+    assert.equal(message.includes("\u001b"), false);
+    let cause: unknown;
+    for (let index = 19; index >= 0; index--) cause = new Error(`level${index} ${"x".repeat(1000)}`, {cause});
+    error = new TypeError("fetch failed", {cause});
+    const bounded = failure(await checkServerVersion(CONFIG));
+    assert.ok(bounded.length < 5000);
+    assert.ok(bounded.includes("level0"));
+    assert.equal(bounded.includes("level7"), false);
+});
+
+test("a body read failure is distinguished from connection failure and its lock is released", async (t) => {
     const body = new ReadableStream<Uint8Array>({
-        pull(controller) { controller.error(new Error(CONFIG.apiKey)); },
+        pull(controller) { controller.error(Object.assign(new Error(`response aborted ${CONFIG.apiKey}`), {code: "ECONNRESET"})); },
     });
     t.mock.method(globalThis, "fetch", async () => new Response(body));
-    failure(await checkServerVersion(CONFIG));
+    const message = failure(await checkServerVersion(CONFIG));
+    assert.match(message, /^Server response failed:.*ECONNRESET/);
     assert.equal(body.locked, false);
 });
 
@@ -295,8 +375,8 @@ test("the same 10-second deadline covers headers and a stalled body", async (t) 
 
 test("completed checks clear their deadline and do not start background requests", async (t) => {
     t.mock.timers.enable({apis: ["setTimeout"]});
-    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: "0.1.1"}));
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: "0.1.1"});
+    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: REQUIRED_SERVER_VERSION}));
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
     const signal = fetch.mock.calls[0].arguments[1]?.signal;
     assert.ok(signal);
     t.mock.timers.tick(100_000);

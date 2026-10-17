@@ -3,8 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
 
-export const REQUIRED_SERVER_VERSION = "0.1.2";
-
 export class ServerConfigError extends Error {
 }
 

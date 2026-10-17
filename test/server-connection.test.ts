@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {REQUIRED_SERVER_VERSION} from "../src/server/ServerConfig.js";
-import {checkServerVersion, type ServerStatus} from "../src/server/ServerConnection.js";
+import type {ServerConfig} from "../src/server/ServerConfig.js";
+import {matchesServerVersion, SERVER_VERSION_REQUIREMENT} from "../src/server/ServerCompatibility.js";
+import {checkServerVersion as requestServerVersion, type ServerStatus} from "../src/server/ServerConnection.js";
+
+const TEST_SERVER_VERSION = "1.2.3";
+
+function checkServerVersion(config: ServerConfig, signal?: AbortSignal): Promise<ServerStatus> {
+    return requestServerVersion(config, signal, "1.*");
+}
 
 const CONFIG = Object.freeze({url: "https://sessions.example.com", apiKey: "private-connection-test-key"});
 const encoder = new TextEncoder();
@@ -49,26 +56,53 @@ test("version check sends one authenticated GET with native TLS defaults and ref
         assert.equal(init.signal.aborted, false);
         // No custom agent/dispatcher or TLS overrides, request body, or credential-bearing URL.
         assert.deepEqual(Object.keys(init).sort(), ["headers", "method", "redirect", "signal"]);
-        return Response.json({version: REQUIRED_SERVER_VERSION});
+        return Response.json({version: TEST_SERVER_VERSION});
     });
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: TEST_SERVER_VERSION});
     assert.equal(fetch.mock.callCount(), 1);
     assert.deepEqual(CONFIG, {url: "https://sessions.example.com", apiKey: "private-connection-test-key"});
 });
 
 test("HTTP and HTTPS origins on non-loopback configured hosts are accepted", async (t) => {
-    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: REQUIRED_SERVER_VERSION}));
+    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: TEST_SERVER_VERSION}));
     for (const url of ["http://sessions.example.com:8080", "https://sessions.example.com:8443"]) {
-        assert.deepEqual(await checkServerVersion({...CONFIG, url}), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
+        assert.deepEqual(await checkServerVersion({...CONFIG, url}), {kind: "compatible", version: TEST_SERVER_VERSION});
         assert.equal(String(fetch.mock.calls.at(-1)?.arguments[0]), `${url}/v1/version`);
     }
 });
 
-test("well-formed versions other than the exact required string are incompatible", async (t) => {
+test("the default check uses the internal requirement, not a release-pinned fixture", async (t) => {
+    const version = "0.1.3";
+    t.mock.method(globalThis, "fetch", async () => Response.json({version}));
+    assert.deepEqual(await requestServerVersion(CONFIG), {
+        kind: matchesServerVersion(version, SERVER_VERSION_REQUIREMENT) ? "compatible" : "incompatible",
+        version,
+    });
+});
+
+test("connection checks apply exact, major-wildcard and minor-wildcard requirements", async (t) => {
+    let version = "";
+    t.mock.method(globalThis, "fetch", async () => Response.json({version}));
+    for (const [reported, requirement, kind] of [
+        ["1.2.3", "1.2.3", "compatible"],
+        ["1.2.4", "1.2.3", "incompatible"],
+        ["1.2.9", "1.2.*", "compatible"],
+        ["1.3.0", "1.2.*", "incompatible"],
+        ["1.9.8", "1.*", "compatible"],
+        ["2.0.0", "1.*", "incompatible"],
+        ["0.1.3", "0.*", "compatible"],
+        ["0.99.21", "0.*", "compatible"],
+        ["1.0.0", "0.*", "incompatible"],
+    ] as const) {
+        version = reported;
+        assert.deepEqual(await requestServerVersion(CONFIG, undefined, requirement), {kind, version});
+    }
+});
+
+test("well-formed versions outside the required range are incompatible", async (t) => {
     let version = "";
     const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version}));
-    const versions = ["0.1.0", "0.1.1", "1.0.0", "0.1.1-rc.1", "0.1.1+build.7", `1.2.3+${"a".repeat(122)}`]
-        .filter((candidate) => candidate !== REQUIRED_SERVER_VERSION);
+    const versions = ["0.1.0", "0.1.1", "2.0.0", "1.2.3-rc.1", "0.1.1+build.7", `0.2.3+${"a".repeat(122)}`];
     for (version of versions) {
         assert.deepEqual(await checkServerVersion(CONFIG), {kind: "incompatible", version});
     }
@@ -113,21 +147,21 @@ test("invalid UTF-8 is not silently replaced before JSON validation", async (t) 
 });
 
 test("JSON may be chunked at any byte boundary, including across multibyte characters", async (t) => {
-    const bytes = encoder.encode(JSON.stringify({version: REQUIRED_SERVER_VERSION, extra: "é"}));
+    const bytes = encoder.encode(JSON.stringify({version: TEST_SERVER_VERSION, extra: "é"}));
     const stream = streamResponse(Array.from(bytes, (byte) => Uint8Array.of(byte)));
     t.mock.method(globalThis, "fetch", async () => stream.response);
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: TEST_SERVER_VERSION});
     assert.equal(stream.body.locked, false);
     assert.equal(stream.reads(), bytes.length + 1);
 });
 
 test("a valid response of exactly 4 KiB is accepted without trusting Content-Length", async (t) => {
-    const json = JSON.stringify({version: REQUIRED_SERVER_VERSION});
+    const json = JSON.stringify({version: TEST_SERVER_VERSION});
     const stream = streamResponse([encoder.encode(json), encoder.encode(" ".repeat(4096 - json.length))], {
         headers: {"Content-Length": "99999999"},
     });
     t.mock.method(globalThis, "fetch", async () => stream.response);
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: TEST_SERVER_VERSION});
     assert.equal(stream.body.locked, false);
 });
 
@@ -375,8 +409,8 @@ test("the same 10-second deadline covers headers and a stalled body", async (t) 
 
 test("completed checks clear their deadline and do not start background requests", async (t) => {
     t.mock.timers.enable({apis: ["setTimeout"]});
-    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: REQUIRED_SERVER_VERSION}));
-    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: REQUIRED_SERVER_VERSION});
+    const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({version: TEST_SERVER_VERSION}));
+    assert.deepEqual(await checkServerVersion(CONFIG), {kind: "compatible", version: TEST_SERVER_VERSION});
     const signal = fetch.mock.calls[0].arguments[1]?.signal;
     assert.ok(signal);
     t.mock.timers.tick(100_000);

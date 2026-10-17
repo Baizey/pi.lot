@@ -1,4 +1,5 @@
-import {REQUIRED_SERVER_VERSION, type ServerConfig} from "./ServerConfig.js";
+import type {ServerConfig} from "./ServerConfig.js";
+import {matchesServerVersion, SERVER_VERSION_REQUIREMENT} from "./ServerCompatibility.js";
 import {decodeServerError, decodeVersionResponse, formatServerError} from "./ServerResponses.js";
 
 export type ServerStatus =
@@ -8,7 +9,11 @@ export type ServerStatus =
 const MAX_RESPONSE_BYTES = 4096;
 const TIMEOUT_MS = 10_000;
 
-export async function checkServerVersion(config: ServerConfig, signal?: AbortSignal): Promise<ServerStatus> {
+export async function checkServerVersion(
+    config: ServerConfig,
+    signal?: AbortSignal,
+    requirement: string = SERVER_VERSION_REQUIREMENT,
+): Promise<ServerStatus> {
     const timeout = new AbortController();
     const requestSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     const timer = setTimeout(() => timeout.abort(new DOMException("Timed out", "TimeoutError")), TIMEOUT_MS);
@@ -63,7 +68,7 @@ export async function checkServerVersion(config: ServerConfig, signal?: AbortSig
         }
         const version = decodeVersionResponse(value);
         if (!version) return {kind: "failure", message: "Server returned an invalid version response."};
-        return {kind: version.version === REQUIRED_SERVER_VERSION ? "compatible" : "incompatible", version: version.version};
+        return {kind: matchesServerVersion(version.version, requirement) ? "compatible" : "incompatible", version: version.version};
     } catch (error) {
         if (requestSignal.aborted) {
             return timeout.signal.aborted && requestSignal.reason === timeout.signal.reason

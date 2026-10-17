@@ -1,5 +1,6 @@
 import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
-import {REQUIRED_SERVER_VERSION, ServerConfigError, ServerConfigStore} from "../server/ServerConfig.js";
+import {ServerConfigError, ServerConfigStore} from "../server/ServerConfig.js";
+import {SERVER_VERSION_REQUIREMENT} from "../server/ServerCompatibility.js";
 import {checkServerVersion} from "../server/ServerConnection.js";
 
 const ACTIONS = ["login", "logout"] as const;
@@ -69,7 +70,7 @@ export class ServerCommand {
                     severity = "info";
                     break;
                 case "incompatible":
-                    message = `Incompatible: server ${status.version}; required ${REQUIRED_SERVER_VERSION}.`;
+                    message = `Incompatible: server ${status.version}; required ${SERVER_VERSION_REQUIREMENT}.`;
                     severity = "warning";
                     break;
                 case "failure":

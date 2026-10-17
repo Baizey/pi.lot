@@ -203,10 +203,13 @@ Canceling either input leaves existing configuration unchanged. Do not pass cred
 as command arguments.
 
 `/server` displays the saved configuration **including the API key**, then the result of
-a `GET /v1/version` check using the `x-apikey` header. A successful status requires an exact match
-with pi.lot's internally required server release (currently `0.1.1`); that version is not
-a configuration field. Missing configuration makes no network request. Checks have a
-bounded deadline and response size, reject redirects, and retain normal HTTPS certificate
+a `GET /v1/version` check using the `x-apikey` header. Compatibility is controlled by
+pi.lot's internal `SERVER_VERSION_REQUIREMENT`, not a connection-configuration field.
+It supports an exact version (`1.2.3`) or trailing wildcards (`1.2.*`, `0.*`). The
+current requirement is `0.*`, accepting stable `0.x.y` releases, including build
+metadata. Prereleases require an explicit exact pin. Missing configuration makes no
+network request. Checks have a bounded deadline and response size, reject redirects,
+and retain normal HTTPS certificate
 verification. A new command/logout cancels an older outstanding check.
 
 Login and logout remain local-only. `/server logout` removes only the connection JSON;

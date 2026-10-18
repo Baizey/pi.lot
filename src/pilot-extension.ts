@@ -8,6 +8,7 @@ import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {SubagentDefaultsCommand} from "./commands/SubagentDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {ServerCommand} from "./commands/ServerCommand.js";
+import {recordArchiveMainIdentity} from "./server/ArchiveSessions.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
 import type {SubagentToolProviders} from "./subagents/SubagentToolCatalog.js";
@@ -21,6 +22,7 @@ import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
 import type {ToolDisplayViews} from "./tui/tool/ToolDisplayMode.js";
 import {TranscriptDisplayRuntime} from "./tui/TranscriptDisplayRuntime.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
+import {ArchiveTools} from "./tools/server/ArchiveTools.js";
 import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
 import {ThinkingLevelUiRuntime} from "./tui/ThinkingLevelUiRuntime.js";
 import {PilotDocumentation} from "./runtime/PilotDocumentation.js";
@@ -47,6 +49,7 @@ export class PilotExtension {
     private readonly thinkingLevelUiRuntime: ThinkingLevelUiRuntime;
     private readonly bashTool: BashTool;
     private readonly webSearchTool: WebSearchTool;
+    private readonly archiveTools: ArchiveTools;
     private readonly readTool: ReadTool;
     private readonly editTool: EditTool;
     private readonly writeTool: WriteTool;
@@ -73,6 +76,7 @@ export class PilotExtension {
         const runtimeProvider = () => this.requireSessionRuntime();
         this.bashTool = new BashTool(pi, runtimeProvider, this.displayRows);
         this.webSearchTool = new WebSearchTool(pi, runtimeProvider, this.displayRows);
+        this.archiveTools = new ArchiveTools(pi, runtimeProvider, this.displayRows);
         this.readTool = new ReadTool(pi, runtimeProvider, this.displayRows);
         this.editTool = new EditTool(pi, runtimeProvider, this.displayRows);
         this.writeTool = new WriteTool(pi, runtimeProvider, this.displayRows);
@@ -118,6 +122,7 @@ export class PilotExtension {
         ).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         new ServerCommand(this.pi).register();
+        this.archiveTools.register();
         new CodemodeExtension(this.pi, this.displayRows).register();
         this.mcpExtension.register();
         this.subagentSpawnTool.register();
@@ -167,6 +172,7 @@ export class PilotExtension {
     }
 
     private async startOwnedExtensions(ctx: ExtensionContext): Promise<void> {
+        recordArchiveMainIdentity(this.pi, ctx.sessionManager);
         await this.mcpExtension.startSession(ctx);
         await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
         await this.subagentUiRuntime.startSession(ctx, this.subagentRuntime.coordinator());

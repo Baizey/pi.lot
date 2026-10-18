@@ -19,6 +19,7 @@ export class PilotDocumentation {
             "- Policies, permissions, network mediation, credentials, or audit logs: read docs/policy.md.",
             "- Subagents or delegation: read docs/subagents.md.",
             "- Web search: read docs/web-search.md.",
+            "- Server connection, session uploads, or archive browsing: read docs/server.md.",
             "- Security model or limitations: read docs/security.md.",
             "Resolve docs/... under Additional docs, not the current working directory, and read relevant files before answering.",
         ].join("\n");

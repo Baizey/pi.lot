@@ -18,7 +18,7 @@ It is **mediation, not complete isolation**:
 - Direct `read`, `edit`, and `write` tool calls use the policy runtime.
 - Bash filesystem effects pass through a FUSE broker.
 - Bash DNS, TCP, UDP, and supported HTTP/HTTPS effects pass through the network gate.
-- `web_search` uses policy-checked extension-side HTTP.
+- `web_search` and root-only archive read tools use policy-checked extension-side HTTP. Archive list/download POSTs remain `web_write` operations.
 - Subagents have principal-specific policy state.
 
 See [Policy system](policy.md) for exact semantics.
@@ -32,6 +32,14 @@ MCP stdio servers run as host processes and MCP HTTP transports use the host net
 ### Codemode model calls
 
 Root codemode exposes `models.classify()` and `models.generateImages()`. These are host-side calls using the session's authenticated provider credentials, can transmit supplied data, and may incur charges. They are outside pi.lot's filesystem and network mediation; policy-area approvals do not gate them. Child codemode is created with `models: false` and exposes no model globals.
+
+### Manual server archival
+
+`/server upload [current|all]` is an explicit user host-management operation, outside agent filesystem/network policy approval. It sends complete session JSONL, potentially including sensitive prompts, reasoning, tool arguments/results, and file contents, not merely active-branch previews. No startup/shutdown or background upload occurs. Login/logout are local-only; `/server` deliberately shows the saved API key, so do not share status output. Credentials are kept in private local configuration and host-side authentication headers, never tool policy context.
+
+Root-only `archive_list` and `archive_fetch` never upload local history. Their host HTTP requests are checked by actual method/URL before the transport timeout starts; POST list/download require `web_write` even though the archive operations are read-only. Fetched bytes are verified and cached privately, with the complete path returned for policy-mediated `read`. Large list previews retain the cursor and link to the complete private page. Neither tool accepts arbitrary local destinations, imports/resumes sessions, nor loads remote cwd/extension configuration. All remote metadata and transcripts are untrusted data, not instructions.
+
+The private journal at `~/.pilot/server-archive/archive.sqlite` retains accepted/pending publication evidence. Conflicts and binding changes reject safely; an observed remote revision is never silently adopted as an upload base. Accepted bytes must remain an exact prefix of later local history: stale, shortened, or rewritten snapshots reject rather than merging automatically. Restore accepted content or fork a new session for divergent history. Logout does not delete this journal or downloads. See [Server archive](server.md) for recovery and classification limitations, including unrecoverable legacy child identities.
 
 ### Host credential IPC
 

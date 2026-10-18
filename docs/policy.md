@@ -10,6 +10,7 @@ pi.lot uses one session-owned policy runtime for the root agent and its subagent
 | `edit`, `write` | Check filesystem-write policy before changing a path. |
 | `bash` | Runs with a FUSE-backed host filesystem and private network gate. |
 | `web_search` | Uses trusted extension-side HTTP with method/URL policy checks. |
+| `archive_list`, `archive_fetch` | Root-only archive reads; each host HTTP method/URL is policy-checked. List/download POSTs require `web_write`. |
 | Subagents | Use principal-specific policy state and the same mediated built-ins. |
 
 Every Bash call includes a short purpose. Bash commands start in Pi's current working directory, but that directory is not a security boundary: access elsewhere on the host is handled by the same policy runtime.
@@ -51,6 +52,12 @@ The HTTP gateway observes canonical URLs, including queries, but current policy 
 The policy model defines SSH-, WebSocket-, gRPC-, and SMTP-specific areas, but the Bash mediator does not currently emit them. SSH and SMTP are opaque generic TCP. With full inspection enabled, the request-aware gateway rejects opaque non-HTTP protocols even when TCP policy allows them. Such workflows currently require inspection off; importing an SSH-agent socket alone does not enable Git-over-SSH. Request-aware WebSocket upgrades and HTTP/2-based gRPC are not currently supported.
 
 `web_search` is different: it is a trusted extension operation using host-side HTTP. Its requests and redirects receive HTTP method/URL policy checks but do not traverse Bash's DNS/TCP/UDP gate.
+
+### Archive tools versus manual commands
+
+`archive_list` and `archive_fetch` begin one policy tool-call scope using the invoking root session principal. Each request checks its actual URL and method before HTTP starts; the API key is only host-client authentication metadata, not policy context. Authorization completes before the request timeout starts. The protocol's GET binding uses `web_read`, while POST list/download use **`web_write`** despite read-only archive semantics. No silent semantic-read bypass or Bash DNS/TCP traversal applies. Download/list-page cache writes are private trusted-extension bookkeeping, not arbitrary model-selected filesystem writes; subsequent `read` calls use normal filesystem policy.
+
+`/server upload [current|all]`, login, logout, and status are explicit user host-management commands, not model tools, and do not ask the agent policy runtime. There is no automatic archive upload on startup/shutdown. Archive tools are not given to children and cannot upload or automatically import/resume sessions. See [Server archive](server.md).
 
 ## Policy areas and built-in defaults
 

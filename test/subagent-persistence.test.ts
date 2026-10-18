@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {createAssistantMessageEventStream, type AssistantMessage, type Message} from "@earendil-works/pi-ai";
 import {SdkSubagentSessionFactory} from "../src/subagents/SdkSubagentSession.js";
+import {SessionKind} from "../src/server/ArchiveProtocol.js";
 import {SubagentReasoningAmount, SubagentReasoningSkill} from "../src/subagents/SubagentReasoning.js";
 import type {SubagentChildSession, SubagentSessionRequest} from "../src/subagents/types.js";
 
@@ -53,7 +54,11 @@ test("SDK subagents save complete ordinary Pi sessions across follow-ups and dis
     const metadata = stored.getEntries().find((entry) => entry.type === "custom"
         && entry.customType === "pilot.subagent");
     assert.ok(metadata?.type === "custom");
-    assert.deepEqual(metadata.data, {parentAgentIdentifier: fixture.parent.getSessionId()});
+    assert.deepEqual(metadata.data, {
+        version: 1, sessionId: request.agentIdentifier,
+        parentAgentIdentifier: fixture.parent.getSessionId(),
+        rootSessionId: fixture.parent.getSessionId(), kind: "subagent",
+    });
     assert.ok(stored.getEntries().some((entry) => entry.type === "model_change"
         && entry.provider === provider && entry.modelId === modelId));
     assert.ok(stored.getEntries().some((entry) => entry.type === "thinking_level_change"
@@ -154,7 +159,60 @@ test("nested subagent sessions link to their immediate parent and keep the actua
     const metadata = stored.getEntries().find((entry) => entry.type === "custom"
         && entry.customType === "pilot.subagent");
     assert.ok(metadata?.type === "custom");
-    assert.deepEqual(metadata.data, {parentAgentIdentifier: firstRequest.agentIdentifier});
+    assert.deepEqual(metadata.data, {
+        version: 1, sessionId: nestedRequest.agentIdentifier,
+        parentAgentIdentifier: firstRequest.agentIdentifier,
+        rootSessionId: fixture.parent.getSessionId(), kind: "subagent",
+    });
+});
+
+test("new child kind comes from creation intent, not its identifier prefix", async (t) => {
+    const fixture = await persistenceFixture(t);
+    for (const [id, archiveKind, expected] of [
+        ["policy-approver-not-a-reviewer", undefined, SessionKind.Subagent],
+        ["explicit-reviewer", SessionKind.PolicyApprover, SessionKind.PolicyApprover],
+    ] as const) {
+        const child = await fixture.create(fixture.request(id, {archiveKind}));
+        await child.prompt("child task", new AbortController().signal);
+        child.dispose();
+        const info = (await SessionManager.list(fixture.cwd, fixture.sessionDir)).find((session) => session.id === id);
+        assert.ok(info);
+        const metadata = SessionManager.open(info.path).getEntries().find((entry) => entry.type === "custom"
+            && entry.customType === "pilot.subagent");
+        assert.ok(metadata?.type === "custom");
+        assert.deepEqual(metadata.data, {
+            version: 1, sessionId: id, parentAgentIdentifier: fixture.parent.getSessionId(),
+            rootSessionId: fixture.parent.getSessionId(), kind: expected,
+        });
+    }
+});
+
+test("a resumed bound child preserves the original archive family for new descendants", async (t) => {
+    const fixture = await persistenceFixture(t);
+    const firstId = "subagent-resumed-root";
+    const first = await fixture.create(fixture.request(firstId));
+    await first.prompt("first task", new AbortController().signal);
+    first.dispose();
+    const info = (await SessionManager.list(fixture.cwd, fixture.sessionDir)).find((session) => session.id === firstId);
+    assert.ok(info);
+    const resumed = SessionManager.open(info.path);
+    const factory = new SdkSubagentSessionFactory({sessionManager: resumed} as unknown as ExtensionContext);
+    const nestedId = "subagent-after-resume";
+    const nested = await factory.create(fixture.request(nestedId, {parentAgentIdentifier: firstId}), [], new AbortController().signal);
+    try {
+        await nested.prompt("nested task", new AbortController().signal);
+    } finally {
+        nested.dispose();
+    }
+    const nestedInfo = (await SessionManager.list(fixture.cwd, fixture.sessionDir)).find((session) => session.id === nestedId);
+    assert.ok(nestedInfo);
+    const metadata = SessionManager.open(nestedInfo.path).getEntries().find((entry) => entry.type === "custom"
+        && entry.customType === "pilot.subagent");
+    assert.ok(metadata?.type === "custom");
+    assert.deepEqual(metadata.data, {
+        version: 1, sessionId: nestedId, parentAgentIdentifier: firstId,
+        rootSessionId: fixture.parent.getSessionId(), kind: SessionKind.Subagent,
+    });
 });
 
 test("ephemeral parents keep both direct and nested child sessions ephemeral", async (t) => {

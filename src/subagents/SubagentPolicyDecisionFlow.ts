@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import {SessionKind} from "../server/ArchiveProtocol.js";
 import type {AgentToolResult, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {
     PolicyApprovalReviewSource,
@@ -100,6 +101,7 @@ export class SubagentPolicyDecisionFlow implements AgentPolicyDecisionFlow {
             const creating = this.sessionFactory.create({
                 parentAgentIdentifier: request.approvingAgentIdentifier,
                 agentIdentifier: id,
+                archiveKind: SessionKind.PolicyApprover,
                 task: "Review one bounded descendant policy request and submit a structured decision.",
                 role: "Policy approval reviewer",
                 capabilities: [],

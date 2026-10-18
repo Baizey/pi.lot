@@ -29,6 +29,8 @@ const expectedToolNames = [
     "read",
     "edit",
     "write",
+    "archive_list",
+    "archive_fetch",
     "codemode",
     "subagent_spawn",
     "subagent_status",
@@ -116,6 +118,7 @@ type ExtensionHarness = {
     registeredCommandNames: string[];
     hasShortcut: (key: string) => boolean;
     registeredEventNames: string[];
+    appendedEntries: Array<{customType: string; data: unknown}>;
     sessionStart: () => SessionStartHandler;
     sessionShutdown: () => SessionShutdownHandler;
     beforeAgentStart: () => BeforeAgentStartHandler;
@@ -160,6 +163,32 @@ test("the production extension installs built-in overrides immediately but defer
     assert.ok(harness.registeredEventNames.includes("model_select"));
 });
 
+test("startup records session-bound main identity before owned child infrastructure without archive network", async (t) => {
+    const harness = extensionHarness();
+    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {}, sessionManager: archiveSessionManager()} as unknown as ExtensionContext;
+    const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("No startup or shutdown archive network"); });
+    let infrastructureStarted = false;
+    new PilotExtension(harness.pi, {
+        createSessionRuntime(runtimeContext) {
+            return {policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() {}};
+        },
+        createMcpExtension: () => ({
+            ...createNoopMcpExtension(),
+            async startSession() {
+                assert.deepEqual(harness.appendedEntries, [{customType: "pilot.archive", data: {
+                    version: 1, sessionId: "extension-test-agent", kind: "main", rootSessionId: "extension-test-agent",
+                }}]);
+                infrastructureStarted = true;
+            },
+        }),
+    }).register();
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+    assert.equal(infrastructureStarted, true);
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    assert.equal(fetch.mock.callCount(), 0);
+});
+
 test("Bash always routes through a native filesystem policy view", async () => {
     const harness = extensionHarness();
     const ctx = {
@@ -167,10 +196,7 @@ test("Bash always routes through a native filesystem policy view", async () => {
         hasUI: false,
         mode: "print",
         ui: {},
-        sessionManager: {
-            getSessionId: () => "extension-test-agent",
-            getSessionFile: () => undefined,
-        },
+        sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
     const sentinel = new Error("native broker routing sentinel");
     let brokerCalls = 0;
@@ -263,7 +289,7 @@ test("the production extension adds routed documentation without forcing or repl
     assert.match(systemPrompt, new RegExp(escapeRegex(path.join(packageRoot, "README.md"))));
     assert.match(systemPrompt, new RegExp(escapeRegex(documentationDirectory)));
     assert.doesNotMatch(systemPrompt, /docs\/mcp\.md/);
-    for (const filename of ["installation.md", "policy.md", "subagents.md", "web-search.md", "security.md"]) {
+    for (const filename of ["installation.md", "policy.md", "subagents.md", "web-search.md", "server.md", "security.md"]) {
         assert.match(systemPrompt, new RegExp(escapeRegex(`docs/${filename}`)));
         assert.doesNotThrow(() => readFileSync(path.join(documentationDirectory, filename), "utf8"));
     }
@@ -276,7 +302,7 @@ test("custom-message starts keep the user's policy task while still adding Pilot
         hasUI: false,
         mode: "print",
         ui: {},
-        sessionManager: {getSessionId: () => "extension-test-agent"},
+        sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
     const tasks: string[] = [];
 
@@ -337,7 +363,7 @@ test("reusable mediated builtin definitions resolve paths from the invoking chil
         hasUI: false,
         mode: "print",
         ui: {},
-        sessionManager: {getSessionId: () => "extension-test-agent"},
+        sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
     writeFileSync(path.join(directory, "target.txt"), "old value", "utf8");
 
@@ -401,6 +427,7 @@ test("Pilot's expanded state switches Bash between minimal and truncated while r
         hasUI: true,
         mode: "tui",
         ui: toolDisplayUi(),
+        sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -493,6 +520,7 @@ test("Bash components remain renderable during and after session shutdown", asyn
         hasUI: true,
         mode: "tui",
         ui: toolDisplayUi(),
+        sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -571,6 +599,7 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
         hasUI: true,
         mode: "tui",
         ui: toolDisplayUi(),
+        sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
     const theme = {
         fg: (_color: string, text: string) => text,
@@ -740,6 +769,7 @@ test("one session runtime owns the production tool overrides until session shutd
         hasUI: false,
         mode: "print",
         ui: {},
+        sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
     let runtimeCreations = 0;
     let runtimeStarts = 0;
@@ -818,6 +848,10 @@ function toolRenderContext(
     };
 }
 
+function archiveSessionManager() {
+    return {getSessionId: () => "extension-test-agent", getSessionFile: () => undefined, getEntries: () => []};
+}
+
 function createNoopMcpExtension() {
     return {
         register() {
@@ -850,11 +884,13 @@ function extensionHarness(): ExtensionHarness {
     const registeredTools: RegisteredTool[] = [];
     const registeredToolNames: string[] = [];
     const registeredCommandNames: string[] = [];
+    const appendedEntries: Array<{customType: string; data: unknown}> = [];
     const shortcuts = new Map<string, ShortcutHandler>();
     let startHandler: SessionStartHandler | undefined;
     let shutdownHandler: SessionShutdownHandler | undefined;
     let beforeAgentStartHandler: BeforeAgentStartHandler | undefined;
     const pi = {
+        appendEntry(customType: string, data: unknown) { appendedEntries.push({customType, data}); },
         registerTool(tool: RegisteredTool) {
             registeredTools.push(tool);
             registeredToolNames.push(tool.name);
@@ -881,6 +917,7 @@ function extensionHarness(): ExtensionHarness {
         registeredToolNames,
         registeredCommandNames,
         registeredEventNames,
+        appendedEntries,
         hasShortcut(key) {
             return shortcuts.has(key);
         },

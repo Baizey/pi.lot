@@ -14,18 +14,25 @@ const SERVER_VERSION = "1.2.3";
 const OTHER_VERSION = "9.8.7";
 type RegisteredCommand = Parameters<ExtensionAPI["registerCommand"]>[1];
 type VersionCheck = NonNullable<ConstructorParameters<typeof ServerCommand>[2]>;
+type UploadArchive = NonNullable<ConstructorParameters<typeof ServerCommand>[3]>;
+const REPORT = {uploaded: 2, unchanged: 1, failed: 0, warnings: [], failures: []};
 
 function harness(
     t: TestContext,
     answers: Array<string | undefined> = [],
     hasUI = true,
     checkVersion: VersionCheck = async () => ({kind: "compatible", version: SERVER_VERSION}),
+    uploadArchive: UploadArchive = async () => REPORT,
 ) {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-server-command-"));
     t.after(() => rmSync(directory, {recursive: true, force: true}));
     const store = new ServerConfigStore(directory);
     const commands = new Map<string, RegisteredCommand>();
+    let shutdown: (() => void) | undefined;
     const pi = {
+        on(event: string, handler: () => void) {
+            if (event === "session_shutdown") shutdown = handler;
+        },
         registerCommand(name: string, options: RegisteredCommand) {
             commands.set(name, options);
         },
@@ -34,7 +41,7 @@ function harness(
     const instance = new ServerCommand(pi, store, (config, signal) => {
         checks.push({config: {...config}, signal});
         return checkVersion(config, signal);
-    });
+    }, uploadArchive);
     instance.register();
     const command = commands.get("server");
     assert.ok(command);
@@ -52,7 +59,7 @@ function harness(
             },
         },
     } as ExtensionCommandContext;
-    return {directory, store, instance, command, prompts, notifications, checks, ctx};
+    return {directory, store, instance, command, prompts, notifications, checks, ctx, shutdown: () => shutdown?.()};
 }
 
 test("server command with no config shows only unconfigured status and makes no request", async (t) => {
@@ -192,18 +199,22 @@ test("unexpected input errors do not expose their messages", async (t) => {
     assert.deepEqual(notifications, [{message: "Server configuration operation failed.", type: "error"}]);
 });
 
-test("only login and logout are offered; update and credential arguments are not implemented", async (t) => {
+test("manual upload scopes are offered; update and credential arguments are not implemented", async (t) => {
     const {command, ctx, directory, notifications, prompts} = harness(t);
     assert.ok(command.getArgumentCompletions);
     assert.deepEqual(await command.getArgumentCompletions(""), [
-        {value: "login", label: "login"}, {value: "logout", label: "logout"},
+        {value: "login", label: "login"}, {value: "logout", label: "logout"}, {value: "upload", label: "upload"},
     ]);
     assert.deepEqual(await command.getArgumentCompletions(" LOGI"), [{value: "login", label: "login"}]);
     assert.deepEqual(await command.getArgumentCompletions("login "), []);
+    assert.deepEqual(await command.getArgumentCompletions("upload "), [
+        {value: "upload current", label: "upload current"}, {value: "upload all", label: "upload all"},
+    ]);
+    assert.deepEqual(await command.getArgumentCompletions("upload a"), [{value: "upload all", label: "upload all"}]);
     assert.equal(await command.getArgumentCompletions("update"), null);
-    for (const input of ["update", "login https://sessions.example.com", `login ${CONFIG.apiKey}`, "logout extra"]) {
+    for (const input of ["update", "login https://sessions.example.com", `login ${CONFIG.apiKey}`, "logout extra", "upload elsewhere", "upload all extra"]) {
         await command.handler(input, ctx);
-        assert.deepEqual(notifications.at(-1), {message: "Usage: /server [login|logout]", type: "error"});
+        assert.deepEqual(notifications.at(-1), {message: "Usage: /server [login|logout|upload [current|all]]", type: "error"});
     }
     assert.deepEqual(prompts, []);
     assert.deepEqual(readdirSync(directory), []);
@@ -242,6 +253,111 @@ test("a newer status check supersedes an older response", async (t) => {
     assert.equal(checks[0]?.signal?.aborted, true);
     assert.equal(notifications.length, 1);
     assert.match(notifications[0]?.message ?? "", /Status: Connected/);
+});
+
+test("upload defaults to current family and all is an explicit backfill", async (t) => {
+    const calls: Array<{scope: string; config: ServerConfig; ctx: ExtensionCommandContext; signal?: AbortSignal}> = [];
+    const {command, ctx, store, checks, notifications} = harness(t, [], true, undefined,
+        async (config, context, scope, signal) => {
+            calls.push({scope, config, ctx: context, signal});
+            return {...REPORT, failed: 1, failures: [{file: "session.jsonl", message: "Safe conflict"}], warnings: ["Legacy child kind unknown"]};
+        });
+    store.save(CONFIG);
+    for (const input of ["upload", "upload current", " UPLOAD ALL "]) await command.handler(input, ctx);
+    assert.deepEqual(calls.map((call) => call.scope), ["current", "current", "all"]);
+    assert.ok(calls.every((call) => call.ctx === ctx && call.config.apiKey === CONFIG.apiKey && !call.signal?.aborted));
+    assert.deepEqual(checks, []);
+    assert.equal(notifications.length, 3);
+    assert.match(notifications[0]!.message, /2 uploaded, 1 unchanged, 1 failed/);
+    assert.match(notifications[0]!.message, /Legacy child kind unknown/);
+    assert.match(notifications[0]!.message, /Failed: session\.jsonl: Safe conflict/);
+    assert.equal(notifications[0]!.type, "warning");
+    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
+});
+
+test("upload shows bounded failure paths and reasons with credentials and terminal controls removed", async (t) => {
+    const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => ({
+        ...REPORT,
+        failed: 25,
+        warnings: [`Warning contains ${CONFIG.apiKey}\u001b[31m\ncontrol`],
+        failures: Array.from({length: 25}, (_, index) => ({
+            file: `/sessions/${CONFIG.apiKey}\u001b[31m\n${index}.jsonl`,
+            message: `Restore or fork: ${CONFIG.apiKey}\u001b[0m\r\u0000${"x".repeat(2000)}`,
+        })),
+    }));
+    store.save(CONFIG);
+    await command.handler("upload", ctx);
+    const output = notifications[0]!.message;
+    assert.equal(output.includes(CONFIG.apiKey), false);
+    assert.doesNotMatch(output, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    assert.doesNotMatch(output, /\[31m|\[0m/);
+    assert.match(output, /Failed: \/sessions\/\[redacted\] 0\.jsonl: Restore or fork: \[redacted\]/);
+    assert.match(output, /Warning: Warning contains \[redacted\] control/);
+    const failures = output.split("\n").filter((line) => line.startsWith("Failed: "));
+    assert.equal(failures.length, 20);
+    assert.ok(failures.every((line) => line.length <= 7 + 512 + 2 + 1024));
+    assert.ok(failures.every((line) => line.endsWith("…")));
+});
+
+test("upload requires configuration and archive exceptions are sanitized", async (t) => {
+    let calls = 0;
+    const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => {
+        calls++;
+        throw new Error(CONFIG.apiKey);
+    });
+    await command.handler("upload", ctx);
+    assert.equal(calls, 0);
+    assert.match(notifications.at(-1)!.message, /not configured/i);
+    store.save(CONFIG);
+    await command.handler("upload", ctx);
+    assert.deepEqual(notifications.at(-1), {message: "Server archive operation failed.", type: "error"});
+    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
+});
+
+test("every new command and shutdown cancel uploads and suppress late results or errors", async (t) => {
+    for (const next of ["", "login", "logout", "invalid", "shutdown"]) {
+        for (const reject of [false, true]) {
+            let finish!: () => void;
+            let uploadSignal: AbortSignal | undefined;
+            const {command, ctx, store, notifications, shutdown} = harness(t, [undefined], true, undefined,
+                (_config, _ctx, _scope, signal) => {
+                    uploadSignal = signal;
+                    return new Promise((resolve, fail) => { finish = () => reject ? fail(new Error(CONFIG.apiKey)) : resolve(REPORT); });
+                });
+            store.save(CONFIG);
+            const pending = command.handler("upload", ctx);
+            if (next === "shutdown") shutdown();
+            else await command.handler(next, ctx);
+            assert.equal(uploadSignal?.aborted, true);
+            const count = notifications.length;
+            finish();
+            await pending;
+            assert.equal(notifications.length, count);
+        }
+    }
+});
+
+test("logout preserves archive journal and downloads", async (t) => {
+    const {command, ctx, store, directory} = harness(t);
+    store.save(CONFIG);
+    const journal = path.join(directory, "archive.sqlite");
+    const download = path.join(directory, "download.jsonl");
+    writeFileSync(journal, "journal");
+    writeFileSync(download, "download");
+    await command.handler("logout", ctx);
+    assert.equal(readFileSync(journal, "utf8"), "journal");
+    assert.equal(readFileSync(download, "utf8"), "download");
+});
+
+test("a superseded login cannot save credentials after logout", async (t) => {
+    const {command, ctx, store} = harness(t);
+    let finish!: (value: string) => void;
+    ctx.ui.input = () => new Promise((resolve) => { finish = resolve; });
+    const pending = command.handler("login", ctx);
+    await command.handler("logout", ctx);
+    finish(CONFIG.url);
+    await pending;
+    assert.equal(store.load(), undefined);
 });
 
 test("server command rejects duplicate registration", (t) => {

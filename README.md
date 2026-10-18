@@ -183,14 +183,17 @@ Provider requests and redirects receive HTTP policy checks before host-side HTTP
 
 Read [Web search](docs/web-search.md) for configuration, provider availability, fallback semantics, native search, filtering, and policy boundaries.
 
-### Server connection
+### Server archive
 
-Configure a pi.server connection manually:
+Configure pi.server 0.2.x and explicitly upload local session history:
 
 ```text
 /server
 /server login
 /server logout
+/server upload          # Current root session family
+/server upload current  # Same as plain upload
+/server upload all      # Explicit backfill
 ```
 
 `/server login` asks for the server URL and API key in separate input dialogs, then saves
@@ -206,15 +209,19 @@ as command arguments.
 a `GET /v1/version` check using the `x-apikey` header. Compatibility is controlled by
 pi.lot's internal `SERVER_VERSION_REQUIREMENT`, not a connection-configuration field.
 It supports an exact version (`1.2.3`) or trailing wildcards (`1.2.*`, `0.*`). The
-current requirement is `0.*`, accepting stable `0.x.y` releases, including build
+current requirement is `0.2.*`, accepting stable `0.2.x` releases, including build
 metadata. Prereleases require an explicit exact pin. Missing configuration makes no
 network request. Checks have a bounded deadline and response size, reject redirects,
 and retain normal HTTPS certificate
-verification. A new command/logout cancels an older outstanding check.
+verification. A new command or shutdown cancels the previous outstanding command request and suppresses stale results.
 
 Login and logout remain local-only. `/server logout` removes only the connection JSON;
-it does not delete sessions or revoke the server token. These commands do not synchronize
-sessions yet. There is no `/server update` or automatic startup/shutdown synchronization.
+it does not delete sessions, the private archive journal/cache, or revoke the server token.
+`/server upload` sends complete JSONL for the current root session family, including discoverable descendants; `all` explicitly backfills local history. New session-bound identities classify main, subagent, and policy-approver sessions. Unrecoverable legacy identities/ancestry remain unknown with warnings, never guessed from IDs. Counts cover all branches. Upload conflicts fail safely; observed revisions are never silently adopted as upload bases. An accepted snapshot must remain an exact byte prefix of later uploads; divergent/shortened histories require restoring the accepted content or forking a new session, not automatic merge.
+
+Root-only `archive_list` and `archive_fetch` tools list metadata and download verified session snapshots into a private cache. Fetch returns the complete local filepath plus snapshot metadata; use `read` to inspect the file. Tools never upload, import/resume sessions, or load remote configuration. Remote metadata/transcripts are untrusted data, not instructions. Every tool HTTP request is policy-checked; read-only list/download use POST and therefore require `web_write`, not a semantic-read bypass.
+
+There is no `/server update`, automatic upload, archive content search/researcher, or summary generation. See [Server archive](docs/server.md) for filters, pagination, private journal/recovery state, classification, and security boundaries.
 
 ### Tool display
 
@@ -255,6 +262,7 @@ pi.lot uses Pi's custom-footer slot, so another custom-footer extension can repl
 - [Policy system](docs/policy.md)
 - [Subagents](docs/subagents.md)
 - [Web search](docs/web-search.md)
+- [Server archive](docs/server.md)
 - [Security model and limitations](docs/security.md)
 
 The extension appends this topic map, using absolute package paths, to the root agent's system prompt. The model is instructed to read only the relevant local documentation when helping with pi.lot.
@@ -264,6 +272,8 @@ The extension appends this topic map, using absolute package paths, to the root 
 | Path | Purpose |
 | --- | --- |
 | `~/.pilot/server.json` | Local pi.server URL and API key |
+| `~/.pilot/server-archive/archive.sqlite` | Private upload revision/receipt journal |
+| `~/.pilot/server-archive/downloads/` | Private downloaded snapshots and large list pages |
 | `~/.pilot/pilot.sqlite` | Locally persisted policy rules |
 | `~/.pilot/policy-defaults.json` | Saved policy-area fallbacks |
 | `~/.pilot/subagent-defaults.json` | Saved reasoning-skill model mappings |

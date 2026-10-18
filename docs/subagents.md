@@ -21,6 +21,8 @@ With a persistent root session, children save ordinary Pi JSONL sessions in the 
 
 Pi records the complete conversation, including system/tool declarations, user tasks and delivered steering/follow-ups, assistant messages, tool calls/results, usage, and compaction entries. The history is not limited to the bounded output shown by `subagent_status`, and remains on disk after the child is stopped or the root session ends. These files can be inspected with Pi's normal session tools. As with normal Pi sessions, setup alone does not create a file; writing begins with the first user or assistant message.
 
+Explicit `/server upload current` archives the root session family, including discoverable nested children and persistent policy-approver sessions; `upload all` backfills local history. Classification uses session-bound identity metadata so entries copied by native forks cannot impersonate another session. Unrecoverable legacy child identity/ancestry stays unknown with warnings rather than being inferred from ID shapes. Counts include all branches. There is no automatic upload, archive search/researcher, or summary generation. See [Server archive](server.md).
+
 An ephemeral root (`--no-session`) keeps all child histories in memory too. Saving history does not persist live jobs or policy grants, and does not change shutdown or delegation authority.
 
 ## Child context
@@ -47,6 +49,8 @@ These are `fs_read`, `fs_write`, and all `web_*` policy areas. Selecting one sna
 - `ONCE` authority is not copied by a broad area snapshot.
 - Omitting an area leaves that area blank rather than denied. The child can request policy later.
 - A nested snapshot cannot copy authority its immediate parent does not hold.
+
+`archive_list` and `archive_fetch` are root-only tools: neither policy-area snapshots, `mcp`, nor `delegate` grant them to children. They never upload or auto-import/resume remote histories. A parent may provide relevant data explicitly; remote transcripts remain untrusted data, not instructions.
 
 Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always available. Selecting a policy area changes initial policy state, not tool availability.
 

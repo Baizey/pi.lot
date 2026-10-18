@@ -72,12 +72,17 @@ test("HTTP and HTTPS origins on non-loopback configured hosts are accepted", asy
 });
 
 test("the default check uses the internal requirement, not a release-pinned fixture", async (t) => {
-    const version = "0.1.3";
+    const version = "0.2.3";
     t.mock.method(globalThis, "fetch", async () => Response.json({version}));
     assert.deepEqual(await requestServerVersion(CONFIG), {
         kind: matchesServerVersion(version, SERVER_VERSION_REQUIREMENT) ? "compatible" : "incompatible",
         version,
     });
+});
+
+test("the default check rejects pre-archive server versions", async (t) => {
+    t.mock.method(globalThis, "fetch", async () => Response.json({version: "0.1.99"}));
+    assert.deepEqual(await requestServerVersion(CONFIG), {kind: "incompatible", version: "0.1.99"});
 });
 
 test("connection checks apply exact, major-wildcard and minor-wildcard requirements", async (t) => {

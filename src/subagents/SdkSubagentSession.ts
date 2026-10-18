@@ -1,4 +1,6 @@
 import path from "node:path";
+import {SessionKind} from "../server/ArchiveProtocol.js";
+import {getArchiveRootSessionId} from "../server/ArchiveSessions.js";
 import {
     createAgentSession,
     createCodemodeExtension,
@@ -126,6 +128,8 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
     private createSessionManager(request: SubagentSessionRequest): SessionManager {
         const root = this.rootContext.sessionManager;
         const rootFile = root.getSessionFile();
+        const rootSessionId = getArchiveRootSessionId(root);
+        if (!rootSessionId) throw new Error("Root session ancestry is unresolved or conflicting; cannot persist child identity.");
         let sessionManager: SessionManager;
         if (rootFile) {
             const parentSession = request.parentAgentIdentifier === root.getSessionId()
@@ -144,7 +148,11 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         }
         sessionManager.appendSessionInfo(`Subagent: ${request.role}`);
         sessionManager.appendCustomEntry("pilot.subagent", {
+            version: 1,
+            sessionId: request.agentIdentifier,
             parentAgentIdentifier: request.parentAgentIdentifier,
+            rootSessionId,
+            kind: request.archiveKind ?? SessionKind.Subagent,
         });
         return sessionManager;
     }

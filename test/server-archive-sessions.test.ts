@@ -118,6 +118,85 @@ test("current family includes nested legacy children and policy reviewers across
     assert.deepEqual(unknownSnapshot.warnings, []);
 });
 
+test("session-bound child identity retains creation intent when its original root is unknown", async (t) => {
+    const f = fixture(t);
+    const id = "intent-defined-child";
+    const file = f.save(id, [custom({version: 1, sessionId: id, kind: SessionKind.PolicyApprover,
+        parentAgentIdentifier: "subagent-missing-parent"})]);
+    assert.ok((await f.archive.discover("all")).files.includes(file));
+    const unresolved = await f.archive.snapshot(file);
+    assert.equal(unresolved.metadata.kind, undefined);
+    assert.equal(unresolved.metadata.root_session_id, undefined);
+    assert.equal(unresolved.warnings.length, 1);
+    const manager = SessionManager.open(file);
+    assert.equal(getArchiveRootSessionId(manager), undefined);
+    const appended: unknown[] = [];
+    recordArchiveMainIdentity({appendEntry: (customType, data) => { appended.push({customType, data}); }}, manager);
+    assert.deepEqual(appended, [], "an explicitly known child must not be relabelled main");
+    f.save("subagent-missing-parent", [custom({parentAgentIdentifier: ROOT})]);
+    assert.ok((await f.archive.discover("current")).files.includes(file));
+    const resolved = await f.archive.snapshot(file);
+    assert.equal(resolved.metadata.kind, SessionKind.PolicyApprover);
+    assert.equal(resolved.metadata.root_session_id, ROOT);
+    assert.deepEqual(resolved.warnings, []);
+});
+
+for (const bound of [false, true]) {
+    test(`a resumed child resolves its current archive family through the catalog (bound=${bound})`, async (t) => {
+        const f = fixture(t);
+        writeFileSync(f.rootFile, [header(ROOT), mainIdentity(ROOT)].map((row) => JSON.stringify(row)).join("\n") + "\n");
+        const id = "subagent-resumed-without-root";
+        const identity = bound ? custom({version: 1, sessionId: id, kind: SessionKind.Subagent, parentAgentIdentifier: ROOT})
+            : custom({parentAgentIdentifier: ROOT});
+        const child = f.save(id, [identity], {parentSession: f.rootFile});
+        const nested = f.save("subagent-nested-resumed", [custom({parentAgentIdentifier: id})]);
+        const reviewer = f.save("policy-approver-resumed", [custom({parentAgentIdentifier: id})]);
+        f.save(OTHER, [mainIdentity(OTHER)]);
+        const archive = new ArchiveSessions(SessionManager.open(child));
+        const discovered = await archive.discover("current");
+        assert.equal(discovered.rootSessionId, ROOT);
+        assert.deepEqual(discovered.files.sort(), [f.rootFile, child, nested, reviewer].sort());
+        for (const file of discovered.files) {
+            assert.equal((await archive.snapshot(file)).metadata.root_session_id, ROOT);
+        }
+    });
+}
+
+for (const link of ["path", "id"] as const) {
+    test(`a resumed header-only child resolves its current archive family by ${link}`, async (t) => {
+        const f = fixture(t);
+        writeFileSync(f.rootFile, [header(ROOT), mainIdentity(ROOT)].map((row) => JSON.stringify(row)).join("\n") + "\n");
+        const child = f.save("subagent-header-only-resumed", [], {parentSession: link === "path" ? f.rootFile : ROOT});
+        const archive = new ArchiveSessions(SessionManager.open(child));
+        const discovered = await archive.discover("current");
+        assert.equal(discovered.rootSessionId, ROOT);
+        assert.deepEqual(discovered.files.sort(), [f.rootFile, child].sort());
+        assert.equal((await archive.snapshot(child)).metadata.root_session_id, ROOT);
+    });
+}
+
+test("current-family fallback does not adopt conflicting, cyclic, or colliding ancestry", async (t) => {
+    const f = fixture(t);
+    writeFileSync(f.rootFile, [header(ROOT), mainIdentity(ROOT)].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const conflicting = f.save("subagent-resumed-conflict", [boundChild("subagent-resumed-conflict", ROOT, ROOT),
+        boundChild("subagent-resumed-conflict", ROOT, OTHER)]);
+    const cycle = f.save("subagent-resumed-cycle", [custom({parentAgentIdentifier: "subagent-cycle-parent"})]);
+    f.save("subagent-cycle-parent", [custom({parentAgentIdentifier: "subagent-resumed-cycle"})]);
+    const headerMismatch = f.save("subagent-resumed-header-mismatch", [custom({parentAgentIdentifier: "missing-parent"})],
+        {parentSession: f.rootFile});
+    for (const file of [conflicting, cycle, headerMismatch]) {
+        const discovered = await new ArchiveSessions(SessionManager.open(file)).discover("current");
+        assert.equal(discovered.rootSessionId, undefined);
+        assert.deepEqual(discovered.files, []);
+    }
+    const child = f.save("subagent-resumed-collision", [custom({parentAgentIdentifier: ROOT})]);
+    f.save(ROOT, [mainIdentity(ROOT)]);
+    const collision = await new ArchiveSessions(SessionManager.open(child)).discover("current");
+    assert.equal(collision.rootSessionId, undefined);
+    assert.deepEqual(collision.files, []);
+    assert.match(collision.warnings.join(" "), /duplicate session ID/);
+});
+
 test("legacy parent paths never open arbitrary files, cycles stay unclassified, and ID collisions are skipped", async (t) => {
     const f = fixture(t);
     const outside = f.save(OTHER, [], {}, path.join(f.directory, "unowned"));

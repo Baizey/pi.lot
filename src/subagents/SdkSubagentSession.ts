@@ -128,8 +128,9 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
     private createSessionManager(request: SubagentSessionRequest): SessionManager {
         const root = this.rootContext.sessionManager;
         const rootFile = root.getSessionFile();
+        // Archive classification is optional bookkeeping: unresolved legacy
+        // ancestry must not disable normal delegation or policy reviewers.
         const rootSessionId = getArchiveRootSessionId(root);
-        if (!rootSessionId) throw new Error("Root session ancestry is unresolved or conflicting; cannot persist child identity.");
         let sessionManager: SessionManager;
         if (rootFile) {
             const parentSession = request.parentAgentIdentifier === root.getSessionId()

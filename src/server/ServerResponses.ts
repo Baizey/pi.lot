@@ -23,7 +23,7 @@ const ERROR_DEFINITIONS = {
     binding_mismatch: {status: 409, retryable: false, message: "Server binding does not match", action: "Stop synchronization and reconcile the changed server, namespace, or history binding."},
     cursor_mismatch: {status: 409, retryable: false, message: "Server discovery cursor does not match", action: "Restart discovery with the current binding."},
     stale_base: {status: 409, retryable: false, message: "Server session has a newer revision", action: "Fetch the current revision and resolve the conflict before publishing."},
-    already_exists: {status: 409, retryable: false, message: "Server session already exists", action: "Use its current revision or choose a different session ID."},
+    already_exists: {status: 409, retryable: false, message: "Server session already exists", action: "Keep the original upload state intact; recover its receipt or fork a new session."},
     operation_id_mismatch: {status: 409, retryable: false, message: "Server operation ID was reused with different content", action: "Use the original request for that operation ID or a new ID for a new operation."},
     capacity: {status: 507, retryable: true, message: "Server capacity limit reached", action: "Check available storage and configured resource quotas before retrying."},
     overloaded: {status: 503, retryable: true, message: "Server is overloaded", action: "Retry later."},
@@ -56,6 +56,12 @@ export function decodeServerError(value: unknown, httpStatus: number): ServerErr
         return undefined;
     }
     return {code: error.code, retryable: error.retryable, publication_outcome: "unconfirmed"};
+}
+
+/** Presentation may trust a recognized code, never an exception's arbitrary message. */
+export function formatServerErrorCode(code: unknown): string | undefined {
+    if (!isServerErrorCode(code)) return undefined;
+    return formatServerError({code, retryable: ERROR_DEFINITIONS[code].retryable, publication_outcome: "unconfirmed"}, null);
 }
 
 /** Format only local messages; never reflect server text or an arbitrary Retry-After header. */

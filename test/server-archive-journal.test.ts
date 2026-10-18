@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
-import {test} from "node:test";
+import {test, type TestContext} from "node:test";
 import {ArchiveJournal, type ArchiveUploadSnapshot} from "../src/server/ArchiveJournal.js";
 import {SessionKind, type Binding, type Publication, type Receipt} from "../src/server/ArchiveProtocol.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
@@ -28,6 +28,204 @@ function pending(journal: ArchiveJournal, value = snapshot(), namespace = bindin
 function receipt(request: Publication, seq = "1"): Receipt {
     return {request, revision: {binding: request.binding, seq}};
 }
+
+function traceJournalIO(t: TestContext, beforeSync: (file: string) => void = () => {}) {
+    const open = fs.openSync;
+    const sync = fs.fsyncSync;
+    const close = fs.closeSync;
+    const descriptors = new Map<number, string>();
+    const events: Array<{kind: "open" | "sync" | "close"; file: string}> = [];
+    t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+        const descriptor = open(...args);
+        const file = String(args[0]);
+        descriptors.set(descriptor, file);
+        events.push({kind: "open", file});
+        return descriptor;
+    });
+    t.mock.method(fs, "fsyncSync", (descriptor: number) => {
+        const file = descriptors.get(descriptor);
+        assert.ok(file !== undefined, "fsync must use an owned open descriptor");
+        beforeSync(file);
+        sync(descriptor);
+        events.push({kind: "sync", file});
+    });
+    t.mock.method(fs, "closeSync", (descriptor: number) => {
+        close(descriptor);
+        const file = descriptors.get(descriptor);
+        if (file !== undefined) {
+            events.push({kind: "close", file});
+            descriptors.delete(descriptor);
+        }
+    });
+    return {events, descriptors};
+}
+
+test("first-use nested journal directories and file are synced before a pending publication can be sent", (t) => {
+    const f = fixture();
+    const directories = [path.join(f.directory, "new"), path.join(f.directory, "new", "nested"),
+        path.join(f.directory, "new", "nested", "archive")];
+    const directory = directories[2]!;
+    const file = path.join(directory, "archive.sqlite");
+    const beforeCreation = new Map(directories.map((entry) => [entry, new Set<string>()]));
+    const {events, descriptors} = traceJournalIO(t, (synced) => {
+        for (const entry of directories) {
+            if (!fs.existsSync(entry)) beforeCreation.get(entry)!.add(synced);
+        }
+    });
+    const send = t.mock.fn(() => {
+        for (const entry of directories) {
+            const parent = path.dirname(entry);
+            assert.ok(beforeCreation.get(entry)!.has(parent), `${parent} must be synced before creating ${entry}`);
+            assert.ok(beforeCreation.get(entry)!.has(path.dirname(parent)), "the parent's own name must already be durable");
+            const directorySync = events.findIndex((event) => event.kind === "sync" && event.file === entry);
+            assert.ok(directorySync >= 0, `${entry} must be synced before publication`);
+            assert.ok(events.slice(directorySync + 1).some((event) => event.kind === "sync" && event.file === parent),
+                `${parent} must also be synced after creating ${entry}`);
+            assert.equal(fs.statSync(entry).mode & 0o777, 0o700);
+        }
+        const fileSync = events.findIndex((event) => event.kind === "sync" && event.file === file);
+        assert.ok(fileSync >= 0, "the new database file must be synced");
+        assert.ok(events.slice(fileSync + 1).some((event) => event.kind === "sync" && event.file === directory),
+            "the database file's directory entry must be synced before publication");
+        assert.equal(descriptors.size, 0, "directory and file sync descriptors must be closed");
+    });
+    try {
+        const journal = new ArchiveJournal(directory);
+        try {
+            const prepared = pending(journal);
+            assert.deepEqual(journal.pending(origin, binding, prepared.request.session_id, prepared.request.operation_id), prepared);
+            send();
+        } finally { journal.close(); }
+        assert.equal(send.mock.callCount(), 1);
+    } finally { f.clean(); }
+});
+
+test("failed parent fsync blocks preparation and publication and is retried even when nested directories now exist", async (t) => {
+    for (const level of [0, 1, 2]) {
+        await t.test(`new ancestor level ${level}`, (t) => {
+            const f = fixture();
+            const directories = [path.join(f.directory, "new"), path.join(f.directory, "new", "nested"),
+                path.join(f.directory, "new", "nested", "archive")];
+            const directory = directories[2]!;
+            const created = directories[level]!;
+            const parent = path.dirname(created);
+            const failure = new Error("injected parent directory fsync failure");
+            let fail = true;
+            let failures = 0;
+            const {events, descriptors} = traceJournalIO(t, (file) => {
+                if (fail && file === parent && fs.existsSync(created)) {
+                    failures++;
+                    throw failure;
+                }
+            });
+            const send = t.mock.fn();
+            let prepared = false;
+            const upload = () => {
+                const journal = new ArchiveJournal(directory);
+                try {
+                    const operation = pending(journal);
+                    prepared = true;
+                    send(operation);
+                } finally { journal.close(); }
+            };
+            try {
+                // These are ordering/failure-injection tests, not a simulation of power loss.
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    assert.throws(upload, (error) => error === failure);
+                    assert.equal(failures, attempt + 1, "a retry must not skip the unsynced ancestor's existing name");
+                    assert.ok(fs.statSync(created).isDirectory());
+                    assert.equal(fs.existsSync(path.join(directory, "archive.sqlite")), false);
+                    assert.equal(prepared, false);
+                    assert.equal(send.mock.callCount(), 0);
+                    assert.equal(descriptors.size, 0, "failed directory fsync must still close its descriptor");
+                }
+                fail = false;
+                const retryStart = events.length;
+                const journal = new ArchiveJournal(directory);
+                try {
+                    assert.deepEqual(journal.pendingRequests(origin, binding), []);
+                    const operation = pending(journal);
+                    const retry = events.slice(retryStart);
+                    for (const entry of [created, parent]) {
+                        assert.ok(retry.some((event) => event.kind === "sync" && event.file === entry),
+                            `retry must sync ${entry} before publication`);
+                    }
+                    assert.equal(descriptors.size, 0);
+                    send(operation);
+                    assert.equal(send.mock.callCount(), 1);
+                } finally { journal.close(); }
+            } finally { f.clean(); }
+        });
+    }
+});
+
+test("reopening an existing journal resyncs directory names before replaying its pending operation", (t) => {
+    const f = fixture();
+    const directory = path.join(f.directory, "archive");
+    try {
+        const first = new ArchiveJournal(directory);
+        const original = (() => {
+            try { return pending(first); }
+            finally { first.close(); }
+        })();
+        const {events, descriptors} = traceJournalIO(t);
+        const reopened = new ArchiveJournal(directory);
+        try {
+            const replay = pending(reopened, snapshot("new local bytes must not replace the pending operation\n"));
+            assert.deepEqual(replay, original);
+            for (const entry of [directory, f.directory, path.dirname(f.directory)]) {
+                assert.ok(events.some((event) => event.kind === "sync" && event.file === entry),
+                    `existing directory name ${entry} must be synced before replay`);
+            }
+            assert.equal(descriptors.size, 0);
+        } finally { reopened.close(); }
+    } finally { f.clean(); }
+});
+
+test("journal initialization rejects directory symlinks, including an ancestor of a new journal", (t) => {
+    const f = fixture();
+    const {descriptors} = traceJournalIO(t);
+    try {
+        const target = path.join(f.directory, "target");
+        const link = path.join(f.directory, "link");
+        fs.mkdirSync(target, {mode: 0o700});
+        fs.symlinkSync(target, link);
+        assert.throws(() => new ArchiveJournal(link), /private directory/);
+        assert.throws(() => new ArchiveJournal(path.join(link, "archive")));
+        assert.equal(fs.existsSync(path.join(target, "archive")), false);
+        assert.equal(fs.existsSync(path.join(target, "archive.sqlite")), false);
+        assert.equal(descriptors.size, 0);
+    } finally { f.clean(); }
+});
+
+test("a directory left by a failed first use is revalidated before retrying", (t) => {
+    const f = fixture();
+    const directory = path.join(f.directory, "archive");
+    let fail = true;
+    const {descriptors} = traceJournalIO(t, (file) => {
+        if (fail && file === f.directory && fs.existsSync(directory)) throw new Error("injected fsync failure");
+    });
+    try {
+        assert.throws(() => new ArchiveJournal(directory), /injected fsync failure/);
+        fail = false;
+        fs.chmodSync(directory, 0o755);
+        assert.throws(() => new ArchiveJournal(directory), /private directory/);
+        assert.equal(fs.existsSync(path.join(directory, "archive.sqlite")), false);
+        fs.chmodSync(directory, 0o700);
+        const moved = path.join(f.directory, "moved");
+        fs.renameSync(directory, moved);
+        fs.symlinkSync(moved, directory);
+        assert.throws(() => new ArchiveJournal(directory), /private directory/);
+        assert.equal(fs.existsSync(path.join(moved, "archive.sqlite")), false);
+        assert.equal(descriptors.size, 0);
+        fs.unlinkSync(directory);
+        fs.renameSync(moved, directory);
+        const journal = new ArchiveJournal(directory);
+        try { assert.equal(pending(journal).request.condition.kind, "absent"); }
+        finally { journal.close(); }
+        assert.equal(descriptors.size, 0);
+    } finally { f.clean(); }
+});
 
 test("pending request and exact snapshot bytes survive reopening before any send", () => {
     const f = fixture();

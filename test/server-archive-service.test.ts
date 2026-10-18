@@ -5,8 +5,10 @@ import path from "node:path";
 import {createHash, randomUUID} from "node:crypto";
 import {test} from "node:test";
 import {SessionManager} from "@earendil-works/pi-coding-agent";
-import {SessionArchive, type ArchiveClientInterface} from "../src/server/SessionArchive.js";
-import {ArchiveJournal} from "../src/server/ArchiveJournal.js";
+import {SessionArchive, type ArchiveClientInterface, type ArchiveListInput} from "../src/server/SessionArchive.js";
+import {ArchiveJournal, type ArchivePendingUpload} from "../src/server/ArchiveJournal.js";
+import {getArchiveRootSessionId} from "../src/server/ArchiveSessions.js";
+import {SqliteDatabase} from "../src/storage/sqlite.js";
 import {SessionKind, sameArchivePublication, type Binding, type ListRequest, type Publication,
     type Receipt, type ReceiptOutcome, type SessionMetadata} from "../src/server/ArchiveProtocol.js";
 
@@ -177,6 +179,32 @@ test("list forwards filters and continuation without creating any local upload s
     } finally { f.clean(); }
 });
 
+test("service validates list parameters and fetch IDs before binding and normalizes accepted filters", async () => {
+    const f = fixture();
+    try {
+        let bindings = 0;
+        const binding = f.server.binding.bind(f.server);
+        f.server.binding = async () => { bindings++; return binding(); };
+        for (const input of [
+            {filters: {started_from: "2026-02-30T00:00:00Z"}},
+            {filters: {activity_from: "2026-02-01T00:00:00Z", activity_to: "2026-01-01T00:00:00Z"}},
+            {filters: {root_session_id: "root\n"}},
+            ...["", "cursor\u007f", "x".repeat(4097)].map((cursor) => ({cursor})),
+            ...[0, -1, 1.5, NaN, Infinity, 4294967296, null].map((limit) => ({limit})),
+        ]) await assert.rejects(f.service().list(input as ArchiveListInput), /Invalid archive protocol data/);
+        for (const id of ["", "id\n", "é".repeat(257), "\ud800"]) {
+            await assert.rejects(f.service().fetch(id), /Invalid archive protocol data/);
+        }
+        assert.equal(bindings, 0);
+        assert.equal(f.server.requestedList, undefined);
+        assert.equal(fs.existsSync(f.stateDirectory), false);
+        await f.service().list({filters: {started_from: "2026-01-01T02:00:00+02:00"}, cursor: "opaque"});
+        assert.equal(bindings, 1);
+        assert.deepEqual(f.server.requestedList, {binding: f.server.identity, limit: 50,
+            filters: {started_from: "2026-01-01T00:00:00.000Z"}, cursor: "opaque"});
+    } finally { f.clean(); }
+});
+
 test("fetch caches exact opaque bytes privately using safe names and never imports the session", async () => {
     const f = fixture();
     try {
@@ -232,6 +260,167 @@ for (const accepted of [true, false]) {
         } finally { f.clean(); }
     });
 }
+
+for (const partial of [false, true]) {
+    test(`discovered ancestry recovers frozen siblings before snapshots (partial identity=${partial})`, async () => {
+        const f = fixture();
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let entered!: () => void;
+        const discoveryEntered = new Promise<void>((resolve) => { entered = resolve; });
+        let uploading: ReturnType<SessionArchive["upload"]> | undefined;
+        try {
+            const root = "R";
+            const currentId = partial ? "resumed-partial-child" : "subagent-resumed-legacy";
+            const currentFile = path.join(f.directory, "resumed.jsonl");
+            const identity = partial
+                ? {version: 1, sessionId: currentId, kind: SessionKind.Subagent, parentAgentIdentifier: "subagent-parent"}
+                : {parentAgentIdentifier: "subagent-parent"};
+            fs.writeFileSync(currentFile, [
+                {type: "session", version: 3, id: currentId, timestamp: "2026-01-01T00:00:00Z", cwd: f.directory},
+                {type: "custom", id: "identity", parentId: null, timestamp: "2026-01-01T00:00:00Z",
+                    customType: "pilot.subagent", data: identity},
+            ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", {mode: 0o600});
+            const manager = SessionManager.open(currentFile, f.directory);
+            assert.equal(getArchiveRootSessionId(manager), undefined, "only discovery can recover this child's root");
+            const missingFile = path.join(f.directory, "missing-sibling.jsonl");
+            const invalidFile = path.join(f.directory, "invalid-sibling.jsonl");
+            fs.writeFileSync(invalidFile, "not valid JSONL\n", {mode: 0o600});
+            const freshFile = path.join(f.directory, "fresh.jsonl");
+            const journal = new ArchiveJournal(f.stateDirectory);
+            const prepare = (sessionId: string, file: string, family = root): ArchivePendingUpload => {
+                const value = journal.prepare(config.url, f.server.identity, {sessionId, file,
+                    body: Buffer.from(`frozen ${sessionId}\n`),
+                    metadata: {kind: SessionKind.Subagent, root_session_id: family}});
+                assert.equal(value.kind, "pending");
+                if (value.kind !== "pending") throw new Error("Expected frozen operation");
+                return value;
+            };
+            let current: ArchivePendingUpload;
+            let missing: ArchivePendingUpload;
+            let accepted: ArchivePendingUpload;
+            let unrelated: ArchivePendingUpload;
+            try {
+                current = prepare(currentId, currentFile);
+                missing = prepare("subagent-missing", missingFile);
+                accepted = prepare("subagent-invalid", invalidFile);
+                unrelated = prepare("subagent-unrelated", path.join(f.directory, "unrelated.jsonl"), "other-root");
+            } finally { journal.close(); }
+            const acceptedReceipt = await f.server.publish(accepted.request, accepted.body);
+            f.server.requests.length = 0;
+            const sentBodies: Buffer[] = [];
+            const publish = f.server.publish.bind(f.server);
+            f.server.publish = async (request, body) => {
+                sentBodies.push(Buffer.from(body));
+                // This operation is eligible in both passes; failure must not cause a second attempt.
+                f.server.reject = partial && request.operation_id === current.request.operation_id;
+                return publish(request, body);
+            };
+            const pendingIds = () => {
+                const inspection = new ArchiveJournal(f.stateDirectory);
+                try { return inspection.pendingRequests(config.url, f.server.identity).map((entry) => entry.request.operation_id).sort(); }
+                finally { inspection.close(); }
+            };
+            const snapshots: string[] = [];
+            const service = new SessionArchive(config, {client: f.server, stateDirectory: f.stateDirectory,
+                createSessions: () => ({
+                    discover: async () => {
+                        entered();
+                        await gate;
+                        return {rootSessionId: root, files: [currentFile, freshFile], warnings: []};
+                    },
+                    snapshot: async (file) => {
+                        snapshots.push(file);
+                        assert.deepEqual(new Set(f.server.receiptRequests), new Set([current.request, missing.request, accepted.request]));
+                        assert.equal(f.server.receiptRequests.length, 3, "no operation is retried twice");
+                        assert.deepEqual(pendingIds(), [unrelated.request.operation_id,
+                            ...(partial ? [current.request.operation_id] : [])].sort());
+                        assert.ok(file === currentFile || file === freshFile, "missing/invalid sources must not be recaptured");
+                        return {file, sessionId: file === currentFile ? currentId : "subagent-fresh",
+                            body: file === currentFile ? current.body : Buffer.from("fresh snapshot\n"),
+                            metadata: {kind: SessionKind.Subagent, root_session_id: root}, warnings: []};
+                    },
+                })});
+            uploading = service.upload(manager, "current");
+            await Promise.race([discoveryEntered, uploading.then(() => assert.fail("Upload finished before discovery gate"))]);
+            assert.deepEqual(f.server.receiptRequests, [current.request], "directly identifiable recovery precedes discovery");
+            assert.deepEqual(f.server.requests, [current.request]);
+            assert.deepEqual(sentBodies, [current.body]);
+            assert.deepEqual(snapshots, []);
+            assert.deepEqual(pendingIds(), [missing.request.operation_id, accepted.request.operation_id,
+                unrelated.request.operation_id, ...(partial ? [current.request.operation_id] : [])].sort());
+            if (!partial) assert.deepEqual(f.server.sessions.get(currentId)?.body, current.body);
+            release();
+            const report = await uploading;
+            assert.equal(report.uploaded, partial ? 3 : 4);
+            assert.equal(report.failed, partial ? 1 : 0);
+            assert.equal(report.unchanged, 0);
+            assert.deepEqual(report.failures.map((failure) => failure.file), partial ? [currentFile] : []);
+            assert.deepEqual(snapshots, partial ? [freshFile] : [currentFile, freshFile]);
+            assert.deepEqual(f.server.requests.slice(0, 2), [current.request, missing.request]);
+            assert.deepEqual(sentBodies.slice(0, 2), [current.body, missing.body]);
+            assert.equal(f.server.requests.length, 3, "accepted sibling is recovered by receipt, not republished");
+            assert.equal(f.server.requests[2]!.session_id, "subagent-fresh");
+            assert.deepEqual(f.server.sessions.get(accepted.request.session_id)?.receipt, acceptedReceipt);
+            assert.deepEqual(f.server.sessions.get(missing.request.session_id)?.body, missing.body);
+            assert.deepEqual(pendingIds(), [unrelated.request.operation_id,
+                ...(partial ? [current.request.operation_id] : [])].sort());
+            assert.equal(fs.existsSync(missingFile), false);
+            assert.equal(fs.readFileSync(invalidFile, "utf8"), "not valid JSONL\n");
+        } finally {
+            release();
+            await uploading?.catch(() => {});
+            f.clean();
+        }
+    });
+}
+
+test("discovered-family operation with missing frozen body fails without recapturing its source", async () => {
+    const f = fixture();
+    try {
+        const file = path.join(f.directory, "would-be-live-source.jsonl");
+        fs.writeFileSync(file, "new live bytes must not replace the frozen operation\n", {mode: 0o600});
+        const body = Buffer.from("lost frozen history\n");
+        const request: Publication = {binding: f.server.identity, session_id: "subagent-sibling", operation_id: randomUUID(),
+            condition: {kind: "absent"}, byte_length: body.length,
+            sha256: createHash("sha256").update(body).digest("hex"),
+            metadata: {kind: SessionKind.Subagent, root_session_id: "R"}};
+        fs.mkdirSync(f.stateDirectory, {mode: 0o700});
+        const databaseFile = path.join(f.stateDirectory, "archive.sqlite");
+        fs.writeFileSync(databaseFile, "", {mode: 0o600});
+        // Deliberately malformed disposable storage models lost bytes. No production
+        // checks are disabled: ArchiveJournal must reject the row when recovering it.
+        const database = SqliteDatabase.test(false, databaseFile);
+        try {
+            database.exec(`CREATE TABLE archive_uploads (
+                profile TEXT NOT NULL, session_id TEXT NOT NULL, source TEXT NOT NULL,
+                accepted TEXT, pending TEXT, body BLOB, PRIMARY KEY (profile, session_id)
+            )`);
+            database.prepare("INSERT INTO archive_uploads (profile, session_id, source, pending, body) VALUES (?, ?, ?, ?, NULL)")
+                .run(JSON.stringify([config.url, f.server.identity.server_id, f.server.identity.namespace_id,
+                    f.server.identity.history_generation]), request.session_id, file, JSON.stringify(request));
+        } finally { database.close(); }
+        let snapshots = 0;
+        const manager = SessionManager.inMemory(f.directory, {id: "subagent-resumed"});
+        assert.equal(getArchiveRootSessionId(manager), undefined);
+        const service = new SessionArchive(config, {client: f.server, stateDirectory: f.stateDirectory,
+            createSessions: () => ({
+                discover: async () => ({rootSessionId: "R", files: [file], warnings: []}),
+                snapshot: async () => { snapshots++; throw new Error("Must not replace lost frozen bytes with a live snapshot"); },
+            })});
+        const report = await service.upload(manager, "current");
+        assert.equal(report.failed, 1);
+        assert.equal(report.uploaded, 0);
+        assert.equal(report.failures[0]?.file, file);
+        assert.match(report.failures[0]!.message, /journal is invalid/);
+        assert.equal(snapshots, 0);
+        assert.deepEqual(f.server.receiptRequests, []);
+        assert.deepEqual(f.server.requests, []);
+        const journal = new ArchiveJournal(f.stateDirectory);
+        try { assert.deepEqual(journal.pendingRequests(config.url, f.server.identity), [{source: file, request}]); }
+        finally { journal.close(); }
+    } finally { f.clean(); }
+});
 
 test("current-family recovery does not publish unrelated frozen operations", async () => {
     const f = fixture();

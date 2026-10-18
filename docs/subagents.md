@@ -23,6 +23,8 @@ Pi records the complete conversation, including system/tool declarations, user t
 
 Explicit `/server upload current` archives the root session family, including discoverable nested children and persistent policy-approver sessions; `upload all` backfills local history. Classification uses session-bound identity metadata so entries copied by native forks cannot impersonate another session. Unrecoverable legacy child identity/ancestry stays unknown with warnings rather than being inferred from ID shapes. Counts include all branches. There is no automatic upload, archive search/researcher, or summary generation. See [Server archive](server.md).
 
+Unknown archive ancestry does not disable delegation or policy reviewers. Children created from an unresolved legacy parent retain their explicit kind and immediate-parent identity without inventing a main-session root; archival remains unclassified until that ancestry can be recovered.
+
 An ephemeral root (`--no-session`) keeps all child histories in memory too. Saving history does not persist live jobs or policy grants, and does not change shutdown or delegation authority.
 
 ## Child context

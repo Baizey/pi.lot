@@ -4,6 +4,8 @@ import {ServerConfigError, ServerConfigStore, type ServerConfig} from "../server
 import {SessionArchive, type ArchiveUploadReport} from "../server/SessionArchive.js";
 import {SERVER_VERSION_REQUIREMENT} from "../server/ServerCompatibility.js";
 import {checkServerVersion} from "../server/ServerConnection.js";
+import {ArchiveClientError} from "../server/ArchiveClient.js";
+import {formatServerErrorCode} from "../server/ServerResponses.js";
 
 const ACTIONS = ["login", "logout", "upload"] as const;
 const USAGE = "Usage: /server [login|logout|upload [current|all]]";
@@ -63,8 +65,11 @@ export class ServerCommand {
                 } catch (error) {
                     if (this.pendingCheck !== controller) return;
                     const archiveOperation = input.trim().toLowerCase().startsWith("upload");
+                    const diagnostic = archiveOperation && error instanceof ArchiveClientError
+                        ? formatServerErrorCode(error.code) : undefined;
                     ctx.ui.notify(error instanceof ServerConfigError ? error.message
-                        : archiveOperation ? "Server archive operation failed." : "Server configuration operation failed.", "error");
+                        : archiveOperation ? `Server archive operation failed.${diagnostic ? ` ${diagnostic}` : ""}`
+                            : "Server configuration operation failed.", "error");
                 } finally {
                     if (this.pendingCheck === controller) this.pendingCheck = undefined;
                 }

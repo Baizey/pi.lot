@@ -35,7 +35,7 @@ export class ArchiveJournal {
     private readonly database: SqliteDatabase;
 
     constructor(directory: string) {
-        ensureArchiveDirectory(directory);
+        ensureDurableArchiveDirectory(directory);
         const file = path.join(directory, "archive.sqlite");
         this.prepareFile(file);
         for (const suffix of ["-wal", "-shm"]) this.checkFile(`${file}${suffix}`, true);
@@ -210,7 +210,12 @@ export class ArchiveJournal {
             this.checkFile(file);
             return;
         }
-        fs.closeSync(descriptor);
+        try {
+            fs.fsyncSync(descriptor);
+        } finally {
+            fs.closeSync(descriptor);
+        }
+        syncArchiveDirectory(path.dirname(file));
     }
 
     private checkFile(file: string, optional = false): void {
@@ -234,8 +239,43 @@ export class ArchiveJournal {
 
 export function ensureArchiveDirectory(directory: string): void {
     fs.mkdirSync(directory, {recursive: true, mode: 0o700});
+    checkArchiveDirectory(directory);
+}
+
+function ensureDurableArchiveDirectory(directory: string): void {
+    const parent = path.dirname(path.resolve(directory));
+    try {
+        syncArchiveDirectory(parent);
+    } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        ensureDurableArchiveDirectory(parent);
+    }
+    // Establish the parent's name BEFORE creating its child. Incremental
+    // creation leaves at most one unsynced link on failure, so retries and
+    // concurrent initializers can safely finish the same ordering.
+    syncArchiveDirectory(path.dirname(parent));
+    try {
+        fs.mkdirSync(directory, {mode: 0o700});
+    } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    }
+    checkArchiveDirectory(directory);
+    syncArchiveDirectory(directory);
+    syncArchiveDirectory(parent);
+}
+
+function checkArchiveDirectory(directory: string): void {
     const stat = fs.lstatSync(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) {
         throw new Error("Archive storage must be a private directory, not a symlink.");
+    }
+}
+
+function syncArchiveDirectory(directory: string): void {
+    const descriptor = fs.openSync(directory, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    try {
+        fs.fsyncSync(descriptor);
+    } finally {
+        fs.closeSync(descriptor);
     }
 }

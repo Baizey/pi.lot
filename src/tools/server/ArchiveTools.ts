@@ -10,6 +10,8 @@ import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRunti
 import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
 import {ServerConfigStore, type ServerConfig} from "../../server/ServerConfig.js";
 import {SessionArchive} from "../../server/SessionArchive.js";
+import {ArchiveClientError} from "../../server/ArchiveClient.js";
+import {formatServerErrorCode} from "../../server/ServerResponses.js";
 import {ensureArchiveDirectory} from "../../server/ArchiveJournal.js";
 import {SessionKind, type ListFilters, type ListPage, type SessionMetadata} from "../../server/ArchiveProtocol.js";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows.js";
@@ -122,9 +124,8 @@ export class ArchiveTools {
                     const page = await service.list({filters, cursor, limit}, signal);
                     signal?.throwIfAborted();
                     return await this.listResult(page);
-                } catch {
-                    // Transport/parser/host errors may include credentials or untrusted response text.
-                    throw new Error(signal?.aborted ? "Archive list cancelled." : "Archive list failed. Check server configuration and network policy.");
+                } catch (error) {
+                    throw this.requestError("list", error, signal);
                 }
             },
             renderCall: (args, theme, context) => {
@@ -167,8 +168,8 @@ export class ArchiveTools {
                         details: result,
                         structuredContent: result,
                     };
-                } catch {
-                    throw new Error(signal?.aborted ? "Archive fetch cancelled." : "Archive fetch failed. Check server configuration and network policy.");
+                } catch (error) {
+                    throw this.requestError("fetch", error, signal);
                 }
             },
             renderCall: (args, theme, context) => {
@@ -198,6 +199,14 @@ export class ArchiveTools {
                 if (result.matchedStatus !== PolicyResponse.ALLOWED) throw new Error("Archive request denied by policy.");
             },
         });
+    }
+
+    private requestError(operation: "list" | "fetch", error: unknown, signal?: AbortSignal): Error {
+        if (signal?.aborted) return new Error(`Archive ${operation} cancelled.`);
+        // Even a typed client error may carry an injected message. Regenerate
+        // recognized protocol diagnostics solely from the local code table.
+        const diagnostic = error instanceof ArchiveClientError ? formatServerErrorCode(error.code) : undefined;
+        return new Error(`Archive ${operation} failed. ${diagnostic ?? "Check server configuration and network policy."}`);
     }
 
     private async listResult(page: ListPage): Promise<AgentToolResult<ListDetails>> {

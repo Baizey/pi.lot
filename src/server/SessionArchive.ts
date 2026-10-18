@@ -8,7 +8,10 @@ import {ArchiveClient} from "./ArchiveClient.js";
 import {ArchiveJournal, ensureArchiveDirectory, type ArchivePendingUpload, type ArchiveUploadSnapshot} from "./ArchiveJournal.js";
 import {ArchiveSessions, getArchiveRootSessionId} from "./ArchiveSessions.js";
 import type {ServerConfig} from "./ServerConfig.js";
-import {decodeArchiveMetadata, type Binding, type ListFilters, type ListPage, type Publication, type SessionMetadata} from "./ArchiveProtocol.js";
+import {
+    decodeArchiveId, decodeArchiveListParameters, decodeArchiveMetadata,
+    type Binding, type ListFilters, type ListPage, type Publication, type SessionMetadata,
+} from "./ArchiveProtocol.js";
 
 type ArchiveSessionManager = ExtensionContext["sessionManager"];
 export type ArchiveClientInterface = Pick<ArchiveClient, "binding" | "list" | "publish" | "receipt" | "download">;
@@ -19,6 +22,7 @@ export type ArchiveUploadReport = {
     warnings: string[];
     failures: Array<{file: string; message: string}>;
 };
+type UploadRecovery = {report: ArchiveUploadReport; recovered: Set<string>; failed: Set<string>};
 export type ArchiveListInput = {filters?: ListFilters; cursor?: string; limit?: number};
 export type SessionArchiveOptions = {
     client?: ArchiveClientInterface;
@@ -49,6 +53,7 @@ export class SessionArchive {
         let journal: ArchiveJournal | undefined;
         const recovered = new Set<string>();
         const failed = new Set<string>();
+        const recovery: UploadRecovery = {report, recovered, failed};
         try {
             // Frozen operations are independently recoverable even if their live
             // files were deleted, became invalid, or changed identity after a crash.
@@ -56,26 +61,21 @@ export class SessionArchive {
                 binding = (await this.client.binding(signal)).binding;
                 journal = new ArchiveJournal(this.directory);
                 const root = getArchiveRootSessionId(manager);
-                for (const pending of journal.pendingRequests(this.config.url, binding)) {
-                    const selected = scope === "all" || pending.request.session_id === manager.getSessionId()
-                        || (root !== undefined && pending.request.metadata?.root_session_id === root);
-                    if (!selected) continue;
-                    signal?.throwIfAborted();
-                    try {
-                        const operation = journal.pending(this.config.url, binding,
-                            pending.request.session_id, pending.request.operation_id);
-                        if (!operation) continue;
-                        await this.publishPending(journal, operation, signal);
-                        recovered.add(pending.source);
-                    } catch (error) {
-                        signal?.throwIfAborted();
-                        failed.add(pending.source);
-                        this.recordFailure(report, pending.source, error);
-                    }
-                }
+                await this.recoverPending(journal, binding, (request) => scope === "all"
+                    || request.session_id === manager.getSessionId()
+                    || (root !== undefined && request.metadata?.root_session_id === root), recovery, signal);
             }
             const discovered = await sessions.discover(scope, signal);
             report.warnings.push(...discovered.warnings.slice(0, 20));
+            // The catalog may have recovered a resumed child's previously unknown
+            // root. Settle that family's remaining frozen operations too, including
+            // those whose source files no longer exist. The independent first pass
+            // above still runs before any potentially failing live-file discovery.
+            if (scope === "current" && journal && binding && discovered.rootSessionId !== undefined
+                && discovered.rootSessionId !== getArchiveRootSessionId(manager)) {
+                await this.recoverPending(journal, binding,
+                    (request) => request.metadata?.root_session_id === discovered.rootSessionId, recovery, signal);
+            }
             if (discovered.files.length === 0) {
                 report.uploaded += recovered.size;
                 return report;
@@ -103,13 +103,15 @@ export class SessionArchive {
     }
 
     async list(input: ArchiveListInput = {}, signal?: AbortSignal): Promise<ListPage> {
+        const parameters = decodeArchiveListParameters({...input, limit: input.limit === undefined ? 50 : input.limit});
         const {binding} = await this.client.binding(signal);
-        return this.client.list({binding, filters: input.filters, cursor: input.cursor, limit: input.limit ?? 50}, signal);
+        return this.client.list({binding, ...parameters}, signal);
     }
 
     async fetch(sessionId: string, signal?: AbortSignal): Promise<{snapshot: SessionMetadata; path: string}> {
+        const id = decodeArchiveId(sessionId);
         const {binding} = await this.client.binding(signal);
-        const downloaded = await this.client.download(binding, sessionId, signal);
+        const downloaded = await this.client.download(binding, id, signal);
         signal?.throwIfAborted();
         const directory = path.join(this.directory, "downloads", this.bindingKey(binding));
         ensureArchiveDirectory(this.directory);
@@ -119,6 +121,30 @@ export class SessionArchive {
         const destination = path.join(directory, `${identity}-${downloaded.snapshot.sha256}.jsonl`);
         this.writeCache(destination, downloaded.body);
         return {snapshot: downloaded.snapshot, path: destination};
+    }
+
+    private async recoverPending(
+        journal: ArchiveJournal,
+        binding: Binding,
+        selected: (request: Publication) => boolean,
+        recovery: UploadRecovery,
+        signal?: AbortSignal,
+    ): Promise<void> {
+        for (const pending of journal.pendingRequests(this.config.url, binding)) {
+            if (!selected(pending.request) || recovery.failed.has(pending.source)) continue;
+            signal?.throwIfAborted();
+            try {
+                const operation = journal.pending(this.config.url, binding,
+                    pending.request.session_id, pending.request.operation_id);
+                if (!operation) continue;
+                await this.publishPending(journal, operation, signal);
+                recovery.recovered.add(pending.source);
+            } catch (error) {
+                signal?.throwIfAborted();
+                recovery.failed.add(pending.source);
+                this.recordFailure(recovery.report, pending.source, error);
+            }
+        }
     }
 
     private async uploadFile(

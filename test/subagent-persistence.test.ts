@@ -215,6 +215,44 @@ test("a resumed bound child preserves the original archive family for new descen
     });
 });
 
+for (const ephemeral of [false, true]) {
+    test(`unresolved archive ancestry does not block children or policy reviewers (ephemeral=${ephemeral})`, async (t) => {
+        const fixture = await persistenceFixture(t, {ephemeral});
+        fixture.parent.newSession({id: "subagent-resumed-legacy"});
+        fixture.parent.appendCustomEntry("pilot.subagent", {parentAgentIdentifier: "unavailable-original-root"});
+        fixture.parent.appendMessage({role: "user", content: "resumed legacy task", timestamp: Date.now()});
+        for (const archiveKind of [SessionKind.Subagent, SessionKind.PolicyApprover] as const) {
+            const id = `${archiveKind}-from-unresolved-parent`;
+            const child = await fixture.create(fixture.request(id, {archiveKind}));
+            assert.equal(await child.prompt("child task", new AbortController().signal), "reply:child task");
+            child.dispose();
+            if (ephemeral) continue;
+            const info = (await SessionManager.list(fixture.cwd, fixture.sessionDir)).find((session) => session.id === id);
+            assert.ok(info);
+            const metadata = SessionManager.open(info.path).getEntries().find((entry) => entry.type === "custom"
+                && entry.customType === "pilot.subagent");
+            assert.ok(metadata?.type === "custom");
+            assert.deepEqual(metadata.data, {version: 1, sessionId: id,
+                parentAgentIdentifier: fixture.parent.getSessionId(), kind: archiveKind});
+        }
+        if (ephemeral) assert.ok(!existsSync(fixture.sessionDir));
+    });
+}
+
+test("conflicting archive bookkeeping does not disable delegation or policy review", async (t) => {
+    const fixture = await persistenceFixture(t);
+    const id = fixture.parent.getSessionId();
+    fixture.parent.appendCustomEntry("pilot.archive", {version: 1, sessionId: id,
+        kind: SessionKind.Main, rootSessionId: id});
+    fixture.parent.appendCustomEntry("pilot.subagent", {version: 1, sessionId: id,
+        kind: SessionKind.Subagent, parentAgentIdentifier: "older-parent", rootSessionId: "older-root"});
+    for (const archiveKind of [SessionKind.Subagent, SessionKind.PolicyApprover] as const) {
+        const child = await fixture.create(fixture.request(`${archiveKind}-after-conflict`, {archiveKind}));
+        assert.equal(await child.prompt("child task", new AbortController().signal), "reply:child task");
+        child.dispose();
+    }
+});
+
 test("ephemeral parents keep both direct and nested child sessions ephemeral", async (t) => {
     const fixture = await persistenceFixture(t, {ephemeral: true});
     t.mock.method(SessionManager, "create", () => {

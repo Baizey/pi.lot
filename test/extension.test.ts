@@ -849,7 +849,7 @@ function toolRenderContext(
 }
 
 function archiveSessionManager() {
-    return {getSessionId: () => "extension-test-agent", getSessionFile: () => undefined, getEntries: () => []};
+    return {getSessionId: () => "extension-test-agent", getSessionFile: () => undefined, getHeader: () => null, getEntries: () => []};
 }
 
 function createNoopMcpExtension() {

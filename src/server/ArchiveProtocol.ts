@@ -36,7 +36,8 @@ export type ListFilters = {
     activity_from?: string;
     activity_to?: string;
 };
-export type ListRequest = {binding: Binding; filters?: ListFilters; cursor?: string | null; limit: number};
+export type ListParameters = {filters?: ListFilters; cursor?: string | null; limit: number};
+export type ListRequest = ListParameters & {binding: Binding};
 export type ListPage = {binding: Binding; sessions: ArchiveSession[]; next_cursor: string | null};
 export type BindingResponse = {binding: Binding; head: string};
 export type Receipt = {request: Publication; revision: Revision};
@@ -163,13 +164,19 @@ export function decodeArchiveListFilters(value: unknown, strict = true): ListFil
     return result;
 }
 
-export function decodeArchiveListRequest(value: unknown): ListRequest {
-    const row = object(value, ["binding", "filters", "cursor", "limit"], true);
-    const result: ListRequest = {binding: decodeArchiveBinding(row.binding), limit: integer(row.limit, 4294967295)};
+export function decodeArchiveListParameters(value: unknown): ListParameters {
+    const row = object(value, ["filters", "cursor", "limit"], true);
+    const result: ListParameters = {limit: integer(row.limit, 4294967295)};
     requireValid(result.limit > 0);
     if (row.filters !== undefined) result.filters = decodeArchiveListFilters(row.filters);
     if (row.cursor !== undefined) result.cursor = row.cursor === null ? null : cursor(row.cursor);
     return result;
+}
+
+export function decodeArchiveListRequest(value: unknown): ListRequest {
+    const row = object(value, ["binding", "filters", "cursor", "limit"], true);
+    return {binding: decodeArchiveBinding(row.binding),
+        ...decodeArchiveListParameters({filters: row.filters, cursor: row.cursor, limit: row.limit})};
 }
 
 export function decodeArchiveListPage(value: unknown): ListPage {

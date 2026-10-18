@@ -8,6 +8,8 @@ import {ServerCommand} from "../src/commands/ServerCommand.js";
 import {ServerConfigStore, type ServerConfig} from "../src/server/ServerConfig.js";
 import {SERVER_VERSION_REQUIREMENT} from "../src/server/ServerCompatibility.js";
 import type {ServerStatus} from "../src/server/ServerConnection.js";
+import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
+import {SessionArchive} from "../src/server/SessionArchive.js";
 
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-command-test-key"};
 const SERVER_VERSION = "1.2.3";
@@ -314,15 +316,108 @@ test("upload requires configuration and archive exceptions are sanitized", async
     assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
 });
 
+test("initial upload binding failures show local authentication and overload diagnostics without creating a journal", async (t) => {
+    for (const entry of [
+        {code: "unauthorized", status: 401, retryable: false, diagnostic: /API key is missing, invalid, or revoked/, action: /Check the configured API key/},
+        {code: "overloaded", status: 503, retryable: true, diagnostic: /Server is overloaded/, action: /Retry later/},
+    ]) {
+        const requests: Array<{url: string; method?: string}> = [];
+        const secret = `${CONFIG.apiKey}\u001b[31m\r\nserver supplied secret`;
+        const snapshot = t.mock.fn(async () => { throw new Error("Binding failure must precede reading a snapshot"); });
+        const {command, ctx, store, directory, notifications, checks} = harness(t, [], true, undefined,
+            (config, context, scope, signal) => {
+                const client = new ArchiveClient(config, {fetch: async (input, init) => {
+                    requests.push({url: String(input), method: init?.method});
+                    return new Response(JSON.stringify({error: {
+                        code: entry.code, retryable: entry.retryable, publication_outcome: "unconfirmed", message: secret,
+                    }}), {status: entry.status, headers: {"Content-Type": "application/json", "Retry-After": "17"}});
+                }});
+                return new SessionArchive(config, {
+                    client,
+                    stateDirectory: path.join(directory, "archive"),
+                    createSessions: () => ({
+                        discover: async () => ({files: [path.join(directory, "session.jsonl")], warnings: []}),
+                        snapshot,
+                    }),
+                }).upload(context.sessionManager, scope, signal);
+            });
+        store.save(CONFIG);
+        const before = readFileSync(store.file);
+        await command.handler("upload", ctx);
+        assert.deepEqual(requests, [{url: `${CONFIG.url}/v1/binding`, method: "GET"}]);
+        assert.equal(snapshot.mock.callCount(), 0);
+        assert.equal(existsSync(path.join(directory, "archive")), false);
+        assert.deepEqual(checks, []);
+        assert.deepEqual(readFileSync(store.file), before);
+        assert.equal(notifications.length, 1);
+        assert.equal(notifications[0]!.type, "error");
+        const output = notifications[0]!.message;
+        assert.match(output, /^Server archive operation failed\./);
+        assert.match(output, entry.diagnostic);
+        assert.match(output, entry.action);
+        assert.ok(output.includes(`(${entry.code}; HTTP ${entry.status})`));
+        assert.equal(output.includes(CONFIG.apiKey), false);
+        assert.doesNotMatch(output, /server supplied secret|\[31m|[\u0000-\u001f\u007f-\u009f]/);
+        assert.doesNotMatch(output, /uploaded|Retry after 17 seconds/);
+    }
+});
+
+test("recognized archive error codes use local advice instead of a forged exception message", async (t) => {
+    const secret = `${CONFIG.apiKey}\u001b]0;forged diagnostic\u0007\r\nserver supplied secret`;
+    for (const entry of [
+        {code: "unauthorized", diagnostic: /API key is missing, invalid, or revoked/, action: /Check the configured API key/},
+        {code: "overloaded", diagnostic: /Server is overloaded/, action: /Retry later/},
+        {code: "already_exists", diagnostic: /Server session already exists/, action: /Keep the original upload state intact; recover its receipt or fork a new session/},
+    ] as const) {
+        const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => {
+            throw new ArchiveClientError(secret, entry.code);
+        });
+        store.save(CONFIG);
+        await command.handler(" UPLOAD ALL ", ctx);
+        assert.equal(notifications.length, 1);
+        assert.equal(notifications[0]!.type, "error");
+        const output = notifications[0]!.message;
+        assert.match(output, /^Server archive operation failed\./);
+        assert.match(output, entry.diagnostic);
+        assert.match(output, entry.action);
+        assert.equal(output.includes(CONFIG.apiKey), false);
+        assert.doesNotMatch(output, /forged diagnostic|server supplied secret|[\u0000-\u001f\u007f-\u009f]/);
+    }
+});
+
+test("unknown, missing, or untrusted archive error codes remain generic without reflecting messages", async (t) => {
+    const secret = `${CONFIG.apiKey}\u001b[31m\u0000\r\nserver supplied secret`;
+    const unknownCodes = ["future_code", "toString", "__proto__", secret].map((code) => {
+        const error = new ArchiveClientError(secret);
+        // Simulate a malformed runtime exception without widening the production error-code type.
+        Object.defineProperty(error, "code", {value: code});
+        return error;
+    });
+    for (const error of [
+        ...unknownCodes,
+        new ArchiveClientError(secret),
+        new Error(secret),
+        Object.assign(new Error(secret), {code: "unauthorized"}),
+        {name: "ArchiveClientError", code: "overloaded", message: secret},
+    ]) {
+        const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => { throw error; });
+        store.save(CONFIG);
+        await command.handler("upload current", ctx);
+        assert.deepEqual(notifications, [{message: "Server archive operation failed.", type: "error"}]);
+    }
+});
+
 test("every new command and shutdown cancel uploads and suppress late results or errors", async (t) => {
     for (const next of ["", "login", "logout", "invalid", "shutdown"]) {
-        for (const reject of [false, true]) {
+        for (const error of [undefined, new Error(CONFIG.apiKey),
+            new ArchiveClientError(`${CONFIG.apiKey}\u001b[31m`, "unauthorized"),
+            new ArchiveClientError(`${CONFIG.apiKey}\u001b[31m`, "overloaded")]) {
             let finish!: () => void;
             let uploadSignal: AbortSignal | undefined;
             const {command, ctx, store, notifications, shutdown} = harness(t, [undefined], true, undefined,
                 (_config, _ctx, _scope, signal) => {
                     uploadSignal = signal;
-                    return new Promise((resolve, fail) => { finish = () => reject ? fail(new Error(CONFIG.apiKey)) : resolve(REPORT); });
+                    return new Promise((resolve, fail) => { finish = () => error ? fail(error) : resolve(REPORT); });
                 });
             store.save(CONFIG);
             const pending = command.handler("upload", ctx);

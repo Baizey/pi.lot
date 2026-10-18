@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-    decodeServerError, decodeVersionResponse, formatServerError,
+    decodeServerError, decodeVersionResponse, formatServerError, formatServerErrorCode,
     type ServerError, type ServerErrorCode, type ServerVersionResponse,
 } from "../src/server/ServerResponses.js";
 
@@ -17,7 +17,7 @@ const ERRORS = {
     binding_mismatch: {status: 409, retryable: false, meaning: /stop synchronization.*reconcile.*binding/i},
     cursor_mismatch: {status: 409, retryable: false, meaning: /restart discovery/i},
     stale_base: {status: 409, retryable: false, meaning: /current revision.*resolve the conflict/i},
-    already_exists: {status: 409, retryable: false, meaning: /current revision or.*different session ID/i},
+    already_exists: {status: 409, retryable: false, meaning: /original upload state intact.*receipt or fork/i},
     operation_id_mismatch: {status: 409, retryable: false, meaning: /original request.*new ID/i},
     capacity: {status: 507, retryable: true, meaning: /storage.*resource quotas/i},
     overloaded: {status: 503, retryable: true, meaning: /overloaded.*retry later/i},
@@ -53,6 +53,21 @@ for (const [code, expected] of Object.entries(ERRORS)) {
         assert.equal(message.includes("Retry after 7 seconds."), expected.retryable);
     });
 }
+
+test("code-only diagnostics regenerate local messages and reject unknown or inherited codes", () => {
+    for (const [code, expected] of Object.entries(ERRORS)) {
+        const message = formatServerErrorCode(code);
+        assert.ok(message);
+        assert.match(message, expected.meaning);
+        assert.ok(message.includes(`(${code}; HTTP ${expected.status})`));
+        assert.ok(!message.includes("Retry after"), "exception fields cannot supply an arbitrary retry header");
+    }
+    for (const code of [undefined, null, true, 401, {}, [], "", "future_error", "__proto__", "constructor", "toString",
+        "unauthorized\n", {code: "not_found", message: "private-api-key\u001b[31m"}]) {
+        assert.equal(formatServerErrorCode(code), undefined);
+    }
+    assert.doesNotMatch(formatServerErrorCode("already_exists")!, /use its current revision/i);
+});
 
 test("error decoder rejects malformed envelopes, unknown codes and proxy response shapes", () => {
     const valid = envelope("unauthorized", false);

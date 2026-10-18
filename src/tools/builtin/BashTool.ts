@@ -3,7 +3,6 @@ import {createBashToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {ToolCallPathPolicyEvaluator} from "../../policy/PolicyRuntime";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ThemeColor} from "../../tui/Color";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {runNetworkSandboxedCommand} from "../../policy/network/NetworkSandbox";
@@ -98,13 +97,13 @@ export class BashTool {
             required: [...bashDefinition.parameters.required, "purpose"] satisfies Required,
         };
 
-        const presentation = new ToolPresentationRenderer(BASH_PRESENTATION, this.displayRows);
+        const renderers = this.displayRows.bind(BASH_PRESENTATION);
         const definition = {
             ...bashDefinition,
             description: `${bashDefinition.description} Include a concise, one-line purpose for the command.`,
             parameters,
             prepareArguments: undefined,
-            renderShell: "self",
+            ...renderers,
             execute: async (id, params, signal, onUpdate, ctx) => {
                 const runtime = this.runtimeProvider();
                 const input = params as BashToolInput;
@@ -137,24 +136,6 @@ export class BashTool {
                     nativePolicyView.close();
                 }
             },
-
-            renderCall: (args, theme, context) => {
-                this.displayRows.observe("bash", args, context);
-                return presentation.renderCall(
-                    args,
-                    theme,
-                    this.displayRows.resolveMode(context.expanded, context.state),
-                    context,
-                );
-            },
-
-            renderResult: (result, options, theme, context) => presentation.renderResult(
-                result,
-                theme,
-                {isError: context.isError, outputPad: context.outputPad},
-                this.displayRows.resolveMode(options.expanded, context.state),
-            ),
-
         } as const satisfies ToolDefinition<typeof parameters, any>;
 
         const untyped = definition as any as ToolDefinition<typeof parameters, any>;

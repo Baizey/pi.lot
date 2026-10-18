@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import {SessionKind} from "../server/ArchiveProtocol.js";
+import {SessionKind} from "../sessions/SessionIdentity.js";
 import type {AgentToolResult, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {
     PolicyApprovalReviewSource,

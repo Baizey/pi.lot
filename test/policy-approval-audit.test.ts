@@ -17,7 +17,8 @@ import {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import {initialPolicyDefaults} from "../src/policy/defaults.js";
 import {PilotSessionRuntime} from "../src/runtime/PilotSessionRuntime.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
-import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import type {QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow.js";
+import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 import {
     PolicyAccessType,
     PolicyArea,
@@ -41,9 +42,9 @@ function policyDao() {
     };
 }
 
-function noUserDecision(): any {
+function noUserDecision(): QueuedPolicyApproval {
     return {
-        async askForPolicy(): Promise<PolicyChoice> {
+        async resolveQueuedPolicy() {
             assert.fail("The request must not reach the user");
         },
     };
@@ -120,17 +121,13 @@ test("user and super-agent decisions are recorded with their distinct routes", a
         const userRuntime = new PolicyRuntime(
             "user-audit-session",
             policyDao(),
-            {
-                async askForPolicy(_uri: string, accessType: PolicyAccessType): Promise<PolicyChoice> {
-                    return {
-                        uri: userTarget,
-                        accessType,
-                        lifetime: PolicyLifetime.ONCE,
-                        status: PolicyResponse.DENIED,
-                        reason: longUserReason,
-                    };
-                },
-            } as any,
+            scriptedPolicyApproval((_uri, accessType) => ({
+                uri: userTarget,
+                accessType,
+                lifetime: PolicyLifetime.ONCE,
+                status: PolicyResponse.DENIED,
+                reason: longUserReason,
+            })),
             undefined,
             undefined,
             audit,
@@ -251,17 +248,13 @@ test("audit logger failures do not change policy decisions", async () => {
     const runtime = new PolicyRuntime(
         "audit-failure-session",
         policyDao(),
-        {
-            async askForPolicy(_uri: string, accessType: PolicyAccessType): Promise<PolicyChoice> {
-                return {
-                    uri: target,
-                    accessType,
-                    lifetime: PolicyLifetime.ONCE,
-                    status: PolicyResponse.ALLOWED,
-                    reason: "User approved despite unavailable audit storage.",
-                };
-            },
-        } as any,
+        scriptedPolicyApproval((_uri, accessType) => ({
+            uri: target,
+            accessType,
+            lifetime: PolicyLifetime.ONCE,
+            status: PolicyResponse.ALLOWED,
+            reason: "User approved despite unavailable audit storage.",
+        })),
         undefined,
         undefined,
         {append: () => { throw new Error("disk unavailable"); }},

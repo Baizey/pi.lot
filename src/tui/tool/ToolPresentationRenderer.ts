@@ -19,8 +19,6 @@ import {
     ToolTextDirection,
 } from "./ToolPresentation.js";
 import {ToolDisplayMode} from "./ToolDisplayMode.js";
-import {ToolCallSpinner} from "./ToolCallSpinner.js";
-import type {ToolDisplayRows, ToolDisplayState} from "./ToolDisplayRows.js";
 
 const DEFAULT_ARGUMENT_PREVIEW_LINES = 8;
 const DEFAULT_RESULT_PREVIEW_LINES = 5;
@@ -30,8 +28,7 @@ const DEFAULT_MAX_ARGUMENT_LINES = 100;
 export type ToolCallRenderOptions = {
     isPartial?: boolean;
     isError?: boolean;
-    state?: ToolDisplayState;
-    invalidate?: () => void;
+    indicator?: () => string | undefined;
     outputPad?: number;
 };
 
@@ -59,7 +56,6 @@ export class ToolPresentationRenderer<TArgs extends object> {
 
     constructor(
         private readonly presentation: ToolPresentationSpec<TArgs>,
-        displayRows?: ToolDisplayRows,
     ) {
         this.validatePresentation();
         for (const argument of presentation.arguments) {
@@ -68,9 +64,6 @@ export class ToolPresentationRenderer<TArgs extends object> {
             consumedKeys.push(argument.key);
             this.consumedKeysByOwner.set(argument.consumedBy, consumedKeys);
         }
-        displayRows?.registerCallPresentation(presentation.toolName, (args, theme, mode, width, indicator) => (
-            this.renderCallLines(args as Partial<TArgs>, theme, mode, width, indicator)
-        ));
     }
 
     renderCall(
@@ -79,12 +72,11 @@ export class ToolPresentationRenderer<TArgs extends object> {
         mode: ToolDisplayMode,
         options: ToolCallRenderOptions = {},
     ): TextComponent {
-        this.updateCallSpinner(options);
         return renderLineFactory((width) => {
             if (mode === ToolDisplayMode.HIDDEN && !options.isPartial) return [];
             return this.renderCallLines(
                 args, theme, mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.MINIMAL : mode,
-                width, options.state?.pilotCallSpinner?.frame(),
+                width, options.indicator?.(),
             );
         }, options.outputPad);
     }
@@ -108,17 +100,6 @@ export class ToolPresentationRenderer<TArgs extends object> {
         mode: ToolDisplayMode,
     ): TextComponent {
         return renderLineFactory((width) => this.toolResultLines(result, theme, options, mode, width), options.outputPad);
-    }
-
-    private updateCallSpinner(options: ToolCallRenderOptions): void {
-        const state = options.state;
-        if (!state) return;
-        if (!options.isPartial) {
-            state.pilotCallSpinner?.stop();
-            state.pilotCallSpinner = null;
-        } else if (state.pilotCallSpinner === undefined && options.invalidate) {
-            state.pilotCallSpinner = new ToolCallSpinner(options.invalidate);
-        }
     }
 
     private toolCallLines(

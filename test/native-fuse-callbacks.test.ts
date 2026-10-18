@@ -1,41 +1,27 @@
 import assert from "node:assert/strict";
-import {spawn, spawnSync} from "node:child_process";
+import childProcess, {spawnSync, type ChildProcess} from "node:child_process";
 import {constants} from "node:fs";
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type {Writable} from "node:stream";
 import test, {after, before} from "node:test";
 import {fileURLToPath} from "node:url";
-import {fuseProbeFlags} from "../scripts/native-test-build-flags.mjs";
+import {NativeFuseCallbackProbe} from "./fixtures/NativeFuseCallbackProbe.js";
 import {
-    decodeNativeFilesystemControlFrames,
-    decodeNativeFilesystemPolicyMiss,
-    encodeNativeFilesystemOnceSnapshotMessage,
-    encodeNativeFilesystemPolicySnapshot,
+    type NativeFilesystemPolicyMiss,
     NativeFilesystemAccess,
-    NativeFilesystemRequestMessage,
 } from "../src/policy/path/native/NativeFilesystemPolicyProtocol.js";
-import type {NativeFilesystemPolicySnapshot} from "../src/policy/path/native/NativeFilesystemPolicyView.js";
-import {PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse, type Policy} from "../src/policy/types.js";
+import {PolicyAccessType, PolicyLifetime, PolicyResponse, type Policy} from "../src/policy/types.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const errno = os.constants.errno;
-let buildDirectory: string;
-let executable: string;
+let callbackProbe: NativeFuseCallbackProbe;
+const withFixture = NativeFuseCallbackProbe.withFixture;
 let initExecutable: string;
 let initBuildDirectory: string;
 
 before(async () => {
-    buildDirectory = await mkdtemp(path.join(os.tmpdir(), "pilot-callback-build-"));
-    executable = path.join(buildDirectory, "probe");
-    const compiled = spawnSync("cc", [
-        "-std=c17", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
-        "-o", executable, path.join(root, "test/fixtures/native-fuse-callback-probe.c"),
-        ...fuseProbeFlags(),
-    ], {cwd: root, encoding: "utf8"});
-    assert.ifError(compiled.error);
-    assert.equal(compiled.status, 0, compiled.stderr);
+    callbackProbe = await NativeFuseCallbackProbe.build();
 });
 
 before(async () => {
@@ -44,14 +30,14 @@ before(async () => {
     const compiled = spawnSync("cc", [
         "-std=c17", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
         "-o", initExecutable, path.join(root, "test/fixtures/native-fuse-init-probe.c"),
-        ...fuseProbeFlags(),
+        ...NativeFuseCallbackProbe.buildFlags(),
     ], {cwd: root, encoding: "utf8"});
     assert.ifError(compiled.error);
     assert.equal(compiled.status, 0, compiled.stderr);
 });
 
 after(async () => {
-    if (buildDirectory) await rm(buildDirectory, {recursive: true, force: true});
+    await callbackProbe?.close();
     if (initBuildDirectory) await rm(initBuildDirectory, {recursive: true, force: true});
 });
 
@@ -75,7 +61,7 @@ for (const option of ["--help", "--version", "--pilot-invalid-option"]) {
 }
 
 test("Rust operation factory obeys the installed C-header table ABI and rejects wrong sizes without writes", () => {
-    const executed = spawnSync(executable, ["abi-operations"], {encoding: "utf8", timeout: 5_000});
+    const executed = spawnSync(callbackProbe.executable, ["abi-operations"], {encoding: "utf8", timeout: 5_000});
     assert.ifError(executed.error);
     assert.equal(executed.status, 0, executed.stderr);
     const result = JSON.parse(executed.stdout) as {
@@ -491,6 +477,62 @@ for (const operation of ["open", "read", "write", "truncate"] as const) {
     });
 }
 
+test("callback probe timeout reaps a real blocked callback and disposes its pipes and backing fixture", async (context) => {
+    const spawn = childProcess.spawn;
+    let child: ChildProcess | undefined;
+    let closed = false;
+    context.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+        child = spawn(...args);
+        child.once("close", () => { closed = true; });
+        return child;
+    });
+    let backingDirectory = "";
+    await assert.rejects(withFixture(async (directory) => {
+        backingDirectory = directory;
+        const target = path.join(directory, "file");
+        await writeFile(target, "original");
+        // No authority: the actual C callback blocks on a policy miss. This
+        // exercises the fixture's five-second deadline without a fake child.
+        await callbackProbe.run(directory, [], "open", target, String(constants.O_RDONLY));
+    }), {code: "ERR_ASSERTION", actual: null, expected: 0});
+    assert.ok(child);
+    assert.equal(closed, true);
+    assert.equal(child.signalCode, "SIGKILL");
+    for (const stream of child.stdio) if (stream) assert.equal(stream.destroyed, true);
+    const pid = child.pid;
+    assert.ok(pid);
+    assert.throws(() => process.kill(pid, 0), {code: "ESRCH"});
+    await assert.rejects(stat(backingDirectory), {code: "ENOENT"});
+});
+
+test("callback probe spawn failure waits for close and disposes pipes and build/backing directories", async (context) => {
+    const missingProbe = await NativeFuseCallbackProbe.build();
+    const spawn = childProcess.spawn;
+    let child: ChildProcess | undefined;
+    let closed = false;
+    context.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+        child = spawn(...args);
+        child.once("close", () => { closed = true; });
+        return child;
+    });
+    let backingDirectory = "";
+    try {
+        await missingProbe.close();
+        await assert.rejects(withFixture(async (directory) => {
+            backingDirectory = directory;
+            await missingProbe.run(directory, [], "open", path.join(directory, "missing"), "0");
+        }), /ENOENT/);
+        assert.ok(child);
+        assert.equal(closed, true);
+        assert.equal(child.pid, undefined);
+        for (const stream of child.stdio) if (stream) assert.equal(stream.destroyed, true);
+        await assert.rejects(stat(backingDirectory), {code: "ENOENT"});
+        await assert.rejects(stat(path.dirname(missingProbe.executable)), {code: "ENOENT"});
+    } finally {
+        await missingProbe.close();
+    }
+});
+
 function policy(pattern: string, read = PolicyResponse.ALLOWED, write = PolicyResponse.ALLOWED): Policy {
     return {
         pattern,
@@ -499,16 +541,6 @@ function policy(pattern: string, read = PolicyResponse.ALLOWED, write = PolicyRe
             [PolicyAccessType.FS_WRITE]: {accessType: PolicyAccessType.FS_WRITE, lifetime: PolicyLifetime.SESSION, status: write, reason: "callback fixture"},
         },
     };
-}
-
-async function withFixture(run: (directory: string) => Promise<void>): Promise<void> {
-    // Linux tmpfs keeps native callback fixtures off any inherited FUSE root mount.
-    const directory = await mkdtemp(path.join("/dev/shm", "pilot-callback-test-"));
-    try {
-        await run(directory);
-    } finally {
-        await rm(directory, {recursive: true, force: true});
-    }
 }
 
 type ProbeResult = {
@@ -543,7 +575,7 @@ type ProbeResult = {
     value: string;
     readValue: string;
     retainedValue: string;
-    denials: ReturnType<typeof decodeNativeFilesystemPolicyMiss>[];
+    denials: NativeFilesystemPolicyMiss[];
 };
 
 function assertDenied(result: ProbeResult, target: string, access: NativeFilesystemAccess): void {
@@ -553,45 +585,6 @@ function assertDenied(result: ProbeResult, target: string, access: NativeFilesys
 }
 
 async function probe(directory: string, policies: Policy[], ...args: string[]): Promise<ProbeResult> {
-    const snapshot: NativeFilesystemPolicySnapshot = {
-        revision: 1,
-        layers: [{policies, resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY}],
-    };
-    const snapshotPath = path.join(directory, "policy.snapshot");
-    await writeFile(snapshotPath, encodeNativeFilesystemPolicySnapshot(snapshot));
-    const child = spawn(executable, [snapshotPath, path.join(directory, "hidden"), ...args], {
-        stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
-    });
-    const responses = child.stdio[4] as Writable;
-    let responseError: Error | undefined;
-    responses.on("error", (error: NodeJS.ErrnoException) => {
-        if (error.code !== "EPIPE" && error.code !== "ECONNRESET") responseError = error;
-    });
-    // Keep the controller pipe live until the child exits: EOF deliberately fails authorization.
-    responses.write(encodeNativeFilesystemOnceSnapshotMessage({revision: 1, layers: []}));
-    let stdout = "";
-    let stderr = "";
-    const requests: Buffer[] = [];
-    child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk; });
-    child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk; });
-    child.stdio[3]!.on("data", (chunk: Buffer) => { requests.push(chunk); });
-    const timeout = setTimeout(() => child.kill("SIGKILL"), 5_000);
-    let exitCode: number | null;
-    try {
-        exitCode = await new Promise<number | null>((resolve, reject) => {
-            child.once("error", reject);
-            child.once("close", resolve);
-        });
-    } finally {
-        clearTimeout(timeout);
-    }
-    assert.ifError(responseError);
-    assert.equal(exitCode, 0, stderr);
-    const decoded = decodeNativeFilesystemControlFrames(Buffer.concat(requests));
-    assert.equal(decoded.remainder.length, 0);
-    assert.ok(decoded.frames.every((frame) => frame.type === NativeFilesystemRequestMessage.DENIAL), "unexpected policy miss");
-    return {
-        ...JSON.parse(stdout) as Omit<ProbeResult, "denials">,
-        denials: decoded.frames.map((frame) => decodeNativeFilesystemPolicyMiss(frame.payload)),
-    };
+    const {stdout, denials} = await callbackProbe.run(directory, policies, ...args);
+    return {...JSON.parse(stdout) as Omit<ProbeResult, "denials">, denials};
 }

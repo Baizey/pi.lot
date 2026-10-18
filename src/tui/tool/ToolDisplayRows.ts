@@ -1,5 +1,8 @@
-import type {Theme} from "@earendil-works/pi-coding-agent";
-import type {ToolCallSpinnerState} from "./ToolCallSpinner.js";
+import type {Theme, ToolDefinition, ToolRenderResultOptions} from "@earendil-works/pi-coding-agent";
+import {ToolCallSpinner, type ToolCallSpinnerState} from "./ToolCallSpinner.js";
+import type {TextComponent} from "../terminalText.js";
+import type {ToolPresentationSpec, ToolResultLike} from "./ToolPresentation.js";
+import {ToolPresentationRenderer} from "./ToolPresentationRenderer.js";
 import type {ToolDisplayMode} from "./ToolDisplayMode.js";
 import {ToolDisplayModes} from "./ToolDisplayModes.js";
 
@@ -14,10 +17,13 @@ export type ToolCallPresentation = (
 
 export type ToolDisplayState = ToolCallSpinnerState & {pilotFullDisplay?: boolean};
 
-type ToolDisplayRenderContext = {
-    toolCallId: string;
-    state: ToolDisplayState;
-    invalidate(): void;
+type DisplayDefinition = ToolDefinition<ToolDefinition["parameters"], unknown, ToolDisplayState>;
+type DisplayContext = Parameters<NonNullable<DisplayDefinition["renderCall"]>>[2];
+type ToolDisplayRenderContext = Pick<DisplayContext, "toolCallId" | "state" | "executionStarted" | "isPartial" | "invalidate">;
+type BoundToolRenderers = {
+    renderShell: "self";
+    renderCall(args: unknown, theme: Theme, context: DisplayContext): TextComponent;
+    renderResult(result: ToolResultLike, options: ToolRenderResultOptions, theme: Theme, context: DisplayContext): TextComponent;
 };
 
 export type ToolDisplayRow = {
@@ -38,6 +44,7 @@ type StoredToolDisplayRow = {
 
 export class ToolDisplayRows {
     private readonly rows = new Map<string, StoredToolDisplayRow>();
+    private readonly liveStates = new WeakSet<ToolDisplayState>();
     // Layouts outlive observed rows: cached definitions do not re-register after tree/compaction cleanup.
     private readonly callPresentations = new Map<string, ToolCallPresentation>();
     private nextSequence = 1;
@@ -46,6 +53,37 @@ export class ToolDisplayRows {
         modes.subscribe(() => {
             for (const row of this.rows.values()) row.invalidate();
         });
+    }
+
+    /** Bind ordinary Pi callbacks and register their pure layout for nested calls. */
+    bind<TArgs extends object>(spec: ToolPresentationSpec<TArgs>): BoundToolRenderers {
+        const presentation = new ToolPresentationRenderer(spec);
+        this.registerCallPresentation(spec.toolName, (args, theme, mode, width, indicator) => (
+            presentation.renderCallLines(args as Partial<TArgs>, theme, mode, width, indicator)
+        ));
+        return {
+            renderShell: "self",
+            renderCall: (args, theme, context) => {
+                this.observe(spec.toolName, args, context);
+                // Pi renders streamed arguments before schema validation; layouts accept partial inputs.
+                return presentation.renderCall(
+                    args as Partial<TArgs> | undefined,
+                    theme,
+                    this.resolveMode(context.expanded, context.state),
+                    {
+                        isPartial: context.isPartial,
+                        outputPad: context.outputPad,
+                        indicator: () => context.state.pilotCallSpinner?.frame(),
+                    },
+                );
+            },
+            renderResult: (result, options, theme, context) => {
+                if (!options.isPartial) this.complete(context.state);
+                return presentation.renderResult(result, theme, {
+                    isError: context.isError, outputPad: context.outputPad,
+                }, this.resolveMode(options.expanded, context.state));
+            },
+        };
     }
 
     resolveMode(expanded: boolean, state?: {pilotFullDisplay?: boolean}): ToolDisplayMode {
@@ -60,7 +98,16 @@ export class ToolDisplayRows {
         return this.callPresentations.get(toolName);
     }
 
-    observe(toolName: string, args: unknown, context: ToolDisplayRenderContext): void {
+    /** Observe a top-level call and advance its animation lifecycle; exports are not live rows. */
+    observe(toolName: string, args: unknown, context: ToolDisplayRenderContext): boolean {
+        // Pi creates TUI rows before execution, including restored rows. HTML export
+        // starts with executionStarted=true and a fresh state for the same call ID.
+        if (!context.executionStarted) this.liveStates.add(context.state);
+        if (!this.liveStates.has(context.state)) return false;
+        if (!context.isPartial) this.complete(context.state);
+        else if (context.state.pilotCallSpinner === undefined) {
+            context.state.pilotCallSpinner = new ToolCallSpinner(context.invalidate);
+        }
         const existing = this.rows.get(context.toolCallId);
         this.rows.set(context.toolCallId, {
             toolName,
@@ -69,6 +116,12 @@ export class ToolDisplayRows {
             state: context.state,
             invalidate: context.invalidate,
         });
+        return true;
+    }
+
+    complete(state: ToolDisplayState): void {
+        state.pilotCallSpinner?.stop();
+        state.pilotCallSpinner = null;
     }
 
     list(): ToolDisplayRow[] {
@@ -91,10 +144,7 @@ export class ToolDisplayRows {
     }
 
     clear(): void {
-        for (const row of this.rows.values()) {
-            row.state.pilotCallSpinner?.stop();
-            row.state.pilotCallSpinner = null;
-        }
+        for (const row of this.rows.values()) this.complete(row.state);
         this.rows.clear();
         this.nextSequence = 1;
     }

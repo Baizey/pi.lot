@@ -28,6 +28,21 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
+    // Identical retransmissions are accepted without replacing authority. Rejected
+    // rollbacks and equal-revision conflicts leave the current snapshot intact.
+    pub fn replace(&mut self, replacement: Self) -> Result<bool, i32> {
+        if replacement.revision < self.revision
+            || (replacement.revision == self.revision && replacement != *self)
+        {
+            set_errno(libc::EPROTO);
+            return Err(-1);
+        }
+        if replacement.revision == self.revision {
+            return Ok(false);
+        }
+        *self = replacement;
+        Ok(true)
+    }
     pub fn parse(bytes: &[u8]) -> Result<Self, i32> {
         let invalid = || {
             set_errno(libc::EINVAL);
@@ -189,6 +204,41 @@ mod tests {
         let mut changed_revision = original;
         changed_revision[8..16].copy_from_slice(&8u64.to_le_bytes());
         assert_ne!(Snapshot::parse(&changed_revision).unwrap(), expected);
+    }
+    #[test]
+    fn replacement_is_monotonic_and_preserves_authority_on_rejection() {
+        let original = encoded(&[(0, 1, 1, b"/a"), (0, 1, 2, b"/b")]);
+        let mut current = Snapshot::parse(&original).unwrap();
+        assert!(!current
+            .replace(Snapshot::parse(&original).unwrap())
+            .unwrap());
+        let mut reserved = original.clone();
+        reserved[26..28].copy_from_slice(&[0, 0]);
+        assert!(!current
+            .replace(Snapshot::parse(&reserved).unwrap())
+            .unwrap());
+        for bytes in [
+            encoded(&[(0, 1, 2, b"/a"), (0, 1, 2, b"/b")]),
+            encoded(&[(0, 1, 2, b"/b"), (0, 1, 1, b"/a")]),
+        ] {
+            assert!(current.replace(Snapshot::parse(&bytes).unwrap()).is_err());
+            assert_eq!(errno(), libc::EPROTO);
+            assert_eq!(current, Snapshot::parse(&original).unwrap());
+        }
+        let mut rollback = original.clone();
+        rollback[8..16].copy_from_slice(&6u64.to_le_bytes());
+        assert!(current
+            .replace(Snapshot::parse(&rollback).unwrap())
+            .is_err());
+        assert_eq!(errno(), libc::EPROTO);
+        assert_eq!(current, Snapshot::parse(&original).unwrap());
+
+        let mut newer = encoded(&[(0, 1, 2, b"/a")]);
+        newer[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(current.replace(Snapshot::parse(&newer).unwrap()).unwrap());
+        assert_eq!(current, Snapshot::parse(&newer).unwrap());
+        assert!(!current.replace(Snapshot::parse(&newer).unwrap()).unwrap());
+        assert!(!Snapshot::default().replace(Snapshot::default()).unwrap());
     }
     #[test]
     fn malformed_snapshots() {

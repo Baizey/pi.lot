@@ -70,6 +70,32 @@ test("search HTTP requests map POST redirects to a newly authorized GET", async 
     ]);
 });
 
+test("search HTTP preserves method normalization and policy access classification", async () => {
+    const methods: Array<[string, PolicyAccessType]> = [
+        ["gEt", PolicyAccessType.HTTP_GET],
+        ["pOsT", PolicyAccessType.HTTP_POST],
+        ["pUt", PolicyAccessType.HTTP_PUT],
+        ["dElEtE", PolicyAccessType.HTTP_DELETE],
+        ["pAtCh", PolicyAccessType.HTTP_PATCH],
+        ["hEaD", PolicyAccessType.HTTP_HEAD],
+        ["oPtIoNs", PolicyAccessType.HTTP_OPTIONS],
+        ["cUsToM", PolicyAccessType.HTTP_ACCESS],
+    ];
+    for (const [method, accessType] of methods) {
+        const policies: Array<{url: string; accessType: PolicyAccessType}> = [];
+        await requestSearchHttp(
+            {url: "https://search.example.test/query", method},
+            allowPolicy(policies),
+            {timeoutMs: 1_000, maxResponseBytes: 1_024},
+            async (_input, init) => {
+                assert.equal(init?.method, method.toUpperCase());
+                return new Response(null);
+            },
+        );
+        assert.deepEqual(policies, [{url: "https://search.example.test/query", accessType}]);
+    }
+});
+
 test("search HTTP requests fail before fetch on denial and bound response bodies", async () => {
     let fetches = 0;
     const fetch = (async () => {
@@ -97,6 +123,46 @@ test("search HTTP requests fail before fetch on denial and bound response bodies
         /exceeds 10 bytes/,
     );
     assert.equal(fetches, 1);
+});
+
+test("search HTTP cancels received redirect bodies before rejecting invalid destinations", async (t) => {
+    for (const location of [
+        "https://[invalid",
+        "https://user:password@other.example.test/result",
+        "https://other.example.test/result#fragment",
+        "ftp://other.example.test/result",
+    ]) {
+        await t.test(location, async () => {
+            let cancellations = 0;
+            const body = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode("redirect body"));
+                },
+                cancel() {
+                    cancellations++;
+                },
+            });
+            const policies: Array<{url: string; accessType: PolicyAccessType}> = [];
+            let fetches = 0;
+            try {
+                await assert.rejects(requestSearchHttp(
+                    {url: "https://search.example.test/query"},
+                    allowPolicy(policies),
+                    {timeoutMs: 1_000, maxResponseBytes: 1_024},
+                    async () => {
+                        fetches++;
+                        return new Response(body, {status: 302, headers: {Location: location}});
+                    },
+                ));
+                assert.equal(fetches, 1);
+                assert.equal(policies.length, 1);
+                assert.equal(cancellations, 1, "received redirect body must be cancelled on rejection");
+                assert.equal(body.locked, false);
+            } finally {
+                await body.cancel();
+            }
+        });
+    }
 });
 
 function allowPolicy(

@@ -22,15 +22,19 @@ export type SubagentRuntimeOptions = {
     defaultsStore?: SubagentDefaultsStore;
 };
 
+type ActiveSubagentSession = {
+    coordinator: SubagentCoordinator;
+    sessionFactory: SdkSubagentSessionFactory;
+    policyApprovals: SubagentPolicyDecisionFlow;
+    policyRuntime: PolicyRuntime;
+    defaults: SubagentDefaultsRuntime;
+    context: ExtensionContext;
+};
+
 export class SubagentRuntime {
     readonly tools: SubagentToolCatalog;
 
-    private activeCoordinator: SubagentCoordinator | undefined;
-    private activeSessionFactory: SdkSubagentSessionFactory | undefined;
-    private activePolicyApprovals: SubagentPolicyDecisionFlow | undefined;
-    private activePolicyRuntime: PolicyRuntime | undefined;
-    private activeDefaults: SubagentDefaultsRuntime | undefined;
-    private activeContext: ExtensionContext | undefined;
+    private activeSession: ActiveSubagentSession | undefined;
 
     private readonly coordinatorOptions: SubagentCoordinatorOptions;
     private readonly modelRanker: SubagentModelPerformanceRanker | undefined;
@@ -47,7 +51,7 @@ export class SubagentRuntime {
     }
 
     async startSession(ctx: ExtensionContext, policyRuntime: PolicyRuntime): Promise<void> {
-        if (this.activeCoordinator) throw new Error("Subagent session is already started");
+        if (this.activeSession) throw new Error("Subagent session is already started");
         const defaults = new SubagentDefaultsRuntime(this.defaultsStore);
         const sessionFactory = new SdkSubagentSessionFactory(ctx, this.modelRanker);
         const coordinator = new SubagentCoordinator(
@@ -58,33 +62,21 @@ export class SubagentRuntime {
         );
         const policyApprovals = new SubagentPolicyDecisionFlow(sessionFactory, () => defaults.values);
         policyRuntime.setAgentDecisionFlow(policyApprovals);
-        this.activeDefaults = defaults;
-        this.activeContext = ctx;
-        this.activeSessionFactory = sessionFactory;
-        this.activePolicyApprovals = policyApprovals;
-        this.activePolicyRuntime = policyRuntime;
-        this.activeCoordinator = coordinator;
+        this.activeSession = {coordinator, sessionFactory, policyApprovals, policyRuntime, defaults, context: ctx};
     }
 
     async stopSession(): Promise<void> {
-        const coordinator = this.activeCoordinator;
-        const policyApprovals = this.activePolicyApprovals;
-        const policyRuntime = this.activePolicyRuntime;
-        this.activeCoordinator = undefined;
-        this.activeSessionFactory = undefined;
-        this.activePolicyApprovals = undefined;
-        this.activePolicyRuntime = undefined;
-        this.activeDefaults = undefined;
-        this.activeContext = undefined;
-        policyRuntime?.beginShutdown();
+        const activeSession = this.activeSession;
+        this.activeSession = undefined;
+        activeSession?.policyRuntime.beginShutdown();
         let firstError: unknown;
         try {
-            await policyApprovals?.close();
+            await activeSession?.policyApprovals.close();
         } catch (error) {
             firstError = error;
         }
         try {
-            await coordinator?.close();
+            await activeSession?.coordinator.close();
         } catch (error) {
             firstError ??= error;
         }
@@ -92,29 +84,31 @@ export class SubagentRuntime {
     }
 
     coordinator(): SubagentCoordinator {
-        if (!this.activeCoordinator) throw new Error("Subagent session is not available");
-        return this.activeCoordinator;
+        return this.requireActiveSession().coordinator;
     }
 
     defaults(): SubagentDefaultsRuntime {
-        if (!this.activeDefaults) throw new Error("Subagent session is not available");
-        return this.activeDefaults;
+        return this.requireActiveSession().defaults;
     }
 
     availableModels(): string[] {
-        if (!this.activeContext) throw new Error("Subagent session is not available");
+        const {context} = this.requireActiveSession();
         return [...new Set(
-            this.activeContext.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`),
+            context.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`),
         )].sort((left, right) => left.localeCompare(right));
     }
 
     async resolveAutomaticModel(skill: SubagentReasoningSkill): Promise<string> {
-        if (!this.activeSessionFactory) throw new Error("Subagent session is not available");
-        const resolved = await this.activeSessionFactory.resolveModel(
+        const resolved = await this.requireActiveSession().sessionFactory.resolveModel(
             skill,
             SubagentReasoningAmount.MID,
             AUTO_SUBAGENT_MODEL,
         );
         return `${resolved.model.provider}/${resolved.model.id}`;
+    }
+
+    private requireActiveSession(): ActiveSubagentSession {
+        if (!this.activeSession) throw new Error("Subagent session is not available");
+        return this.activeSession;
     }
 }

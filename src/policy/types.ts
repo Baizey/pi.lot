@@ -1,8 +1,5 @@
 // noinspection JSUnusedGlobalSymbols
 
-import {resolvePhysicalPath} from "./path/validation";
-import {ParsedUri} from "./network/ParsedUri";
-
 export type PolicyStatus = {
     accessType: PolicyAccessType;
     lifetime: PolicyLifetime;
@@ -10,16 +7,6 @@ export type PolicyStatus = {
     reason: string;
 };
 
-
-export function resolveUri(accessType: PolicyAccessType, uri: string): string {
-    switch (accessType) {
-        case PolicyAccessType.FS_READ:
-        case PolicyAccessType.FS_WRITE:
-            return resolvePhysicalPath(uri)
-        default:
-            return new ParsedUri(uri).fullUri()
-    }
-}
 
 export type Policy = {
     pattern: string;
@@ -62,6 +49,27 @@ export enum PolicyAccessType {
 
     // Email
     SMTP_ACCESS = "SMTP",
+}
+
+export function httpMethodAccessType(method: string): PolicyAccessType {
+    switch (method.toUpperCase()) {
+        case "GET":
+            return PolicyAccessType.HTTP_GET;
+        case "POST":
+            return PolicyAccessType.HTTP_POST;
+        case "PUT":
+            return PolicyAccessType.HTTP_PUT;
+        case "DELETE":
+            return PolicyAccessType.HTTP_DELETE;
+        case "PATCH":
+            return PolicyAccessType.HTTP_PATCH;
+        case "HEAD":
+            return PolicyAccessType.HTTP_HEAD;
+        case "OPTIONS":
+            return PolicyAccessType.HTTP_OPTIONS;
+        default:
+            return PolicyAccessType.HTTP_ACCESS;
+    }
 }
 
 export enum PolicyFallbackResponse {

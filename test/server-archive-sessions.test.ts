@@ -6,8 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
 import {SessionManager} from "@earendil-works/pi-coding-agent";
-import {ArchiveSessions, getArchiveRootSessionId, recordArchiveMainIdentity} from "../src/server/ArchiveSessions.js";
-import {decodeArchiveMetadata, MAX_ARCHIVE_BYTES, SessionKind} from "../src/server/ArchiveProtocol.js";
+import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
+import {decodeArchiveMetadata, MAX_ARCHIVE_BYTES} from "../src/server/ArchiveProtocol.js";
+import {getSessionRootId, recordMainSessionIdentity, SessionKind} from "../src/sessions/SessionIdentity.js";
 
 const ROOT = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -129,9 +130,9 @@ test("session-bound child identity retains creation intent when its original roo
     assert.equal(unresolved.metadata.root_session_id, undefined);
     assert.equal(unresolved.warnings.length, 1);
     const manager = SessionManager.open(file);
-    assert.equal(getArchiveRootSessionId(manager), undefined);
+    assert.equal(getSessionRootId(manager), undefined);
     const appended: unknown[] = [];
-    recordArchiveMainIdentity({appendEntry: (customType, data) => { appended.push({customType, data}); }}, manager);
+    recordMainSessionIdentity({appendEntry: (customType, data) => { appended.push({customType, data}); }}, manager);
     assert.deepEqual(appended, [], "an explicitly known child must not be relabelled main");
     f.save("subagent-missing-parent", [custom({parentAgentIdentifier: ROOT})]);
     assert.ok((await f.archive.discover("current")).files.includes(file));
@@ -382,13 +383,13 @@ test("bound identities survive resumes, reject conflicts, and do not leak across
     }
     assert.equal((await f.archive.snapshot(conflicting)).warnings.length, 1);
     const resumed = SessionManager.open(childFile);
-    assert.equal(getArchiveRootSessionId(resumed), ROOT);
+    assert.equal(getSessionRootId(resumed), ROOT);
     const notCalled = {appendEntry() { assert.fail("A resumed child must not become a main root"); }};
-    recordArchiveMainIdentity(notCalled, resumed);
-    assert.equal(getArchiveRootSessionId(SessionManager.open(conflicting)), undefined);
+    recordMainSessionIdentity(notCalled, resumed);
+    assert.equal(getSessionRootId(SessionManager.open(conflicting)), undefined);
     const forkManager = SessionManager.open(copied);
     const records: unknown[] = [];
-    recordArchiveMainIdentity({appendEntry(customType, data) {
+    recordMainSessionIdentity({appendEntry(customType, data) {
         records.push(data);
         forkManager.appendCustomEntry(customType, data);
     }}, forkManager);
@@ -397,10 +398,10 @@ test("bound identities survive resumes, reject conflicts, and do not leak across
     const snapshot = await forkArchive.snapshot(copied);
     assert.equal(snapshot.metadata.kind, SessionKind.Main);
     assert.equal(snapshot.metadata.root_session_id, FORK);
-    recordArchiveMainIdentity(notCalled, forkManager);
+    recordMainSessionIdentity(notCalled, forkManager);
     const legacyPrefix = SessionManager.inMemory(f.directory, {id: "policy-approver-legacy"});
-    recordArchiveMainIdentity(notCalled, legacyPrefix);
-    assert.equal(getArchiveRootSessionId(legacyPrefix), undefined);
+    recordMainSessionIdentity(notCalled, legacyPrefix);
+    assert.equal(getSessionRootId(legacyPrefix), undefined);
 });
 
 function fixture(t: TestContext) {

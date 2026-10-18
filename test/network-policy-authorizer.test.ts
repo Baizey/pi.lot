@@ -6,7 +6,7 @@ import {NetworkTargetKind} from "../src/policy/network/NetworkPolicy.js";
 import type {NetworkPolicyEvent, NetworkPolicyScope} from "../src/policy/network/NetworkPolicy.js";
 import type {HttpRequestEvent} from "../src/policy/network/HttpRequestBroker.js";
 import type {ToolCallPathPolicyEvaluator} from "../src/policy/PolicyRuntime.js";
-import {PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse, PolicyResult} from "../src/policy/types.js";
+import {httpMethodAccessType, PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse, PolicyResult} from "../src/policy/types.js";
 
 test("network authorizer maps coarse TCP scopes and exact HTTP methods into unified policy", async () => {
     const evaluations: Array<{uri: string; accessType: PolicyAccessType}> = [];
@@ -25,6 +25,35 @@ test("network authorizer maps coarse TCP scopes and exact HTTP methods into unif
         {uri: "[2001:db8::8]:443", accessType: PolicyAccessType.TCP_ACCESS},
         {uri: "https://example.test/resource", accessType: PolicyAccessType.HTTP_PATCH},
     ]);
+});
+
+test("HTTP method classification preserves the full method table, case handling and unknown fallback", async () => {
+    const cases: Array<[string, PolicyAccessType]> = [
+        ["GET", PolicyAccessType.HTTP_GET],
+        ["POST", PolicyAccessType.HTTP_POST],
+        ["PUT", PolicyAccessType.HTTP_PUT],
+        ["DELETE", PolicyAccessType.HTTP_DELETE],
+        ["PATCH", PolicyAccessType.HTTP_PATCH],
+        ["HEAD", PolicyAccessType.HTTP_HEAD],
+        ["OPTIONS", PolicyAccessType.HTTP_OPTIONS],
+        ["CONNECT", PolicyAccessType.HTTP_ACCESS],
+        ["TRACE", PolicyAccessType.HTTP_ACCESS],
+        ["custom", PolicyAccessType.HTTP_ACCESS],
+        ["", PolicyAccessType.HTTP_ACCESS],
+        [" GET ", PolicyAccessType.HTTP_ACCESS],
+    ];
+    const evaluations: Array<{uri: string; accessType: PolicyAccessType}> = [];
+    const authorizer = new NetworkPolicyAuthorizer({
+        policyEvaluator: evaluator(evaluations, PolicyResponse.ALLOWED),
+        report: () => assert.fail("allowed policy must not be reported"),
+    });
+    for (const [method, expected] of cases) {
+        for (const spelling of [method, method.toLowerCase(), method.slice(0, 1) + method.slice(1).toLowerCase()]) {
+            assert.equal(httpMethodAccessType(spelling), expected, spelling);
+            assert.equal(await authorizer.authorizeHttpRequest(httpEvent(spelling), new AbortController().signal), true);
+            assert.equal(evaluations.at(-1)?.accessType, expected, spelling);
+        }
+    }
 });
 
 test("network authorizer fails closed and reports unified policy denials", async () => {

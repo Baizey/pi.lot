@@ -1,25 +1,17 @@
 import {constants} from "node:fs";
 import {lstat, open, readdir, realpath} from "node:fs/promises";
 import path from "node:path";
-import {getAgentDir, type ExtensionAPI, type ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {MAX_ARCHIVE_BYTES, SessionKind, type ArchiveMetadata} from "./ArchiveProtocol.js";
+import {getAgentDir, type ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {MAX_ARCHIVE_BYTES, type ArchiveMetadata} from "./ArchiveProtocol.js";
+import {getSessionRootId, isNativeSessionId, SessionIdentity, SessionKind} from "../sessions/SessionIdentity.js";
 
 // Pi exposes this native readonly view through ExtensionContext, not its barrel exports.
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 type CatalogEntry = {
     file: string;
-    sessionId: string;
     parentSession?: string;
-    parentAgentIdentifier?: string;
-    rootSessionId?: string;
-    childKind?: ChildSessionKind;
-    identity?: ArchiveIdentity;
-    identityConflict?: boolean;
+    session: SessionIdentity;
 };
-type ChildSessionKind = SessionKind.Subagent | SessionKind.PolicyApprover;
-type ArchiveIdentity =
-    | {kind: SessionKind.Main; rootSessionId: string; parentAgentIdentifier?: undefined}
-    | {kind: ChildSessionKind; rootSessionId?: string; parentAgentIdentifier: string};
 type ParsedSession = {entry: CatalogEntry; metadata: ArchiveMetadata};
 type Snapshot = {file: string; sessionId: string; body: Buffer; metadata: ArchiveMetadata; warnings: string[]};
 type Family = {kind: SessionKind; rootSessionId: string};
@@ -32,7 +24,7 @@ export class ArchiveSessions {
     private currentRootSessionId: string | undefined;
 
     constructor(private readonly manager: ReadonlySessionManager) {
-        this.currentRootSessionId = getArchiveRootSessionId(manager);
+        this.currentRootSessionId = getSessionRootId(manager);
     }
 
     async discover(scope: "current" | "all", signal?: AbortSignal): Promise<{files: string[]; warnings: string[]; rootSessionId?: string}> {
@@ -40,7 +32,7 @@ export class ArchiveSessions {
         this.catalog.clear();
         this.byId.clear();
         this.collisions.clear();
-        this.currentRootSessionId = getArchiveRootSessionId(this.manager);
+        this.currentRootSessionId = getSessionRootId(this.manager);
         const warnings: string[] = [];
         const currentFile = this.manager.getSessionFile();
         if (scope === "current" && !currentFile) {
@@ -85,9 +77,9 @@ export class ArchiveSessions {
                 if (this.catalog.has(file)) continue;
                 const {entry} = this.parse(file, body, signal);
                 this.catalog.set(file, entry);
-                const previous = this.byId.get(entry.sessionId);
-                if (previous && previous.file !== file) this.collisions.add(entry.sessionId);
-                else this.byId.set(entry.sessionId, entry);
+                const previous = this.byId.get(entry.session.sessionId);
+                if (previous && previous.file !== file) this.collisions.add(entry.session.sessionId);
+                else this.byId.set(entry.session.sessionId, entry);
             } catch {
                 checkAbort(signal);
                 skippedFiles++;
@@ -96,13 +88,20 @@ export class ArchiveSessions {
         for (const id of this.collisions) this.byId.delete(id);
         // A resumed legacy/partial child may need the catalog's parent chain to
         // recover its originating main session. Unknown is not an empty family.
-        this.currentRootSessionId ??= this.resolveFamily(managerIdentity(this.manager))?.rootSessionId;
+        if (this.currentRootSessionId === undefined) {
+            const parentSession = this.manager.getHeader()?.parentSession;
+            this.currentRootSessionId = this.resolveFamily({
+                file: this.manager.getSessionFile() ?? "",
+                parentSession: typeof parentSession === "string" ? parentSession : undefined,
+                session: SessionIdentity.fromManager(this.manager),
+            })?.rootSessionId;
+        }
         let unresolvedChildren = 0;
         const files: string[] = [];
         for (const entry of this.catalog.values()) {
-            if (this.collisions.has(entry.sessionId)) continue;
+            if (this.collisions.has(entry.session.sessionId)) continue;
             const family = this.resolveFamily(entry);
-            if ((entry.childKind || entry.identityConflict) && !family) unresolvedChildren++;
+            if ((entry.session.childKind || entry.session.identityConflict) && !family) unresolvedChildren++;
             if (scope === "all" || (family && family.rootSessionId === this.currentRootSessionId)) files.push(entry.file);
         }
         if (skippedFiles) warnings.push(`Skipped ${skippedFiles} unreadable, unsafe, changing, or invalid session file(s).`);
@@ -119,11 +118,11 @@ export class ArchiveSessions {
         const stable = await this.readStable(file, signal);
         const parsed = this.parse(stable.file, stable.body, signal);
         const indexed = this.catalog.get(stable.file);
-        if (indexed && indexed.sessionId !== parsed.entry.sessionId) {
+        if (indexed && indexed.session.sessionId !== parsed.entry.session.sessionId) {
             throw new Error("Session identity changed after archive discovery; discover again before uploading.");
         }
-        if (this.collisions.has(parsed.entry.sessionId)
-            || (this.byId.has(parsed.entry.sessionId) && this.byId.get(parsed.entry.sessionId)?.file !== stable.file)) {
+        if (this.collisions.has(parsed.entry.session.sessionId)
+            || (this.byId.has(parsed.entry.session.sessionId) && this.byId.get(parsed.entry.session.sessionId)?.file !== stable.file)) {
             throw new Error("Duplicate session ID in different files; archive upload is ambiguous.");
         }
         const warnings: string[] = [];
@@ -131,52 +130,54 @@ export class ArchiveSessions {
         if (family) {
             parsed.metadata.kind = family.kind;
             parsed.metadata.root_session_id = family.rootSessionId;
-        } else if (parsed.entry.childKind || parsed.entry.identityConflict) {
+        } else if (parsed.entry.session.childKind || parsed.entry.session.identityConflict) {
             warnings.push("Session root ancestry is unresolved or conflicting; kind and root session metadata were omitted.");
         }
         checkAbort(signal);
-        return {file: stable.file, sessionId: parsed.entry.sessionId, body: stable.body, metadata: parsed.metadata, warnings};
+        return {file: stable.file, sessionId: parsed.entry.session.sessionId, body: stable.body, metadata: parsed.metadata, warnings};
     }
 
     private resolveFamily(entry: CatalogEntry): Family | undefined {
-        if (this.collisions.has(entry.sessionId) || entry.identityConflict) return undefined;
+        const session = entry.session;
+        if (this.collisions.has(session.sessionId) || session.identityConflict) return undefined;
         const activeRootId = this.currentRootSessionId;
         const currentId = this.manager.getSessionId();
-        if (!entry.childKind) {
+        if (!session.childKind) {
             // UUID shape and native fork provenance do not establish Pilot identity.
-            return entry.identity?.kind === SessionKind.Main || (entry.sessionId === currentId && activeRootId === currentId)
-                ? {kind: SessionKind.Main, rootSessionId: entry.sessionId}
+            return session.identity?.kind === SessionKind.Main || (session.sessionId === currentId && activeRootId === currentId)
+                ? {kind: SessionKind.Main, rootSessionId: session.sessionId}
                 : undefined;
         }
         const seen = new Set<string>();
         let expectedRoot: string | undefined;
         let cursor: CatalogEntry | undefined = entry;
         while (cursor) {
-            if (seen.has(cursor.sessionId) || this.collisions.has(cursor.sessionId) || cursor.identityConflict) return undefined;
-            seen.add(cursor.sessionId);
-            if (!cursor.childKind) {
-                const isRoot = cursor.identity?.kind === SessionKind.Main
-                    || (cursor.sessionId === currentId && activeRootId === currentId)
-                    || cursor.sessionId === expectedRoot;
-                return isRoot && (!expectedRoot || expectedRoot === cursor.sessionId)
-                    ? {kind: entry.childKind, rootSessionId: cursor.sessionId} : undefined;
+            const ancestor: SessionIdentity = cursor.session;
+            if (seen.has(ancestor.sessionId) || this.collisions.has(ancestor.sessionId) || ancestor.identityConflict) return undefined;
+            seen.add(ancestor.sessionId);
+            if (!ancestor.childKind) {
+                const isRoot = ancestor.identity?.kind === SessionKind.Main
+                    || (ancestor.sessionId === currentId && activeRootId === currentId)
+                    || ancestor.sessionId === expectedRoot;
+                return isRoot && (!expectedRoot || expectedRoot === ancestor.sessionId)
+                    ? {kind: session.childKind, rootSessionId: ancestor.sessionId} : undefined;
             }
-            if (cursor.rootSessionId) {
-                if (expectedRoot && expectedRoot !== cursor.rootSessionId) return undefined;
-                expectedRoot = cursor.rootSessionId;
-                const root = this.byId.get(expectedRoot);
+            if (ancestor.rootSessionId) {
+                if (expectedRoot && expectedRoot !== ancestor.rootSessionId) return undefined;
+                expectedRoot = ancestor.rootSessionId;
+                const root = this.byId.get(expectedRoot)?.session;
                 if (seen.has(expectedRoot) || this.collisions.has(expectedRoot) || root?.identityConflict || root?.childKind) return undefined;
             }
-            if (cursor.parentAgentIdentifier && this.collisions.has(cursor.parentAgentIdentifier)) return undefined;
-            const parentById: CatalogEntry | undefined = cursor.parentAgentIdentifier
-                ? this.byId.get(cursor.parentAgentIdentifier) : undefined;
+            if (ancestor.parentAgentIdentifier && this.collisions.has(ancestor.parentAgentIdentifier)) return undefined;
+            const parentById: CatalogEntry | undefined = ancestor.parentAgentIdentifier
+                ? this.byId.get(ancestor.parentAgentIdentifier) : undefined;
             if (parentById) {
                 cursor = parentById;
                 continue;
             }
-            if (cursor.parentAgentIdentifier === currentId && activeRootId && !this.collisions.has(activeRootId)) {
+            if (ancestor.parentAgentIdentifier === currentId && activeRootId && !this.collisions.has(activeRootId)) {
                 return !expectedRoot || expectedRoot === activeRootId
-                    ? {kind: entry.childKind, rootSessionId: activeRootId} : undefined;
+                    ? {kind: session.childKind, rootSessionId: activeRootId} : undefined;
             }
             // Never open parentSession: only look up paths/IDs already in the owned catalog.
             const parentPath: string | undefined = cursor.parentSession
@@ -185,20 +186,20 @@ export class ArchiveSessions {
             const parentByHeaderId: CatalogEntry | undefined = cursor.parentSession ? this.byId.get(cursor.parentSession) : undefined;
             const indexedParent: CatalogEntry | undefined = parentByPath ?? parentByHeaderId;
             if (indexedParent) {
-                if (cursor.parentAgentIdentifier && indexedParent.sessionId !== cursor.parentAgentIdentifier) return undefined;
+                if (ancestor.parentAgentIdentifier && indexedParent.session.sessionId !== ancestor.parentAgentIdentifier) return undefined;
                 cursor = indexedParent;
                 continue;
             }
             const currentFile = this.manager.getSessionFile();
             const pathLinksToCurrent = parentPath && currentFile && parentPath === path.resolve(currentFile);
-            if (pathLinksToCurrent && cursor.parentAgentIdentifier && cursor.parentAgentIdentifier !== currentId) return undefined;
-            const linksToCurrent = cursor.parentAgentIdentifier === currentId || pathLinksToCurrent;
+            if (pathLinksToCurrent && ancestor.parentAgentIdentifier && ancestor.parentAgentIdentifier !== currentId) return undefined;
+            const linksToCurrent = ancestor.parentAgentIdentifier === currentId || pathLinksToCurrent;
             if (linksToCurrent && activeRootId && !this.collisions.has(currentId) && !this.collisions.has(activeRootId)) {
                 return !expectedRoot || expectedRoot === activeRootId
-                    ? {kind: entry.childKind, rootSessionId: activeRootId} : undefined;
+                    ? {kind: session.childKind, rootSessionId: activeRootId} : undefined;
             }
             // A self-bound root remains usable when its parent history is unavailable.
-            return expectedRoot ? {kind: entry.childKind, rootSessionId: expectedRoot} : undefined;
+            return expectedRoot ? {kind: session.childKind, rootSessionId: expectedRoot} : undefined;
         }
         return undefined;
     }
@@ -275,15 +276,13 @@ export class ArchiveSessions {
             }
             if (!isRecord(value) || typeof value.type !== "string") throw new Error("Archive session contains invalid native entries.");
             if (!header) {
-                if (value.type !== "session" || !validId(value.id)
+                if (value.type !== "session" || !isNativeSessionId(value.id)
                     || (value.version !== undefined && (!Number.isInteger(value.version) || Number(value.version) < 1))) {
                     throw new Error("Archive session must start with a native session header.");
                 }
                 header = value;
-                entry = {file, sessionId: value.id};
+                entry = {file, session: new SessionIdentity(value.id)};
                 if (typeof value.parentSession === "string") entry.parentSession = value.parentSession;
-                if (value.id.startsWith("policy-approver-")) entry.childKind = SessionKind.PolicyApprover;
-                else if (value.id.startsWith("subagent-")) entry.childKind = SessionKind.Subagent;
                 const started = persistedTime(value.timestamp);
                 if (started !== undefined) {
                     metadata.started_at = new Date(started).toISOString();
@@ -295,8 +294,8 @@ export class ArchiveSessions {
             const time = persistedTime(value.timestamp);
             if (time !== undefined) lastActivity = Math.max(lastActivity ?? time, time);
             if (value.type === "session_info") name = typeof value.name === "string" ? shortTitle(value.name) : undefined;
-            if (value.type === "custom" && (value.customType === "pilot.subagent" || value.customType === "pilot.archive") && entry) {
-                applyIdentityRecord(entry, value.customType, value.data);
+            if (value.type === "custom" && typeof value.customType === "string" && entry) {
+                entry.session.applyRecord(value.customType, value.data);
             }
             if (value.type !== "message" || !isRecord(value.message)) continue;
             const message = value.message;
@@ -320,72 +319,6 @@ export class ArchiveSessions {
     }
 }
 
-/** Called only for the active Pilot session, before any children are created. */
-export function recordArchiveMainIdentity(pi: Pick<ExtensionAPI, "appendEntry">, manager: ReadonlySessionManager): void {
-    const entry = managerIdentity(manager);
-    if (!validId(entry.sessionId) || entry.childKind || entry.identity || entry.identityConflict) return;
-    pi.appendEntry("pilot.archive", {
-        version: 1, sessionId: entry.sessionId, kind: SessionKind.Main, rootSessionId: entry.sessionId,
-    });
-}
-
-/** Active context supplies positive main identity; resumed children must retain their original root. */
-export function getArchiveRootSessionId(manager: ReadonlySessionManager): string | undefined {
-    const entry = managerIdentity(manager);
-    if (!validId(entry.sessionId) || entry.identityConflict) return undefined;
-    if (entry.identity) return entry.identity.rootSessionId;
-    return entry.childKind ? undefined : entry.sessionId;
-}
-
-function managerIdentity(manager: ReadonlySessionManager): CatalogEntry {
-    const sessionId = manager.getSessionId();
-    const entry: CatalogEntry = {file: manager.getSessionFile() ?? "", sessionId};
-    const parentSession = manager.getHeader()?.parentSession;
-    if (typeof parentSession === "string") entry.parentSession = parentSession;
-    if (sessionId.startsWith("policy-approver-")) entry.childKind = SessionKind.PolicyApprover;
-    else if (sessionId.startsWith("subagent-")) entry.childKind = SessionKind.Subagent;
-    for (const value of manager.getEntries()) {
-        if (value.type === "custom" && (value.customType === "pilot.subagent" || value.customType === "pilot.archive")) {
-            applyIdentityRecord(entry, value.customType, value.data);
-        }
-    }
-    return entry;
-}
-
-function applyIdentityRecord(entry: CatalogEntry, customType: string, data: unknown): void {
-    if (!isRecord(data)) return;
-    if (data.sessionId === undefined) {
-        // Old records are useful only for known legacy child IDs. Forks copy custom
-        // entries, so an unbound record can never establish identity on ordinary IDs.
-        if (customType === "pilot.subagent" && entry.childKind && !entry.identity && validId(data.parentAgentIdentifier)) {
-            if (entry.parentAgentIdentifier && entry.parentAgentIdentifier !== data.parentAgentIdentifier) entry.identityConflict = true;
-            entry.parentAgentIdentifier = data.parentAgentIdentifier;
-        }
-        return;
-    }
-    if (data.sessionId !== entry.sessionId) return;
-    let identity: ArchiveIdentity;
-    if (data.version === 1 && customType === "pilot.archive" && data.kind === SessionKind.Main
-        && data.rootSessionId === entry.sessionId) {
-        identity = {kind: SessionKind.Main, rootSessionId: entry.sessionId};
-    } else if (data.version === 1 && customType === "pilot.subagent"
-        && (data.kind === SessionKind.Subagent || data.kind === SessionKind.PolicyApprover)
-        && validId(data.parentAgentIdentifier) && data.parentAgentIdentifier !== entry.sessionId
-        && (data.rootSessionId === undefined || (validId(data.rootSessionId) && data.rootSessionId !== entry.sessionId))) {
-        identity = {kind: data.kind, parentAgentIdentifier: data.parentAgentIdentifier,
-            ...(data.rootSessionId !== undefined ? {rootSessionId: data.rootSessionId} : {})};
-    } else {
-        entry.identityConflict = true;
-        return;
-    }
-    if (entry.identity && (entry.identity.kind !== identity.kind || entry.identity.rootSessionId !== identity.rootSessionId
-        || entry.identity.parentAgentIdentifier !== identity.parentAgentIdentifier)) entry.identityConflict = true;
-    entry.identity = identity;
-    entry.rootSessionId = identity.rootSessionId;
-    entry.parentAgentIdentifier = identity.parentAgentIdentifier;
-    entry.childKind = identity.kind === SessionKind.Main ? undefined : identity.kind;
-}
-
 function checkAbort(signal?: AbortSignal): void {
     if (!signal?.aborted) return;
     const error = new Error("Archive operation was aborted.");
@@ -399,11 +332,6 @@ function hasCode(error: unknown, code: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function validId(value: unknown): value is string {
-    return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 512
-        && !/[\u0000-\u001f\u007f-\u009f]/u.test(value) && Buffer.from(value).toString("utf8") === value;
 }
 
 function persistedTime(value: unknown): number | undefined {

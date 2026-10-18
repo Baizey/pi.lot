@@ -7,7 +7,6 @@ import {
 import {objectSchema, stringSchema} from "../types";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {ThemeColor} from "../../tui/Color";
 
@@ -51,32 +50,16 @@ function createDefinition(
     coordinator: CoordinatorProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
-    const presentation = new ToolPresentationRenderer(STOP_PRESENTATION, displayRows);
     return {
         name: "subagent_stop",
         label: "Stop subagent",
         description: "Stop a queued, running, or idle subagent and all of its descendants.",
-        renderShell: "self",
+        ...displayRows.bind(STOP_PRESENTATION),
         parameters: objectSchema({jobId: stringSchema("Subagent job id")}, ["jobId"]),
         async execute(_id, params): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as StopToolInput;
             const result = await coordinator().stop(input.jobId);
             return subagentToolResult([result]);
         },
-        renderCall: (args, theme, context) => {
-            displayRows.observe("subagent_stop", args, context);
-            return presentation.renderCall(
-                args as StopToolInput,
-                theme,
-                displayRows.resolveMode(context.expanded, context.state),
-                context,
-            );
-        },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
-            theme,
-            {isError: context.isError, outputPad: context.outputPad},
-            displayRows.resolveMode(options.expanded, context.state),
-        ),
     };
 }

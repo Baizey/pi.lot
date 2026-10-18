@@ -74,6 +74,71 @@ test("JSON providers map their APIs into one normalized response contract", asyn
     }
 });
 
+test("JSON providers preserve row defaults and their distinct envelope requirements", async (t) => {
+    const scenarios = [
+        {
+            provider: new SearXngSearchProvider({baseUrl: "https://searx.example.test"}),
+            urlField: "url", snippetField: "content", dateField: "publishedDate",
+            envelope: (rows: unknown) => ({results: rows}),
+        },
+        {
+            provider: new BraveSearchProvider({apiKey: "secret"}),
+            urlField: "url", snippetField: "description", dateField: "age",
+            envelope: (rows: unknown) => ({web: {results: rows}}),
+        },
+        {
+            provider: new TavilySearchProvider({apiKey: "secret"}),
+            urlField: "url", snippetField: "content", dateField: "published_date",
+            envelope: (rows: unknown) => ({results: rows}),
+        },
+        {
+            provider: new SerperSearchProvider({apiKey: "secret"}),
+            urlField: "link", snippetField: "snippet", dateField: "date",
+            envelope: (rows: unknown) => ({organic: rows}),
+        },
+    ];
+    for (const scenario of scenarios) {
+        await t.test(scenario.provider.id, async () => {
+            const search = (envelope: unknown) => scenario.provider.search(
+                {query: "test", maxResults: 1},
+                fakeHttp(async () => httpResponse(JSON.stringify(envelope))),
+            );
+            const response = await search(scenario.envelope([
+                null, [], "row", 42, {},
+                {[scenario.urlField]: ""},
+                {[scenario.urlField]: 123},
+                {[scenario.urlField]: "https://example.test/defaults", title: 123,
+                    [scenario.snippetField]: false, [scenario.dateField]: 123},
+                {[scenario.urlField]: "https://example.test/full", title: "Title",
+                    [scenario.snippetField]: "Snippet", [scenario.dateField]: "2026-01-01"},
+                {[scenario.urlField]: "https://example.test/full", title: "",
+                    [scenario.snippetField]: "", [scenario.dateField]: ""},
+                {[scenario.urlField]: "not a URL"},
+            ]));
+            assert.deepEqual(response.results, [
+                {title: "https://example.test/defaults", url: "https://example.test/defaults", snippet: ""},
+                {title: "Title", url: "https://example.test/full", snippet: "Snippet", publishedAt: "2026-01-01"},
+                {title: "", url: "https://example.test/full", snippet: "", publishedAt: ""},
+                {title: "not a URL", url: "not a URL", snippet: ""},
+            ]);
+            assert.deepEqual(await search(scenario.envelope([])), {results: []});
+            for (const invalid of [null, [], "envelope", scenario.envelope(null), scenario.envelope({})]) {
+                await assert.rejects(search(invalid), /Search backend returned/);
+            }
+            for (const absent of [{}, scenario.envelope(undefined)]) {
+                if (scenario.provider.id === WebSearchProviderId.BRAVE) {
+                    assert.deepEqual(await search(absent), {results: []});
+                } else {
+                    await assert.rejects(search(absent), /Search backend returned no .*results array/);
+                }
+            }
+            if (scenario.provider.id === WebSearchProviderId.BRAVE) {
+                await assert.rejects(search({web: null}), /invalid web result envelope/);
+            }
+        });
+    }
+});
+
 test("DuckDuckGo HTML parsing needs no DOM dependency and resolves redirect URLs", async () => {
     const html = `
         <div class="result results_links">

@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {JsonDefaultsFile} from "../storage/JsonDefaultsFile.js";
 import {SubagentReasoningSkill} from "./SubagentReasoning.js";
 
 export const AUTO_SUBAGENT_MODEL = "auto";
@@ -22,41 +22,27 @@ export interface SubagentDefaultsStore {
 
 export class SubagentDefaultsJsonStore implements SubagentDefaultsStore {
     readonly file: string;
+    private readonly defaultsFile: JsonDefaultsFile<SubagentDefaultValues>;
 
     constructor(
         filename = "subagent-defaults",
         directory = path.join(os.homedir(), ".pilot"),
     ) {
         this.file = path.join(directory, `${filename}.json`);
+        this.defaultsFile = new JsonDefaultsFile(
+            this.file,
+            "subagent defaults",
+            parseDefaults,
+            () => ({...initialSubagentDefaults}),
+        );
     }
 
     load(): SubagentDefaultValues {
-        let contents: string;
-        try {
-            contents = fs.readFileSync(this.file, "utf8");
-        } catch (error) {
-            if (isNodeError(error) && error.code === "ENOENT") return {...initialSubagentDefaults};
-            throw new Error(`Unable to read subagent defaults from ${this.file}.`, {cause: error});
-        }
-
-        try {
-            return parseDefaults(JSON.parse(contents));
-        } catch (error) {
-            throw new Error(`Invalid subagent defaults in ${this.file}.`, {cause: error});
-        }
+        return this.defaultsFile.load();
     }
 
     save(defaults: SubagentDefaultValues): void {
-        fs.mkdirSync(path.dirname(this.file), {recursive: true, mode: 0o700});
-        try {
-            fs.writeFileSync(this.file, `${JSON.stringify(defaults, null, 2)}\n`, {
-                encoding: "utf8",
-                flag: "w",
-                mode: 0o600,
-            });
-        } catch (error) {
-            throw new Error(`Unable to save subagent defaults to ${this.file}.`, {cause: error});
-        }
+        this.defaultsFile.save(defaults);
     }
 }
 
@@ -106,8 +92,4 @@ function modelPreference(value: unknown, skill: SubagentReasoningSkill): Subagen
         throw new Error(`${skill} must be auto or a canonical provider/model`);
     }
     return normalized;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-    return error instanceof Error && "code" in error;
 }

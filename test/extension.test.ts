@@ -22,6 +22,9 @@ import {PolicyDaoInterface} from "../src/storage/PolicyDao";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 import {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime";
 import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue";
+import {SubagentRuntime} from "../src/subagents/SubagentRuntime.js";
+import {AgentCapabilitySet, AgentMechanismCapability} from "../src/subagents/AgentCapability.js";
+import {initialSubagentDefaults} from "../src/subagents/SubagentDefaults.js";
 
 const expectedToolNames = [
     "bash",
@@ -161,6 +164,53 @@ test("the production extension installs built-in overrides immediately but defer
     assert.equal(typeof harness.sessionShutdown(), "function");
     assert.ok(harness.registeredEventNames.includes("thinking_level_select"));
     assert.ok(harness.registeredEventNames.includes("model_select"));
+});
+
+test("registered builtin and delegation collections supply the same child definitions without root-only tools", async (t) => {
+    const harness = extensionHarness();
+    const ctx = {
+        cwd: process.cwd(), hasUI: false, mode: "print", ui: {}, sessionManager: archiveSessionManager(),
+    } as unknown as ExtensionContext;
+    const childTools: ReturnType<SubagentRuntime["tools"]["resolve"]>[] = [];
+    const startSession = SubagentRuntime.prototype.startSession;
+    t.mock.method(SubagentRuntime.prototype, "startSession", async function (
+        this: SubagentRuntime,
+        context: ExtensionContext,
+        policyRuntime: PolicyRuntime,
+    ) {
+        await startSession.call(this, context, policyRuntime);
+        childTools.push(
+            this.tools.resolve(new AgentCapabilitySet([])),
+            this.tools.resolve(new AgentCapabilitySet([AgentMechanismCapability.delegate])),
+        );
+    });
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        subagentDefaultsStore: {load: () => ({...initialSubagentDefaults}), save() {}},
+        createSessionRuntime(context) {
+            const policyRuntime = createPolicyRuntime(context);
+            return {
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                setFullNetworkInspection() {}, beginShutdown: () => policyRuntime.beginShutdown(), close() {},
+            };
+        },
+    }).register();
+
+    try {
+        await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+        const builtins = ["bash", "web_search", "read", "edit", "write"];
+        const delegation = ["subagent_spawn", "subagent_status", "subagent_message", "subagent_stop"];
+        assert.deepEqual(childTools.map((tools) => tools.map((tool) => tool.name)), [
+            builtins, [...builtins, ...delegation],
+        ]);
+        for (const tools of childTools) {
+            for (const tool of tools) assert.equal(tool, registeredTool(harness, tool.name));
+            assert.equal(tools.some((tool) => tool.name.startsWith("archive_")), false);
+        }
+        assert.deepEqual(harness.registeredToolNames, expectedToolNames);
+    } finally {
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    }
 });
 
 test("startup records session-bound main identity before owned child infrastructure without archive network", async (t) => {

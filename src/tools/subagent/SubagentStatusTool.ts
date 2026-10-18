@@ -12,7 +12,6 @@ import {
 } from "../types";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {ThemeColor} from "../../tui/Color";
 
@@ -64,12 +63,11 @@ function createDefinition(
     coordinator: CoordinatorProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
-    const presentation = new ToolPresentationRenderer(STATUS_PRESENTATION, displayRows);
     return {
         name: "subagent_status",
         label: "Subagent status",
         description: "Inspect subagent conversation jobs and optionally wait for selected active turns to become idle or terminal. Omit jobIds to render the invoking agent's scoped descendant tree.",
-        renderShell: "self",
+        ...displayRows.bind(STATUS_PRESENTATION),
         parameters: objectSchema({
             jobIds: arraySchema(
                 stringSchema("Subagent job id"),
@@ -88,20 +86,5 @@ function createDefinition(
             );
             return subagentToolResult(jobs, {tree});
         },
-        renderCall: (args, theme, context) => {
-            displayRows.observe("subagent_status", args, context);
-            return presentation.renderCall(
-                args as StatusToolInput,
-                theme,
-                displayRows.resolveMode(context.expanded, context.state),
-                context,
-            );
-        },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
-            theme,
-            {isError: context.isError, outputPad: context.outputPad},
-            displayRows.resolveMode(options.expanded, context.state),
-        ),
     };
 }

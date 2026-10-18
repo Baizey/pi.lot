@@ -5,7 +5,8 @@ import path from "node:path";
 import {randomUUID} from "node:crypto";
 import {test, type TestContext} from "node:test";
 import {ArchiveJournal, type ArchiveUploadSnapshot} from "../src/server/ArchiveJournal.js";
-import {SessionKind, type Binding, type Publication, type Receipt} from "../src/server/ArchiveProtocol.js";
+import type {Binding, Publication, Receipt} from "../src/server/ArchiveProtocol.js";
+import {SessionKind} from "../src/sessions/SessionIdentity.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 
 const binding: Binding = {server_id: randomUUID(), namespace_id: randomUUID(), history_generation: randomUUID()};

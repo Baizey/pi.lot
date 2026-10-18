@@ -364,6 +364,143 @@ test("queued follow-ups clear completed output when promoted to the displayed ta
     await coordinator.close();
 });
 
+test("idle promotion updates policy context, publishes the queue, then prompts the retained session", async (t) => {
+    const events: string[] = [];
+    const second = deferred<string>();
+    const principals = new FakePolicyPrincipals();
+    const updateContext = principals.updatePolicyPrincipalContext.bind(principals);
+    t.mock.method(principals, "updatePolicyPrincipalContext", (id: string, context: {task?: string}) => {
+        updateContext(id, context);
+        events.push(`context:${context.task}`);
+    });
+    let firstScope: ApprovalWaitScope | undefined;
+    const coordinator = new SubagentCoordinator({
+        async create() {
+            return new FakeSession(async (task, signal) => {
+                if (task === "inspect the change") {
+                    firstScope = ApprovalWaitScope.current();
+                    return "first answer";
+                }
+                events.push(`prompt:${task}`);
+                assert.equal(principals.contextUpdates.at(-1)?.task, task);
+                const previousScope = firstScope;
+                assert.ok(previousScope);
+                assert.throws(() => previousScope.setTimeout(() => {}, 10), /closed/);
+                assert.notEqual(ApprovalWaitScope.current(), previousScope);
+                return abortable(second.promise, signal);
+            });
+        },
+    }, tools(), principals);
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request());
+    const [first] = await coordinator.status([spawned.job.id], 2);
+    assert.equal(first?.status, SubagentJobStatus.IDLE);
+    assert.equal(first?.finishedAt, undefined);
+    coordinator.subscribe((change) => {
+        if (change.kind === "upsert" && change.job.status === SubagentJobStatus.QUEUED) {
+            events.push(`queued:${change.job.task}`);
+        }
+    });
+
+    const active = await coordinator.message(spawned.job.id, "second task");
+    assert.deepEqual(events, ["context:second task", "queued:second task", "prompt:second task"]);
+    assert.equal(active.status, SubagentJobStatus.RUNNING);
+    assert.equal(active.finishedAt, undefined);
+    assert.equal(active.output, undefined);
+    second.resolve("second answer");
+    const [settled] = await coordinator.status([spawned.job.id], 2);
+    assert.equal(settled?.status, SubagentJobStatus.IDLE);
+    assert.equal(settled?.finishedAt, undefined);
+    assert.equal(settled?.startedAt, first?.startedAt);
+    const stopped = await coordinator.stop(spawned.job.id);
+    assert.equal(typeof stopped.finishedAt, "number");
+    await assert.rejects(coordinator.message(spawned.job.id, "cannot resume"), /cannot receive a message/);
+});
+
+test("automatic promotion cleans the old scope before queue notification and releases its slot in FIFO order", async (t) => {
+    const events: string[] = [];
+    const first = deferred<string>();
+    const peer = deferred<string>();
+    const second = deferred<string>();
+    const principals = new FakePolicyPrincipals();
+    const updateContext = principals.updatePolicyPrincipalContext.bind(principals);
+    t.mock.method(principals, "updatePolicyPrincipalContext", (id: string, context: {task?: string}) => {
+        updateContext(id, context);
+        if (context.task === "second task") events.push("context:second task");
+    });
+    const setScope = principals.setPolicyApprovalWaitScope.bind(principals);
+    let workerId: string;
+    let firstScope: ApprovalWaitScope | undefined;
+    t.mock.method(principals, "setPolicyApprovalWaitScope", (id: string, scope: ApprovalWaitScope | undefined) => {
+        setScope(id, scope);
+        if (id === workerId && !scope) events.push("old-scope:detached");
+    });
+    const coordinator = new SubagentCoordinator({
+        async create(childRequest) {
+            if (childRequest.role === "peer") {
+                return new FakeSession((_task, signal) => {
+                    events.push("prompt:peer");
+                    return abortable(peer.promise, signal);
+                });
+            }
+            return new FakeSession(async (task, signal) => {
+                if (task === "inspect the change") {
+                    firstScope = ApprovalWaitScope.current();
+                    assert.ok(firstScope);
+                    firstScope.beginWait();
+                    firstScope.subscribe((waiting) => {
+                        if (!waiting) events.push("old-scope:closed");
+                    });
+                    return abortable(first.promise, signal);
+                }
+                events.push(`prompt:${task}`);
+                assert.equal(principals.contextUpdates.at(-1)?.task, task);
+                const previousScope = firstScope;
+                assert.ok(previousScope);
+                assert.equal(previousScope.waiting, false);
+                assert.throws(() => previousScope.setTimeout(() => {}, 10), /closed/);
+                assert.notEqual(ApprovalWaitScope.current(), previousScope);
+                return abortable(second.promise, signal);
+            }, undefined, async () => false);
+        },
+    }, tools(), principals, {maxConcurrency: 1});
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request());
+    workerId = spawned.job.id;
+    await waitUntil(() => firstScope !== undefined);
+    const waitingPeer = await coordinator.spawn(request({role: "peer"}));
+    await coordinator.message(workerId, "second task");
+    coordinator.subscribe((change) => {
+        if (change.kind === "upsert" && change.job.id === workerId
+            && change.job.task === "second task" && change.job.status === SubagentJobStatus.QUEUED) {
+            events.push("queued:second task");
+        }
+    });
+
+    first.resolve("first answer");
+    await waitUntil(() => events.includes("prompt:peer"));
+    assert.deepEqual(events, [
+        "context:second task", "old-scope:closed", "old-scope:detached",
+        "queued:second task", "prompt:peer",
+    ]);
+    const [queued] = coordinator.list([workerId]);
+    assert.equal(queued?.status, SubagentJobStatus.QUEUED);
+    assert.equal(queued?.finishedAt, undefined);
+    assert.equal(queued?.output, undefined);
+    assert.equal(queued?.turns, 1);
+    peer.resolve("peer answer");
+    await coordinator.status([waitingPeer.job.id], 2);
+    await waitUntil(() => events.includes("prompt:second task"));
+    assert.equal(events.at(-1), "prompt:second task");
+    second.resolve("second answer");
+    const [settled] = await coordinator.status([workerId], 2);
+    assert.equal(settled?.status, SubagentJobStatus.IDLE);
+    assert.equal(settled?.finishedAt, undefined);
+    assert.equal(settled?.output, "second answer");
+    assert.equal(settled?.turns, 2);
+    assert.equal(principals.registrations.filter((entry) => entry.id === workerId).length, 1);
+});
+
 test("messages sent to a queued job remain ordered conversation turns", async () => {
     const blocker = deferred<string>();
     const prompts: string[] = [];

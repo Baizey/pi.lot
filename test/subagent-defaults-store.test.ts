@@ -26,10 +26,56 @@ test("JSON subagent defaults are auto until saved and round-trip exact model map
     });
 });
 
+test("missing subagent defaults are fresh mutable copies across loads and stores", () => {
+    withStore((store) => {
+        const defaults = store.load();
+        const other = new SubagentDefaultsJsonStore("other-defaults", path.dirname(store.file));
+        assert.notStrictEqual(defaults, initialSubagentDefaults);
+        assert.notStrictEqual(store.load(), defaults);
+        assert.notStrictEqual(other.load(), defaults);
+        assert.equal(Object.isFrozen(defaults), false);
+        defaults.mid = "provider/balanced";
+        assert.equal(store.load().mid, "auto");
+        assert.equal(other.load().mid, "auto");
+        assert.equal(initialSubagentDefaults.mid, "auto");
+        assert.equal(Object.isFrozen(initialSubagentDefaults), true);
+
+        const runtime = new SubagentDefaultsRuntime(store);
+        const activeValues = runtime.values;
+        runtime.set(SubagentReasoningSkill.MID, "provider/balanced");
+        runtime.reset();
+        assert.strictEqual(runtime.values, activeValues);
+        assert.deepEqual(runtime.values, initialSubagentDefaults);
+    });
+});
+
+test("JSON subagent defaults preserve parse and validation error causes", () => {
+    withStore((store) => {
+        writeFileSync(store.file, "{");
+        assert.throws(() => store.load(), (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.equal(error.message, `Invalid subagent defaults in ${store.file}.`);
+            assert.ok(error.cause instanceof SyntaxError);
+            return true;
+        });
+        writeFileSync(store.file, JSON.stringify({...initialSubagentDefaults, mid: "bare-model"}));
+        assert.throws(() => store.load(), (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.equal(error.message, `Invalid subagent defaults in ${store.file}.`);
+            assert.ok(error.cause instanceof Error);
+            assert.equal(error.cause.message, "mid must be auto or a canonical provider/model");
+            return true;
+        });
+    });
+});
+
 test("JSON subagent defaults reject malformed or unsupported mappings", () => {
     withStore((store) => {
         for (const value of [
             "{",
+            "null",
+            "[]",
+            "42",
             JSON.stringify({...initialSubagentDefaults, unexpected: "auto"}),
             JSON.stringify({...initialSubagentDefaults, mid: "bare-model"}),
             JSON.stringify({...initialSubagentDefaults, high: ""}),

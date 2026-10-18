@@ -7,7 +7,8 @@ import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {PolicyEngine} from "../src/policy/PolicyEngine";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
-import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow";
+import type {PolicyChoice, QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow";
+import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 import type {Policy} from "../src/policy/types";
 import {
     PolicyAccessType,
@@ -55,18 +56,16 @@ function pathPolicyDao(
 }
 
 function scriptedDecisionFlow(choices: PolicyChoice[]): {
-    flow: PolicyDecisionFlow;
+    flow: QueuedPolicyApproval;
     callCount(): number;
 } {
     let calls = 0;
-    const flow = {
-        async askForPolicy(_path: string, accessType: PolicyAccessType): Promise<PolicyChoice> {
-            const choice = choices[calls++];
-            assert.ok(choice, "Unexpected path policy decision request");
-            assert.equal(choice.accessType, accessType);
-            return choice;
-        },
-    } as unknown as PolicyDecisionFlow;
+    const flow = scriptedPolicyApproval((_path, accessType) => {
+        const choice = choices[calls++];
+        assert.ok(choice, "Unexpected path policy decision request");
+        assert.equal(choice.accessType, accessType);
+        return choice;
+    });
     return {flow, callCount: () => calls};
 }
 

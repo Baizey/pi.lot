@@ -7,9 +7,9 @@ import {test} from "node:test";
 import {SessionManager} from "@earendil-works/pi-coding-agent";
 import {SessionArchive, type ArchiveClientInterface, type ArchiveListInput} from "../src/server/SessionArchive.js";
 import {ArchiveJournal, type ArchivePendingUpload} from "../src/server/ArchiveJournal.js";
-import {getArchiveRootSessionId} from "../src/server/ArchiveSessions.js";
+import {getSessionRootId, SessionKind} from "../src/sessions/SessionIdentity.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
-import {SessionKind, sameArchivePublication, type Binding, type ListRequest, type Publication,
+import {sameArchivePublication, type Binding, type ListRequest, type Publication,
     type Receipt, type ReceiptOutcome, type SessionMetadata} from "../src/server/ArchiveProtocol.js";
 
 const config = {url: "https://archive.example", apiKey: "synthetic-never-print-this-key"};
@@ -282,7 +282,7 @@ for (const partial of [false, true]) {
                     customType: "pilot.subagent", data: identity},
             ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", {mode: 0o600});
             const manager = SessionManager.open(currentFile, f.directory);
-            assert.equal(getArchiveRootSessionId(manager), undefined, "only discovery can recover this child's root");
+            assert.equal(getSessionRootId(manager), undefined, "only discovery can recover this child's root");
             const missingFile = path.join(f.directory, "missing-sibling.jsonl");
             const invalidFile = path.join(f.directory, "invalid-sibling.jsonl");
             fs.writeFileSync(invalidFile, "not valid JSONL\n", {mode: 0o600});
@@ -402,7 +402,7 @@ test("discovered-family operation with missing frozen body fails without recaptu
         } finally { database.close(); }
         let snapshots = 0;
         const manager = SessionManager.inMemory(f.directory, {id: "subagent-resumed"});
-        assert.equal(getArchiveRootSessionId(manager), undefined);
+        assert.equal(getSessionRootId(manager), undefined);
         const service = new SessionArchive(config, {client: f.server, stateDirectory: f.stateDirectory,
             createSessions: () => ({
                 discover: async () => ({rootSessionId: "R", files: [file], warnings: []}),

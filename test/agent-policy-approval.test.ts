@@ -10,7 +10,8 @@ import {
     type AgentPolicyDecisionFlow,
     type PolicyApprovalRequestContext,
 } from "../src/policy/AgentPolicyDecisionFlow.js";
-import {PolicyDecisionFlow, type PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import {PolicyDecisionFlow, type PolicyChoice, type QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow.js";
+import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 import {PolicyEngine} from "../src/policy/PolicyEngine.js";
 import {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import type {Policy} from "../src/policy/types.js";
@@ -60,9 +61,9 @@ function policyDao(initial: Policy[] = [], persisted?: (policies: Policy[]) => v
     };
 }
 
-function noUserDecision(): any {
+function noUserDecision(): QueuedPolicyApproval {
     return {
-        async askForPolicy(): Promise<PolicyChoice> {
+        async resolveQueuedPolicy() {
             assert.fail("The request must not reach the user decision flow");
         },
     };
@@ -418,24 +419,17 @@ test("a user decision owns the root lifetime while every descendant on the reque
     let persisted: Policy[] = [];
     const runtime = new PolicyRuntime(ROOT, policyDao([], (policies) => {
         persisted = policies;
-    }), {
-        async askForPolicy(
-            _uri: string,
-            accessType: PolicyAccessType,
-            _signal?: AbortSignal,
-            context?: PolicyApprovalRequestContext,
-        ): Promise<PolicyChoice> {
-            userCalls++;
-            userContext = context;
-            return {
-                uri: workspace,
-                accessType,
-                lifetime: PolicyLifetime.LOCAL,
-                status: PolicyResponse.ALLOWED,
-                reason: "User approved descendant output",
-            };
-        },
-    } as any);
+    }), scriptedPolicyApproval((_uri, accessType, _signal, context) => {
+        userCalls++;
+        userContext = context;
+        return {
+            uri: workspace,
+            accessType,
+            lifetime: PolicyLifetime.LOCAL,
+            status: PolicyResponse.ALLOWED,
+            reason: "User approved descendant output",
+        };
+    }));
     runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_user);
     let reviewerCalls = 0;
     runtime.setAgentDecisionFlow({
@@ -734,11 +728,11 @@ test("an unavailable super-agent reviewer fails closed instead of escalating to 
             "Root authority",
         ),
     ]), {
-        async askForPolicy(): Promise<PolicyChoice> {
+        async resolveQueuedPolicy() {
             userCalls++;
             assert.fail("Known super-agent authority must not be bypassed");
         },
-    } as any);
+    });
     runtime.registerPolicyPrincipal("child", ROOT, []);
 
     const result = await runtime.beginToolCall("child")(target, PolicyAccessType.FS_READ);
@@ -886,19 +880,17 @@ test("concurrent user ONCE decisions preserve the first tool-call resolution", a
     const workspace = path.join(os.tmpdir(), "pilot-user-once-concurrency");
     const target = path.join(workspace, "file.ts");
     let calls = 0;
-    const runtime = new PolicyRuntime(ROOT, policyDao(), {
-        async askForPolicy(_uri: string, accessType: PolicyAccessType): Promise<PolicyChoice> {
-            const call = ++calls;
-            await Promise.resolve();
-            return {
-                uri: target,
-                accessType,
-                lifetime: PolicyLifetime.ONCE,
-                status: call === 1 ? PolicyResponse.DENIED : PolicyResponse.ALLOWED,
-                reason: call === 1 ? "First decision denied" : "Late decision allowed",
-            };
-        },
-    } as any);
+    const runtime = new PolicyRuntime(ROOT, policyDao(), scriptedPolicyApproval(async (_uri, accessType) => {
+        const call = ++calls;
+        await Promise.resolve();
+        return {
+            uri: target,
+            accessType,
+            lifetime: PolicyLifetime.ONCE,
+            status: call === 1 ? PolicyResponse.DENIED : PolicyResponse.ALLOWED,
+            reason: call === 1 ? "First decision denied" : "Next tool call allowed",
+        };
+    }));
     runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_user);
     const toolCall = runtime.beginToolCall(ROOT);
 
@@ -913,12 +905,12 @@ test("concurrent user ONCE decisions preserve the first tool-call resolution", a
         (await toolCall(target, PolicyAccessType.FS_WRITE)).matchedStatus,
         PolicyResponse.DENIED,
     );
-    assert.equal(calls, 2);
+    assert.equal(calls, 1, "the queued request must reuse the first tool-call decision without prompting");
     assert.equal(
         (await runtime.beginToolCall(ROOT)(target, PolicyAccessType.FS_WRITE)).matchedStatus,
         PolicyResponse.ALLOWED,
     );
-    assert.equal(calls, 3, "a new tool call must not reuse the previous user ONCE denial");
+    assert.equal(calls, 2, "a new tool call must not reuse the previous user ONCE denial");
 });
 
 test("the specialized approval subagent can decide only through its bounded structured tool", async () => {

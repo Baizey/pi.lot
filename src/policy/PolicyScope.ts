@@ -1,6 +1,17 @@
 import path from "node:path";
 import {ParsedUri} from "./network/ParsedUri.js";
-import {PolicyAccessType, resolveUri} from "./types.js";
+import {resolvePhysicalPath} from "./path/validation.js";
+import {PolicyAccessType} from "./types.js";
+
+export function resolveUri(accessType: PolicyAccessType, uri: string): string {
+    switch (accessType) {
+        case PolicyAccessType.FS_READ:
+        case PolicyAccessType.FS_WRITE:
+            return resolvePhysicalPath(uri);
+        default:
+            return new ParsedUri(uri).fullUri();
+    }
+}
 
 export function policyScopeHierarchy(
     inputUri: string,

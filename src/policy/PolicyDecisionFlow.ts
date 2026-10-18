@@ -3,12 +3,11 @@ import {
     PolicyLifetime,
     type PolicyResult,
     PolicyResponse,
-    resolveUri,
 } from "./types";
 import type {UiDecision, UiDecisionFlowManager, UiSelectDecisionOption} from "../tui/UiDecisionFlowManager";
 import {UiFlowShortcut} from "../tui/UiDecisionFlowManager";
 import type {UiDecisionContext, UiDecisionField} from "../tui/UiDecisionPrompt.js";
-import {policyScopeHierarchy} from "./PolicyScope.js";
+import {policyScopeHierarchy, resolveUri} from "./PolicyScope.js";
 import type {PolicyApprovalRequestContext} from "./AgentPolicyDecisionFlow.js";
 
 export type PolicyChoice = {
@@ -28,6 +27,21 @@ export type QueuedPolicyResolution = {
     complete: (choice: PolicyChoice) => PolicyResult | Promise<PolicyResult>;
 };
 
+/**
+ * Recheck immediately before prompting; a resolved recheck skips completion.
+ * Otherwise complete exactly once, keeping normal completion inside the queue
+ * so installed policy is visible before the next request starts.
+ */
+export interface QueuedPolicyApproval {
+    resolveQueuedPolicy(
+        inputUri: string,
+        accessType: PolicyAccessType,
+        resolution: QueuedPolicyResolution,
+        signal?: AbortSignal,
+        requestContext?: PolicyApprovalRequestContext,
+    ): Promise<PolicyResult>;
+}
+
 type PolicyApproval = {
     scope: string;
     status: PolicyResponse;
@@ -35,28 +49,8 @@ type PolicyApproval = {
     reason?: string;
 };
 
-export class PolicyDecisionFlow {
+export class PolicyDecisionFlow implements QueuedPolicyApproval {
     constructor(private readonly options: PolicyDecisionFlowOptions) {
-    }
-
-    async askForPolicy(
-        inputUri: string,
-        accessType: PolicyAccessType,
-        signal?: AbortSignal,
-        requestContext?: PolicyApprovalRequestContext,
-    ): Promise<PolicyChoice> {
-        const uri = resolveUri(accessType, inputUri);
-        const scopes = policyScopeHierarchy(uri, accessType);
-        const decisions = this.policyDecisions(uri, accessType, scopes, requestContext);
-
-        const approval = await this.options.decisionFlows.runFlow(
-            decisions.scope,
-            decisions,
-            (state) => this.cancelledApproval(state, uri),
-            {shortcuts: {enabled: true}, signal},
-        );
-
-        return this.policyChoice(approval, uri, accessType);
     }
 
     async resolveQueuedPolicy(

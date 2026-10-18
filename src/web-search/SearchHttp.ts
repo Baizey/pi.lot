@@ -1,5 +1,5 @@
 import type {ToolCallPathPolicyEvaluator} from "../policy/PolicyRuntime.js";
-import {PolicyAccessType, PolicyResponse} from "../policy/types.js";
+import {httpMethodAccessType, PolicyResponse} from "../policy/types.js";
 import type {WebSearchHttpRequest, WebSearchHttpResponse} from "./SearchProvider.js";
 
 const MAX_REDIRECTS = 5;
@@ -34,7 +34,7 @@ export async function requestSearchHttp(
     ]);
 
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-        const policyResult = await policy(url.toString(), httpAccessType(method), request.signal);
+        const policyResult = await policy(url.toString(), httpMethodAccessType(method), request.signal);
         if (policyResult.matchedStatus !== PolicyResponse.ALLOWED) {
             throw new WebSearchPolicyDeniedError(policyResult.toDenyMessage());
         }
@@ -64,8 +64,8 @@ export async function requestSearchHttp(
                 ),
             };
         }
+        await response.body?.cancel().catch(() => undefined);
         if (redirects === MAX_REDIRECTS) {
-            await response.body?.cancel().catch(() => undefined);
             throw new Error(`Web-search HTTP request exceeded ${MAX_REDIRECTS} redirects`);
         }
 
@@ -79,7 +79,6 @@ export async function requestSearchHttp(
             headers.delete("content-length");
             headers.delete("content-type");
         }
-        await response.body?.cancel().catch(() => undefined);
         url = destination;
     }
 
@@ -162,17 +161,4 @@ async function readBoundedBody(response: Response, maximum: number): Promise<str
         reader.releaseLock();
     }
     return Buffer.concat(chunks, total).toString("utf8");
-}
-
-function httpAccessType(method: string): PolicyAccessType {
-    switch (method) {
-        case "GET": return PolicyAccessType.HTTP_GET;
-        case "POST": return PolicyAccessType.HTTP_POST;
-        case "PUT": return PolicyAccessType.HTTP_PUT;
-        case "DELETE": return PolicyAccessType.HTTP_DELETE;
-        case "PATCH": return PolicyAccessType.HTTP_PATCH;
-        case "HEAD": return PolicyAccessType.HTTP_HEAD;
-        case "OPTIONS": return PolicyAccessType.HTTP_OPTIONS;
-        default: return PolicyAccessType.HTTP_ACCESS;
-    }
 }

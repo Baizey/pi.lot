@@ -41,10 +41,9 @@ impl Default for Call {
         }
     }
 }
-#[repr(u32)]
 #[derive(Clone, Copy)]
 pub(super) enum Operation {
-    Access = 1,
+    Access,
     Getattr,
     Readlink,
     Statfs,
@@ -74,43 +73,6 @@ pub(super) enum Operation {
     Rename,
     Link,
     Symlink,
-}
-impl Operation {
-    fn from_raw(op: u32) -> Option<Self> {
-        Some(match op {
-            1 => Self::Access,
-            2 => Self::Getattr,
-            3 => Self::Readlink,
-            4 => Self::Statfs,
-            5 => Self::Opendir,
-            6 => Self::Readdir,
-            7 => Self::Fsyncdir,
-            8 => Self::Releasedir,
-            9 => Self::Open,
-            10 => Self::Create,
-            11 => Self::Utimens,
-            12 => Self::Chmod,
-            13 => Self::Chown,
-            14 => Self::Getxattr,
-            15 => Self::Listxattr,
-            16 => Self::Setxattr,
-            17 => Self::Removexattr,
-            18 => Self::Mknod,
-            19 => Self::Read,
-            20 => Self::Write,
-            21 => Self::Truncate,
-            22 => Self::Flush,
-            23 => Self::Fsync,
-            24 => Self::Release,
-            25 => Self::Mkdir,
-            26 => Self::Rmdir,
-            27 => Self::Unlink,
-            28 => Self::Rename,
-            29 => Self::Link,
-            30 => Self::Symlink,
-            _ => return None,
-        })
-    }
 }
 struct Directory {
     directory: *mut libc::DIR,
@@ -143,19 +105,19 @@ struct DirectoryHandle {
 /// mount's opendir callback, and release must not race another handle user.
 /// The filler function and its buffer must remain valid during readdir. The
 /// caller must not free state or referenced storage while this call is active.
-pub(super) unsafe fn pilot_fuse_call(state: *mut State, operation: u32, call: *mut Call) -> i32 {
+pub(super) unsafe fn pilot_fuse_call(
+    state: *mut State,
+    operation: Operation,
+    call: *mut Call,
+) -> i32 {
     if state.is_null() || call.is_null() {
         return -libc::EACCES;
     }
     let state = &*state;
-    let operation = Operation::from_raw(operation);
-    let invoke = || match operation {
-        Some(op) => dispatch(state, op, &mut *call),
-        None => Err(-libc::ENOSYS),
-    };
+    let invoke = || dispatch(state, operation, &mut *call);
     if matches!(
         operation,
-        Some(Operation::Release | Operation::Releasedir | Operation::Flush)
+        Operation::Release | Operation::Releasedir | Operation::Flush
     ) {
         catch_callback(state, invoke)
     } else {

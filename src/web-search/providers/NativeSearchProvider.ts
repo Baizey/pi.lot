@@ -9,6 +9,7 @@ import {
     type WebSearchResult,
 } from "../SearchProvider.js";
 import {normalizeSearchDomainFilters} from "../SearchDomainFilters.js";
+import {WebSearchPolicyDeniedError} from "../SearchHttp.js";
 import {requireSuccessfulProviderResponse} from "./ProviderResponse.js";
 
 type NativeModel = NonNullable<ExtensionContext["model"]>;
@@ -154,7 +155,8 @@ async function resolveGoogleSourceUrl(
     if (!url.startsWith("https://vertexaisearch.cloud.google.com/grounding-api-redirect/")) return url;
     try {
         return (await http({url, method: "HEAD", signal: request.signal})).url;
-    } catch {
+    } catch (error) {
+        if (error instanceof WebSearchPolicyDeniedError || request.signal?.aborted) throw error;
         return url;
     }
 }

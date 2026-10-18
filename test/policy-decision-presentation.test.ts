@@ -4,6 +4,7 @@ import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {KeybindingsManager, TUI_KEYBINDINGS, stripTerminalSequences, visibleWidth} from "@earendil-works/pi-tui";
 import type {PolicyApprovalRequestContext} from "../src/policy/AgentPolicyDecisionFlow.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
+import {promptPolicyChoice} from "./fixtures/QueuedPolicyApproval.js";
 import {policyScopeHierarchy} from "../src/policy/PolicyScope.js";
 import {PolicyAccessType, PolicyLifetime, PolicyResponse} from "../src/policy/types.js";
 import {UiDecisionFlowManager, type UiDecision} from "../src/tui/UiDecisionFlowManager.js";
@@ -55,8 +56,9 @@ class PromptHarness {
         } as unknown as ExtensionContext;
     }
 
-    flow(): PolicyDecisionFlow {
-        return new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(this.context)});
+    flow() {
+        const flow = new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(this.context)});
+        return {askForPolicy: promptPolicyChoice.bind(undefined, flow)};
     }
 
     async prompt(index = this.prompts.length - 1): Promise<TextComponent> {
@@ -388,7 +390,8 @@ for (const mode of ["rpc", "tui"] as const) {
                 ...(mode === "rpc" ? {custom: () => assert.fail("RPC must never invoke terminal custom UI")} : {}),
             },
         } as unknown as ExtensionContext;
-        const choice = await new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(context)}).askForPolicy(
+        const choice = await promptPolicyChoice(
+            new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(context)}),
             target, PolicyAccessType.FS_WRITE, undefined,
             {...request, toolCall: {...request.toolCall, command: "first\nsecond\x1b[31m"}},
         );

@@ -11,7 +11,6 @@ import {
     ToolArgumentPlacement,
     ToolTextDirection,
 } from "../../tui/tool/ToolPresentation";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {ThemeColor} from "../../tui/Color";
 
@@ -62,12 +61,11 @@ function createDefinition(
     coordinator: CoordinatorProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
-    const presentation = new ToolPresentationRenderer(MESSAGE_PRESENTATION, displayRows);
     return {
         name: "subagent_message",
         label: "Message subagent",
         description: "Message a subagent. A running job receives steering for its active turn; otherwise the message becomes an ordered follow-up turn.",
-        renderShell: "self",
+        ...displayRows.bind(MESSAGE_PRESENTATION),
         parameters: objectSchema({
             jobId: stringSchema("Subagent job id"),
             task: stringSchema("Steering instruction or conversation follow-up"),
@@ -76,20 +74,5 @@ function createDefinition(
             const input = params as MessageToolInput;
             return subagentToolResult([await coordinator().message(input.jobId, input.task)]);
         },
-        renderCall: (args, theme, context) => {
-            displayRows.observe("subagent_message", args, context);
-            return presentation.renderCall(
-                args as MessageToolInput,
-                theme,
-                displayRows.resolveMode(context.expanded, context.state),
-                context,
-            );
-        },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
-            theme,
-            {isError: context.isError, outputPad: context.outputPad},
-            displayRows.resolveMode(options.expanded, context.state),
-        ),
     };
 }

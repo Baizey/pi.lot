@@ -6,7 +6,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
@@ -49,7 +48,7 @@ export class WriteTool {
     toolDefinition(): ToolDefinition<any, any> {
         if (this.definition) return this.definition;
         const definition = createWriteToolDefinition(process.cwd());
-        const presentation = new ToolPresentationRenderer(WRITE_PRESENTATION, this.displayRows);
+        const renderers = this.displayRows.bind(WRITE_PRESENTATION);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const resolvedPath = resolveBuiltinToolPath(params.path, ctx.cwd);
             const result = await this.runtimeProvider().policyRuntime.once(
@@ -69,26 +68,10 @@ export class WriteTool {
             }
             return definition.execute(toolCallId, params, signal, onUpdate, ctx);
         };
-        const renderCall: NonNullable<typeof definition.renderCall> = (args, theme, context) => {
-            this.displayRows.observe("write", args, context);
-            const mode = this.displayRows.resolveMode(context.expanded, context.state);
-            return presentation.renderCall(
-                args,
-                theme,
-                mode,
-                context,
-            );
-        };
-        const renderResult: NonNullable<typeof definition.renderResult> = (result, options, theme, context) => {
-            const mode = this.displayRows.resolveMode(options.expanded, context.state);
-            return presentation.renderResult(result, theme, {isError: context.isError, outputPad: context.outputPad}, mode);
-        };
         this.definition = {
             ...definition,
-            renderShell: "self",
+            ...renderers,
             execute,
-            renderCall,
-            renderResult,
         } as unknown as ToolDefinition<any, any>;
         return this.definition;
     }

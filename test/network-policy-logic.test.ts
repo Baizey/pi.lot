@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {PolicyEngine} from "../src/policy/PolicyEngine";
+import {evaluateStoredPolicies, PolicyEngine} from "../src/policy/PolicyEngine";
 import {initialPolicyDefaults} from "../src/policy/defaults.js";
 import {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
-import type {PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
-import {policyScopeCovers, policyScopeHierarchy} from "../src/policy/PolicyScope.js";
+import type {PolicyChoice, QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow.js";
+import {promptPolicyChoice, scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
+import {policyScopeCovers, policyScopeHierarchy, resolveUri} from "../src/policy/PolicyScope.js";
 import {ParsedUri, UNIVERSAL_NETWORK_POLICY_PATTERN} from "../src/policy/network/ParsedUri.js";
 import type {Policy} from "../src/policy/types.js";
 import {
@@ -57,18 +58,16 @@ function networkPolicyDao(
 }
 
 function scriptedDecisionFlow(choices: PolicyChoice[]): {
-    flow: PolicyDecisionFlow;
+    flow: QueuedPolicyApproval;
     callCount(): number;
 } {
     let calls = 0;
-    const flow = {
-        async askForPolicy(_uri: string, accessType: PolicyAccessType): Promise<PolicyChoice> {
-            const choice = choices[calls++];
-            assert.ok(choice, "Unexpected network policy decision request");
-            assert.equal(choice.accessType, accessType);
-            return choice;
-        },
-    } as unknown as PolicyDecisionFlow;
+    const flow = scriptedPolicyApproval((_uri, accessType) => {
+        const choice = choices[calls++];
+        assert.ok(choice, "Unexpected network policy decision request");
+        assert.equal(choice.accessType, accessType);
+        return choice;
+    });
     return {flow, callCount: () => calls};
 }
 
@@ -165,6 +164,9 @@ test("policy selection keeps specificity and access-type filtering independent o
             const before = engine.allPolicies();
             for (const [uri, accessType, reason] of cases) {
                 const result = engine.evaluate(uri, accessType);
+                assert.deepEqual(evaluateStoredPolicies(
+                    before, resolveUri(accessType, uri), accessType, PolicyResolutionSource.EXISTING_USER_POLICY,
+                ), result);
                 assert.equal(result?.matchedReason, reason, `${uri} (${accessType})`);
                 if (reason) {
                     const expected = before.find((rule) => rule.info[accessType]?.reason === reason)!;
@@ -319,7 +321,7 @@ test("localhost approval offers an all-port scope that can be selected", async (
         },
     } as unknown as ExtensionContext;
     const flow = new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)});
-    const choice = await flow.askForPolicy("localhost:3000", PolicyAccessType.TCP_ACCESS);
+    const choice = await promptPolicyChoice(flow, "localhost:3000", PolicyAccessType.TCP_ACCESS);
     assert.equal(choice.uri, "localhost");
     assert.equal(choice.status, PolicyResponse.ALLOWED);
     assert.equal(choice.lifetime, PolicyLifetime.ONCE);
@@ -475,7 +477,7 @@ test("network policy decisions use network-specific prompts", async () => {
     } as unknown as ExtensionContext;
     const flow = new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)});
 
-    const choice = await flow.askForPolicy("example.com:443", PolicyAccessType.TCP_ACCESS);
+    const choice = await promptPolicyChoice(flow, "example.com:443", PolicyAccessType.TCP_ACCESS);
 
     assert.equal(choice.status, PolicyResponse.ALLOWED);
     assert.equal(choice.lifetime, PolicyLifetime.ONCE);

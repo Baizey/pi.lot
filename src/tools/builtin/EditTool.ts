@@ -13,13 +13,13 @@ import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {ToolDisplayMode} from "../../tui/tool/ToolDisplayMode";
-import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
+import {ToolDisplayRows, type ToolDisplayState} from "../../tui/tool/ToolDisplayRows";
 import {resolveBuiltinToolPath} from "./resolveBuiltinToolPath.js";
 
 type EditPresentationDefinition = ToolDefinition<
     ReturnType<typeof createEditToolDefinition>["parameters"],
     EditToolDetails | undefined,
-    {pilotFullDisplay?: boolean}
+    ToolDisplayState
 >;
 
 const EDIT_PRESENTATION = {
@@ -70,7 +70,10 @@ export class EditTool {
     toolDefinition(): ToolDefinition<any, any> {
         if (this.definition) return this.definition;
         const definition = createEditToolDefinition(process.cwd());
-        const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION, this.displayRows);
+        const presentation = new ToolPresentationRenderer(EDIT_PRESENTATION);
+        this.displayRows.registerCallPresentation("edit", (args, theme, mode, width, indicator) => (
+            presentation.renderCallLines(args, theme, mode, width, indicator)
+        ));
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
             const resolvedPath = resolveBuiltinToolPath(params.path, ctx.cwd);
             const result = await this.runtimeProvider().policyRuntime.once(
@@ -95,7 +98,11 @@ export class EditTool {
             const selected = this.displayRows.resolveMode(context.expanded, context.state);
             const mode = context.isPartial && selected === ToolDisplayMode.MINIMAL
                 ? ToolDisplayMode.TRUNCATED : selected;
-            const call = presentation.renderCall(args, theme, mode, context);
+            const call = presentation.renderCall(args, theme, mode, {
+                isPartial: context.isPartial,
+                outputPad: context.outputPad,
+                indicator: () => context.state.pilotCallSpinner?.frame(),
+            });
             if (!context.isPartial || mode === ToolDisplayMode.HIDDEN) return call;
 
             // Preview only supplied replacement text: reading the target here would
@@ -110,6 +117,7 @@ export class EditTool {
             return component;
         };
         const renderResult: NonNullable<EditPresentationDefinition["renderResult"]> = (result, options, theme, context) => {
+            if (!options.isPartial) this.displayRows.complete(context.state);
             const selected = this.displayRows.resolveMode(options.expanded, context.state);
             const mode = options.isPartial && selected === ToolDisplayMode.MINIMAL
                 ? ToolDisplayMode.TRUNCATED : selected;

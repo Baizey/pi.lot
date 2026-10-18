@@ -14,7 +14,8 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type {PolicyDecisionFlow, PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import type {QueuedPolicyApproval, PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
 import {
     PolicyAccessType,
@@ -41,18 +42,16 @@ function policyDao(): PolicyDaoInterface {
     };
 }
 
-function decisionFlow(choices: PolicyChoice[] = []): PolicyDecisionFlow {
+function decisionFlow(choices: PolicyChoice[] = []): QueuedPolicyApproval {
     let index = 0;
-    return {
-        async askForPolicy(): Promise<PolicyChoice> {
-            const choice = choices[index++];
-            assert.ok(choice, "Unexpected native FUSE policy request");
-            return choice;
-        },
-    } as unknown as PolicyDecisionFlow;
+    return scriptedPolicyApproval(() => {
+        const choice = choices[index++];
+        assert.ok(choice, "Unexpected native FUSE policy request");
+        return choice;
+    });
 }
 
-function allowingRuntime(flow: PolicyDecisionFlow = decisionFlow()): PolicyRuntime {
+function allowingRuntime(flow: QueuedPolicyApproval = decisionFlow()): PolicyRuntime {
     const runtime = new PolicyRuntime(AGENT, policyDao(), flow);
     runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.allow);
     return runtime;
@@ -461,9 +460,9 @@ test("native FUSE reports known policy denials with the standard message", async
 test("native FUSE aborts a pending policy miss and leaves the filesystem unchanged", async () => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-native-fuse-abort-"));
     const target = path.join(workspace, "pending.txt");
-    const pendingFlow = {
-        askForPolicy: () => new Promise<PolicyChoice>(() => undefined),
-    } as unknown as PolicyDecisionFlow;
+    const pendingFlow: QueuedPolicyApproval = {
+        resolveQueuedPolicy: () => new Promise(() => undefined),
+    };
     // This deliberately non-cooperative flow outlives source cancellation. Keep its real
     // watchdog short so the test process does not wait for the production 300-second deadline.
     const runtime = new PolicyRuntime(

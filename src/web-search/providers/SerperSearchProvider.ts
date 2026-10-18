@@ -10,6 +10,7 @@ import {
 import {normalizeSearchDomainFilters, searchQueryWithDomains} from "../SearchDomainFilters.js";
 import type {ApiKeyConfig} from "../WebSearchConfig.js";
 import {
+    mapProviderResults,
     parseProviderJson,
     providerRecord,
     requireSuccessfulProviderResponse,
@@ -60,18 +61,12 @@ export class SerperSearchProvider implements WebSearchProvider {
             throw new WebSearchProviderRequestError(this.id, "Search backend returned no organic results array");
         }
 
-        const results: WebSearchProviderResponse["results"] = [];
-        for (const rawResult of envelope.organic) {
-            if (typeof rawResult !== "object" || rawResult === null || Array.isArray(rawResult)) continue;
-            const result = rawResult as Record<string, unknown>;
-            if (typeof result.link !== "string" || !result.link) continue;
-            results.push({
-                title: typeof result.title === "string" ? result.title : result.link,
-                url: result.link,
-                snippet: typeof result.snippet === "string" ? result.snippet : "",
-                ...(typeof result.date === "string" ? {publishedAt: result.date} : {}),
-            });
-        }
-        return {results};
+        return {
+            results: mapProviderResults(envelope.organic, {
+                url: "link",
+                snippet: "snippet",
+                publishedAt: "date",
+            }),
+        };
     }
 }

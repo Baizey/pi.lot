@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
+import {mkdirSync, mkdtempSync, rmSync, symlinkSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {PassThrough} from "node:stream";
 import test from "node:test";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
-import type {PolicyDecisionFlow, PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import {PolicyEngine} from "../src/policy/PolicyEngine.js";
+import {NativeFilesystemPolicyBase} from "../src/policy/path/native/NativeFilesystemPolicyView.js";
+import type {QueuedPolicyApproval, PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 import {
     PolicyAccessType,
     PolicyArea,
     PolicyFallbackResponse,
     PolicyLifetime,
+    PolicyResolutionSource,
     PolicyResponse,
+    type Policy,
 } from "../src/policy/types.js";
 import type {PolicyDaoInterface} from "../src/storage/PolicyDao.js";
 import type {PolicyApprovalAuditLogInterface} from "../src/policy/PolicyApprovalAuditLog.js";
@@ -39,15 +45,13 @@ function emptyPolicyDao(): PolicyDaoInterface {
     };
 }
 
-function decisionFlow(choices: PolicyChoice[]): PolicyDecisionFlow {
+function decisionFlow(choices: PolicyChoice[]): QueuedPolicyApproval {
     let index = 0;
-    return {
-        async askForPolicy(): Promise<PolicyChoice> {
-            const choice = choices[index++];
-            assert.ok(choice, "Unexpected policy decision request");
-            return choice;
-        },
-    } as unknown as PolicyDecisionFlow;
+    return scriptedPolicyApproval(() => {
+        const choice = choices[index++];
+        assert.ok(choice, "Unexpected policy decision request");
+        return choice;
+    });
 }
 
 function choice(target: string, lifetime: PolicyLifetime): PolicyChoice {
@@ -59,6 +63,80 @@ function choice(target: string, lifetime: PolicyLifetime): PolicyChoice {
         reason: "native policy view test",
     };
 }
+
+test("stored native policy selection preserves layer priority, specificity, access filtering and ties", () => {
+    const storedPolicy = (pattern: string, accessType: PolicyAccessType, reason: string): Policy => ({
+        pattern,
+        info: {[accessType]: PolicyEngine.createStatus(
+            accessType, PolicyLifetime.LOCAL, PolicyResponse.DENIED, reason,
+        )},
+    });
+    const policies = [
+        storedPolicy("/workspace", PolicyAccessType.FS_READ, "broad"),
+        storedPolicy("/workspace/nested", PolicyAccessType.FS_READ, "first tie"),
+        storedPolicy("/workspace/nested", PolicyAccessType.FS_READ, "second tie"),
+        storedPolicy("/workspace/nested/file", PolicyAccessType.FS_WRITE, "write only"),
+    ];
+    const before = structuredClone(policies);
+    for (const policy of policies) {
+        for (const status of Object.values(policy.info)) Object.freeze(status);
+        Object.freeze(policy.info);
+        Object.freeze(policy);
+    }
+    Object.freeze(policies);
+    const base = new NativeFilesystemPolicyBase(AGENT, () => [
+        {policies, resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY},
+        {
+            policies: [storedPolicy("/workspace/nested/file", PolicyAccessType.FS_READ, "later layer")],
+            resolutionSource: PolicyResolutionSource.SYSTEM,
+        },
+    ]);
+    try {
+        const result = base.currentPolicyResult("/workspace/nested/file", PolicyAccessType.FS_READ);
+        assert.equal(result?.matchedReason, "first tie");
+        assert.equal(result?.matchedPattern, "/workspace/nested");
+        assert.equal(result?.resolutionSource, PolicyResolutionSource.EXISTING_USER_POLICY);
+        assert.equal(base.currentPolicyResult("/workspace/nested/file", PolicyAccessType.FS_WRITE)?.matchedReason, "write only");
+        assert.equal(base.currentPolicyResult("/workspace-other/file", PolicyAccessType.FS_READ), undefined);
+        assert.deepEqual(policies, before);
+        const engine = new PolicyEngine(policies.slice(0, 2));
+        assert.deepEqual(result, engine.evaluate("/workspace/nested/file", PolicyAccessType.FS_READ));
+    } finally {
+        base.close();
+    }
+});
+
+test("native lookup does not re-normalize stored grants after their directory becomes a symlink", () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "native-policy-stored-path-"));
+    const granted = path.join(directory, "granted");
+    const outside = path.join(directory, "outside");
+    mkdirSync(granted);
+    mkdirSync(outside);
+    const engine = new PolicyEngine([{
+        pattern: granted,
+        info: {[PolicyAccessType.FS_READ]: PolicyEngine.createStatus(
+            PolicyAccessType.FS_READ, PolicyLifetime.LOCAL, PolicyResponse.ALLOWED, "original grant",
+        )},
+    }]);
+    const stored = engine.allPolicies();
+    const base = new NativeFilesystemPolicyBase(AGENT, () => [{
+        policies: stored, resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY,
+    }]);
+    try {
+        assert.equal(base.currentPolicyResult(granted, PolicyAccessType.FS_READ)?.matchedStatus, PolicyResponse.ALLOWED);
+        rmSync(granted, {recursive: true});
+        symlinkSync(outside, granted, "dir");
+        for (const target of [granted, outside, path.join(granted, "file")]) {
+            assert.equal(base.currentPolicyResult(target, PolicyAccessType.FS_READ), undefined);
+            assert.equal(engine.evaluate(target, PolicyAccessType.FS_READ), null);
+        }
+        assert.deepEqual(base.snapshot().layers[0]!.policies, stored);
+        assert.equal(stored[0]!.pattern, granted);
+    } finally {
+        base.close();
+        rmSync(directory, {recursive: true, force: true});
+    }
+});
 
 test("a native tool-call view starts with the root filesystem fallback snapshot", () => {
     const runtime = new PolicyRuntime(AGENT, emptyPolicyDao(), decisionFlow([]));
@@ -140,6 +218,14 @@ test("an ONCE decision is returned as an updated tool-call snapshot", async () =
     assert.equal(evaluation.onceSnapshot.revision, 1);
     assert.equal(evaluation.onceSnapshot.layers[0]!.policies.length, 1);
     assert.equal(evaluation.onceSnapshot.layers[0]!.policies[0]!.pattern, target);
+    assert.equal(view.currentPolicyResult(target, PolicyAccessType.FS_WRITE)?.matchedStatus, PolicyResponse.ALLOWED);
+    runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.deny);
+    const overridden = view.currentPolicyResult(target, PolicyAccessType.FS_WRITE);
+    assert.equal(overridden?.matchedStatus, PolicyResponse.DENIED, "base layers precede even a more specific ONCE grant");
+    assert.equal(overridden?.matchedPattern, "/");
+    assert.equal(overridden?.resolutionSource, PolicyResolutionSource.SYSTEM);
+    runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.ask_user);
+    assert.equal(view.currentPolicyResult(target, PolicyAccessType.FS_WRITE)?.matchedStatus, PolicyResponse.ALLOWED);
     view.close();
 });
 

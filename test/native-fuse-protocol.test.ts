@@ -6,7 +6,7 @@ import path from "node:path";
 import type {Writable} from "node:stream";
 import test from "node:test";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
-import type {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
+import type {QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow.js";
 import {
     decodeNativeFilesystemControlFrames,
     decodeNativeFilesystemPolicyMiss,
@@ -41,9 +41,9 @@ function emptyPolicyDao(): PolicyDaoInterface {
 }
 
 function unresolvedPolicyView() {
-    const flow = {
-        askForPolicy: () => new Promise(() => undefined),
-    } as unknown as PolicyDecisionFlow;
+    const flow: QueuedPolicyApproval = {
+        resolveQueuedPolicy: () => new Promise(() => undefined),
+    };
     const runtime = new PolicyRuntime(AGENT, emptyPolicyDao(), flow);
     runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.ask_user);
     return runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-protocol-test"});

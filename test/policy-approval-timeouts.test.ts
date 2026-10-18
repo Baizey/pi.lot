@@ -17,7 +17,7 @@ import {
     PolicyResolutionSource,
     PolicyResponse,
     type Policy,
-    type PolicyResult,
+    PolicyResult,
 } from "../src/policy/types.js";
 import {ApprovalWaitScope} from "../src/runtime/ApprovalWaitScope.js";
 import type {PolicyDaoInterface} from "../src/storage/PolicyDao.js";
@@ -442,7 +442,7 @@ test("a short internal user approval deadline lets a cancelled non-cooperative n
         const {PolicyAccessType} = typesModule.default ?? typesModule;
         const dao = {initializeSchema() {}, loadPolicies: () => [], upsertPolicies() {}, deletePolicy() {}};
         let approvalRequested = false;
-        const pendingFlow = {askForPolicy() {
+        const pendingFlow = {resolveQueuedPolicy() {
             approvalRequested = true;
             return new Promise(() => undefined);
         }};
@@ -478,6 +478,68 @@ test("a short internal user approval deadline lets a cancelled non-cooperative n
         callerAborted: true,
         watchdogActive: true,
     });
+});
+
+test("abort racing queued afterFinish completes once and does not release the next request early", async () => {
+    const controller = new AbortController();
+    const finishing = deferred<void>();
+    const release = deferred<void>();
+    const queue = new UiDecisionFlowQueue();
+    let prompts = 0;
+    let completions = 0;
+    const choices: PolicyResponse[] = [];
+    const context = {
+        hasUI: true,
+        mode: "rpc",
+        ui: {select: async (_title: string, options: string[]) => {
+            prompts++;
+            return options[0];
+        }},
+    } as unknown as ExtensionContext;
+    const flow = new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(context, queue)});
+    const expected = PolicyResult.of({
+        evaluatedUri: TARGET,
+        evaluatedAccessType: PolicyAccessType.FS_WRITE,
+        matchedPattern: TARGET,
+        matchedLifetime: PolicyLifetime.ONCE,
+        matchedStatus: PolicyResponse.ALLOWED,
+        matchedReason: "completed once",
+        resolutionSource: PolicyResolutionSource.NEW_USER_DECISION,
+    });
+    const first = observe(flow.resolveQueuedPolicy(TARGET, PolicyAccessType.FS_WRITE, {
+        beforePrompt: () => undefined,
+        complete: async (choice) => {
+            completions++;
+            choices.push(choice.status);
+            finishing.resolve();
+            await release.promise;
+            return expected;
+        },
+    }, controller.signal));
+    try {
+        await finishing.promise;
+        let rechecks = 0;
+        const second = flow.resolveQueuedPolicy(OTHER_TARGET, PolicyAccessType.FS_WRITE, {
+            beforePrompt: () => { rechecks++; return expected; },
+            complete: () => assert.fail("superseded queued approval must not complete or audit again"),
+        });
+        controller.abort();
+        await flush();
+        assert.equal(first.settled, false, "abort must join the completion already running in afterFinish");
+        assert.equal(completions, 1);
+        assert.deepEqual(choices, [PolicyResponse.ALLOWED]);
+        assert.equal(rechecks, 0, "the queue must retain ownership until completion finishes");
+        assert.equal(prompts, 3);
+        release.resolve();
+        assert.equal(await first.promise, expected);
+        assert.equal(await second, expected);
+        assert.equal(completions, 1);
+        assert.equal(rechecks, 1);
+        assert.equal(prompts, 3);
+    } finally {
+        release.resolve();
+        queue.close();
+    }
 });
 
 test("completed user approvals clear their watchdog instead of aborting later work", async (t) => {

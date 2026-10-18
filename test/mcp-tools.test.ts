@@ -10,6 +10,9 @@ import {
 import {McpToolRegistry} from "../src/mcp/McpToolRegistry.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 import {displayWidth} from "../src/tui/terminalText.js";
+import type {ToolDisplayState} from "../src/tui/tool/ToolDisplayRows.js";
+// Exercise Pi's actual export boundary; this helper is not part of its public SDK exports.
+import {createToolHtmlRenderer} from "../node_modules/@earendil-works/pi-coding-agent/dist/core/export-html/tool-renderer.js";
 
 function definition(name = "mcp__demo__echo", exposure: ToolDefinition["exposure"] = "direct"): ToolDefinition {
     return {
@@ -172,6 +175,56 @@ test("MCP long-line previews are bounded by wrapped rows and keep a separate ful
     assert.equal(full.filter((line) => line && !line.startsWith("Full output:")).join(""), text);
     assert.ok(full.every((line) => !/[ \t]+$/.test(line)));
     assert.deepEqual(decorated.renderResult!(result, {expanded: false, isPartial: false}, plainTheme, context).render(40), []);
+});
+
+test("actual Pi HTML export preserves live MCP row ownership and never allocates an export spinner", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    const exports: ToolDisplayState[] = [];
+    t.after(() => {
+        rows.clear();
+        for (const state of exports) state.pilotCallSpinner?.stop();
+    });
+    const renderers = new McpToolRegistry({registerTool() {}}, rows).renderers("mcp__demo__echo");
+    let redraws = 0;
+    const component = new ToolExecutionComponent(
+        "mcp__demo__echo", "exported-call", {value: "fixture"}, {outputPad: 0}, renderers,
+        {requestRender() { redraws++; }} as ConstructorParameters<typeof ToolExecutionComponent>[5], process.cwd(),
+    );
+    component.setArgsComplete();
+    component.markExecutionStarted();
+    component.updateResult({content: [{type: "text", text: "finished"}], isError: false});
+    rows.toggle("exported-call");
+    const before = rows.list();
+    const html = createToolHtmlRenderer({
+        cwd: process.cwd(), theme: {fg: (_color: string, text: string) => text, bold: (text: string) => text} as Theme,
+        getToolRenderers: () => ({
+            ...renderers,
+            renderCall: (args, theme, context) => {
+                exports.push(context.state);
+                return renderers.renderCall!(args, theme, context);
+            },
+        }),
+    });
+    const call = html.renderCall("exported-call", "mcp__demo__echo", {value: "fixture"});
+    const spinnerAllocated = exports.some((state) => state.pilotCallSpinner != null);
+    const result = html.renderResult("exported-call", "mcp__demo__echo", [{type: "text", text: "finished"}], undefined, false);
+    const after = rows.list();
+    const beforeToggle = redraws;
+    rows.toggle("exported-call");
+    assert.deepEqual({
+        rowsPreserved: JSON.stringify(after) === JSON.stringify(before),
+        liveInvalidations: redraws - beforeToggle,
+        spinnerAllocated,
+        spinnerRetained: exports.some((state) => state.pilotCallSpinner != null),
+    }, {rowsPreserved: true, liveInvalidations: 1, spinnerAllocated: false, spinnerRetained: false});
+    assert.match(call!, /mcp__demo__echo/);
+    assert.doesNotMatch(call!, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+    assert.match(result!.expanded!, /finished/);
+    const afterCompletion = redraws;
+    t.mock.timers.tick(800);
+    assert.equal(redraws, afterCompletion);
 });
 
 function stripAnsi(value: string): string {

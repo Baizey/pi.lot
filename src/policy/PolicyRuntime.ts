@@ -13,10 +13,9 @@ import {
     PolicyPrincipalContext,
     PolicyToolCallContext,
 } from "./AgentPolicyDecisionFlow.js";
-import type {PolicyChoice} from "./PolicyDecisionFlow.js";
-import {PolicyDecisionFlow} from "./PolicyDecisionFlow";
+import type {PolicyChoice, QueuedPolicyApproval} from "./PolicyDecisionFlow.js";
 import {PolicyEngine} from "./PolicyEngine";
-import {policyScopeCovers, policyScopeHierarchy} from "./PolicyScope.js";
+import {policyScopeCovers, policyScopeHierarchy, resolveUri} from "./PolicyScope.js";
 import {
     isPersistedLifetime,
     type Policy,
@@ -31,7 +30,6 @@ import {
     type PolicyStatus,
     policyAreaAccessTypes,
     policyAreaForAccessType,
-    resolveUri,
 } from "./types";
 import type {PolicyDaoInterface} from "../storage/PolicyDao";
 import {initialPolicyDefaults, type PolicyDefaultJsonStorageInterface, type ResponseDefaults} from "./defaults.js";
@@ -133,7 +131,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
     constructor(
         agentIdentifier: string,
         private readonly database: PolicyDaoInterface,
-        private readonly decisionFlow: PolicyDecisionFlow,
+        private readonly decisionFlow: QueuedPolicyApproval,
         private readonly defaultsStore?: PolicyDefaultJsonStorageInterface,
         rootContext: PolicyPrincipalContext = ROOT_AGENT_CONTEXT,
         private readonly approvalAudit?: PolicyApprovalAuditLogInterface,
@@ -969,33 +967,28 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             );
         };
 
-        if (typeof this.decisionFlow.resolveQueuedPolicy === "function") {
-            return this.decisionFlow.resolveQueuedPolicy(
-                uri,
-                accessType,
-                {
-                    beforePrompt: () => {
-                        deadline.expireIfOverdue();
-                        return this.queuedUserApprovalResolution(
-                            requester,
-                            uri,
-                            accessType,
-                            oncePolicies,
-                            path,
-                            pathSnapshot,
-                            fallback,
-                            signal,
-                        );
-                    },
-                    complete,
+        return this.decisionFlow.resolveQueuedPolicy(
+            uri,
+            accessType,
+            {
+                beforePrompt: () => {
+                    deadline.expireIfOverdue();
+                    return this.queuedUserApprovalResolution(
+                        requester,
+                        uri,
+                        accessType,
+                        oncePolicies,
+                        path,
+                        pathSnapshot,
+                        fallback,
+                        signal,
+                    );
                 },
-                signal,
-                requestContext,
-            );
-        }
-
-        const choice = await this.decisionFlow.askForPolicy(uri, accessType, signal, requestContext);
-        return complete(choice);
+                complete,
+            },
+            signal,
+            requestContext,
+        );
     }
 
     private queuedUserApprovalResolution(

@@ -24,7 +24,6 @@ type CodemodeInput = {purpose: string; code: string};
 
 /** Pi owns script execution and discovery; Pilot adds purpose and presentation. */
 export class CodemodeExtension {
-    private readonly liveRows = new WeakSet<object>();
     private readonly timing = new WeakMap<object, {startedAt: number; endedAt?: number}>();
     // UI-only arguments: leave Pi's bounded transcript metadata and model output unchanged.
     private readonly callArguments = new WeakMap<CodemodeToolDetails, ReadonlyMap<number, string>>();
@@ -108,29 +107,26 @@ export class CodemodeExtension {
                 },
                 renderShell: "self",
                 renderCall: (args, theme, context) => {
-                    // Pi's TUI creates rows before execution; HTML exports start with
-                    // executionStarted=true. Export state must not own live toggles or timers.
-                    if (!context.executionStarted) this.liveRows.add(context.state);
-                    const live = this.liveRows.has(context.state);
-                    if (live) {
-                        this.displayRows.observe("codemode", args, context);
-                        if (context.executionStarted && !this.timing.has(context.state)) {
-                            this.timing.set(context.state, {startedAt: Date.now()});
-                        }
+                    const live = this.displayRows.observe("codemode", args, context);
+                    if (live && context.executionStarted && !this.timing.has(context.state)) {
+                        this.timing.set(context.state, {startedAt: Date.now()});
                     }
                     return this.presentation.renderCall(
                         args,
                         theme,
                         this.displayRows.resolveMode(context.expanded, context.state),
-                        {...context, invalidate: live ? context.invalidate : undefined},
+                        {
+                            isPartial: context.isPartial,
+                            outputPad: context.outputPad,
+                            indicator: () => context.state.pilotCallSpinner?.frame(),
+                        },
                     );
                 },
                 renderResult: (result, options, theme, context) => {
                     const timing = this.timing.get(context.state);
                     if (!options.isPartial) {
                         if (timing) timing.endedAt ??= Date.now();
-                        context.state.pilotCallSpinner?.stop();
-                        context.state.pilotCallSpinner = null;
+                        this.displayRows.complete(context.state);
                     }
                     return this.renderResult(
                         result,

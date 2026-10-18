@@ -4,7 +4,8 @@ import {createConnection} from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type {PolicyDecisionFlow, PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import type {QueuedPolicyApproval, PolicyChoice} from "../src/policy/PolicyDecisionFlow.js";
+import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
 import {NativeFuseSessionBroker} from "../src/policy/path/native/NativeFuseSessionBroker.js";
 import {runNativeFuseSandboxedCommand} from "../src/policy/path/native/native-fuse-runner.js";
@@ -33,18 +34,16 @@ function policyDao(): PolicyDaoInterface {
     };
 }
 
-function decisionFlow(choices: PolicyChoice[] = []): PolicyDecisionFlow {
+function decisionFlow(choices: PolicyChoice[] = []): QueuedPolicyApproval {
     let index = 0;
-    return {
-        async askForPolicy(): Promise<PolicyChoice> {
-            const choice = choices[index++];
-            assert.ok(choice, "Unexpected session-broker policy request");
-            return choice;
-        },
-    } as unknown as PolicyDecisionFlow;
+    return scriptedPolicyApproval(() => {
+        const choice = choices[index++];
+        assert.ok(choice, "Unexpected session-broker policy request");
+        return choice;
+    });
 }
 
-function allowingRuntime(flow: PolicyDecisionFlow = decisionFlow()): PolicyRuntime {
+function allowingRuntime(flow: QueuedPolicyApproval = decisionFlow()): PolicyRuntime {
     const runtime = new PolicyRuntime(AGENT, policyDao(), flow);
     runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.allow);
     return runtime;

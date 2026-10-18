@@ -1,6 +1,6 @@
 import type {ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {AgentCapability} from "./AgentCapability.js";
-import type {SessionKind} from "../server/ArchiveProtocol.js";
+import type {ChildSessionKind} from "../sessions/SessionIdentity.js";
 import type {
     SubagentReasoningAmount,
     SubagentReasoningSkill,
@@ -32,7 +32,7 @@ export type SubagentRequest = {
 
 export type SubagentSessionRequest = SubagentRequest & {
     agentIdentifier: string;
-    archiveKind?: typeof SessionKind.Subagent | typeof SessionKind.PolicyApprover;
+    archiveKind?: ChildSessionKind;
 };
 
 export type SubagentJobSnapshot = {

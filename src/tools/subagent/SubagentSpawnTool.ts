@@ -27,7 +27,6 @@ import {
     ToolArgumentPlacement,
     ToolTextDirection,
 } from "../../tui/tool/ToolPresentation";
-import {ToolPresentationRenderer} from "../../tui/tool/ToolPresentationRenderer";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {ThemeColor} from "../../tui/Color";
 
@@ -113,13 +112,12 @@ function createDefinition(
     defaults: DefaultsProvider,
     displayRows: ToolDisplayRows,
 ): ToolDefinition<any, SubagentToolDetails> {
-    const presentation = new ToolPresentationRenderer(SPAWN_PRESENTATION, displayRows);
     return {
         name: "subagent_spawn",
         label: "Spawn subagent",
         description: "Start a retained child-agent conversation with abstract reasoning capabilities and return its job ID immediately. Policy-area capabilities snapshot the parent's matching policy state; MCP and delegation are hard capabilities.",
         promptSnippet: "Delegate independent work to a retained in-process child-agent conversation with explicit reasoning and mechanism capabilities.",
-        renderShell: "self",
+        ...displayRows.bind(SPAWN_PRESENTATION),
         parameters: objectSchema({
             task: stringSchema("Task to delegate"),
             role: stringSchema("Concise role or title for the child agent", 120),
@@ -166,20 +164,5 @@ function createDefinition(
             }, signal);
             return subagentToolResult([result.job]);
         },
-        renderCall: (args, theme, context) => {
-            displayRows.observe("subagent_spawn", args, context);
-            return presentation.renderCall(
-                args as SpawnToolInput,
-                theme,
-                displayRows.resolveMode(context.expanded, context.state),
-                context,
-            );
-        },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result,
-            theme,
-            {isError: context.isError, outputPad: context.outputPad},
-            displayRows.resolveMode(options.expanded, context.state),
-        ),
     };
 }

@@ -21,6 +21,24 @@ fn default_call_has_null_pointers_zero_scalars_and_no_filler() {
 }
 
 #[test]
+fn null_dispatch_arguments_fail_closed() {
+    unsafe {
+        let mut call = Call::default();
+        let mut state = State::new(cstring(b""), cstring(b"/hidden"), -1, -1);
+        assert_eq!(
+            pilot_fuse_call(std::ptr::null_mut(), Operation::Flush, &mut call),
+            -libc::EACCES
+        );
+        assert_eq!(
+            pilot_fuse_call(&mut state, Operation::Flush, std::ptr::null_mut()),
+            -libc::EACCES
+        );
+        assert_eq!(pilot_fuse_call(&mut state, Operation::Flush, &mut call), 0);
+        assert!(!state.panicked.load(Ordering::Relaxed));
+    }
+}
+
+#[test]
 fn panicked_mount_releases_file_and_poisoned_directory_handles() {
     unsafe {
         let file = Stdio(libc::tmpfile());
@@ -67,32 +85,26 @@ fn panicked_mount_releases_file_and_poisoned_directory_handles() {
             Operation::Getattr,
             Operation::Fsync,
         ] {
-            assert_eq!(
-                pilot_fuse_call(&mut state, op as u32, &mut call),
-                -libc::EACCES
-            );
+            assert_eq!(pilot_fuse_call(&mut state, op, &mut call), -libc::EACCES);
         }
         assert_eq!(libc::fstat(file_fd, &mut attributes), 0);
         assert_eq!(
-            pilot_fuse_call(&mut state, Operation::Release as u32, &mut call),
+            pilot_fuse_call(&mut state, Operation::Release, &mut call),
             0
         );
         assert_eq!(libc::fstat(file_fd, &mut attributes), -1);
         assert_eq!(errno(), libc::EBADF);
         call.fh = handle as usize as u64;
         assert_eq!(
-            pilot_fuse_call(&mut state, Operation::Releasedir as u32, &mut call),
+            pilot_fuse_call(&mut state, Operation::Releasedir, &mut call),
             0
         );
         assert_eq!(libc::fstat(retained_directory_fd, &mut attributes), -1);
         assert_eq!(errno(), libc::EBADF);
-        assert_eq!(
-            pilot_fuse_call(&mut state, Operation::Flush as u32, &mut call),
-            0
-        );
+        assert_eq!(pilot_fuse_call(&mut state, Operation::Flush, &mut call), 0);
         assert!(state.panicked.load(Ordering::Relaxed));
         assert_eq!(
-            pilot_fuse_call(&mut state, Operation::Open as u32, &mut call),
+            pilot_fuse_call(&mut state, Operation::Open, &mut call),
             -libc::EACCES
         );
     }

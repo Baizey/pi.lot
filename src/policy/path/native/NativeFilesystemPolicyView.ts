@@ -1,14 +1,13 @@
 import {isDeepStrictEqual} from "node:util";
 import {ApprovalWaitScope} from "../../../runtime/ApprovalWaitScope.js";
 import type {ToolCallPathPolicyEvaluator} from "../../PolicyRuntime.js";
-import {policyScopeCovers} from "../../PolicyScope.js";
+import {evaluateStoredPolicies} from "../../PolicyEngine.js";
+import {resolveUri} from "../../PolicyScope.js";
 import {
     PolicyAccessType,
     type Policy,
     PolicyResolutionSource,
-    PolicyResult,
-    type PolicyStatus,
-    resolveUri,
+    type PolicyResult,
 } from "../../types.js";
 
 export type NativeFilesystemPolicyLayer = {
@@ -239,21 +238,8 @@ function evaluateLayers(
 ): PolicyResult | undefined {
     const evaluatedUri = resolveUri(accessType, path);
     for (const layer of layers) {
-        const policy = layer.policies
-            .filter((candidate) => candidate.info[accessType]
-                && policyScopeCovers(accessType, candidate.pattern, evaluatedUri))
-            .sort((left, right) => right.pattern.length - left.pattern.length)[0];
-        if (!policy) continue;
-        const status = policy.info[accessType] as PolicyStatus;
-        return PolicyResult.of({
-            evaluatedUri,
-            evaluatedAccessType: accessType,
-            matchedPattern: policy.pattern,
-            matchedLifetime: status.lifetime,
-            matchedStatus: status.status,
-            matchedReason: status.reason,
-            resolutionSource: layer.resolutionSource,
-        });
+        const result = evaluateStoredPolicies(layer.policies, evaluatedUri, accessType, layer.resolutionSource);
+        if (result) return result;
     }
     return undefined;
 }

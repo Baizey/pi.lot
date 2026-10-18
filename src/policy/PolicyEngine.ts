@@ -1,4 +1,4 @@
-import {policyScopeCovers} from "./PolicyScope.js";
+import {policyScopeCovers, resolveUri} from "./PolicyScope.js";
 import {
     isPersistedLifetime,
     type Policy,
@@ -9,8 +9,34 @@ import {
     PolicyResponse,
     PolicyResult,
     type PolicyStatus,
-    resolveUri,
 } from "./types";
+
+/** Evaluate stored authority against an already-resolved target without resolving stored paths again. */
+export function evaluateStoredPolicies(
+    policies: readonly Policy[],
+    evaluatedUri: string,
+    accessType: PolicyAccessType,
+    resolutionSource: PolicyResolutionSource,
+): PolicyResult | null {
+    let match: {pattern: string; status: PolicyStatus} | undefined;
+    for (const policy of policies) {
+        const status = policy.info[accessType];
+        if (!status || !policyScopeCovers(accessType, policy.pattern, evaluatedUri)) continue;
+        if (!match || policy.pattern.length > match.pattern.length) {
+            match = {pattern: policy.pattern, status};
+        }
+    }
+    if (!match) return null;
+    return PolicyResult.of({
+        evaluatedUri,
+        evaluatedAccessType: accessType,
+        matchedPattern: match.pattern,
+        matchedLifetime: match.status.lifetime,
+        matchedStatus: match.status.status,
+        matchedReason: match.status.reason,
+        resolutionSource,
+    });
+}
 
 export class PolicyEngine {
     private readonly policies: Policy[] = [];
@@ -24,19 +50,9 @@ export class PolicyEngine {
         accessType: PolicyAccessType,
     ): PolicyResult | null {
         const evaluatedUri = resolveUri(accessType, inputUri);
-        const policy = this.findPolicy(evaluatedUri, accessType);
-        if (!policy) return null;
-
-        const status = policy.info[accessType] as PolicyStatus;
-        return PolicyResult.of({
-            evaluatedUri,
-            evaluatedAccessType: accessType,
-            matchedPattern: policy.pattern,
-            matchedLifetime: status.lifetime,
-            matchedStatus: status.status,
-            matchedReason: status.reason,
-            resolutionSource: PolicyResolutionSource.EXISTING_USER_POLICY,
-        });
+        return evaluateStoredPolicies(
+            this.policies, evaluatedUri, accessType, PolicyResolutionSource.EXISTING_USER_POLICY,
+        );
     }
 
     addPolicies(policies: Policy[]): void {
@@ -79,15 +95,6 @@ export class PolicyEngine {
                 ),
             }))
             .filter((policy) => Object.keys(policy.info).length > 0);
-    }
-
-    private findPolicy(evaluatedPath: string, accessType: PolicyAccessType): Policy | undefined {
-        let match: Policy | undefined;
-        for (const policy of this.policies) {
-            if (!policy.info[accessType] || !policyScopeCovers(accessType, policy.pattern, evaluatedPath)) continue;
-            if (!match || policy.pattern.length > match.pattern.length) match = policy;
-        }
-        return match;
     }
 
     private standardizePolicy(policy: Policy): Policy {

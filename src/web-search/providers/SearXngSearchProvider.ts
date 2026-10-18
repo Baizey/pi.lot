@@ -9,6 +9,7 @@ import {
 import {normalizeSearchDomainFilters, searchQueryWithDomains} from "../SearchDomainFilters.js";
 import type {SearXngConfig} from "../WebSearchConfig.js";
 import {
+    mapProviderResults,
     parseProviderJson,
     providerRecord,
     requireSuccessfulProviderResponse,
@@ -39,19 +40,13 @@ export class SearXngSearchProvider implements WebSearchProvider {
             throw new WebSearchProviderRequestError(this.id, "Search backend returned no results array");
         }
 
-        const results: WebSearchProviderResponse["results"] = [];
-        for (const rawResult of envelope.results) {
-            if (typeof rawResult !== "object" || rawResult === null || Array.isArray(rawResult)) continue;
-            const result = rawResult as Record<string, unknown>;
-            if (typeof result.url !== "string" || !result.url) continue;
-            results.push({
-                title: typeof result.title === "string" ? result.title : result.url,
-                url: result.url,
-                snippet: typeof result.content === "string" ? result.content : "",
-                ...(typeof result.publishedDate === "string" ? {publishedAt: result.publishedDate} : {}),
-            });
-        }
-        return {results};
+        return {
+            results: mapProviderResults(envelope.results, {
+                url: "url",
+                snippet: "content",
+                publishedAt: "publishedDate",
+            }),
+        };
     }
 
     private searchUrl(request: WebSearchRequest): URL {

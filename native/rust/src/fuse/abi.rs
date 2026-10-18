@@ -27,7 +27,7 @@ unsafe fn invoke(operation: Operation, mut call: Call, info: *mut ffi::fuse_file
             call.direct_io = info.direct_io() as c_int;
             call.keep_cache = info.keep_cache() as c_int;
         }
-        let result = pilot_fuse_call(state, operation as u32, &mut call);
+        let result = pilot_fuse_call(state, operation, &mut call);
         if let Some(info) = info.as_mut() {
             info.fh = call.fh;
             info.set_direct_io(u32::from(call.direct_io != 0));

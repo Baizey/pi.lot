@@ -191,30 +191,16 @@ impl Policy {
             return Ok(());
         }
         let (replacement, loaded) = Snapshot::load(&state.snapshot_path)?;
-        if replacement.revision < self.base.revision
-            || (replacement.revision == self.base.revision && replacement != self.base)
-        {
-            set_errno(libc::EPROTO);
-            return Err(-1);
-        }
-        if replacement.revision > self.base.revision {
+        if self.base.replace(replacement)? {
             state.count(BASE_RELOADS);
-            self.base = replacement;
         }
         self.status = Some(loaded);
         Ok(())
     }
     fn apply_once(&mut self, state: &State, payload: &[u8]) -> Result<(), i32> {
         let replacement = Snapshot::parse(payload)?;
-        if replacement.revision < self.once.revision
-            || (replacement.revision == self.once.revision && replacement != self.once)
-        {
-            set_errno(libc::EPROTO);
-            return Err(-1);
-        }
-        if replacement.revision > self.once.revision {
+        if self.once.replace(replacement)? {
             state.count(ONCE_UPDATES);
-            self.once = replacement;
         }
         Ok(())
     }
@@ -371,7 +357,7 @@ mod tests {
         assert_eq!(state.counters[ONCE_UPDATES].load(Ordering::Relaxed), 1);
     }
     #[test]
-    fn base_revisions_accept_identical_duplicates_and_reject_conflicts() {
+    fn base_revisions_preserve_replacement_and_stat_cache_invariants() {
         struct SnapshotFile {
             descriptor: Fd,
             path: CString,
@@ -426,6 +412,29 @@ mod tests {
             Some(Decision::Allow)
         );
         assert_eq!(state.counters[BASE_RELOADS].load(Ordering::Relaxed), 0);
+        file.replace_contents(&snapshot(6, 2));
+        assert!(policy.refresh(&state).is_err());
+        assert_eq!(errno(), libc::EPROTO);
+        assert!(policy.status.is_none());
+        assert_eq!(policy.base.revision, 7);
+        assert_eq!(
+            policy.base.evaluate(b"/target", Access::Read),
+            Some(Decision::Allow)
+        );
+        assert_eq!(state.counters[BASE_RELOADS].load(Ordering::Relaxed), 0);
+
+        file.replace_contents(&snapshot(8, 2));
+        policy.refresh(&state).unwrap();
+        assert!(policy.status.is_some());
+        assert_eq!(policy.base.revision, 8);
+        assert_eq!(
+            policy.base.evaluate(b"/target", Access::Read),
+            Some(Decision::Deny)
+        );
+        assert_eq!(state.counters[BASE_RELOADS].load(Ordering::Relaxed), 1);
+        policy.refresh(&state).unwrap();
+        assert_eq!(state.counters[BASE_RELOADS].load(Ordering::Relaxed), 1);
+        assert_eq!(state.counters[BASE_CHECKS].load(Ordering::Relaxed), 5);
     }
     #[test]
     fn events_preserve_full_width_revisions_and_path_bytes() {

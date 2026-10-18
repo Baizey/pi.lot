@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {createAssistantMessageEventStream, type AssistantMessage, type Message} from "@earendil-works/pi-ai";
 import {SdkSubagentSessionFactory} from "../src/subagents/SdkSubagentSession.js";
-import {SessionKind} from "../src/server/ArchiveProtocol.js";
+import {getSessionRootId, SessionIdentity, SessionKind} from "../src/sessions/SessionIdentity.js";
 import {SubagentReasoningAmount, SubagentReasoningSkill} from "../src/subagents/SubagentReasoning.js";
 import type {SubagentChildSession, SubagentSessionRequest} from "../src/subagents/types.js";
 
@@ -177,7 +177,10 @@ test("new child kind comes from creation intent, not its identifier prefix", asy
         child.dispose();
         const info = (await SessionManager.list(fixture.cwd, fixture.sessionDir)).find((session) => session.id === id);
         assert.ok(info);
-        const metadata = SessionManager.open(info.path).getEntries().find((entry) => entry.type === "custom"
+        const stored = SessionManager.open(info.path);
+        assert.equal(SessionIdentity.fromManager(stored).childKind, expected);
+        assert.equal(getSessionRootId(stored), fixture.parent.getSessionId());
+        const metadata = stored.getEntries().find((entry) => entry.type === "custom"
             && entry.customType === "pilot.subagent");
         assert.ok(metadata?.type === "custom");
         assert.deepEqual(metadata.data, {
@@ -229,7 +232,10 @@ for (const ephemeral of [false, true]) {
             if (ephemeral) continue;
             const info = (await SessionManager.list(fixture.cwd, fixture.sessionDir)).find((session) => session.id === id);
             assert.ok(info);
-            const metadata = SessionManager.open(info.path).getEntries().find((entry) => entry.type === "custom"
+            const stored = SessionManager.open(info.path);
+            assert.equal(SessionIdentity.fromManager(stored).childKind, archiveKind);
+            assert.equal(getSessionRootId(stored), undefined);
+            const metadata = stored.getEntries().find((entry) => entry.type === "custom"
                 && entry.customType === "pilot.subagent");
             assert.ok(metadata?.type === "custom");
             assert.deepEqual(metadata.data, {version: 1, sessionId: id,

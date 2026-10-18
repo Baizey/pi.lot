@@ -17,9 +17,12 @@ import {resolveToolDisplayMode, ToolDisplayMode} from "../src/tui/tool/ToolDispl
 import {ToolPresentationRenderer} from "../src/tui/tool/ToolPresentationRenderer.js";
 import {ThemeColor} from "../src/tui/Color.js";
 import {displayWidth} from "../src/tui/terminalText.js";
-import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
+import {ToolDisplayRows, type ToolDisplayState} from "../src/tui/tool/ToolDisplayRows.js";
 import type {ToolCallSpinnerState} from "../src/tui/tool/ToolCallSpinner.js";
 import {EditTool} from "../src/tools/builtin/EditTool.js";
+import {WebSearchTool} from "../src/tools/web-search/WebSearchTool.js";
+// Pi's export helper is internal; using it here catches differences from TUI contexts.
+import {createToolHtmlRenderer} from "../node_modules/@earendil-works/pi-coding-agent/dist/core/export-html/tool-renderer.js";
 
 const plainTheme = {
     fg: (_color: string, text: string) => text,
@@ -34,6 +37,8 @@ test("tool rows retain full-display toggles and invalidate only the selected cal
         rows.observe("bash", {purpose: `Call ${index + 1}`}, {
             toolCallId: `call-${index + 1}`,
             state: states[index]!,
+            executionStarted: false,
+            isPartial: false,
             invalidate: () => invalidations[index]++,
         });
     }
@@ -185,12 +190,14 @@ test("full Bash presentation promotes purpose and timeout and shows complete out
 
 test("tool headers animate Pi's spinner and keep its blank slot after success or error", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
-    const renderer = new ToolPresentationRenderer(bashPresentation());
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const renderer = rows.bind(bashPresentation());
     const args = {purpose: "Check lifecycle", command: "true"};
     const state: ToolCallSpinnerState = {};
     let invalidations = 0;
-    const options = {isPartial: true, state, invalidate: () => invalidations++};
-    const call = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, options);
+    const options = renderContext(state, {isPartial: true, invalidate: () => invalidations++});
+    const call = renderer.renderCall(args, plainTheme, options);
     assert.equal(invalidations, 0, "construction must not recursively invalidate the tool row");
     assert.deepEqual(call.render(120), ["⠋ bash | Check lifecycle"]);
 
@@ -198,7 +205,7 @@ test("tool headers animate Pi's spinner and keep its blank slot after success or
         t.mock.timers.tick(80);
         assert.deepEqual(call.render(120), [`${frame} bash | Check lifecycle`]);
         assert.deepEqual(
-            renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, options).render(120),
+            renderer.renderCall(args, plainTheme, options).render(120),
             call.render(120),
             "redraws must reuse the animation rather than resetting its phase",
         );
@@ -206,8 +213,9 @@ test("tool headers animate Pi's spinner and keep its blank slot after success or
     assert.equal(invalidations, 10);
 
     for (const mode of Object.values(ToolDisplayMode)) {
+        rows.modes.setViews(mode, mode);
         for (const width of [1, 2, 10, 120]) {
-            const lines = renderer.renderCall(args, plainTheme, mode, options).render(width);
+            const lines = renderer.renderCall(args, plainTheme, options).render(width);
             assert.ok(lines.every((line) => displayWidth(line) <= width));
             assert.ok(lines.every((line) => !/[ \t]+$/.test(line)));
         }
@@ -216,7 +224,8 @@ test("tool headers animate Pi's spinner and keep its blank slot after success or
     const runningTitleColumn = call.render(120)[0]!.indexOf("bash");
     for (const isError of [false, true]) {
         for (const mode of Object.values(ToolDisplayMode)) {
-            const completed = renderer.renderCall(args, plainTheme, mode, {
+            rows.modes.setViews(mode, mode);
+            const completed = renderer.renderCall(args, plainTheme, {
                 ...options, isPartial: false, isError,
             });
             const lines = completed.render(120);
@@ -230,8 +239,9 @@ test("tool headers animate Pi's spinner and keep its blank slot after success or
         }
         assert.deepEqual(call.render(120), ["  bash | Check lifecycle"]);
         assert.equal(state.pilotCallSpinner, null);
+        const afterCompletion: number = invalidations;
         t.mock.timers.tick(800);
-        assert.equal(invalidations, 10, "finished rows must stop requesting redraws");
+        assert.equal(invalidations, afterCompletion, "finished rows must stop requesting redraws");
     }
 });
 
@@ -240,27 +250,13 @@ test("Pi tool execution keeps the spinner through streaming and expansion and st
     initTheme("dark");
     const rows = new ToolDisplayRows();
     t.after(() => rows.clear());
-    const presentation = new ToolPresentationRenderer(bashPresentation());
     const definition = {
         name: "bash",
         label: "Bash",
         description: "Exercise animated tool rendering",
         parameters: {type: "object", properties: {}},
-        renderShell: "self",
+        ...rows.bind(bashPresentation()),
         async execute() { return {content: [], details: undefined}; },
-        renderCall: (args, theme, context) => {
-            rows.observe("bash", args, context);
-            return presentation.renderCall(
-                args as {purpose: string; command: string},
-                theme,
-                resolveToolDisplayMode(context.expanded, context.state),
-                context,
-            );
-        },
-        renderResult: (result, options, theme, context) => presentation.renderResult(
-            result, theme, {isError: context.isError},
-            resolveToolDisplayMode(options.expanded, context.state),
-        ),
     } satisfies ToolDefinition<any, any>;
     const args = {purpose: "Streaming", command: "echo live"};
 
@@ -300,18 +296,16 @@ test("Pi tool execution keeps the spinner through streaming and expansion and st
 test("clearing tool rows stops independent animations and cannot restart detached rows", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const rows = new ToolDisplayRows();
-    const renderer = new ToolPresentationRenderer(bashPresentation());
+    const renderer = rows.bind(bashPresentation());
     const args = {purpose: "Cleanup", command: "true"};
     const state: ToolCallSpinnerState = {};
     let invalidations = 0;
-    const context = {toolCallId: "first", state, isPartial: true, invalidate: () => invalidations++};
-    rows.observe("bash", args, context);
-    const first = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, context);
+    const context = renderContext(state, {toolCallId: "first", isPartial: true, invalidate: () => invalidations++});
+    const first = renderer.renderCall(args, plainTheme, context);
     t.mock.timers.tick(80);
 
     const secondContext = {...context, toolCallId: "second", state: {} as ToolCallSpinnerState};
-    rows.observe("bash", args, secondContext);
-    const second = renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, secondContext);
+    const second = renderer.renderCall(args, plainTheme, secondContext);
     assert.deepEqual(first.render(120), ["⠙ bash | Cleanup"]);
     assert.deepEqual(second.render(120), ["⠋ bash | Cleanup"]);
     t.mock.timers.tick(80);
@@ -323,7 +317,7 @@ test("clearing tool rows stops independent animations and cannot restart detache
     for (const options of [context, secondContext]) {
         assert.equal(options.state.pilotCallSpinner, null);
         assert.deepEqual(
-            renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL, options).render(120),
+            renderer.renderCall(args, plainTheme, options).render(120),
             ["  bash | Cleanup"],
         );
     }
@@ -331,6 +325,95 @@ test("clearing tool rows stops independent animations and cannot restart detache
     assert.deepEqual(second.render(120), ["  bash | Cleanup"]);
     t.mock.timers.tick(800);
     assert.equal(invalidations, 3);
+});
+
+test("ordinary bindings keep result-only completion terminal and cached nested layouts pure", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const binding = rows.bind(bashPresentation());
+    const nested = rows.callPresentation("bash")!;
+    const state: ToolDisplayState = {};
+    let invalidations = 0;
+    const context = renderContext(state, {isPartial: true, invalidate: () => invalidations++});
+    const args = {purpose: "Bound lifecycle", command: "echo fixture"};
+    binding.renderCall(args, plainTheme, context);
+    rows.toggle(context.toolCallId);
+    binding.renderCall({...args, command: "echo updated"}, plainTheme, {...context, executionStarted: true});
+    assert.deepEqual(rows.list(), [{
+        toolCallId: "call", toolName: "bash", args: {...args, command: "echo updated"}, sequence: 1, full: true,
+    }]);
+    const beforeNested = rows.list();
+    assert.deepEqual(nested(args, plainTheme, ToolDisplayMode.MINIMAL, 120, "⠋"), ["⠋ bash | Bound lifecycle"]);
+    assert.deepEqual(rows.list(), beforeNested);
+    const beforeTick = invalidations;
+    t.mock.timers.tick(80);
+    assert.equal(invalidations, beforeTick + 1, "nested layouts do not allocate a second spinner");
+
+    binding.renderResult({content: [{type: "text", text: "finished"}]}, {expanded: false, isPartial: false}, plainTheme, context);
+    assert.equal(state.pilotCallSpinner, null, "result completion does not require another call render");
+    binding.renderCall(args, plainTheme, context);
+    binding.renderResult({content: []}, {expanded: false, isPartial: true}, plainTheme, context);
+    const afterCompletion = invalidations;
+    t.mock.timers.tick(800);
+    assert.equal(invalidations, afterCompletion, "stale partial callbacks cannot restart completed rows");
+    rows.clear();
+    assert.equal(rows.callPresentation("bash"), nested, "cached bindings outlive row cleanup");
+    assert.deepEqual(nested(args, plainTheme, ToolDisplayMode.MINIMAL, 120), ["  bash | Bound lifecycle"]);
+    assert.deepEqual(rows.list(), []);
+    t.mock.timers.tick(800);
+    assert.equal(invalidations, afterCompletion);
+});
+
+test("actual Pi HTML rendering of an ordinary adapter neither owns nor completes live rows", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    initTheme("dark");
+    const rows = new ToolDisplayRows();
+    t.after(() => rows.clear());
+    const definition = new WebSearchTool({} as ExtensionAPI, () => assert.fail("rendering cannot execute search"), rows).toolDefinition();
+    const args = {query: "Fixture query"};
+    let redraws = 0;
+    const component = new ToolExecutionComponent("web_search", "live", args, {outputPad: 0}, definition,
+        {requestRender() { redraws++; }} as ConstructorParameters<typeof ToolExecutionComponent>[5], process.cwd());
+    component.markExecutionStarted();
+    rows.toggle("live");
+    const observed = rows.list();
+    const html = createToolHtmlRenderer({getToolRenderers: () => definition, cwd: process.cwd(), theme: plainTheme});
+    for (const id of ["live", "export-only"]) {
+        const call = html.renderCall(id, "web_search", args);
+        assert.match(call!, /web_search \| Fixture query/);
+        assert.doesNotMatch(call!, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+        const result = html.renderResult(id, "web_search", [{type: "text", text: "Fixture result"}], undefined, false);
+        assert.match(result!.expanded!, /Fixture result/);
+        assert.deepEqual(rows.list(), observed);
+    }
+    const beforeTick = redraws;
+    t.mock.timers.tick(80);
+    assert.equal(redraws, beforeTick + 1, "exported results cannot complete the live spinner");
+    component.updateResult({content: [], isError: false});
+    const completed = redraws;
+    t.mock.timers.tick(800);
+    assert.equal(redraws, completed);
+});
+
+test("ordinary bindings apply padding once in all configured views", () => {
+    const spec = bashPresentation();
+    const renderer = new ToolPresentationRenderer(spec);
+    const rows = new ToolDisplayRows();
+    const binding = rows.bind(spec);
+    const args = {purpose: "Padding", command: "fixture command"};
+    const result = {content: [{type: "text", text: "fixture result"}]};
+    for (const mode of Object.values(ToolDisplayMode)) {
+        rows.modes.setViews(mode, mode);
+        for (const outputPad of [0, 1, 3]) {
+            const context = renderContext({}, {outputPad});
+            assert.deepEqual(binding.renderCall(args, plainTheme, context).render(40),
+                renderer.renderCall(args, plainTheme, mode, {outputPad}).render(40));
+            assert.deepEqual(binding.renderResult(result, {expanded: false, isPartial: false}, plainTheme, context).render(40),
+                renderer.renderResult(result, plainTheme, {outputPad}, mode).render(40));
+        }
+    }
+    rows.clear();
 });
 
 test("minimal presentation shows title arguments and hides successful or failed output", () => {
@@ -897,6 +980,18 @@ function bashPresentation(): ToolPresentationSpec<{
 
 function stripAnsi(value: string): string {
     return value.replace(/\x1b\[[0-?]*[ -/]*m/g, "");
+}
+
+type DisplayContext = Parameters<ReturnType<ToolDisplayRows["bind"]>["renderCall"]>[2];
+
+function renderContext(state: ToolDisplayState, options: Partial<DisplayContext> = {}): DisplayContext {
+    return {
+        args: {}, toolCallId: "call", state, invalidate() {}, lastComponent: undefined,
+        cwd: process.cwd(), executionStarted: false, argsComplete: true,
+        isPartial: false, expanded: false, showImages: false, isError: false,
+        durationMs: undefined, outputPad: 0,
+        ...options,
+    };
 }
 
 function numberedLines(count: number): string {

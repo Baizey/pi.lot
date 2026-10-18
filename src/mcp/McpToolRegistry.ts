@@ -5,7 +5,6 @@ import {renderLineFactory} from "../tui/terminalText.js";
 import {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
 import {ToolDisplayMode} from "../tui/tool/ToolDisplayMode.js";
 import {ToolTextDirection} from "../tui/tool/ToolPresentation.js";
-import {ToolPresentationRenderer} from "../tui/tool/ToolPresentationRenderer.js";
 
 // MCP servers register heterogeneous JSON Schemas, as does Pi's native tool registry.
 type McpDefinition = ToolDefinition<any, any>;
@@ -49,31 +48,22 @@ export class McpToolRegistry {
 
     /** Presentation also works before native discovery, without granting execution authority. */
     renderers(name: string): ToolRenderers {
-        const presentation = new ToolPresentationRenderer<Record<string, unknown>>({
+        const renderers = this.displayRows.bind<Record<string, unknown>>({
             toolName: name,
             arguments: [],
             result: {direction: ToolTextDirection.TAIL, wrap: true},
         });
         return {
-            renderShell: "self",
-            renderCall: (args, theme, context) => {
-                this.displayRows.observe(name, args, context);
-                return presentation.renderCall(
-                    args as Record<string, unknown>,
-                    theme,
-                    this.displayRows.resolveMode(context.expanded, context.state),
-                    context,
-                );
-            },
+            ...renderers,
             renderResult: (result, options, theme, context) => {
                 const mode = this.displayRows.resolveMode(options.expanded, context.state);
-                const displayed = presentation.renderResult({
+                const displayed = renderers.renderResult({
                     content: result.content.map((part) => (
                         part.type === "image" && (!context.showImages || !getCapabilities().images)
                             ? {type: "text", text: "[image]"}
                             : part
                     )),
-                }, theme, {isError: context.isError}, mode);
+                }, options, theme, {...context, outputPad: 0});
                 return renderLineFactory((width) => {
                     const lines = displayed.render(width);
                     if ((mode === ToolDisplayMode.TRUNCATED || mode === ToolDisplayMode.FULL)

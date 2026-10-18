@@ -1,6 +1,5 @@
 import path from "node:path";
-import {SessionKind} from "../server/ArchiveProtocol.js";
-import {getArchiveRootSessionId} from "../server/ArchiveSessions.js";
+import {getSessionRootId, recordChildSessionIdentity} from "../sessions/SessionIdentity.js";
 import {
     createAgentSession,
     createCodemodeExtension,
@@ -130,7 +129,7 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
         const rootFile = root.getSessionFile();
         // Archive classification is optional bookkeeping: unresolved legacy
         // ancestry must not disable normal delegation or policy reviewers.
-        const rootSessionId = getArchiveRootSessionId(root);
+        const rootSessionId = getSessionRootId(root);
         let sessionManager: SessionManager;
         if (rootFile) {
             const parentSession = request.parentAgentIdentifier === root.getSessionId()
@@ -148,12 +147,10 @@ export class SdkSubagentSessionFactory implements SubagentChildSessionFactory {
             sessionManager = SessionManager.inMemory(request.cwd, {id: request.agentIdentifier});
         }
         sessionManager.appendSessionInfo(`Subagent: ${request.role}`);
-        sessionManager.appendCustomEntry("pilot.subagent", {
-            version: 1,
-            sessionId: request.agentIdentifier,
+        recordChildSessionIdentity(sessionManager, {
             parentAgentIdentifier: request.parentAgentIdentifier,
             rootSessionId,
-            kind: request.archiveKind ?? SessionKind.Subagent,
+            kind: request.archiveKind,
         });
         return sessionManager;
     }

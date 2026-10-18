@@ -2,7 +2,7 @@ import type {HttpRequestEvent} from "./HttpRequestBroker.js";
 import type {NetworkPolicyEvent, NetworkPolicyScope} from "./NetworkPolicy.js";
 import {NetworkDecision, NetworkOperation} from "./network-queue-protocol.js";
 import type {ToolCallPathPolicyEvaluator} from "../PolicyRuntime.js";
-import {PolicyAccessType, PolicyResponse} from "../types.js";
+import {httpMethodAccessType, PolicyAccessType, PolicyResponse} from "../types.js";
 
 export type NetworkPolicyAuthorizerOptions = {
     policyEvaluator: ToolCallPathPolicyEvaluator;
@@ -35,7 +35,7 @@ export class NetworkPolicyAuthorizer {
     ): Promise<boolean> => {
         const result = await this.options.policyEvaluator(
             event.url,
-            httpAccessType(event.method),
+            httpMethodAccessType(event.method),
             signal,
         );
         if (result.matchedStatus === PolicyResponse.ALLOWED) return true;
@@ -59,26 +59,5 @@ function networkAccessType(event: NetworkPolicyEvent): PolicyAccessType {
             return PolicyAccessType.TCP_ACCESS;
         case NetworkOperation.UDP_FLOW:
             return PolicyAccessType.UDP_ACCESS;
-    }
-}
-
-function httpAccessType(method: string): PolicyAccessType {
-    switch (method.toUpperCase()) {
-        case "GET":
-            return PolicyAccessType.HTTP_GET;
-        case "POST":
-            return PolicyAccessType.HTTP_POST;
-        case "PUT":
-            return PolicyAccessType.HTTP_PUT;
-        case "DELETE":
-            return PolicyAccessType.HTTP_DELETE;
-        case "PATCH":
-            return PolicyAccessType.HTTP_PATCH;
-        case "HEAD":
-            return PolicyAccessType.HTTP_HEAD;
-        case "OPTIONS":
-            return PolicyAccessType.HTTP_OPTIONS;
-        default:
-            return PolicyAccessType.HTTP_ACCESS;
     }
 }

@@ -49,7 +49,6 @@ type SubagentJob = {
     output?: string;
     error?: string;
     turns: number;
-    nextTask: string;
     queuedTasks: string[];
     pendingSteering: string[];
     session?: SubagentChildSession;
@@ -131,7 +130,6 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             status: SubagentJobStatus.QUEUED,
             createdAt: Date.now(),
             turns: 0,
-            nextTask: normalized.task,
             queuedTasks: [],
             pendingSteering: [],
             stopRequested: false,
@@ -242,17 +240,8 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         }
 
         if (job.status === SubagentJobStatus.IDLE) {
-            job.request = {...job.request, task: normalizedTask};
-            this.policyPrincipals.updatePolicyPrincipalContext?.(job.agentIdentifier, {task: normalizedTask});
-            job.nextTask = normalizedTask;
-            job.output = undefined;
-            job.status = SubagentJobStatus.QUEUED;
-            job.latestLine = "Queued follow-up";
+            this.promoteFollowUp(job, normalizedTask);
             job.finishedAt = undefined;
-            job.error = undefined;
-            job.stopRequested = false;
-            job.timedOut = false;
-            this.queue.push(job);
             this.notify(job);
             this.pump();
             return snapshot(job);
@@ -285,6 +274,18 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         this.releaseTerminalPrincipals();
         this.queue.splice(0);
         this.changes.clear();
+    }
+
+    private promoteFollowUp(job: SubagentJob, task: string): void {
+        job.request = {...job.request, task};
+        this.policyPrincipals.updatePolicyPrincipalContext?.(job.agentIdentifier, {task});
+        job.output = undefined;
+        job.status = SubagentJobStatus.QUEUED;
+        job.latestLine = "Queued follow-up";
+        job.error = undefined;
+        job.stopRequested = false;
+        job.timedOut = false;
+        this.queue.push(job);
     }
 
     private updateSteeringPolicyContext(job: SubagentJob, steering: string): void {
@@ -403,7 +404,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                 depth: job.depth,
                 mechanisms: new Set(job.capabilities.mechanisms()),
             }, async () => {
-                const prompting = job.session!.prompt(job.nextTask, controller.signal, (update) => {
+                const prompting = job.session!.prompt(job.request.task, controller.signal, (update) => {
                     job.latestLine = update.latestLine;
                     if (update.output !== undefined) job.output = boundedOutput(update.output);
                     this.notify(job);
@@ -421,16 +422,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             job.turns++;
             const nextTask = job.queuedTasks.shift();
             if (nextTask) {
-                job.request = {...job.request, task: nextTask};
-                this.policyPrincipals.updatePolicyPrincipalContext?.(job.agentIdentifier, {task: nextTask});
-                job.nextTask = nextTask;
-                job.output = undefined;
-                job.status = SubagentJobStatus.QUEUED;
-                job.latestLine = "Queued follow-up";
-                job.error = undefined;
-                job.stopRequested = false;
-                job.timedOut = false;
-                this.queue.push(job);
+                this.promoteFollowUp(job, nextTask);
             } else {
                 job.status = SubagentJobStatus.IDLE;
             }
@@ -454,8 +446,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             job.approvalWaitScope = undefined;
             this.policyPrincipals.setPolicyApprovalWaitScope(job.agentIdentifier, undefined);
             job.controller = undefined;
-            const retainedConversation = job.status === SubagentJobStatus.IDLE
-                || job.status === SubagentJobStatus.QUEUED;
+            const retainedConversation = [SubagentJobStatus.IDLE, SubagentJobStatus.QUEUED].includes(job.status);
             if (!retainedConversation) this.disposeSession(job);
             this.notify(job);
             this.releaseTerminalPrincipals();

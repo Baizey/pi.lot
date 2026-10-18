@@ -8,7 +8,7 @@ import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {SubagentDefaultsCommand} from "./commands/SubagentDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {ServerCommand} from "./commands/ServerCommand.js";
-import {recordArchiveMainIdentity} from "./server/ArchiveSessions.js";
+import {recordMainSessionIdentity} from "./sessions/SessionIdentity.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
 import type {SubagentToolProviders} from "./subagents/SubagentToolCatalog.js";
@@ -47,19 +47,14 @@ export class PilotExtension {
     private readonly documentation = new PilotDocumentation();
     private readonly transcriptDisplayRuntime: TranscriptDisplayRuntime;
     private readonly thinkingLevelUiRuntime: ThinkingLevelUiRuntime;
-    private readonly bashTool: BashTool;
-    private readonly webSearchTool: WebSearchTool;
+    private readonly builtinTools: readonly (BashTool | WebSearchTool | ReadTool | EditTool | WriteTool)[];
     private readonly archiveTools: ArchiveTools;
-    private readonly readTool: ReadTool;
-    private readonly editTool: EditTool;
-    private readonly writeTool: WriteTool;
     private readonly mcpExtension: McpExtensionInterface;
     private readonly subagentRuntime: SubagentRuntime;
     private readonly subagentUiRuntime: SubagentUiRuntime;
-    private readonly subagentSpawnTool: SubagentSpawnTool;
-    private readonly subagentStatusTool: SubagentStatusTool;
-    private readonly subagentMessageTool: SubagentMessageTool;
-    private readonly subagentStopTool: SubagentStopTool;
+    private readonly subagentTools: readonly (
+        SubagentSpawnTool | SubagentStatusTool | SubagentMessageTool | SubagentStopTool
+    )[];
     private sessionRuntime: PilotSessionRuntimeInterface | undefined;
     private registered = false;
 
@@ -74,26 +69,30 @@ export class PilotExtension {
         this.transcriptDisplayRuntime = new TranscriptDisplayRuntime(pi, this.displayRows.modes);
         this.thinkingLevelUiRuntime = new ThinkingLevelUiRuntime((tui) => this.transcriptDisplayRuntime.attach(tui));
         const runtimeProvider = () => this.requireSessionRuntime();
-        this.bashTool = new BashTool(pi, runtimeProvider, this.displayRows);
-        this.webSearchTool = new WebSearchTool(pi, runtimeProvider, this.displayRows);
+        this.builtinTools = [
+            new BashTool(pi, runtimeProvider, this.displayRows),
+            new WebSearchTool(pi, runtimeProvider, this.displayRows),
+            new ReadTool(pi, runtimeProvider, this.displayRows),
+            new EditTool(pi, runtimeProvider, this.displayRows),
+            new WriteTool(pi, runtimeProvider, this.displayRows),
+        ];
         this.archiveTools = new ArchiveTools(pi, runtimeProvider, this.displayRows);
-        this.readTool = new ReadTool(pi, runtimeProvider, this.displayRows);
-        this.editTool = new EditTool(pi, runtimeProvider, this.displayRows);
-        this.writeTool = new WriteTool(pi, runtimeProvider, this.displayRows);
         this.mcpExtension = (
             options.createMcpExtension
             ?? ((extensionApi, displayRows) => new McpExtension(extensionApi, {displayRows}))
         )(pi, this.displayRows);
         const coordinator = () => this.subagentRuntime.coordinator();
         const subagentDefaults = () => this.subagentRuntime.defaults().values;
-        this.subagentSpawnTool = new SubagentSpawnTool(pi, coordinator, subagentDefaults, this.displayRows);
-        this.subagentStatusTool = new SubagentStatusTool(pi, coordinator, this.displayRows);
-        this.subagentMessageTool = new SubagentMessageTool(pi, coordinator, this.displayRows);
-        this.subagentStopTool = new SubagentStopTool(pi, coordinator, this.displayRows);
+        this.subagentTools = [
+            new SubagentSpawnTool(pi, coordinator, subagentDefaults, this.displayRows),
+            new SubagentStatusTool(pi, coordinator, this.displayRows),
+            new SubagentMessageTool(pi, coordinator, this.displayRows),
+            new SubagentStopTool(pi, coordinator, this.displayRows),
+        ];
         const toolProviders: SubagentToolProviders = {
-            builtins: () => this.builtinToolDefinitions(),
+            builtins: () => this.builtinTools.map((tool) => tool.toolDefinition()),
             mcp: () => this.mcpExtension.toolDefinitions(),
-            delegate: () => this.subagentToolDefinitions(),
+            delegate: () => this.subagentTools.map((tool) => tool.toolDefinition()),
         };
         this.subagentRuntime = new SubagentRuntime(toolProviders, {
             modelRanker: options.subagentModelRanker,
@@ -108,11 +107,7 @@ export class PilotExtension {
 
         const runtimeProvider = () => this.requireSessionRuntime();
         this.transcriptDisplayRuntime.register();
-        this.bashTool.register();
-        this.webSearchTool.register();
-        this.readTool.register();
-        this.editTool.register();
-        this.writeTool.register();
+        for (const tool of this.builtinTools) tool.register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
         new SubagentDefaultsCommand(
             this.pi,
@@ -125,10 +120,7 @@ export class PilotExtension {
         this.archiveTools.register();
         new CodemodeExtension(this.pi, this.displayRows).register();
         this.mcpExtension.register();
-        this.subagentSpawnTool.register();
-        this.subagentStatusTool.register();
-        this.subagentMessageTool.register();
-        this.subagentStopTool.register();
+        for (const tool of this.subagentTools) tool.register();
 
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
         this.pi.on("before_agent_start", (event, ctx) => {
@@ -172,7 +164,7 @@ export class PilotExtension {
     }
 
     private async startOwnedExtensions(ctx: ExtensionContext): Promise<void> {
-        recordArchiveMainIdentity(this.pi, ctx.sessionManager);
+        recordMainSessionIdentity(this.pi, ctx.sessionManager);
         await this.mcpExtension.startSession(ctx);
         await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
         await this.subagentUiRuntime.startSession(ctx, this.subagentRuntime.coordinator());
@@ -208,25 +200,6 @@ export class PilotExtension {
             firstError ??= error;
         }
         if (firstError !== undefined) throw firstError;
-    }
-
-    private builtinToolDefinitions() {
-        return [
-            this.bashTool.toolDefinition(),
-            this.webSearchTool.toolDefinition(),
-            this.readTool.toolDefinition(),
-            this.editTool.toolDefinition(),
-            this.writeTool.toolDefinition(),
-        ];
-    }
-
-    private subagentToolDefinitions() {
-        return [
-            this.subagentSpawnTool.toolDefinition(),
-            this.subagentStatusTool.toolDefinition(),
-            this.subagentMessageTool.toolDefinition(),
-            this.subagentStopTool.toolDefinition(),
-        ];
     }
 
     private requireSessionRuntime(): PilotSessionRuntimeInterface {

@@ -3,11 +3,12 @@ import {createHash} from "node:crypto";
 import test from "node:test";
 import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
 import {
-    ArchiveProtocolError, MAX_ARCHIVE_BYTES, SessionKind,
+    ArchiveProtocolError, MAX_ARCHIVE_BYTES,
     decodeArchiveBinding, decodeArchiveListFilters, decodeArchiveListPage, decodeArchiveMetadata,
     decodeArchivePublication, decodeArchiveReceipt, decodeArchiveSequence,
     type Binding, type Publication, type Receipt, type SessionMetadata,
 } from "../src/server/ArchiveProtocol.js";
+import {SessionKind} from "../src/sessions/SessionIdentity.js";
 
 const CONFIG = {url: "https://archive.example.test", apiKey: "private-archive-test-key"};
 const BINDING: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "generation"};
@@ -79,7 +80,7 @@ function reversed(value: unknown): unknown {
 }
 
 // Journal boundaries use the same normalized wire fingerprint as response verification.
-test("protocol exports stable enum members and canonical, lossless sequences", () => {
+test("session kinds remain stable and protocol sequences are canonical and lossless", () => {
     assert.deepEqual(SessionKind, {Main: "main", Subagent: "subagent", PolicyApprover: "policy_approver"});
     for (const value of ["0", "1", "9007199254740993", "9223372036854775807"]) assert.equal(decodeArchiveSequence(value), value);
     for (const value of [0, 1, "", "01", "+1", "-1", "1.0", "1\n", " 1", "9223372036854775808", "9".repeat(100)]) {

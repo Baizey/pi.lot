@@ -13,7 +13,7 @@ import {
     PolicyResolutionSource,
     PolicyResponse,
 } from "../src/policy/types.js";
-import type {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
+import type {QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow.js";
 import type {PolicyDaoInterface} from "../src/storage/PolicyDao.js";
 
 test("JSON policy defaults are absent until saved and round-trip exactly", () => {
@@ -36,10 +36,43 @@ test("JSON policy defaults are absent until saved and round-trip exactly", () =>
     });
 });
 
-test("JSON policy defaults reject malformed JSON", () => {
+test("missing policy defaults share the frozen built-in object across stores", () => {
+    withStore((store) => {
+        const defaults = store.load();
+        const other = new PolicyDefaultJsonStorage("other-defaults", path.dirname(store.file));
+        assert.strictEqual(defaults, initialPolicyDefaults);
+        assert.strictEqual(store.load(), defaults);
+        assert.strictEqual(other.load(), defaults);
+        assert.equal(Object.isFrozen(defaults), true);
+        assert.equal(Reflect.set(defaults, "fs_read", PolicyFallbackResponse.deny), false);
+        assert.equal(store.load().fs_read, PolicyFallbackResponse.allow);
+    });
+});
+
+test("JSON policy defaults retain permissive parsing without merging or validation", () => {
+    withStore((store) => {
+        for (const value of [{fs_write: "deny"}, {unexpected: "value"}, null, [], "allow", 42]) {
+            writeFileSync(store.file, JSON.stringify(value));
+            assert.deepEqual(store.load(), value);
+        }
+        store.save({...initialPolicyDefaults});
+        const defaults = store.load();
+        assert.notStrictEqual(store.load(), defaults);
+        assert.equal(Object.isFrozen(defaults), false);
+        defaults.fs_read = PolicyFallbackResponse.deny;
+        assert.equal(store.load().fs_read, PolicyFallbackResponse.allow);
+    });
+});
+
+test("JSON policy defaults reject malformed JSON with its parse error as cause", () => {
     withStore((store) => {
         writeFileSync(store.file, "{");
-        assert.throws(() => store.load(), /Invalid policy defaults/);
+        assert.throws(() => store.load(), (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.equal(error.message, `Invalid policy defaults in ${store.file}.`);
+            assert.ok(error.cause instanceof SyntaxError);
+            return true;
+        });
     });
 });
 
@@ -134,10 +167,10 @@ function emptyPolicyDao(): PolicyDaoInterface {
     };
 }
 
-function unusedDecisionFlow(): PolicyDecisionFlow {
+function unusedDecisionFlow(): QueuedPolicyApproval {
     return {
-        async askForPolicy(): Promise<never> {
+        async resolveQueuedPolicy(): Promise<never> {
             throw new Error("Unexpected policy decision request");
         },
-    } as unknown as PolicyDecisionFlow;
+    };
 }

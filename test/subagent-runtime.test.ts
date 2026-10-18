@@ -20,6 +20,8 @@ import {
     SdkSubagentSessionFactory,
 } from "../src/subagents/SdkSubagentSession.js";
 import {SubagentRuntime} from "../src/subagents/SubagentRuntime.js";
+import {SubagentPolicyDecisionFlow} from "../src/subagents/SubagentPolicyDecisionFlow.js";
+import type {AgentPolicyDecisionFlow} from "../src/policy/AgentPolicyDecisionFlow.js";
 import {SubagentReasoningAmount, SubagentReasoningSkill} from "../src/subagents/SubagentReasoning.js";
 import type {SubagentSessionRequest} from "../src/subagents/types.js";
 import {
@@ -403,4 +405,106 @@ test("subagent runtime owns one coordinator per root session", async () => {
     assert.throws(() => runtime.coordinator(), /session is not available/);
     assert.throws(() => runtime.defaults(), /session is not available/);
     assert.throws(() => runtime.availableModels(), /session is not available/);
+    await assert.rejects(runtime.resolveAutomaticModel(SubagentReasoningSkill.MID), /session is not available/);
 });
+
+test("runtime detaches before shutdown and drains old approvals before the old coordinator", async (t) => {
+    const runtime = new SubagentRuntime({builtins: () => [], mcp: () => [], delegate: () => []}, {
+        defaultsStore: {load: () => ({...initialSubagentDefaults}), save() {}},
+    });
+    const events: string[] = [];
+    const ctx = {
+        modelRegistry: {getAvailable: () => [{provider: "provider", id: "old"}]},
+    } as unknown as ExtensionContext;
+    let approvals: SubagentPolicyDecisionFlow | undefined;
+    const policyRuntime = {
+        setAgentDecisionFlow(flow: AgentPolicyDecisionFlow) {
+            assert.ok(flow instanceof SubagentPolicyDecisionFlow);
+            approvals = flow;
+        },
+        beginShutdown() {
+            events.push("policy shutdown");
+            assert.throws(() => runtime.coordinator(), /session is not available/);
+            assert.throws(() => runtime.defaults(), /session is not available/);
+            assert.throws(() => runtime.availableModels(), /session is not available/);
+        },
+    } as unknown as PolicyRuntime;
+    await runtime.startSession(ctx, policyRuntime);
+    const oldCoordinator = runtime.coordinator();
+    const oldDefaults = runtime.defaults();
+    assert.ok(approvals);
+    let releaseApprovals!: () => void;
+    const approvalGate = new Promise<void>((resolve) => { releaseApprovals = resolve; });
+    t.mock.method(approvals, "close", async () => {
+        events.push("approvals close");
+        await approvalGate;
+        events.push("approvals closed");
+    });
+    t.mock.method(oldCoordinator, "close", async () => { events.push("coordinator close"); });
+
+    const stopping = runtime.stopSession();
+    assert.deepEqual(events, ["policy shutdown", "approvals close"]);
+    await assert.rejects(runtime.resolveAutomaticModel(SubagentReasoningSkill.MID), /session is not available/);
+    await runtime.stopSession();
+    assert.deepEqual(events, ["policy shutdown", "approvals close"]);
+
+    // A replacement root can start while detached resources finish closing.
+    const replacementContext = {
+        modelRegistry: {getAvailable: () => [{provider: "provider", id: "new"}]},
+    } as unknown as ExtensionContext;
+    await runtime.startSession(replacementContext, policyRuntime);
+    const newCoordinator = runtime.coordinator();
+    assert.notEqual(newCoordinator, oldCoordinator);
+    assert.notEqual(runtime.defaults(), oldDefaults);
+    assert.deepEqual(runtime.availableModels(), ["provider/new"]);
+    releaseApprovals();
+    await stopping;
+    assert.deepEqual(events, ["policy shutdown", "approvals close", "approvals closed", "coordinator close"]);
+    assert.equal(runtime.coordinator(), newCoordinator);
+    assert.deepEqual(runtime.availableModels(), ["provider/new"]);
+    await runtime.stopSession();
+});
+
+for (const failure of ["shutdown", "approvals", "coordinator", "both"] as const) {
+    test(`runtime preserves cleanup ordering and first failure when ${failure} fails`, async (t) => {
+        const runtime = new SubagentRuntime({builtins: () => [], mcp: () => [], delegate: () => []}, {
+            defaultsStore: {load: () => ({...initialSubagentDefaults}), save() {}},
+        });
+        const events: string[] = [];
+        const shutdownError = new Error("shutdown failed");
+        const approvalError = new Error("approvals failed");
+        const coordinatorError = new Error("coordinator failed");
+        let approvals: SubagentPolicyDecisionFlow | undefined;
+        const policyRuntime = {
+            setAgentDecisionFlow(flow: AgentPolicyDecisionFlow) {
+                assert.ok(flow instanceof SubagentPolicyDecisionFlow);
+                approvals = flow;
+            },
+            beginShutdown() {
+                events.push("shutdown");
+                if (failure === "shutdown") throw shutdownError;
+            },
+        } as unknown as PolicyRuntime;
+        await runtime.startSession({} as ExtensionContext, policyRuntime);
+        assert.ok(approvals);
+        t.mock.method(approvals, "close", async () => {
+            events.push("approvals");
+            if (failure === "approvals" || failure === "both") throw approvalError;
+        });
+        t.mock.method(runtime.coordinator(), "close", async () => {
+            events.push("coordinator");
+            if (failure === "coordinator" || failure === "both") throw coordinatorError;
+        });
+
+        const expected = failure === "shutdown" ? shutdownError
+            : failure === "coordinator" ? coordinatorError : approvalError;
+        await assert.rejects(runtime.stopSession(), (error) => error === expected);
+        assert.deepEqual(events, failure === "shutdown" ? ["shutdown"] : ["shutdown", "approvals", "coordinator"]);
+        assert.throws(() => runtime.coordinator(), /session is not available/);
+        assert.throws(() => runtime.defaults(), /session is not available/);
+        assert.throws(() => runtime.availableModels(), /session is not available/);
+        await assert.rejects(runtime.resolveAutomaticModel(SubagentReasoningSkill.MID), /session is not available/);
+        await runtime.stopSession();
+        assert.deepEqual(events, failure === "shutdown" ? ["shutdown"] : ["shutdown", "approvals", "coordinator"]);
+    });
+}

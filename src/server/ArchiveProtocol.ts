@@ -1,12 +1,9 @@
+import {SessionKind} from "../sessions/SessionIdentity.js";
+
 // pi.server v0.2 archive wire types. Sequences must never pass through a JS number.
 export type Binding = {server_id: string; namespace_id: string; history_generation: string};
 export type Revision = {binding: Binding; seq: string};
 export type Condition = {kind: "absent"} | {kind: "exact_base_revision"; revision: Revision};
-export enum SessionKind {
-    Main = "main",
-    Subagent = "subagent",
-    PolicyApprover = "policy_approver",
-}
 export type SessionCounts = {user_messages: number; assistant_messages: number; tool_calls: number};
 export type ArchiveMetadata = {
     kind?: SessionKind;

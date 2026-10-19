@@ -16,7 +16,7 @@ export class McpToolRegistry {
     private active = false;
 
     constructor(
-        private readonly pi: Pick<ExtensionAPI, "registerTool">,
+        private readonly pi: ExtensionAPI,
         private readonly displayRows: ToolDisplayRows = new ToolDisplayRows(),
     ) {}
 

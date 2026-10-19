@@ -19,7 +19,6 @@ export type ToolDisplayState = ToolCallSpinnerState & {pilotFullDisplay?: boolea
 
 type DisplayDefinition = ToolDefinition<ToolDefinition["parameters"], unknown, ToolDisplayState>;
 type DisplayContext = Parameters<NonNullable<DisplayDefinition["renderCall"]>>[2];
-type ToolDisplayRenderContext = Pick<DisplayContext, "toolCallId" | "state" | "executionStarted" | "isPartial" | "invalidate">;
 type BoundToolRenderers = {
     renderShell: "self";
     renderCall(args: unknown, theme: Theme, context: DisplayContext): TextComponent;
@@ -99,7 +98,7 @@ export class ToolDisplayRows {
     }
 
     /** Observe a top-level call and advance its animation lifecycle; exports are not live rows. */
-    observe(toolName: string, args: unknown, context: ToolDisplayRenderContext): boolean {
+    observe(toolName: string, args: unknown, context: DisplayContext): boolean {
         // Pi creates TUI rows before execution, including restored rows. HTML export
         // starts with executionStarted=true and a fresh state for the same call ID.
         if (!context.executionStarted) this.liveStates.add(context.state);

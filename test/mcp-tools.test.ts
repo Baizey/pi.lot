@@ -8,6 +8,7 @@ import {
     type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {McpToolRegistry} from "../src/mcp/McpToolRegistry.js";
+import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 import type {ToolDisplayState} from "../src/tui/tool/ToolDisplayRows.js";
@@ -36,9 +37,11 @@ function definition(name = "mcp__demo__echo", exposure: ToolDefinition["exposure
 
 const context = {cwd: "/child", tools: [], executeTool: async () => { throw new Error("unexpected nested call"); }} as unknown as ExtensionToolContext;
 
-test("native MCP registry preserves metadata and invokes the native definition with child context", async () => {
+test("native MCP registry preserves metadata and invokes the native definition with child context", async (t) => {
     const registered: ToolDefinition<any, any>[] = [];
-    const registry = new McpToolRegistry({registerTool: (tool) => { registered.push(tool); }});
+    const pi = await createNativeExtensionApi();
+    t.mock.method(pi, "registerTool", (tool: ToolDefinition<any, any>) => { registered.push(tool); });
+    const registry = new McpToolRegistry(pi);
     registry.startSession();
     const native = definition();
     registry.register(native);
@@ -56,7 +59,7 @@ test("native MCP registry preserves metadata and invokes the native definition w
 });
 
 test("retained MCP proxies honor withdrawal, new definitions, schema changes, and session shutdown", async () => {
-    const registry = new McpToolRegistry({registerTool() {}});
+    const registry = new McpToolRegistry(await createNativeExtensionApi());
     registry.startSession();
     registry.register(definition());
     const snapshot = registry.toolDefinitions();
@@ -85,8 +88,8 @@ test("retained MCP proxies honor withdrawal, new definitions, schema changes, an
     await assert.rejects(async () => proxy.execute("call", {}, undefined, undefined, context), /no longer exposed/);
 });
 
-test("MCP child definitions include indirect exposures but never hidden or aggregate resource tools", () => {
-    const registry = new McpToolRegistry({registerTool() {}});
+test("MCP child definitions include indirect exposures but never hidden or aggregate resource tools", async () => {
+    const registry = new McpToolRegistry(await createNativeExtensionApi());
     registry.startSession();
     registry.register(definition("mcp__demo__direct"));
     registry.register(definition("mcp__demo__code", "codemode"));
@@ -100,12 +103,14 @@ test("MCP child definitions include indirect exposures but never hidden or aggre
     ]);
 });
 
-test("native MCP calls keep Pilot's copy-safe shell, compact, expanded, and row-local full rendering", (t) => {
+test("native MCP calls keep Pilot's copy-safe shell, compact, expanded, and row-local full rendering", async (t) => {
     initTheme("dark");
     const rows = new ToolDisplayRows();
     t.after(() => rows.clear());
     let decorated!: ToolDefinition<any, any>;
-    const registry = new McpToolRegistry({registerTool: (tool) => { decorated = tool; }}, rows);
+    const pi = await createNativeExtensionApi();
+    t.mock.method(pi, "registerTool", (tool: ToolDefinition<any, any>) => { decorated = tool; });
+    const registry = new McpToolRegistry(pi, rows);
     registry.startSession();
     registry.register(definition());
     assert.equal(decorated.renderShell, "self");
@@ -149,10 +154,12 @@ test("native MCP calls keep Pilot's copy-safe shell, compact, expanded, and row-
     assert.deepEqual(partial, ["⠋ mcp__demo__echo"]);
 });
 
-test("MCP long-line previews are bounded by wrapped rows and keep a separate full-output hint", () => {
+test("MCP long-line previews are bounded by wrapped rows and keep a separate full-output hint", async (t) => {
     const rows = new ToolDisplayRows();
     let decorated!: ToolDefinition;
-    const registry = new McpToolRegistry({registerTool: (tool) => { decorated = tool as ToolDefinition; }}, rows);
+    const pi = await createNativeExtensionApi();
+    t.mock.method(pi, "registerTool", (tool: ToolDefinition) => { decorated = tool; });
+    const registry = new McpToolRegistry(pi, rows);
     registry.startSession();
     registry.register(definition());
     const plainTheme = {fg: (_color: string, text: string) => text, bold: (text: string) => text} as unknown as Theme;
@@ -177,7 +184,7 @@ test("MCP long-line previews are bounded by wrapped rows and keep a separate ful
     assert.deepEqual(decorated.renderResult!(result, {expanded: false, isPartial: false}, plainTheme, context).render(40), []);
 });
 
-test("actual Pi HTML export preserves live MCP row ownership and never allocates an export spinner", (t) => {
+test("actual Pi HTML export preserves live MCP row ownership and never allocates an export spinner", async (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     initTheme("dark");
     const rows = new ToolDisplayRows();
@@ -186,7 +193,7 @@ test("actual Pi HTML export preserves live MCP row ownership and never allocates
         rows.clear();
         for (const state of exports) state.pilotCallSpinner?.stop();
     });
-    const renderers = new McpToolRegistry({registerTool() {}}, rows).renderers("mcp__demo__echo");
+    const renderers = new McpToolRegistry(await createNativeExtensionApi(), rows).renderers("mcp__demo__echo");
     let redraws = 0;
     const component = new ToolExecutionComponent(
         "mcp__demo__echo", "exported-call", {value: "fixture"}, {outputPad: 0}, renderers,

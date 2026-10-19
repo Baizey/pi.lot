@@ -57,7 +57,7 @@ The policy model defines SSH-, WebSocket-, gRPC-, and SMTP-specific areas, but t
 
 `archive_list` and `archive_fetch` begin one policy tool-call scope using the invoking root session principal. Each request checks its actual URL and method before HTTP starts; the API key is only host-client authentication metadata, not policy context. Authorization completes before the request timeout starts. The protocol's GET binding uses `web_read`, while POST list/download use **`web_write`** despite read-only archive semantics. No silent semantic-read bypass or Bash DNS/TCP traversal applies. Download/list-page cache writes are private trusted-extension bookkeeping, not arbitrary model-selected filesystem writes; subsequent `read` calls use normal filesystem policy.
 
-`/server upload [current|all]`, login, logout, and status are explicit user host-management commands, not model tools, and do not ask the agent policy runtime. There is no automatic archive upload on startup/shutdown. Archive tools are not given to children and cannot upload or automatically import/resume sessions. See [Server archive](server.md).
+`/server upload [current|all]`, login, logout, and status are explicit user host-management commands, not model tools, and do not ask the agent policy runtime. Saved server configuration also enables automatic current-family upload on graceful session shutdown, outside agent policy approval; `/server logout` disables future automatic uploads. There is no startup or periodic upload. Archive tools are not given to children and cannot upload or automatically import/resume sessions. See [Server archive](server.md).
 
 ## Policy areas and built-in defaults
 

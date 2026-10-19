@@ -15,7 +15,6 @@ import {
 } from "./ArchiveProtocol.js";
 
 type ArchiveSessionManager = ExtensionContext["sessionManager"];
-export type ArchiveClientInterface = Pick<ArchiveClient, "binding" | "list" | "publish" | "receipt" | "download">;
 export type ArchiveUploadReport = {
     uploaded: number;
     unchanged: number;
@@ -26,15 +25,15 @@ export type ArchiveUploadReport = {
 type UploadRecovery = {report: ArchiveUploadReport; recovered: Set<string>; failed: Set<string>};
 export type ArchiveListInput = {filters?: ListFilters; cursor?: string; limit?: number};
 export type SessionArchiveOptions = {
-    client?: ArchiveClientInterface;
+    client?: ArchiveClient;
     stateDirectory?: string;
     beforeRequest?: (method: "GET" | "POST", path: string, signal?: AbortSignal) => Promise<void>;
-    createSessions?: (manager: ArchiveSessionManager) => Pick<ArchiveSessions, "discover" | "snapshot">;
+    createSessions?: (manager: ArchiveSessionManager) => ArchiveSessions;
 };
 
-/** Explicit one-way uploads and lazy retrieval, never a startup/shutdown synchronizer. */
+/** One-way session publication and lazy retrieval; entry points own when these operations run. */
 export class SessionArchive {
-    private readonly client: ArchiveClientInterface;
+    private readonly client: ArchiveClient;
     private readonly directory: string;
 
     constructor(private readonly config: ServerConfig, private readonly options: SessionArchiveOptions = {}) {
@@ -150,7 +149,7 @@ export class SessionArchive {
 
     private async uploadFile(
         journal: ArchiveJournal,
-        sessions: Pick<ArchiveSessions, "snapshot">,
+        sessions: ArchiveSessions,
         binding: Binding,
         file: string,
         warnings: string[],

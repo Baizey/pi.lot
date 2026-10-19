@@ -32,6 +32,7 @@ import {SubagentMessageTool} from "../src/tools/subagent/SubagentMessageTool.js"
 import {SubagentStopTool} from "../src/tools/subagent/SubagentStopTool.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 import {McpToolRegistry} from "../src/mcp/McpToolRegistry.js";
+import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 
 const plainTheme = {
@@ -211,11 +212,13 @@ test("nested calls reuse ordinary builtin, web-search, and subagent layouts in e
     assert.deepEqual(afterClear, ["", "    read | fixture:3-7"], "row cleanup preserves shared presentations");
 });
 
-test("nested MCP calls use the ordinary generic layout without needing a live registration", () => {
+test("nested MCP calls use the ordinary generic layout without needing a live registration", async (t) => {
     const rows = new ToolDisplayRows();
     const {tool} = harness(rows);
     let mcp!: ToolDefinition<any, any>;
-    const registry = new McpToolRegistry({registerTool: (definition) => { mcp = definition; }}, rows);
+    const pi = await createNativeExtensionApi();
+    t.mock.method(pi, "registerTool", (definition: ToolDefinition<any, any>) => { mcp = definition; });
+    const registry = new McpToolRegistry(pi, rows);
     registry.startSession();
     registry.register({
         name: "mcp__fixture__search", label: "search", description: "Fixture search",

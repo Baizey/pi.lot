@@ -25,6 +25,7 @@ import {PilotSessionRuntime} from "../src/runtime/PilotSessionRuntime.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 import {openIsolatedTestDatabase} from "./fixtures/IsolatedTestDatabase.js";
+import {createMemoryPolicyDao} from "./fixtures/MemoryPolicyDao.js";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 
 const TEST_AGENT_IDENTIFIER = "network-policy-test-agent";
@@ -42,19 +43,6 @@ function policy(
             [accessType]: PolicyEngine.createStatus(accessType, lifetime, status, reason),
         },
     };
-}
-
-function networkPolicyDao(
-    overrides: Partial<Pick<PolicyDao, "loadPolicies" | "upsertPolicies" | "deletePolicy">> = {},
-): PolicyDao {
-    return {
-        loadPolicies: () => [],
-        upsertPolicies() {
-        },
-        deletePolicy() {
-        },
-        ...overrides,
-    } as unknown as PolicyDao;
 }
 
 function scriptedDecisionFlow(choices: PolicyChoice[]): {
@@ -485,7 +473,7 @@ test("network policy decisions use network-specific prompts", async () => {
     assert.equal(titles.every((title) => title.startsWith("Network policy")), true);
 });
 
-test("runtime policy ownership follows tool-call, session, and persistent lifetimes", async () => {
+test("runtime policy ownership follows tool-call, session, and persistent lifetimes", async (t) => {
     let persisted: Policy[] = [];
     const decisions = scriptedDecisionFlow([
         {
@@ -517,11 +505,11 @@ test("runtime policy ownership follows tool-call, session, and persistent lifeti
             reason: "local",
         },
     ]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, networkPolicyDao({
-        loadPolicies: () => structuredClone(persisted),
-        upsertPolicies: (policies) => {
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+        t.mock.method(dao, "loadPolicies", () => structuredClone(persisted));
+        t.mock.method(dao, "upsertPolicies", (policies: Policy[]) => {
             persisted = structuredClone(policies);
-        },
+        });
     }), decisions.flow);
     runtime.setDefaultResponse(PolicyArea.web_read, PolicyFallbackResponse.ask_user);
     const firstCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);
@@ -552,8 +540,8 @@ test("runtime policy ownership follows tool-call, session, and persistent lifeti
         status: PolicyResponse.ALLOWED,
         reason: "new session",
     }]);
-    const nextSession = new PolicyRuntime(TEST_AGENT_IDENTIFIER, networkPolicyDao({
-        loadPolicies: () => structuredClone(persisted),
+    const nextSession = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+        t.mock.method(dao, "loadPolicies", () => structuredClone(persisted));
     }), nextSessionDecisions.flow);
     nextSession.setDefaultResponse(PolicyArea.web_read, PolicyFallbackResponse.ask_user);
     assert.equal(

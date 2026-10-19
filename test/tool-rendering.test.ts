@@ -34,13 +34,12 @@ test("tool rows retain full-display toggles and invalidate only the selected cal
     const states = Array.from({length: 3}, () => ({} as {pilotFullDisplay?: boolean}));
     const invalidations = Array.from({length: 3}, () => 0);
     for (let index = 0; index < states.length; index++) {
-        rows.observe("bash", {purpose: `Call ${index + 1}`}, {
+        const args = {purpose: `Call ${index + 1}`};
+        rows.observe("bash", args, renderContext(states[index]!, {
+            args,
             toolCallId: `call-${index + 1}`,
-            state: states[index]!,
-            executionStarted: false,
-            isPartial: false,
             invalidate: () => invalidations[index]++,
-        });
+        }));
     }
 
     assert.deepEqual(rows.list().map((row) => row.sequence), [1, 2, 3]);

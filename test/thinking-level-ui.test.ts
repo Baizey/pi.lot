@@ -12,7 +12,7 @@ import {
     type KeybindingsManager,
     type Theme,
 } from "@earendil-works/pi-coding-agent";
-import {Container, type Component, type EditorComponent, type EditorTheme, type TUI} from "@earendil-works/pi-tui";
+import {Container, TuiMainScreen, type EditorComponent, type EditorTheme} from "@earendil-works/pi-tui";
 import {ThemeColor} from "../src/tui/Color.js";
 import {ThinkingLevelUiRuntime} from "../src/tui/ThinkingLevelUiRuntime.js";
 import {NativeFooterAutoCompaction} from "../src/tui/NativeFooterAutoCompaction.js";
@@ -350,13 +350,12 @@ function nativeFooter(harness: UiHarness): FooterComponent {
     return new FooterComponent(session, data);
 }
 
-class UiHarness {
+class UiHarness extends TuiMainScreen {
     level: ExtensionContext["thinkingLevel"] = "medium";
     reasoning = true;
     hasModel = true;
     modelId = "test-model-low";
     provider = "example";
-    readonly children: Component[] = [];
     theme = testTheme();
     factory: EditorFactory | undefined;
     editor: EditorComponent | undefined;
@@ -367,6 +366,12 @@ class UiHarness {
     readonly context: ExtensionContext;
 
     constructor(mode: ExtensionContext["mode"] = "tui") {
+        super({
+            columns: 80, rows: 24, kittyProtocolActive: false,
+            start() {}, stop() {}, async drainInput() {}, write() {}, moveBy() {},
+            hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {},
+            setTitle() {}, setProgress() {}, setProgramStatus() {},
+        });
         const harness = this;
         this.context = {
             mode,
@@ -391,7 +396,7 @@ class UiHarness {
                 getEditorComponent: () => this.factory,
                 setFooter: (factory: FooterFactory | undefined) => {
                     this.footer?.dispose?.();
-                    this.footer = factory?.({requestRender() {}} as TUI, this.theme, {
+                    this.footer = factory?.(this, this.theme, {
                         getGitBranch: () => "main",
                         getAvailableProviderCount: () => 2,
                         getExtensionStatuses: () => this.statuses,
@@ -403,17 +408,12 @@ class UiHarness {
                 },
                 setEditorComponent: (factory: EditorFactory | undefined) => {
                     this.factory = factory;
-                    const tui = {
-                        children: this.children,
-                        terminal: {rows: 24, columns: 80},
-                        requestRender() {},
-                    } as unknown as TUI;
                     const editorTheme: EditorTheme = {
                         borderColor: (text) => text,
                         selectList: getSelectListTheme(),
                     };
                     const keybindings = {matches: () => false} as unknown as KeybindingsManager;
-                    this.editor = factory?.(tui, editorTheme, keybindings);
+                    this.editor = factory?.(this, editorTheme, keybindings);
                 },
                 setStatus: (key: string, value: string | undefined) => {
                     this.statusWrites++;
@@ -423,6 +423,8 @@ class UiHarness {
             },
         } as unknown as ExtensionContext;
     }
+
+    override requestRender(_force?: boolean): void {}
 
     status(): string {
         const value = this.statuses.get(STATUS_KEY);

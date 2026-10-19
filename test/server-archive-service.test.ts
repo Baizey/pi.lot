@@ -5,7 +5,9 @@ import path from "node:path";
 import {createHash, randomUUID} from "node:crypto";
 import {test} from "node:test";
 import {SessionManager} from "@earendil-works/pi-coding-agent";
-import {SessionArchive, type ArchiveClientInterface, type ArchiveListInput} from "../src/server/SessionArchive.js";
+import {SessionArchive, type ArchiveListInput} from "../src/server/SessionArchive.js";
+import {ArchiveClient} from "../src/server/ArchiveClient.js";
+import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
 import {ArchiveJournal, type ArchivePendingUpload} from "../src/server/ArchiveJournal.js";
 import {getSessionRootId, SessionKind} from "../src/sessions/SessionIdentity.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
@@ -13,7 +15,7 @@ import {sameArchivePublication, type Binding, type ListRequest, type Publication
     type Receipt, type ReceiptOutcome, type SessionMetadata} from "../src/server/ArchiveProtocol.js";
 
 const config = {url: "https://archive.example", apiKey: "synthetic-never-print-this-key"};
-class ServerFixture implements ArchiveClientInterface {
+class ServerFixture extends ArchiveClient {
     readonly identity: Binding = {server_id: randomUUID(), namespace_id: randomUUID(), history_generation: randomUUID()};
     readonly requests: Publication[] = [];
     readonly receiptRequests: Publication[] = [];
@@ -24,7 +26,11 @@ class ServerFixture implements ArchiveClientInterface {
     reject = false;
     requestedList: ListRequest | undefined;
 
-    async binding() { return {binding: this.identity, head: String(this.head)}; }
+    constructor() {
+        super(config);
+    }
+
+    override async binding() { return {binding: this.identity, head: String(this.head)}; }
     async list(request: ListRequest) {
         this.requestedList = request;
         return {binding: this.identity, sessions: [], next_cursor: null};
@@ -61,6 +67,17 @@ class ServerFixture implements ArchiveClientInterface {
     }
 }
 
+function catalog(
+    manager: ConstructorParameters<typeof ArchiveSessions>[0],
+    discover: ArchiveSessions["discover"],
+    snapshot: ArchiveSessions["snapshot"],
+): ArchiveSessions {
+    const sessions = new ArchiveSessions(manager);
+    sessions.discover = discover;
+    sessions.snapshot = snapshot;
+    return sessions;
+}
+
 function fixture() {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pilot-archive-service-"));
     const file = path.join(directory, "session.jsonl");
@@ -68,16 +85,15 @@ function fixture() {
     const manager = SessionManager.inMemory(undefined, {id: "root"});
     let body = Buffer.from("original history\n");
     const server = new ServerFixture();
-    const snapshots = {
-        discover: async (_scope: "current" | "all", signal?: AbortSignal) => {
+    const snapshots = catalog(manager,
+        async (_scope, signal) => {
             signal?.throwIfAborted(); return {files: [file], warnings: []};
         },
-        snapshot: async (source: string, signal?: AbortSignal) => {
+        async (source, signal) => {
             signal?.throwIfAborted();
             return {file: source, sessionId: "root", body,
                 metadata: {kind: SessionKind.Main, root_session_id: "root"}, warnings: []};
-        },
-    };
+        });
     const service = () => new SessionArchive(config, {client: server, stateDirectory, createSessions: () => snapshots});
     return {directory, stateDirectory, manager, server, snapshots, service,
         setBody: (value: string) => { body = Buffer.from(value); },
@@ -323,13 +339,13 @@ for (const partial of [false, true]) {
             };
             const snapshots: string[] = [];
             const service = new SessionArchive(config, {client: f.server, stateDirectory: f.stateDirectory,
-                createSessions: () => ({
-                    discover: async () => {
+                createSessions: () => catalog(manager,
+                    async () => {
                         entered();
                         await gate;
                         return {rootSessionId: root, files: [currentFile, freshFile], warnings: []};
                     },
-                    snapshot: async (file) => {
+                    async (file) => {
                         snapshots.push(file);
                         assert.deepEqual(new Set(f.server.receiptRequests), new Set([current.request, missing.request, accepted.request]));
                         assert.equal(f.server.receiptRequests.length, 3, "no operation is retried twice");
@@ -339,8 +355,7 @@ for (const partial of [false, true]) {
                         return {file, sessionId: file === currentFile ? currentId : "subagent-fresh",
                             body: file === currentFile ? current.body : Buffer.from("fresh snapshot\n"),
                             metadata: {kind: SessionKind.Subagent, root_session_id: root}, warnings: []};
-                    },
-                })});
+                    })});
             uploading = service.upload(manager, "current");
             await Promise.race([discoveryEntered, uploading.then(() => assert.fail("Upload finished before discovery gate"))]);
             assert.deepEqual(f.server.receiptRequests, [current.request], "directly identifiable recovery precedes discovery");
@@ -404,10 +419,9 @@ test("discovered-family operation with missing frozen body fails without recaptu
         const manager = SessionManager.inMemory(f.directory, {id: "subagent-resumed"});
         assert.equal(getSessionRootId(manager), undefined);
         const service = new SessionArchive(config, {client: f.server, stateDirectory: f.stateDirectory,
-            createSessions: () => ({
-                discover: async () => ({rootSessionId: "R", files: [file], warnings: []}),
-                snapshot: async () => { snapshots++; throw new Error("Must not replace lost frozen bytes with a live snapshot"); },
-            })});
+            createSessions: () => catalog(manager,
+                async () => ({rootSessionId: "R", files: [file], warnings: []}),
+                async () => { snapshots++; throw new Error("Must not replace lost frozen bytes with a live snapshot"); })});
         const report = await service.upload(manager, "current");
         assert.equal(report.failed, 1);
         assert.equal(report.uploaded, 0);
@@ -449,11 +463,11 @@ for (const lostInitialReply of [false, true]) {
             f.server.loseReply = lostInitialReply;
             await f.service().upload(f.manager, "current");
             const stale = new SessionArchive(config, {client: f.server, stateDirectory: f.stateDirectory,
-                createSessions: () => ({discover: f.snapshots.discover, snapshot: async (file, signal) => {
+                createSessions: () => catalog(f.manager, f.snapshots.discover, async (file, signal) => {
                     const value = await f.snapshots.snapshot(file, signal);
                     captured(); await gate;
                     return value;
-                }})});
+                })});
             const uploading = stale.upload(f.manager, "current");
             await capture;
             f.setBody("original history\nnewer accepted turn\n");

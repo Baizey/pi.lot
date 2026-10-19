@@ -15,6 +15,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {initTheme} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
+import {ServerService} from "../src/server/ServerService.js";
+import {ServerConfigStore} from "../src/server/ServerConfig.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyArea, PolicyFallbackResponse} from "../src/policy/types.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
@@ -237,6 +239,131 @@ test("startup records session-bound main identity before owned child infrastruct
     assert.equal(infrastructureStarted, true);
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     assert.equal(fetch.mock.callCount(), 0);
+});
+
+for (const reason of ["quit", "reload", "new", "resume", "fork"] as const) {
+    test(`${reason} shutdown awaits child teardown before uploading the outgoing session`, async (t) => {
+        const harness = extensionHarness();
+        const ctx = {
+            cwd: process.cwd(), hasUI: false, mode: "print", ui: {notify() {}},
+            sessionManager: {...archiveSessionManager(), getSessionFile: () => "/outgoing.jsonl"},
+        } as unknown as ExtensionContext;
+        const events: string[] = [];
+        t.mock.method(ServerConfigStore.prototype, "load", () => ({url: "https://sessions.example.com", apiKey: "test-key"}));
+        let request: AbortController | undefined;
+        const startServer = ServerService.prototype.startSession;
+        t.mock.method(ServerService.prototype, "startSession", function (this: ServerService) {
+            startServer.call(this);
+            request = this.beginRequest();
+            request!.signal.addEventListener("abort", () => { events.push("server cancelled"); });
+        });
+        let finishChildren!: () => void;
+        let childrenStarted!: () => void;
+        const ready = new Promise<void>((resolve) => { childrenStarted = resolve; });
+        const children = new Promise<void>((resolve) => { finishChildren = resolve; });
+        const stopChildren = SubagentRuntime.prototype.stopSession;
+        t.mock.method(SubagentRuntime.prototype, "stopSession", async function (this: SubagentRuntime) {
+            events.push("children stopping");
+            childrenStarted();
+            await children;
+            await stopChildren.call(this);
+            events.push("children stopped");
+        });
+        t.mock.method(ServerService.prototype, "upload", async (...[_config, manager, scope, signal]: Parameters<ServerService["upload"]>) => {
+            assert.equal(manager, ctx.sessionManager, "archive uses the outgoing manager, not the destination");
+            assert.equal(scope, "current");
+            assert.equal(signal?.aborted, false);
+            events.push("upload");
+            return {uploaded: 1, unchanged: 0, failed: 0, warnings: [], failures: []};
+        });
+        new PilotExtension(harness.pi, {
+            createMcpExtension: () => ({...createNoopMcpExtension(), async stopSession() { events.push("mcp stopped"); }}),
+            createSessionRuntime(runtimeContext) {
+                return {
+                    policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                    fullNetworkInspection: true, setFullNetworkInspection() {},
+                    beginShutdown() {
+                        assert.equal(request?.signal.aborted, true, "server requests cancel before owned teardown");
+                        events.push("runtime stopping");
+                    },
+                    close() { events.push("runtime closed"); },
+                };
+            },
+        }).register();
+        await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+        assert.deepEqual(events, []);
+        const event = {type: "session_shutdown", reason, targetSessionFile: "/destination.jsonl"} as const;
+        const ending = harness.sessionShutdown()(event, ctx);
+        const repeated = harness.sessionShutdown()(event, ctx);
+        await ready;
+        assert.deepEqual(events, ["server cancelled", "runtime stopping", "children stopping"]);
+        finishChildren();
+        await Promise.all([ending, repeated]);
+        assert.deepEqual(events, ["server cancelled", "runtime stopping", "children stopping", "children stopped", "mcp stopped", "runtime closed", "upload"]);
+    });
+}
+
+test("failed owned teardown skips automatic upload but still closes the session runtime", async (t) => {
+    const harness = extensionHarness();
+    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {}, sessionManager: archiveSessionManager()} as unknown as ExtensionContext;
+    const notifications: Array<{message: string; type: string}> = [];
+    ctx.ui.notify = (message, type = "info") => { notifications.push({message, type}); };
+    const failure = new Error("teardown failed");
+    const upload = t.mock.method(ServerService.prototype, "upload", async () => {
+        throw new Error("Must not upload after teardown failure");
+    });
+    let closed = false;
+    new PilotExtension(harness.pi, {
+        createMcpExtension: () => ({...createNoopMcpExtension(), async stopSession() { throw failure; }}),
+        createSessionRuntime(runtimeContext) {
+            return {
+                policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() { closed = true; },
+            };
+        },
+    }).register();
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+    await assert.rejects(Promise.resolve(harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx)), failure);
+    assert.equal(closed, true);
+    assert.equal(upload.mock.callCount(), 0);
+    assert.deepEqual(notifications, [{
+        message: "Automatic archive upload skipped because local session shutdown failed.", type: "warning",
+    }]);
+});
+
+test("the same extension instance resets owned shutdown and server lifecycle for a subsequent session", async (t) => {
+    const harness = extensionHarness();
+    const firstManager = {...archiveSessionManager(), getSessionFile: () => "/first.jsonl"};
+    const secondManager = {...archiveSessionManager(), getSessionFile: () => "/second.jsonl"};
+    const ctx = {
+        cwd: process.cwd(), hasUI: false, mode: "print", ui: {notify() {}}, sessionManager: firstManager,
+    } as unknown as ExtensionContext;
+    t.mock.method(ServerConfigStore.prototype, "load", () => ({url: "https://sessions.example.com", apiKey: "test-key"}));
+    const managers: ExtensionContext["sessionManager"][] = [];
+    t.mock.method(ServerService.prototype, "upload", async (...[_config, manager]: Parameters<ServerService["upload"]>) => {
+        managers.push(manager);
+        return {uploaded: 1, unchanged: 0, failed: 0, warnings: [], failures: []};
+    });
+    let starts = 0;
+    let closes = 0;
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        createSessionRuntime(runtimeContext) {
+            starts++;
+            return {
+                policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
+                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() { closes++; },
+            };
+        },
+    }).register();
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "new"}, ctx);
+    ctx.sessionManager = secondManager as unknown as ExtensionContext["sessionManager"];
+    await harness.sessionStart()({type: "session_start", reason: "new"}, ctx);
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    assert.equal(starts, 2);
+    assert.equal(closes, 2, "the second local shutdown must not reuse the first session's cached promise");
+    assert.deepEqual(managers, [firstManager, secondManager]);
 });
 
 test("Bash always routes through a native filesystem policy view", async () => {
@@ -852,8 +979,8 @@ test("one session runtime owns the production tool overrides until session shutd
 
     assert.equal(runtimeCreations, 1);
     assert.equal(runtimeStarts, 1);
-    assert.throws(
-        () => harness.sessionStart()({type: "session_start", reason: "reload"}, ctx),
+    await assert.rejects(
+        Promise.resolve(harness.sessionStart()({type: "session_start", reason: "reload"}, ctx)),
         /session runtime is already started/,
     );
     assert.equal(runtimeCreations, 1);
@@ -936,8 +1063,8 @@ function extensionHarness(): ExtensionHarness {
     const registeredCommandNames: string[] = [];
     const appendedEntries: Array<{customType: string; data: unknown}> = [];
     const shortcuts = new Map<string, ShortcutHandler>();
-    let startHandler: SessionStartHandler | undefined;
-    let shutdownHandler: SessionShutdownHandler | undefined;
+    const startHandlers: SessionStartHandler[] = [];
+    const shutdownHandlers: SessionShutdownHandler[] = [];
     let beforeAgentStartHandler: BeforeAgentStartHandler | undefined;
     const pi = {
         appendEntry(customType: string, data: unknown) { appendedEntries.push({customType, data}); },
@@ -955,8 +1082,8 @@ function extensionHarness(): ExtensionHarness {
         },
         on(event: string, handler: unknown) {
             registeredEventNames.push(event);
-            if (event === "session_start") startHandler = handler as SessionStartHandler;
-            if (event === "session_shutdown") shutdownHandler = handler as SessionShutdownHandler;
+            if (event === "session_start") startHandlers.push(handler as SessionStartHandler);
+            if (event === "session_shutdown") shutdownHandlers.push(handler as SessionShutdownHandler);
             if (event === "before_agent_start") beforeAgentStartHandler = handler as BeforeAgentStartHandler;
         },
     } as unknown as ExtensionAPI;
@@ -972,12 +1099,24 @@ function extensionHarness(): ExtensionHarness {
             return shortcuts.has(key);
         },
         sessionStart() {
-            assert.ok(startHandler);
-            return startHandler;
+            assert.ok(startHandlers.length > 0);
+            return async (event, ctx) => {
+                for (const handler of startHandlers) await handler(event, ctx);
+            };
         },
         sessionShutdown() {
-            assert.ok(shutdownHandler);
-            return shutdownHandler;
+            assert.ok(shutdownHandlers.length > 0);
+            return async (event, ctx) => {
+                let firstError: unknown;
+                for (const handler of shutdownHandlers) {
+                    try {
+                        await handler(event, ctx);
+                    } catch (error) {
+                        firstError ??= error;
+                    }
+                }
+                if (firstError !== undefined) throw firstError;
+            };
         },
         beforeAgentStart() {
             assert.ok(beforeAgentStartHandler);

@@ -11,7 +11,6 @@ import {Image, type Component, type TUI} from "@earendil-works/pi-tui";
 import {ToolDisplayMode} from "./tool/ToolDisplayMode.js";
 import {ToolDisplayModes} from "./tool/ToolDisplayModes.js";
 
-type TranscriptTui = Pick<TUI, "children" | "invalidate" | "requestRender">;
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
 type Decoration = {refresh(hidden: boolean): void; restore(): void};
 type PartialProbe = {partial?: boolean};
@@ -19,7 +18,7 @@ type PartialProbe = {partial?: boolean};
 /** UI-only projection of native rows; never changes the session transcript. */
 export class TranscriptDisplayRuntime {
     private context: ExtensionContext | undefined;
-    private tui: TranscriptTui | undefined;
+    private tui: TUI | undefined;
     private scanning = false;
     private unsubscribe: (() => void) | undefined;
     private readonly decorations = new Map<Component, Decoration>();
@@ -66,7 +65,7 @@ export class TranscriptDisplayRuntime {
     }
 
     /** Called by the existing editor factory; does not claim editor ownership. */
-    attach(tui: TranscriptTui): void {
+    attach(tui: TUI): void {
         if (!this.context?.hasUI || this.context.mode !== "tui") return;
         if (this.tui !== tui) {
             this.detach();

@@ -19,16 +19,14 @@ import {SubagentSpawnTool} from "../src/tools/subagent/SubagentSpawnTool";
 import {SubagentStatusTool} from "../src/tools/subagent/SubagentStatusTool";
 import {SubagentStopTool} from "../src/tools/subagent/SubagentStopTool";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
+import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
 
 const expectedNames = ["subagent_spawn", "subagent_status", "subagent_message", "subagent_stop"];
 
-test("each subagent tool registers independently and delegates only to the coordinator", async () => {
+test("each subagent tool registers independently and delegates only to the coordinator", async (t) => {
     const registered: ToolDefinition<any, any>[] = [];
-    const pi = {
-        registerTool(tool: ToolDefinition<any, any>) {
-            registered.push(tool);
-        },
-    };
+    const pi = await createNativeExtensionApi();
+    t.mock.method(pi, "registerTool", (tool: ToolDefinition<any, any>) => { registered.push(tool); });
     let coordinator: SubagentCoordinator | undefined;
     const coordinatorProvider = () => {
         if (!coordinator) throw new Error("Subagent session is not available");

@@ -11,7 +11,7 @@ import {
     type ExtensionContext,
     type ToolRendererResolver,
 } from "@earendil-works/pi-coding-agent";
-import {Container, getCapabilities, Image, setCapabilities, Text, TuiAltScreen, type Terminal} from "@earendil-works/pi-tui";
+import {Container, getCapabilities, Image, setCapabilities, Text, TuiAltScreen, TuiMainScreen, type Terminal, type TUI} from "@earendil-works/pi-tui";
 import {ReadTool} from "../src/tools/builtin/ReadTool.js";
 import {TranscriptDisplayRuntime} from "../src/tui/TranscriptDisplayRuntime.js";
 import {ToolDisplayMode} from "../src/tui/tool/ToolDisplayMode.js";
@@ -145,14 +145,14 @@ test("fullscreen discovers new rows before drawing layout frames that bypass the
 
 test("transcript projection survives a stable TUI facade replacing its renderer without modifying facade methods", (t) => {
     let current = new TestTui();
-    const facade = new Proxy({}, {
+    const facade = new Proxy(current, {
         get(_target, property) {
             const value = Reflect.get(current, property, current);
             return typeof value === "function" ? (...args: unknown[]) =>
                 Reflect.apply(Reflect.get(current, property, current), current, args) : value;
         },
         set() { assert.fail("extension must not assign methods on Pi's stable TUI facade"); },
-    }) as NonNullable<Parameters<typeof createHarness>[0]>;
+    });
     const harness = createHarness(facade);
     t.after(() => harness.close());
     harness.root.addChild(new AssistantMessageComponent(assistant([{type: "thinking", thinking: "retained thought"}])));
@@ -204,11 +204,20 @@ test("hidden omits internal summaries but not notifications, and restores detach
     assert.match(plain(component.render(80)), /preserved source/);
 });
 
-class TestTui extends Container {
-    requestRender(_force?: boolean): void {}
+class TestTui extends TuiMainScreen {
+    constructor() {
+        super({
+            columns: 80, rows: 24, kittyProtocolActive: false,
+            start() {}, stop() {}, async drainInput() {}, write() {}, moveBy() {},
+            hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {},
+            setTitle() {}, setProgress() {}, setProgramStatus() {},
+        });
+    }
+
+    override requestRender(_force?: boolean): void {}
 }
 
-function createHarness(root: Parameters<TranscriptDisplayRuntime["attach"]>[0] & Pick<Container, "addChild"> = new TestTui()) {
+function createHarness(root: TUI = new TestTui()) {
     const transcript = new Container();
     root.addChild(transcript);
     const rows = new ToolDisplayRows();
@@ -231,7 +240,7 @@ function createHarness(root: Parameters<TranscriptDisplayRuntime["attach"]>[0] &
             const renderers = resolver("read", () => read);
             assert.ok(renderers);
             return new ToolExecutionComponent("read", id, {path: id}, {outputPad: 0}, renderers,
-                root as ConstructorParameters<typeof ToolExecutionComponent>[5], process.cwd());
+                root, process.cwd());
         },
         close() { runtime.stopSession(); rows.clear(); },
     };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import type {ModelRuntime} from "@earendil-works/pi-coding-agent";
+import test, {type TestContext} from "node:test";
+import {ModelRuntime} from "@earendil-works/pi-coding-agent";
 import {
     CatalogueSubagentModelPerformanceRanker,
     SubagentModelResolver,
@@ -23,7 +23,7 @@ class FixedPerformanceRanker implements SubagentModelPerformanceRanker {
     }
 }
 
-test("reasoning skills select five positions across the available performance-cost frontier", async () => {
+test("reasoning skills select five positions across the available performance-cost frontier", async (t) => {
     const models = [
         model("economy", 1),
         model("small", 2),
@@ -32,7 +32,7 @@ test("reasoning skills select five positions across the available performance-co
         model("maximum", 5),
     ];
     const ranker = new FixedPerformanceRanker({economy: 1, small: 2, balanced: 3, strong: 4, maximum: 5});
-    const resolver = new SubagentModelResolver(runtime(models), ranker);
+    const resolver = new SubagentModelResolver(await runtime(t, models), ranker);
 
     const expected = new Map([
         [SubagentReasoningSkill.MIN, "economy"],
@@ -49,10 +49,10 @@ test("reasoning skills select five positions across the available performance-co
     }
 });
 
-test("min optimizes cost while max uses replaceable performance evidence", async () => {
+test("min optimizes cost while max uses replaceable performance evidence", async (t) => {
     const models = [model("cheap", 1), model("benchmark-winner", 3), model("expensive", 8)];
     const resolver = new SubagentModelResolver(
-        runtime(models),
+        await runtime(t, models),
         new FixedPerformanceRanker({cheap: 1, "benchmark-winner": 100, expensive: 2}),
     );
 
@@ -66,14 +66,14 @@ test("min optimizes cost while max uses replaceable performance evidence", async
     );
 });
 
-test("an exact skill default bypasses auto ranking and clamps amount after model selection", async () => {
+test("an exact skill default bypasses auto ranking and clamps amount after model selection", async (t) => {
     const models = [
         model("automatic-winner", 8, {provider: "provider"}),
         model("configured", 1, {provider: "other"}),
         model("low-only", 2, {provider: "provider", thinkingLevelMap: {high: null}}),
     ];
     const resolver = new SubagentModelResolver(
-        runtime(models),
+        await runtime(t, models),
         new FixedPerformanceRanker({"automatic-winner": 100, configured: 1, "low-only": 2}),
     );
 
@@ -97,14 +97,14 @@ test("an exact skill default bypasses auto ranking and clamps amount after model
     assert.equal(clamped.thinkingLevel, "medium");
 });
 
-test("reasoning amount does not affect model selection and unsupported amounts clamp normally", async () => {
+test("reasoning amount does not affect model selection and unsupported amounts clamp normally", async (t) => {
     const unavailableAtMedium = model("same-model", 1, {
         provider: "preferred",
         thinkingLevelMap: {medium: null},
     });
     const alternative = model("same-model", 1, {provider: "alternative"});
     const resolver = new SubagentModelResolver(
-        runtime([unavailableAtMedium, alternative]),
+        await runtime(t, [unavailableAtMedium, alternative]),
         new FixedPerformanceRanker({"same-model": 5}),
         "preferred",
     );
@@ -123,13 +123,9 @@ test("reasoning amount does not affect model selection and unsupported amounts c
     assert.equal(high.thinkingLevel, "high");
 });
 
-test("resolution reads the authenticated catalogue again when availability changes", async () => {
+test("resolution reads the authenticated catalogue again when availability changes", async (t) => {
     let models = [model("initial", 1)];
-    const modelRuntime = {
-        async getAvailable() {
-            return models;
-        },
-    } as unknown as Pick<ModelRuntime, "getAvailable">;
+    const modelRuntime = await runtime(t, () => models);
     const resolver = new SubagentModelResolver(
         modelRuntime,
         new CatalogueSubagentModelPerformanceRanker(),
@@ -146,8 +142,8 @@ test("resolution reads the authenticated catalogue again when availability chang
     );
 });
 
-test("resolution fails clearly when no authenticated model supports normal reasoning amounts", async () => {
-    const resolver = new SubagentModelResolver(runtime([
+test("resolution fails clearly when no authenticated model supports normal reasoning amounts", async (t) => {
+    const resolver = new SubagentModelResolver(await runtime(t, [
         model("non-reasoning", 0, {reasoning: false}),
         model("extended-only", 1, {thinkingLevelMap: {low: null, medium: null, high: null, max: "max"}}),
     ]));
@@ -158,12 +154,19 @@ test("resolution fails clearly when no authenticated model supports normal reaso
     );
 });
 
-function runtime(models: SubagentModel[]): Pick<ModelRuntime, "getAvailable"> {
-    return {
-        async getAvailable() {
-            return models;
+async function runtime(t: TestContext, models: SubagentModel[] | (() => SubagentModel[])): Promise<ModelRuntime> {
+    const runtime = await ModelRuntime.create({
+        credentials: {
+            async read() { return undefined; },
+            async list() { return []; },
+            async modify() { throw new Error("unexpected credential mutation"); },
+            async delete() { throw new Error("unexpected credential deletion"); },
         },
-    } as unknown as Pick<ModelRuntime, "getAvailable">;
+        modelsPath: null,
+        refreshOnCreate: false,
+    });
+    t.mock.method(runtime, "getAvailable", async () => typeof models === "function" ? models() : models);
+    return runtime;
 }
 
 function model(

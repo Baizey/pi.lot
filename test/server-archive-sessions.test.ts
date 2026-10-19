@@ -9,6 +9,7 @@ import {SessionManager} from "@earendil-works/pi-coding-agent";
 import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
 import {decodeArchiveMetadata, MAX_ARCHIVE_BYTES} from "../src/server/ArchiveProtocol.js";
 import {getSessionRootId, recordMainSessionIdentity, SessionKind} from "../src/sessions/SessionIdentity.js";
+import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
 
 const ROOT = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -132,7 +133,9 @@ test("session-bound child identity retains creation intent when its original roo
     const manager = SessionManager.open(file);
     assert.equal(getSessionRootId(manager), undefined);
     const appended: unknown[] = [];
-    recordMainSessionIdentity({appendEntry: (customType, data) => { appended.push({customType, data}); }}, manager);
+    const pi = await createNativeExtensionApi();
+    t.mock.method(pi, "appendEntry", (customType: string, data: unknown) => { appended.push({customType, data}); });
+    recordMainSessionIdentity(pi, manager);
     assert.deepEqual(appended, [], "an explicitly known child must not be relabelled main");
     f.save("subagent-missing-parent", [custom({parentAgentIdentifier: ROOT})]);
     assert.ok((await f.archive.discover("current")).files.includes(file));
@@ -384,15 +387,18 @@ test("bound identities survive resumes, reject conflicts, and do not leak across
     assert.equal((await f.archive.snapshot(conflicting)).warnings.length, 1);
     const resumed = SessionManager.open(childFile);
     assert.equal(getSessionRootId(resumed), ROOT);
-    const notCalled = {appendEntry() { assert.fail("A resumed child must not become a main root"); }};
+    const notCalled = await createNativeExtensionApi();
+    t.mock.method(notCalled, "appendEntry", () => { assert.fail("A resumed child must not become a main root"); });
     recordMainSessionIdentity(notCalled, resumed);
     assert.equal(getSessionRootId(SessionManager.open(conflicting)), undefined);
     const forkManager = SessionManager.open(copied);
     const records: unknown[] = [];
-    recordMainSessionIdentity({appendEntry(customType, data) {
+    const pi = await createNativeExtensionApi();
+    t.mock.method(pi, "appendEntry", (customType: string, data: unknown) => {
         records.push(data);
         forkManager.appendCustomEntry(customType, data);
-    }}, forkManager);
+    });
+    recordMainSessionIdentity(pi, forkManager);
     assert.deepEqual(records, [{version: 1, sessionId: FORK, kind: SessionKind.Main, rootSessionId: FORK}]);
     const forkArchive = new ArchiveSessions(forkManager);
     const snapshot = await forkArchive.snapshot(copied);

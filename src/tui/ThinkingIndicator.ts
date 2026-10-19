@@ -2,7 +2,6 @@ import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {ThemeColor} from "./Color.js";
 
 type ThinkingLevel = NonNullable<ExtensionContext["thinkingLevel"]>;
-type ThinkingContext = Pick<ExtensionContext, "model" | "thinkingLevel" | "ui">;
 
 const THINKING_STEPS = {
     off: {filled: 0, color: ThemeColor.thinkingOff},
@@ -18,7 +17,7 @@ const BAR_WIDTH = Math.max(...Object.values(THINKING_STEPS).map(({filled}) => fi
 const LABEL_WIDTH = Math.max(...Object.keys(THINKING_STEPS).map((level) => level.length));
 
 /** Formats the live level with fixed cube and label columns, including trailing padding. */
-export function formatThinkingIndicator(ctx: ThinkingContext, includeHeading = true): string {
+export function formatThinkingIndicator(ctx: ExtensionContext, includeHeading = true): string {
     const level = ctx.model?.reasoning ? (ctx.thinkingLevel ?? "off") : "off";
     const {filled, color} = THINKING_STEPS[level];
     const total = Math.max(THINKING_STEPS.xhigh.filled, filled);

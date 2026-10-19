@@ -70,7 +70,7 @@ export class CatalogueSubagentModelPerformanceRanker implements SubagentModelPer
 
 export class SubagentModelResolver {
     constructor(
-        private readonly modelRuntime: Pick<ModelRuntime, "getAvailable">,
+        private readonly modelRuntime: ModelRuntime,
         private readonly performanceRanker: SubagentModelPerformanceRanker = (
             new CatalogueSubagentModelPerformanceRanker()
         ),

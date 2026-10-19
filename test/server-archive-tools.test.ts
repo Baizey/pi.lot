@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
 import type {ExtensionAPI, ExtensionToolContext} from "@earendil-works/pi-coding-agent";
-import {ArchiveTools, type ArchiveToolsOptions} from "../src/tools/server/ArchiveTools.js";
+import {ArchiveTools} from "../src/tools/server/ArchiveTools.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow.js";
@@ -14,7 +14,9 @@ import type {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRunt
 import type {ListPage, SessionMetadata} from "../src/server/ArchiveProtocol.js";
 import {SessionKind} from "../src/sessions/SessionIdentity.js";
 import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
-import {SessionArchive} from "../src/server/SessionArchive.js";
+import {SessionArchive, type ArchiveListInput, type SessionArchiveOptions} from "../src/server/SessionArchive.js";
+import {ServerService} from "../src/server/ServerService.js";
+import {ServerConfigStore, type ServerConfig} from "../src/server/ServerConfig.js";
 import type {ServerErrorCode} from "../src/server/ServerResponses.js";
 
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-archive-tool-key"};
@@ -54,35 +56,37 @@ function harness(t: TestContext, page: ListPage = PAGE, fetcher?: typeof fetch) 
     let requests = 0;
     const inputs: unknown[] = [];
     const factories: unknown[] = [];
-    const serviceFactory: NonNullable<ArchiveToolsOptions["serviceFactory"]> = (config, options) => {
+    const store = new ServerConfigStore(directory);
+    t.mock.method(store, "load", () => configured ? CONFIG : undefined);
+    const server = new ServerService(store);
+    t.mock.method(server, "archive", (config: ServerConfig, options: SessionArchiveOptions = {}) => {
         factories.push({config, options});
         assert.deepEqual(config, CONFIG);
         if (fetcher) return new SessionArchive(config, {...options,
             client: new ArchiveClient(config, {fetch: fetcher, beforeRequest: options.beforeRequest})});
+        const beforeRequest = options.beforeRequest;
+        assert.ok(beforeRequest);
         const request = async (method: "GET" | "POST", url: string, signal?: AbortSignal) => {
-            await options.beforeRequest(method, url, signal);
+            await beforeRequest(method, url, signal);
             requests++;
             if (failure) throw failure;
         };
-        return {
-            async list(input, signal) {
-                inputs.push(input);
-                await request("GET", "/v1/binding", signal);
-                await request("POST", "/v1/list", signal);
-                return page;
-            },
-            async fetch(sessionId, signal) {
-                inputs.push(sessionId);
-                await request("GET", "/v1/binding", signal);
-                await request("POST", "/v1/download", signal);
-                return {snapshot: SNAPSHOT, path: path.join(directory, "downloads", "snapshot.jsonl")};
-            },
-        };
-    };
-    const tools = new ArchiveTools(pi, () => runtime, new ToolDisplayRows(), {
-        stateDirectory: directory,
-        store: {load: () => configured ? CONFIG : undefined}, serviceFactory,
+        const archive = new SessionArchive(config, options);
+        t.mock.method(archive, "list", async (input: ArchiveListInput = {}, signal?: AbortSignal) => {
+            inputs.push(input);
+            await request("GET", "/v1/binding", signal);
+            await request("POST", "/v1/list", signal);
+            return page;
+        });
+        t.mock.method(archive, "fetch", async (sessionId: string, signal?: AbortSignal) => {
+            inputs.push(sessionId);
+            await request("GET", "/v1/binding", signal);
+            await request("POST", "/v1/download", signal);
+            return {snapshot: SNAPSHOT, path: path.join(directory, "downloads", "snapshot.jsonl")};
+        });
+        return archive;
     });
+    const tools = new ArchiveTools(pi, () => runtime, new ToolDisplayRows(), {server, stateDirectory: directory});
     return {tools, ctx, policy, directory, registrations, checks, contexts, inputs, factories,
         requestCount: () => requests,
         configure: (value: boolean) => { configured = value; },
@@ -118,6 +122,39 @@ test("archive tools register lazily once, with read-only annotations and narrowl
     assert.equal(Reflect.get(list.parameters.properties.activity_to, "description"), "RFC 3339 timestamp (exclusive)");
     assert.ok(list.outputSchema);
     assert.ok(fetch.outputSchema);
+});
+
+test("agent tools use the shared server core without losing their independent policy boundary", async (t) => {
+    const {ctx, policy, directory, checks, contexts} = harness(t);
+    const store = new ServerConfigStore(directory);
+    store.save(CONFIG);
+    const server = new ServerService(store);
+    const requests: string[] = [];
+    const factory = t.mock.method(server, "archive", (config: ServerConfig, options: SessionArchiveOptions = {}) => (
+        new SessionArchive(config, {...options, client: new ArchiveClient(config, {
+            beforeRequest: options.beforeRequest,
+            fetch: async (input, init) => {
+                requests.push(String(input));
+                return Response.json(init?.method === "GET" ? {binding: BINDING, head: "0"} : PAGE);
+            },
+        })})
+    ));
+    const hooks: string[] = [];
+    const tools = new ArchiveTools({
+        registerTool() {}, on(event: string) { hooks.push(event); },
+    } as unknown as ExtensionAPI, () => ({policyRuntime: policy}) as PilotSessionRuntimeInterface,
+    new ToolDisplayRows(), {server, stateDirectory: directory});
+    tools.register();
+    assert.deepEqual(hooks, [], "agent tools do not register lifecycle hooks");
+    assert.equal(factory.mock.callCount(), 0);
+    const result = await tools.listToolDefinition().execute("shared-core", {}, undefined, undefined, ctx);
+    assert.deepEqual(result.structuredContent, PAGE);
+    assert.equal(factory.mock.callCount(), 1);
+    assert.deepEqual(checks.map((check) => check.access), [PolicyAccessType.HTTP_GET, PolicyAccessType.HTTP_POST]);
+    assert.equal(JSON.stringify({contexts, result}).includes(CONFIG.apiKey), false);
+    policy.setDefaultResponse(PolicyArea.web_write, PolicyFallbackResponse.deny);
+    await assert.rejects(tools.listToolDefinition().execute("shared-core-denied", {}, undefined, undefined, ctx), /Archive list failed/);
+    assert.deepEqual(requests, [`${CONFIG.url}/v1/binding`, `${CONFIG.url}/v1/list`, `${CONFIG.url}/v1/binding`]);
 });
 
 test("list uses the invoking principal, checks GET and POST with no API key in policy context, and preserves cursors", async (t) => {

@@ -1,6 +1,6 @@
 # pi.server session archive
 
-pi.lot supports explicit, manual archival of Pi session JSONL files to pi.server **0.2.x** and root-only read tools. There is no background synchronization, automatic startup/shutdown upload, server-side summary generation, content search, or archive researcher agent.
+pi.lot supports automatic session-end archival and explicit manual uploads of Pi session JSONL files to pi.server **0.2.x**, plus root-only read tools. There is no startup upload, periodic/background synchronization, server-side summary generation, content search, or archive researcher agent.
 
 ## Connection and credentials
 
@@ -18,6 +18,18 @@ Use an HTTP(S) origin without a path, embedded credentials, query, or fragment. 
 
 Login and logout are local-only. Logout removes only the connection JSON: it does not revoke a server token, remove local session files, delete the archive journal, or clear downloads. A new `/server` command or session shutdown cancels the previous outstanding command request. Only the latest command can publish status or upload results; completed remote effects are not undone by cancellation.
 
+## Automatic session-end upload
+
+A saved server URL and API key enable automatic upload of the outgoing **current session family** on graceful `session_shutdown`: quit, reload, new session, resume, and fork. This also applies to configuration saved before automatic upload was introduced. `/server logout` disables future automatic uploads; no separate setting or startup request is added. Ephemeral (`--no-session`) and unconfigured sessions are skipped. Login still only saves credentials locally and does not immediately contact the server.
+
+The server lifecycle hook is independent of `/server` commands and archive tools. These access points share the core server service under `src/server/`; commands own command parsing/dialogs, tools own schemas and policy checks, and lifecycle hooks own automatic upload. Shutdown first closes admission to new command requests and cancels outstanding server work. The late upload hook runs after Pilot child/runtime teardown and verifies that teardown succeeded. It waits for prior uploads to release their journals before starting another publication, including uploads superseded by earlier commands.
+
+Waiting for prior uploads and performing automatic upload share a **10-second overall deadline**, with a dedicated cancellation signal. This bounds automatic upload work, not all of Pi or its extensions’ teardown; cancellation is cooperative. If prior uploads do not finish in that budget, no overlapping upload is started. Failure, partial success, or expiry produces a sanitized warning when the UI supports notifications and preserves local session files and pending journal recovery state. Retry with `/server upload current` or a later graceful shutdown. Automatic upload is attempted only once per session, even if shutdown is requested repeatedly; a subsequent session start resets that state without uploading.
+
+This is best-effort archival of persisted JSONL, not a promise that every shutdown path saves every in-flight token. Crashes, forced termination, and emergency exits may bypass hooks; already-running root or policy-reviewer work, or later hooks from other extensions, may persist entries after capture. Successful normal subagent teardown precedes capture. There is no automatic full-history backfill: `all` remains explicit.
+
+Automatic uploads use the same complete-history, append-only, conflict, credential, and recovery rules as manual uploads below. **Saved configuration now authorizes sending complete session families at session end**, outside agent policy approval; session files may contain sensitive data. Review the destination and use logout to disable this behavior.
+
 ## Manual upload
 
 ```text
@@ -30,7 +42,7 @@ Plain `upload` is an alias for `upload current`. Current uploads the active sess
 
 Sources must be regular, non-symlink native session JSONL files no larger than **64 MiB**. Capture is bounded and checked for concurrent modification; invalid, unsafe, or repeatedly changing files are skipped with warnings rather than partially parsed or reconstructed.
 
-These are explicit user host-management operations, not model tools: they do not ask the agent's filesystem or HTTP policy runtime for authorization. Upload sends complete session JSONL, not just the currently selected branch or bounded tool previews. Session files can contain prompts, reasoning, tool arguments/results, credentials, and file contents. Review the destination and your data before uploading.
+Manual uploads and configured automatic uploads are host-management operations, not model tools: they do not ask the agent's filesystem or HTTP policy runtime for authorization. Upload sends complete session JSONL, not just the currently selected branch or bounded tool previews. Session files can contain prompts, reasoning, tool arguments/results, credentials, and file contents. Review the destination and your data before uploading.
 
 Reports distinguish uploaded, unchanged, and failed files and show warnings plus up to 20 failed-file paths and reasons. Displayed diagnostic fields are length-bounded, stripped of terminal controls, and redact the configured API key. The archive extracts bounded metadata locally without a model call:
 
@@ -48,7 +60,7 @@ Pilot owns a private journal at `~/.pilot/server-archive/archive.sqlite` and a p
 
 The journal records accepted revisions and pending publications associated with the source path, server origin, and complete server/namespace/history-generation binding. Retries use durable operation identity and receipt reconciliation, including when the response to an upload was lost. Changes in binding and conflicting revisions fail safely. An observed server revision is **never adopted as a new upload base** merely to overwrite a conflict. Unknown pending outcomes retain recovery state rather than being treated as success. Do not delete the journal to bypass a conflict: doing so discards publication/recovery evidence. Logout intentionally retains this state.
 
-An explicit upload first reconciles frozen pending publications identifiable from the current session ID or its directly recorded original root **before fresh discovery or snapshot capture**, using the configured server origin and complete binding. If discovery subsequently recovers a resumed legacy child's previously unknown root, a second journal-based pass recovers that family's remaining pending publications before fresh snapshot capture. `all` selects every pending request in that origin/binding profile before discovery. Unrelated families are not recovered by `current`.
+Each upload first reconciles frozen pending publications identifiable from the current session ID or its directly recorded original root **before fresh discovery or snapshot capture**, using the configured server origin and complete binding. If discovery subsequently recovers a resumed legacy child's previously unknown root, a second journal-based pass recovers that family's remaining pending publications before fresh snapshot capture. `all` selects every pending request in that origin/binding profile before discovery. Unrelated families are not recovered by `current`.
 
 Receipt recovery or byte-for-byte replay does not require the source file to remain available: deleted, unreadable, invalid, or oversized live files do not block recovery of an identifiable pending publication. A fresh successor is captured only when its source is found; recovery never substitutes changed live bytes for the frozen request. Journal initialization syncs newly created directory names before publication, in addition to SQLite's FULL-synchronous transactions.
 

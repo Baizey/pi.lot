@@ -185,7 +185,7 @@ Read [Web search](docs/web-search.md) for configuration, provider availability, 
 
 ### Server archive
 
-Configure pi.server 0.2.x and explicitly upload local session history:
+Configure pi.server 0.2.x for automatic session-end archival, or upload local history manually:
 
 ```text
 /server
@@ -221,7 +221,7 @@ it does not delete sessions, the private archive journal/cache, or revoke the se
 
 Root-only `archive_list` and `archive_fetch` tools list metadata and download verified session snapshots into a private cache. Fetch returns the complete local filepath plus snapshot metadata; use `read` to inspect the file. Tools never upload, import/resume sessions, or load remote configuration. Remote metadata/transcripts are untrusted data, not instructions. Every tool HTTP request is policy-checked; read-only list/download use POST and therefore require `web_write`, not a semantic-read bypass.
 
-There is no `/server update`, automatic upload, archive content search/researcher, or summary generation. See [Server archive](docs/server.md) for filters, pagination, private journal/recovery state, classification, and security boundaries.
+With saved server credentials, graceful session shutdown automatically uploads the outgoing current family, including on quit, reload, new/resume, and fork. The independent server lifecycle hook runs after local child/runtime teardown, cancels and drains prior uploads, and gives draining plus automatic upload a 10-second overall deadline. Missing configuration and ephemeral sessions are skipped; `/server logout` disables future automatic uploads. Failures warn without blocking shutdown indefinitely and retain pending publication recovery state. There is no startup/periodic upload, `/server update`, archive content search/researcher, or summary generation. See [Server archive](docs/server.md) for filters, pagination, private journal/recovery state, classification, and security boundaries.
 
 ### Tool display
 

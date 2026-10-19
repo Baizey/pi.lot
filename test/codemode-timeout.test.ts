@@ -36,6 +36,7 @@ import {SubagentStatusTool} from "../src/tools/subagent/SubagentStatusTool.js";
 import {UiDecisionFlowManager} from "../src/tui/UiDecisionFlowManager.js";
 import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
+import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
 
 type Result = AgentToolResult<CodemodeToolDetails | undefined>;
 const context = {} as ExtensionToolContext;
@@ -614,7 +615,7 @@ class PolicyCodemodeHierarchy {
     static async create(t: TestContext, parallel: boolean): Promise<PolicyCodemodeHierarchy> {
         const fixture = new PolicyCodemodeHierarchy(parallel);
         t.after(() => fixture.close());
-        const pi = {registerTool() {}};
+        const pi = await createNativeExtensionApi();
         const spawn = new SubagentSpawnTool(pi, () => fixture.coordinator, () => initialSubagentDefaults, fixture.rows).toolDefinition();
         const status = new SubagentStatusTool(pi, () => fixture.coordinator, fixture.rows).toolDefinition();
         fixture.root = await sessionFixture(false, [

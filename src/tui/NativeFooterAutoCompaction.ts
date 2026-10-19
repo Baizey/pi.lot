@@ -16,7 +16,7 @@ export class NativeFooterAutoCompaction {
         return this.enabled;
     }
 
-    attach(tui: Pick<TUI, "children">): void {
+    attach(tui: TUI): void {
         if (this.closed || this.footer) return;
         for (const child of tui.children) {
             const footer = this.findFooter(child);

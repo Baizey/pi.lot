@@ -28,7 +28,7 @@ export class SubagentStopTool {
     private registered = false;
 
     constructor(
-        private readonly pi: Pick<ExtensionAPI, "registerTool">,
+        private readonly pi: ExtensionAPI,
         coordinator: CoordinatorProvider,
         displayRows: ToolDisplayRows,
     ) {

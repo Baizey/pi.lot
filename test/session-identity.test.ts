@@ -9,11 +9,12 @@ import {
     SessionIdentity, SessionKind,
 } from "../src/sessions/SessionIdentity.js";
 import {decodeArchiveMetadata} from "../src/server/ArchiveProtocol.js";
+import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
 
 const ROOT = "original-main";
 
-test("main identity writer round-trips through native storage and is idempotent on resume", (t) => {
-    const f = fixture(t);
+test("main identity writer round-trips through native storage and is idempotent on resume", async (t) => {
+    const f = await fixture(t);
     const manager = f.create(ROOT);
     recordMainSessionIdentity(f.writer(manager), manager);
     const resumed = f.persist(manager);
@@ -28,8 +29,8 @@ test("main identity writer round-trips through native storage and is idempotent 
 
 for (const kind of [SessionKind.Subagent, SessionKind.PolicyApprover] as const) {
     for (const rootSessionId of [ROOT, undefined]) {
-        test(`${kind} writer-reader round trip with root=${rootSessionId ?? "unknown"}`, (t) => {
-            const f = fixture(t);
+        test(`${kind} writer-reader round trip with root=${rootSessionId ?? "unknown"}`, async (t) => {
+            const f = await fixture(t);
             // Creation intent overrides misleading legacy prefixes.
             const id = kind === SessionKind.Subagent ? "policy-approver-ordinary-child" : "explicit-reviewer";
             const manager = f.create(id);
@@ -67,8 +68,8 @@ test("child writing defaults to ordinary delegation, retaining an absent root in
 });
 
 for (const kind of [SessionKind.Main, SessionKind.Subagent, SessionKind.PolicyApprover] as const) {
-    test(`native forks ignore copied ${kind} writer records before recording their own main identity`, (t) => {
-        const f = fixture(t);
+    test(`native forks ignore copied ${kind} writer records before recording their own main identity`, async (t) => {
+        const f = await fixture(t);
         const original = f.create("original-session");
         if (kind === SessionKind.Main) recordMainSessionIdentity(f.writer(original), original);
         else recordChildSessionIdentity(original, {parentAgentIdentifier: ROOT, rootSessionId: ROOT, kind});
@@ -88,8 +89,8 @@ for (const kind of [SessionKind.Main, SessionKind.Subagent, SessionKind.PolicyAp
     });
 }
 
-test("conflicting writer records remain unresolved, including after another matching record", (t) => {
-    const f = fixture(t);
+test("conflicting writer records remain unresolved, including after another matching record", async (t) => {
+    const f = await fixture(t);
     let index = 0;
     for (const conflict of [
         {parentAgentIdentifier: "other-parent", rootSessionId: ROOT, kind: SessionKind.Subagent},
@@ -151,14 +152,16 @@ function records(manager: SessionManager) {
         .map((entry) => ({customType: entry.customType, data: entry.data}));
 }
 
-function fixture(t: TestContext) {
+async function fixture(t: TestContext) {
+    const pi = await createNativeExtensionApi();
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-session-identity-"));
     t.after(() => rmSync(directory, {recursive: true, force: true}));
     return {
         directory,
         create(id: string) { return SessionManager.create(directory, directory, {id}); },
         writer(manager: SessionManager) {
-            return {appendEntry(customType: string, data: unknown) { manager.appendCustomEntry(customType, data); }};
+            t.mock.method(pi, "appendEntry", (customType: string, data: unknown) => { manager.appendCustomEntry(customType, data); });
+            return pi;
         },
         persist(manager: SessionManager) {
             manager.appendMessage({role: "user", content: "persist identity", timestamp: Date.now()});

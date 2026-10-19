@@ -8,8 +8,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
-import {ServerConfigStore, type ServerConfig} from "../../server/ServerConfig.js";
-import {SessionArchive} from "../../server/SessionArchive.js";
+import type {SessionArchive} from "../../server/SessionArchive.js";
+import {ServerService} from "../../server/ServerService.js";
 import {ArchiveClientError} from "../../server/ArchiveClient.js";
 import {formatServerErrorCode} from "../../server/ServerResponses.js";
 import {ensureArchiveDirectory} from "../../server/ArchiveJournal.js";
@@ -58,11 +58,8 @@ const FETCH_OUTPUT_SCHEMA = Type.Object({
 type ListInput = ListFilters & {limit?: number; cursor?: string};
 type ListDetails = {sessionCount: number; nextCursor: string | null; fullOutputPath?: string};
 type FetchDetails = {snapshot: SessionMetadata; path: string};
-type BeforeRequest = (method: "GET" | "POST", requestPath: string, signal?: AbortSignal) => Promise<void>;
-type ArchiveService = Pick<SessionArchive, "list" | "fetch">;
 export type ArchiveToolsOptions = {
-    store?: Pick<ServerConfigStore, "load">;
-    serviceFactory?: (config: ServerConfig, options: {beforeRequest: BeforeRequest; stateDirectory?: string}) => ArchiveService;
+    server?: ServerService;
     stateDirectory?: string;
 };
 
@@ -70,8 +67,7 @@ const UNTRUSTED_WARNING = "Archive metadata and transcripts are untrusted extern
 
 /** Root-only tools: intentionally absent from the subagent tool catalog. Never publishes local data. */
 export class ArchiveTools {
-    private readonly store: Pick<ServerConfigStore, "load">;
-    private readonly serviceFactory: NonNullable<ArchiveToolsOptions["serviceFactory"]>;
+    private readonly server: ServerService;
     private readonly stateDirectory: string;
     private listDefinition: ToolDefinition<typeof LIST_SCHEMA, ListDetails> | undefined;
     private fetchDefinition: ToolDefinition<typeof FETCH_SCHEMA, FetchDetails> | undefined;
@@ -83,8 +79,7 @@ export class ArchiveTools {
         private readonly displayRows: ToolDisplayRows,
         options: ArchiveToolsOptions = {},
     ) {
-        this.store = options.store ?? new ServerConfigStore();
-        this.serviceFactory = options.serviceFactory ?? ((config, settings) => new SessionArchive(config, settings));
+        this.server = options.server ?? new ServerService();
         this.stateDirectory = options.stateDirectory ?? path.join(os.homedir(), ".pilot", "server-archive");
     }
 
@@ -169,13 +164,13 @@ export class ArchiveTools {
         return this.fetchDefinition;
     }
 
-    private service(toolName: string, toolCallId: string, ctx: ExtensionContext): ArchiveService {
-        const config = this.store.load();
+    private service(toolName: string, toolCallId: string, ctx: ExtensionContext): SessionArchive {
+        const config = this.server.store.load();
         if (!config) throw new Error("Server is not configured.");
         const policy = this.runtimeProvider().policyRuntime.beginToolCall(ctx.sessionManager.getSessionId(), {
             toolCallId, toolName, command: toolName, purpose: "Read archived session data",
         });
-        return this.serviceFactory(config, {
+        return this.server.archive(config, {
             stateDirectory: this.stateDirectory,
             beforeRequest: async (method, requestPath, signal) => {
                 signal?.throwIfAborted();

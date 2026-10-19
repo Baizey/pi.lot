@@ -3,20 +3,22 @@ import {existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
-import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
+import {SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {ServerCommand} from "../src/commands/ServerCommand.js";
+import {ServerService} from "../src/server/ServerService.js";
 import {ServerConfigStore, type ServerConfig} from "../src/server/ServerConfig.js";
 import {SERVER_VERSION_REQUIREMENT} from "../src/server/ServerCompatibility.js";
 import type {ServerStatus} from "../src/server/ServerConnection.js";
 import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
 import {SessionArchive} from "../src/server/SessionArchive.js";
+import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
 
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-command-test-key"};
 const SERVER_VERSION = "1.2.3";
 const OTHER_VERSION = "9.8.7";
 type RegisteredCommand = Parameters<ExtensionAPI["registerCommand"]>[1];
-type VersionCheck = NonNullable<ConstructorParameters<typeof ServerCommand>[2]>;
-type UploadArchive = NonNullable<ConstructorParameters<typeof ServerCommand>[3]>;
+type VersionCheck = NonNullable<ConstructorParameters<typeof ServerService>[1]>;
+type UploadArchive = NonNullable<ConstructorParameters<typeof ServerService>[2]>;
 const REPORT = {uploaded: 2, unchanged: 1, failed: 0, warnings: [], failures: []};
 
 function harness(
@@ -30,27 +32,30 @@ function harness(
     t.after(() => rmSync(directory, {recursive: true, force: true}));
     const store = new ServerConfigStore(directory);
     const commands = new Map<string, RegisteredCommand>();
-    let shutdown: (() => void) | undefined;
+    const hooks: string[] = [];
     const pi = {
-        on(event: string, handler: () => void) {
-            if (event === "session_shutdown") shutdown = handler;
+        on(event: string) {
+            hooks.push(event);
         },
         registerCommand(name: string, options: RegisteredCommand) {
             commands.set(name, options);
         },
-    } as ExtensionAPI;
+    } as unknown as ExtensionAPI;
     const checks: Array<{config: ServerConfig; signal: AbortSignal | undefined}> = [];
-    const instance = new ServerCommand(pi, store, (config, signal) => {
+    const server = new ServerService(store, (config, signal) => {
         checks.push({config: {...config}, signal});
         return checkVersion(config, signal);
     }, uploadArchive);
+    const instance = new ServerCommand(pi, server);
     instance.register();
+    assert.deepEqual(hooks, [], "commands must not register lifecycle hooks");
     const command = commands.get("server");
     assert.ok(command);
     const prompts: Array<{title: string; placeholder?: string}> = [];
     const notifications: Array<{message: string; type: string}> = [];
     const ctx = {
         hasUI,
+        sessionManager: SessionManager.inMemory(directory),
         ui: {
             async input(title: string, placeholder?: string) {
                 prompts.push({title, placeholder});
@@ -60,8 +65,8 @@ function harness(
                 notifications.push({message, type});
             },
         },
-    } as ExtensionCommandContext;
-    return {directory, store, instance, command, prompts, notifications, checks, ctx, shutdown: () => shutdown?.()};
+    } as unknown as ExtensionCommandContext;
+    return {directory, store, server, instance, command, prompts, notifications, checks, ctx};
 }
 
 test("server command with no config shows only unconfigured status and makes no request", async (t) => {
@@ -258,16 +263,16 @@ test("a newer status check supersedes an older response", async (t) => {
 });
 
 test("upload defaults to current family and all is an explicit backfill", async (t) => {
-    const calls: Array<{scope: string; config: ServerConfig; ctx: ExtensionCommandContext; signal?: AbortSignal}> = [];
+    const calls: Array<{scope: string; config: ServerConfig; manager: ExtensionContext["sessionManager"]; signal?: AbortSignal}> = [];
     const {command, ctx, store, checks, notifications} = harness(t, [], true, undefined,
-        async (config, context, scope, signal) => {
-            calls.push({scope, config, ctx: context, signal});
+        async (config, manager, scope, signal) => {
+            calls.push({scope, config, manager, signal});
             return {...REPORT, failed: 1, failures: [{file: "session.jsonl", message: "Safe conflict"}], warnings: ["Legacy child kind unknown"]};
         });
     store.save(CONFIG);
     for (const input of ["upload", "upload current", " UPLOAD ALL "]) await command.handler(input, ctx);
     assert.deepEqual(calls.map((call) => call.scope), ["current", "current", "all"]);
-    assert.ok(calls.every((call) => call.ctx === ctx && call.config.apiKey === CONFIG.apiKey && !call.signal?.aborted));
+    assert.ok(calls.every((call) => call.manager === ctx.sessionManager && call.config.apiKey === CONFIG.apiKey && !call.signal?.aborted));
     assert.deepEqual(checks, []);
     assert.equal(notifications.length, 3);
     assert.match(notifications[0]!.message, /2 uploaded, 1 unchanged, 1 failed/);
@@ -335,11 +340,13 @@ test("initial upload binding failures show local authentication and overload dia
                 return new SessionArchive(config, {
                     client,
                     stateDirectory: path.join(directory, "archive"),
-                    createSessions: () => ({
-                        discover: async () => ({files: [path.join(directory, "session.jsonl")], warnings: []}),
-                        snapshot,
-                    }),
-                }).upload(context.sessionManager, scope, signal);
+                    createSessions(manager) {
+                        const sessions = new ArchiveSessions(manager);
+                        t.mock.method(sessions, "discover", async () => ({files: [path.join(directory, "session.jsonl")], warnings: []}));
+                        t.mock.method(sessions, "snapshot", snapshot);
+                        return sessions;
+                    },
+                }).upload(context, scope, signal);
             });
         store.save(CONFIG);
         const before = readFileSync(store.file);
@@ -414,14 +421,14 @@ test("every new command and shutdown cancel uploads and suppress late results or
             new ArchiveClientError(`${CONFIG.apiKey}\u001b[31m`, "overloaded")]) {
             let finish!: () => void;
             let uploadSignal: AbortSignal | undefined;
-            const {command, ctx, store, notifications, shutdown} = harness(t, [undefined], true, undefined,
+            const {command, ctx, store, notifications, server} = harness(t, [undefined], true, undefined,
                 (_config, _ctx, _scope, signal) => {
                     uploadSignal = signal;
                     return new Promise((resolve, fail) => { finish = () => error ? fail(error) : resolve(REPORT); });
                 });
             store.save(CONFIG);
             const pending = command.handler("upload", ctx);
-            if (next === "shutdown") shutdown();
+            if (next === "shutdown") server.beginShutdown();
             else await command.handler(next, ctx);
             assert.equal(uploadSignal?.aborted, true);
             const count = notifications.length;

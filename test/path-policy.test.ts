@@ -9,6 +9,7 @@ import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import type {PolicyChoice, QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow";
 import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
+import {createMemoryPolicyDao} from "./fixtures/MemoryPolicyDao.js";
 import type {Policy} from "../src/policy/types";
 import {
     PolicyAccessType,
@@ -40,19 +41,6 @@ function policy(
             [accessType]: PolicyEngine.createStatus(accessType, lifetime, status, reason),
         },
     };
-}
-
-function pathPolicyDao(
-    overrides: Partial<Pick<PolicyDao, "loadPolicies" | "upsertPolicies" | "deletePolicy">> = {},
-): PolicyDao {
-    return {
-        loadPolicies: () => [],
-        upsertPolicies() {
-        },
-        deletePolicy() {
-        },
-        ...overrides,
-    } as unknown as PolicyDao;
 }
 
 function scriptedDecisionFlow(choices: PolicyChoice[]): {
@@ -203,7 +191,7 @@ test("a policy on the filesystem root applies to the root and every descendant",
     }
 });
 
-test("recording a root policy applies it to later tool calls", async () => {
+test("recording a root policy applies it to later tool calls", async (t) => {
     const decisions = scriptedDecisionFlow([{
         uri: "/",
         accessType: PolicyAccessType.FS_WRITE,
@@ -211,7 +199,7 @@ test("recording a root policy applies it to later tool calls", async () => {
         status: PolicyResponse.DENIED,
         reason: "recorded root policy",
     }]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao(), decisions.flow);
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t), decisions.flow);
 
     const recorded = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)("/", PolicyAccessType.FS_WRITE);
     assert.equal(recorded.matchedPattern, "/");
@@ -296,7 +284,7 @@ test("local and global path policies round-trip through in-memory SQLite", () =>
     }
 });
 
-test("runtime policy ownership follows tool-call, session, and local lifetimes", async () => {
+test("runtime policy ownership follows tool-call, session, and local lifetimes", async (t) => {
     const target = path.join(os.tmpdir(), "pi-policy-runtime");
     const sessionTarget = path.join(target, "session");
     const localTarget = path.join(target, "local");
@@ -331,11 +319,11 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
             reason: "local",
         },
     ]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
-        loadPolicies: () => structuredClone(persisted),
-        upsertPolicies: (policies) => {
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+        t.mock.method(dao, "loadPolicies", () => structuredClone(persisted));
+        t.mock.method(dao, "upsertPolicies", (policies: Policy[]) => {
             persisted = structuredClone(policies);
-        },
+        });
     }), decisions.flow);
     runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.ask_user);
     const firstCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);
@@ -359,8 +347,8 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
         status: PolicyResponse.ALLOWED,
         reason: "new session",
     }]);
-    const nextSession = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
-        loadPolicies: () => structuredClone(persisted),
+    const nextSession = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+        t.mock.method(dao, "loadPolicies", () => structuredClone(persisted));
     }), nextSessionDecisions.flow);
     assert.equal(
         (
@@ -376,16 +364,16 @@ test("runtime policy ownership follows tool-call, session, and local lifetimes",
     );
 });
 
-test("explicit root policies override defaults at the same broad scope", async () => {
+test("explicit root policies override defaults at the same broad scope", async (t) => {
     const decisions = scriptedDecisionFlow([]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
-        loadPolicies: () => [policy(
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+        t.mock.method(dao, "loadPolicies", () => [policy(
             "/",
             PolicyAccessType.FS_READ,
             PolicyLifetime.LOCAL,
             PolicyResponse.DENIED,
             "explicit root denial",
-        )],
+        )]);
     }), decisions.flow);
 
     const result = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(
@@ -398,11 +386,11 @@ test("explicit root policies override defaults at the same broad scope", async (
     assert.equal(decisions.callCount(), 0);
 });
 
-test("root policy defaults and subagent capability snapshots use the same policy areas", async () => {
+test("root policy defaults and subagent capability snapshots use the same policy areas", async (t) => {
     const childIdentifier = "path-policy-default-snapshot-child";
     const target = path.join(os.tmpdir(), "pi-policy-default-snapshot");
     const decisions = scriptedDecisionFlow([]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao(), decisions.flow);
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t), decisions.flow);
 
     runtime.registerPolicyPrincipal(childIdentifier, TEST_AGENT_IDENTIFIER, [PolicyArea.fs_read]);
     const result = await runtime.beginToolCall(childIdentifier)(target, PolicyAccessType.FS_READ);
@@ -414,7 +402,7 @@ test("root policy defaults and subagent capability snapshots use the same policy
     runtime.removePolicyPrincipal(childIdentifier);
 });
 
-test("subagent policy capabilities snapshot complete parent areas without becoming hard ceilings", async () => {
+test("subagent policy capabilities snapshot complete parent areas without becoming hard ceilings", async (t) => {
     const inheritedChild = "path-policy-inherited-child";
     const blankChild = "path-policy-blank-child";
     const target = path.join(os.tmpdir(), "pi-policy-agent-snapshot");
@@ -453,8 +441,8 @@ test("subagent policy capabilities snapshot complete parent areas without becomi
         },
     ];
     let agentCalls = 0;
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
-        loadPolicies: () => [
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+        t.mock.method(dao, "loadPolicies", () => [
             policy(
                 target,
                 PolicyAccessType.FS_READ,
@@ -469,7 +457,7 @@ test("subagent policy capabilities snapshot complete parent areas without becomi
                 PolicyResponse.DENIED,
                 "parent private-path denial",
             ),
-        ],
+        ]);
     }), decisions.flow);
     runtime.setDefaultResponse(PolicyArea.fs_read, PolicyFallbackResponse.ask_user);
     runtime.setAgentDecisionFlow({
@@ -519,7 +507,7 @@ test("subagent policy capabilities snapshot complete parent areas without becomi
     assert.throws(() => runtime.beginToolCall(inheritedChild), /No agent registered/);
 });
 
-test("durable decisions requested by a child remain rooted in the durable root principal", async () => {
+test("durable decisions requested by a child remain rooted in the durable root principal", async (t) => {
     const childIdentifier = "path-policy-durable-child";
     const target = path.join(os.tmpdir(), "pi-policy-child-durable-grant");
     let persisted: Policy[] = [];
@@ -530,10 +518,10 @@ test("durable decisions requested by a child remain rooted in the durable root p
         status: PolicyResponse.ALLOWED,
         reason: "durable user grant for descendant work",
     }]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, pathPolicyDao({
-        upsertPolicies: (policies) => {
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+        t.mock.method(dao, "upsertPolicies", (policies: Policy[]) => {
             persisted = structuredClone(policies);
-        },
+        });
     }), decisions.flow);
     runtime.registerPolicyPrincipal(childIdentifier, TEST_AGENT_IDENTIFIER, []);
 
@@ -549,10 +537,10 @@ test("durable decisions requested by a child remain rooted in the durable root p
     runtime.removePolicyPrincipal(childIdentifier);
 });
 
-test("policy principals must be removed from the leaves of the authority tree", () => {
+test("policy principals must be removed from the leaves of the authority tree", (t) => {
     const runtime = new PolicyRuntime(
         TEST_AGENT_IDENTIFIER,
-        pathPolicyDao(),
+        createMemoryPolicyDao(t),
         scriptedDecisionFlow([]).flow,
     );
     runtime.registerPolicyPrincipal("principal-parent", TEST_AGENT_IDENTIFIER, []);
@@ -566,7 +554,7 @@ test("policy principals must be removed from the leaves of the authority tree", 
     runtime.removePolicyPrincipal("principal-parent");
 });
 
-test("path approval uses the decision flow manager and records session policy", async () => {
+test("path approval uses the decision flow manager and records session policy", async (t) => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-path-policy-flow-"));
     const target = path.join(workspace, "allowed.txt");
     const promptTitles: string[] = [];
@@ -592,7 +580,7 @@ test("path approval uses the decision flow manager and records session policy", 
     } as unknown as ExtensionContext;
     const runtime = new PolicyRuntime(
         TEST_AGENT_IDENTIFIER,
-        pathPolicyDao(),
+        createMemoryPolicyDao(t),
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
 
@@ -616,7 +604,7 @@ test("path approval uses the decision flow manager and records session policy", 
     }
 });
 
-test("queued approvals recheck policies after the preceding decision is installed", async () => {
+test("queued approvals recheck policies after the preceding decision is installed", async (t) => {
     const scenarios = [
         {
             name: "an ONCE approval covers only another request in the same tool call",
@@ -687,7 +675,7 @@ test("queued approvals recheck policies after the preceding decision is installe
         } as unknown as ExtensionContext;
         const runtime = new PolicyRuntime(
             TEST_AGENT_IDENTIFIER,
-            pathPolicyDao(),
+            createMemoryPolicyDao(t),
             new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
             undefined,
             undefined,
@@ -723,7 +711,7 @@ test("queued approvals recheck policies after the preceding decision is installe
     }
 });
 
-test("path denial records the optional reason collected by the decision flow", async () => {
+test("path denial records the optional reason collected by the decision flow", async (t) => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-path-policy-denial-"));
     const target = path.join(workspace, "denied.txt");
     const denialReason = "Generated files must not be overwritten.";
@@ -747,7 +735,7 @@ test("path denial records the optional reason collected by the decision flow", a
     } as unknown as ExtensionContext;
     const runtime = new PolicyRuntime(
         TEST_AGENT_IDENTIFIER,
-        pathPolicyDao(),
+        createMemoryPolicyDao(t),
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
     const toolCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);
@@ -820,7 +808,7 @@ test("the decision flow manager supports TUI allow-once and deny-once shortcuts"
     }
 });
 
-test("a non-interactive path decision fails closed without opening a prompt", async () => {
+test("a non-interactive path decision fails closed without opening a prompt", async (t) => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-path-policy-no-ui-"));
     const target = path.join(workspace, "denied.txt");
     let prompts = 0;
@@ -837,7 +825,7 @@ test("a non-interactive path decision fails closed without opening a prompt", as
     } as unknown as ExtensionContext;
     const runtime = new PolicyRuntime(
         TEST_AGENT_IDENTIFIER,
-        pathPolicyDao(),
+        createMemoryPolicyDao(t),
         new PolicyDecisionFlow({decisionFlows: new UiDecisionFlowManager(ctx)}),
     );
     const toolCall = runtime.beginToolCall(TEST_AGENT_IDENTIFIER);

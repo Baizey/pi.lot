@@ -8,6 +8,8 @@ import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {SubagentDefaultsCommand} from "./commands/SubagentDefaultsCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {ServerCommand} from "./commands/ServerCommand.js";
+import {ServerService} from "./server/ServerService.js";
+import {ServerSessionLifecycle} from "./server/ServerSessionLifecycle.js";
 import {recordMainSessionIdentity} from "./sessions/SessionIdentity.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
@@ -49,6 +51,8 @@ export class PilotExtension {
     private readonly thinkingLevelUiRuntime: ThinkingLevelUiRuntime;
     private readonly builtinTools: readonly (BashTool | WebSearchTool | ReadTool | EditTool | WriteTool)[];
     private readonly archiveTools: ArchiveTools;
+    private readonly serverCommand: ServerCommand;
+    private readonly serverLifecycle: ServerSessionLifecycle;
     private readonly mcpExtension: McpExtensionInterface;
     private readonly subagentRuntime: SubagentRuntime;
     private readonly subagentUiRuntime: SubagentUiRuntime;
@@ -56,6 +60,7 @@ export class PilotExtension {
         SubagentSpawnTool | SubagentStatusTool | SubagentMessageTool | SubagentStopTool
     )[];
     private sessionRuntime: PilotSessionRuntimeInterface | undefined;
+    private sessionShutdown: Promise<void> | undefined;
     private registered = false;
 
     constructor(
@@ -76,7 +81,10 @@ export class PilotExtension {
             new EditTool(pi, runtimeProvider, this.displayRows),
             new WriteTool(pi, runtimeProvider, this.displayRows),
         ];
-        this.archiveTools = new ArchiveTools(pi, runtimeProvider, this.displayRows);
+        const server = new ServerService();
+        this.archiveTools = new ArchiveTools(pi, runtimeProvider, this.displayRows, {server});
+        this.serverCommand = new ServerCommand(pi, server);
+        this.serverLifecycle = new ServerSessionLifecycle(pi, server, () => this.stopSession());
         this.mcpExtension = (
             options.createMcpExtension
             ?? ((extensionApi, displayRows) => new McpExtension(extensionApi, {displayRows}))
@@ -107,6 +115,7 @@ export class PilotExtension {
 
         const runtimeProvider = () => this.requireSessionRuntime();
         this.transcriptDisplayRuntime.register();
+        this.serverLifecycle.registerPreparation();
         for (const tool of this.builtinTools) tool.register();
         new PolicyDefaultsCommand(this.pi, runtimeProvider).register();
         new SubagentDefaultsCommand(
@@ -116,7 +125,7 @@ export class PilotExtension {
             (level) => this.subagentRuntime.resolveAutomaticModel(level),
         ).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
-        new ServerCommand(this.pi).register();
+        this.serverCommand.register();
         this.archiveTools.register();
         new CodemodeExtension(this.pi, this.displayRows).register();
         this.mcpExtension.register();
@@ -137,10 +146,13 @@ export class PilotExtension {
         this.pi.on("session_compact", () => this.displayRows.clear());
         this.pi.on("session_tree", () => this.displayRows.clear());
         this.pi.on("session_shutdown", () => this.stopSession());
+        // Pi awaits hooks in registration order: archive after local writers close.
+        this.serverLifecycle.register();
     }
 
     private startSession(ctx: ExtensionContext): Promise<void> {
         if (this.sessionRuntime) throw new Error("pi.lot session runtime is already started");
+        this.sessionShutdown = undefined;
 
         const runtime = this.createSessionRuntime(ctx);
         this.sessionRuntime = runtime;
@@ -154,13 +166,19 @@ export class PilotExtension {
     }
 
     private stopSession(): Promise<void> {
+        return this.sessionShutdown ??= this.closeSession();
+    }
+
+    private async closeSession(): Promise<void> {
         const runtime = this.sessionRuntime;
         runtime?.beginShutdown();
-        return this.stopOwnedExtensions().finally(async () => {
+        try {
+            await this.stopOwnedExtensions();
+        } finally {
             if (this.sessionRuntime === runtime) this.sessionRuntime = undefined;
             this.displayRows.clear();
             await runtime?.close();
-        });
+        }
     }
 
     private async startOwnedExtensions(ctx: ExtensionContext): Promise<void> {

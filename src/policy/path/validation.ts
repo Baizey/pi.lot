@@ -19,7 +19,7 @@ export function resolvePhysicalPath(input: string): string {
 
 function stripTrailingPathSeparators(
     input: string,
-    pathParser: Pick<typeof path, "parse"> = path,
+    pathParser: typeof path = path,
 ): string {
     const root = pathParser.parse(input).root;
     // Linux treats backslashes as filename characters, not path separators.

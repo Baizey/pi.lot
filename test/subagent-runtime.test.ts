@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {AgentMechanismCapability} from "../src/subagents/AgentCapability.js";
 import {McpToolRegistry} from "../src/mcp/McpToolRegistry.js";
+import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
 import type {PolicyRuntime} from "../src/policy/PolicyRuntime.js";
 import {
     createSubagentResourceLoader,
@@ -191,7 +192,7 @@ test("SDK child executes native MCP proxies through real codemode, search, and n
     try {
         mkdirSync(cwd, {recursive: true});
         mkdirSync(agentDir, {recursive: true});
-        const registry = new McpToolRegistry({registerTool() {}});
+        const registry = new McpToolRegistry(await createNativeExtensionApi());
         registry.startSession();
         const executions: Array<{name: string; cwd: string; value: string}> = [];
         const nativeTool = (name: string, exposure: ToolDefinition<any, any>["exposure"]): ToolDefinition<any, any> => ({

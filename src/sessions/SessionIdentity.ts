@@ -89,7 +89,7 @@ export class SessionIdentity {
 }
 
 /** Called only for the active Pilot session, before any children are created. */
-export function recordMainSessionIdentity(pi: Pick<ExtensionAPI, "appendEntry">, manager: ReadonlySessionManager): void {
+export function recordMainSessionIdentity(pi: ExtensionAPI, manager: ReadonlySessionManager): void {
     const entry = SessionIdentity.fromManager(manager);
     if (!isNativeSessionId(entry.sessionId) || entry.childKind || entry.identity || entry.identityConflict) return;
     pi.appendEntry("pilot.archive", {
@@ -98,7 +98,7 @@ export function recordMainSessionIdentity(pi: Pick<ExtensionAPI, "appendEntry">,
 }
 
 export function recordChildSessionIdentity(
-    manager: Pick<SessionManager, "getSessionId" | "appendCustomEntry">,
+    manager: SessionManager,
     child: {parentAgentIdentifier: string; rootSessionId?: string; kind?: ChildSessionKind},
 ): void {
     manager.appendCustomEntry("pilot.subagent", {

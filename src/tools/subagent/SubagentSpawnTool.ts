@@ -88,7 +88,7 @@ export class SubagentSpawnTool {
     private registered = false;
 
     constructor(
-        private readonly pi: Pick<ExtensionAPI, "registerTool">,
+        private readonly pi: ExtensionAPI,
         coordinator: CoordinatorProvider,
         defaults: DefaultsProvider,
         displayRows: ToolDisplayRows,

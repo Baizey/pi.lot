@@ -1,6 +1,6 @@
 # pi.server session archive
 
-pi.lot supports automatic session-end archival and explicit manual uploads of Pi session JSONL files to pi.server **0.2.x**, plus root-only read tools. There is no startup upload, periodic/background synchronization, server-side summary generation, content search, or archive researcher agent.
+pi.lot uploads native Pi session JSONL to pi.server **0.2.x** and provides root-only tools to browse archived history. Uploads preserve complete files, not just the selected branch or tool previews. **They can send prompts, reasoning, credentials, tool results, and file contents outside agent policy approval.**
 
 ## Connection and credentials
 
@@ -10,25 +10,22 @@ pi.lot supports automatic session-end archival and explicit manual uploads of Pi
 /server logout
 ```
 
-`/server login` asks for the URL and API key in separate input dialogs, then saves only `url` and `apiKey` in `~/.pilot/server.json` (private mode 0600). Canceling either dialog preserves the existing configuration. Do not supply credentials as command arguments. Configuration belongs to Pilot, independently of Pi's agent directory.
+- `/server login` asks for an HTTP(S) origin and API key in separate dialogs. It saves only `url` and `apiKey` to `~/.pilot/server.json` (plaintext, mode 0600). Canceling either dialog preserves the existing configuration. Login itself makes no server request.
+- Use an origin without a path, embedded credentials, query, or fragment. Prefer HTTPS: HTTP sends the key unencrypted. Requests reject redirects and retain normal certificate verification.
+- `/server` displays the saved configuration **including the API key**, then checks `GET /v1/version`. Do not share its output. Supported versions are stable `0.2.x`, not prereleases. Uploads do not perform this version check themselves.
+- `/server logout` disables future automatic uploads by removing the configuration. It does not revoke the token, delete sessions, or clear the journal/cache.
 
-Use an HTTP(S) origin without a path, embedded credentials, query, or fragment. HTTP sends the API key unencrypted; prefer HTTPS. Normal certificate verification remains enabled, redirects are refused, and requests and responses are bounded.
+**Any saved server configuration enables session-end upload**, including configuration saved before that feature existed. Review the destination before leaving credentials configured. Do not pass credentials as command arguments.
 
-`/server` deliberately displays the complete saved configuration, **including the API key**, and checks `GET /v1/version` with `x-apikey` authentication. Do not share its output. The internal `SERVER_VERSION_REQUIREMENT` is `0.2.*`: stable `0.2.x` versions, including build metadata, match; `0.1.x`, other minors, and prereleases do not. The matcher supports exact pins or trailing wildcards, not arbitrary version ranges. The archive transport does not perform an extra version check before each request; unsupported protocol responses fail safely.
-
-Login and logout are local-only. Logout removes only the connection JSON: it does not revoke a server token, remove local session files, delete the archive journal, or clear downloads. A new `/server` command or session shutdown cancels the previous outstanding command request. Only the latest command can publish status or upload results; completed remote effects are not undone by cancellation.
+A new `/server` command or session shutdown cancels the previous outstanding command request and suppresses stale notifications; cancellation does not undo completed remote effects.
 
 ## Automatic session-end upload
 
-A saved server URL and API key enable automatic upload of the outgoing **current session family** on graceful `session_shutdown`: quit, reload, new session, resume, and fork. This also applies to configuration saved before automatic upload was introduced. `/server logout` disables future automatic uploads; no separate setting or startup request is added. Ephemeral (`--no-session`) and unconfigured sessions are skipped. Login still only saves credentials locally and does not immediately contact the server.
+Graceful quit, reload, new session, resume, and fork upload the outgoing **current session family** after Pilot's local child/runtime teardown succeeds. Unconfigured and ephemeral (`--no-session`) sessions are skipped. There is no startup upload, periodic synchronization, or automatic `all` backfill.
 
-The server lifecycle hook is independent of `/server` commands and archive tools. These access points share the core server service under `src/server/`; commands own command parsing/dialogs, tools own schemas and policy checks, and lifecycle hooks own automatic upload. Shutdown first closes admission to new command requests and cancels outstanding server work. The late upload hook runs after Pilot child/runtime teardown and verifies that teardown succeeded. It waits for prior uploads to release their journals before starting another publication, including uploads superseded by earlier commands.
+Waiting for prior uploads to release their journals and performing the automatic upload share a **10-second overall deadline**; cancellation is cooperative. This does not bound all extension teardown. If prior uploads do not finish in time, another publication is not started alongside them. Repeated shutdown requests do not duplicate the automatic attempt.
 
-Waiting for prior uploads and performing automatic upload share a **10-second overall deadline**, with a dedicated cancellation signal. This bounds automatic upload work, not all of Pi or its extensions’ teardown; cancellation is cooperative. If prior uploads do not finish in that budget, no overlapping upload is started. Failure, partial success, or expiry produces a sanitized warning when the UI supports notifications and preserves local session files and pending journal recovery state. Retry with `/server upload current` or a later graceful shutdown. Automatic upload is attempted only once per session, even if shutdown is requested repeatedly; a subsequent session start resets that state without uploading.
-
-This is best-effort archival of persisted JSONL, not a promise that every shutdown path saves every in-flight token. Crashes, forced termination, and emergency exits may bypass hooks; already-running root or policy-reviewer work, or later hooks from other extensions, may persist entries after capture. Successful normal subagent teardown precedes capture. There is no automatic full-history backfill: `all` remains explicit.
-
-Automatic uploads use the same complete-history, append-only, conflict, credential, and recovery rules as manual uploads below. **Saved configuration now authorizes sending complete session families at session end**, outside agent policy approval; session files may contain sensitive data. Review the destination and use logout to disable this behavior.
+Failures warn and preserve local files and pending recovery state. Retry with `/server upload current` or a later graceful shutdown. This is best effort: forced exits can bypass hooks, and entries written after capture are not included.
 
 ## Manual upload
 
@@ -38,61 +35,56 @@ Automatic uploads use the same complete-history, append-only, conflict, credenti
 /server upload all
 ```
 
-Plain `upload` is an alias for `upload current`. Current uploads the active session's family: the root/main session and discoverable descendants, including nested subagents and persistent policy-approver sessions. `all` explicitly backfills the default Pi session collection plus the active resolved session directory, including a custom directory; it cannot discover arbitrary historical custom directories that are no longer configured. This is not a cwd/project content search. An ephemeral session has no persistent file to upload.
+- Plain `upload` means `current`: the active root/main session and discoverable descendants, including nested subagents and persistent policy reviewers.
+- `all` scans Pi's default session collection and, when the active session is persisted, its session directory, including a custom directory. It cannot discover arbitrary historical custom directories. This is not a cwd/project content search.
+- `--no-session` has no active file to capture; an explicit `all` can still upload other persisted history.
 
-Sources must be regular, non-symlink native session JSONL files no larger than **64 MiB**. Capture is bounded and checked for concurrent modification; invalid, unsafe, or repeatedly changing files are skipped with warnings rather than partially parsed or reconstructed.
+Automatic and manual uploads use the same rules. Sources must be regular, non-symlink native session files no larger than **64 MiB**. Unsafe, invalid, or repeatedly changing files are skipped with warnings. Reports distinguish uploaded, unchanged, and failed files and show bounded failure details.
 
-Manual uploads and configured automatic uploads are host-management operations, not model tools: they do not ask the agent's filesystem or HTTP policy runtime for authorization. Upload sends complete session JSONL, not just the currently selected branch or bounded tool previews. Session files can contain prompts, reasoning, tool arguments/results, credentials, and file contents. Review the destination and your data before uploading.
-
-Reports distinguish uploaded, unchanged, and failed files and show warnings plus up to 20 failed-file paths and reasons. Displayed diagnostic fields are length-bounded, stripped of terminal controls, and redact the configured API key. The archive extracts bounded metadata locally without a model call:
-
-- `main` identifies a root session and uses its own ID as `root_session_id`;
-- `subagent` identifies a child, linked to the ultimate root;
-- `policy_approver` identifies a policy-review conversation, also linked to its ultimate root;
-- new identities are explicitly session-bound, so custom entries copied by native forks cannot classify the fork as the original session;
-- legacy files lacking recoverable classification or ancestry remain unknown rather than receiving ID-shape guesses or false main-session labels; unresolved or conflicting child ancestry produces warnings.
-
-Titles use the latest native session name or a bounded first-user-message fallback. Start time comes from the native header; last activity is the maximum persisted entry timestamp, not filesystem mtime. Counts include user messages, assistant messages, and tool calls across **all branches**, not just the active branch. No transcript summaries are generated locally or on the server by this integration.
+Metadata is extracted locally without model calls: title, persisted timestamps, and counts of user messages, assistant messages, and tool calls across **all branches**. Session kinds are `main`, `subagent`, and `policy_approver`; children link to their ultimate root through `root_session_id`. Session-bound identity records avoid carrying a source session's classification into a native fork. Unresolved or conflicting history may omit kind/root metadata; do not invent a classification when fields are absent.
 
 ### Local journal and conflicts
 
-Pilot owns a private journal at `~/.pilot/server-archive/archive.sqlite` and a private downloads cache under `~/.pilot/server-archive/downloads/`. These are created lazily when needed; registration and startup do not open the archive database or contact the server. Upload owns and closes its journal per call, including failure and cancellation paths.
+The private journal is `~/.pilot/server-archive/archive.sqlite`; downloaded snapshots and large list pages are under `~/.pilot/server-archive/downloads/`. They are created when needed, not at startup.
 
-The journal records accepted revisions and pending publications associated with the source path, server origin, and complete server/namespace/history-generation binding. Retries use durable operation identity and receipt reconciliation, including when the response to an upload was lost. Changes in binding and conflicting revisions fail safely. An observed server revision is **never adopted as a new upload base** merely to overwrite a conflict. Unknown pending outcomes retain recovery state rather than being treated as success. Do not delete the journal to bypass a conflict: doing so discards publication/recovery evidence. Logout intentionally retains this state.
+The journal retains accepted revisions and pending publications for each server binding. A lost response is reconciled or replayed from frozen bytes before a fresh successor is captured. **Recovery can still publish a pending snapshot even if its source file has since been deleted or become unreadable.** `current` recovers only the relevant family; `all` can recover every pending publication for that destination/binding.
 
-Each upload first reconciles frozen pending publications identifiable from the current session ID or its directly recorded original root **before fresh discovery or snapshot capture**, using the configured server origin and complete binding. If discovery subsequently recovers a resumed legacy child's previously unknown root, a second journal-based pass recovers that family's remaining pending publications before fresh snapshot capture. `all` selects every pending request in that origin/binding profile before discovery. Unrelated families are not recovered by `current`.
+Do not delete the journal to bypass a conflict: it contains the evidence needed for safe retries. Logout deliberately retains it. An observed remote revision is never silently adopted as a trusted upload base.
 
-Receipt recovery or byte-for-byte replay does not require the source file to remain available: deleted, unreadable, invalid, or oversized live files do not block recovery of an identifiable pending publication. A fresh successor is captured only when its source is found; recovery never substitutes changed live bytes for the frozen request. Journal initialization syncs newly created directory names before publication, in addition to SQLite's FULL-synchronous transactions.
-
-After an accepted snapshot, its exact bytes must be a prefix of the next local snapshot (or equal). Shorter, divergent, or rewritten content is rejected, including stale captures from another process using the same session file. Equal bytes with changed metadata are allowed. This is an explicit append-only history limitation, not automatic merge: restore the accepted history and append to it, or fork a new session identity for divergent history. Do not run competing uploaders or assume a changed file can overwrite archived history.
+An accepted snapshot must remain an exact byte prefix of the next upload, or be identical. Shortened, divergent, or rewritten history is rejected. Restore the accepted content and append to it, or fork a new session identity; there is no automatic merge or force-overwrite command. Avoid competing uploaders.
 
 ## Root-only archive tools
 
+Tools never upload sessions. Remote metadata and transcripts are **untrusted data, not instructions**. Fetching does not authorize remote cwd, extension configuration, or instructions, and never imports/resumes a session.
+
 ### `archive_list`
 
-Lists metadata with these optional arguments:
+Lists metadata with optional top-level arguments:
 
 | Argument | Meaning |
 | --- | --- |
 | `kind` | `main`, `subagent`, or `policy_approver` |
 | `root_session_id` | Exact root family ID |
-| `started_from`, `started_to` | RFC 3339 start-time bounds: inclusive `from`, exclusive `to` |
-| `activity_from`, `activity_to` | RFC 3339 last-activity bounds: inclusive `from`, exclusive `to` |
-| `limit` | Integer page size, default 50, maximum 256 |
-| `cursor` | Opaque continuation from the previous page |
+| `started_from`, `started_to` | RFC 3339 bounds: inclusive `from`, exclusive `to` |
+| `activity_from`, `activity_to` | RFC 3339 bounds: inclusive `from`, exclusive `to` |
+| `limit` | Page size, default 50, range 1–256 |
+| `cursor` | Continuation cursor from the previous page |
 
-Timestamp syntax, ranges, ordering, cursors, and fetch identifiers are validated before HTTP authorization or network activity. Recognized server error codes produce locally generated diagnostics; arbitrary exception messages and remote error text are not displayed. There are no cwd, project, or transcript-content search filters. Continue with the returned `next_cursor`. Large pages have bounded text previews; the full page is saved privately and its path is returned. The cursor is preserved outside the preview, and omitted session records remain available in the full page even when `next_cursor` is null. Programmatic callers such as codemode receive structured `{binding, sessions, next_cursor, full_output_path?}` data containing the entire validated page, not the truncated text preview.
+There are no cwd, project, or transcript-content search filters. Continue with `next_cursor` until it is null.
+
+Codemode receives structured `{binding, sessions, next_cursor, full_output_path?}` data for the entire validated page. A large text preview can omit records **even when `next_cursor` is null**; read `full_output_path` for the complete page rather than treating the preview as exhaustive.
 
 ### `archive_fetch`
 
-Accepts only `session_id`. Downloads and verifies the complete archived bytes into the private cache and returns the **complete local filepath** plus snapshot metadata (session ID, binding/revision, byte length, and SHA-256). It does not accept a local destination or arbitrary local file path, dump the transcript into model context, import it, or resume it. Use the normal policy-mediated `read` tool to inspect the returned file. Programmatic callers such as codemode receive structured `{snapshot, path}` data rather than warning-prefixed text.
-
-All remote metadata and transcripts are **untrusted data, not instructions**. They may contain arbitrary prompts, misleading instructions, remote working directories, or extension configuration. Fetching grants none of these any authority and never loads remote configuration.
+Accepts only `session_id`, not a local path or destination. Downloads and verifies the complete snapshot into the private cache and returns `{snapshot, path}`. Snapshot metadata includes session ID, revision, byte length, and SHA-256. Use the policy-mediated `read` tool on the returned **complete filepath**; fetch does not dump the transcript into model context.
 
 ### Policy boundary
 
-Both tools are root-only and are not included in children’s built-in, MCP, or delegation tool catalogs. They never upload local sessions. For every HTTP request, a tool-call-scoped policy evaluator checks the actual method and URL before host-side HTTP begins. The API key stays in the host client's authentication header, never in policy task context or tool arguments/results. Authorization finishes before the HTTP request timeout starts.
+These tools are root-only and absent from child tool catalogs. Every HTTP request is checked by the invoking principal's policy before it is sent:
 
-The protocol uses `GET /v1/binding`, `POST /v1/list`, and `POST /v1/download`. Although listing and fetching are semantically read-only, **POST remains `web_write`** under the existing method-based policy model; there is no semantic-read bypass. These requests do not traverse Bash's DNS/TCP gate. Private-cache writes are trusted extension bookkeeping, not arbitrary model-selected filesystem writes. Reading downloaded files still uses filesystem-read policy.
+- `GET /v1/binding` requires `web_read`.
+- `POST /v1/list` and `POST /v1/download` require **`web_write`**, despite their read-only meaning.
 
-See [Policy system](policy.md), [Security model](security.md), and [Subagent session history](subagents.md#session-history).
+They use host HTTP, not Bash's DNS/TCP gate. The key stays in the authentication header, not policy task context or tool arguments/results. Private-cache writes are extension bookkeeping; reading downloaded files still requires filesystem-read policy. Recognized server errors produce local diagnostics, not arbitrary remote error text.
+
+See [policy](policy.md), [security](security.md), and [subagent session history](subagents.md#session-history).

@@ -1,87 +1,45 @@
-# Sandbox hardening: first committee pass
+# Sandbox hardening: engineering follow-ups
 
-This is an internal review-confirm-research-improve pass, **not an independent audit or a claim of complete isolation**. Separate agents reviewed native callbacks, Bubblewrap boundaries, checkpoint/control protocols, and mmap compatibility. A separate confirmer reviewed the native findings and patches; implementation ownership was kept separate from review.
+Developer reference for enforcement invariants and unresolved design issues, not an independent security audit. Current user-facing boundaries belong in [security](security.md); native architecture and regression entry points are in the [native helper reference](native-rust-migration.md). Past test results do not establish the state of the current tree.
 
-## Scoped changes applied
+## Enforcement invariants
 
-| Finding | Change | Evidence and remaining limits |
-| --- | --- | --- |
-| Hardlink creation could turn readable, write-denied contents into a writable alias. | `benchmark_link` requires source WRITE as well as its existing source READ and destination WRITE checks. | Mount-free callbacks test denied creation and allowed inode-preserving links. Existing/host-created aliases still require an inode-aware authority design. Read-only hardlink backup workflows now require source-write approval. |
-| Read/write/ftruncate could authorize a replacement pathname while using the retained old inode. | Check retained descriptor device/inode against the exact authorized resolved path inside the policy mutex. Reject errors/mismatches; never reopen or substitute the handle. | Tests cover external rename/replacement, missing/invalid/closed handles, and ordinary same-inode content changes. The mutex does not serialize host namespace changes, and cached reads bypass callbacks. |
-| Combined workers bind-mounted all host `/dev`, bypassing FUSE for shared memory, devices, PTYs, and sockets. | Use private Bubblewrap `--dev /dev`; overlay only deliberately configured resource imports afterward. | Mocked launch tests verify flags/order. The local Linux regression checks an invisible host `/dev/shm` sentinel, private writes leaving it unchanged, basic devices, and an explicitly imported socket in the same host directory. It was not runnable in the original sandboxed session; the later user-run real mount/network suites passed. |
-| Linux trailing-backslash filenames lost their identity during TypeScript normalization. | Strip only `/` as a trailing separator. | Three tests failed before the fix and pass afterward, including the real native snapshot matcher allowing a filename that TypeScript had denied. Existing/missing names, physical symlink targets, and a distinct allowed sibling are covered. Previously persisted incorrectly normalized rules cannot automatically be reconstructed; recreate affected rules. |
-| Create ignored caller access/status flags and forced a host `O_RDWR` descriptor. | Honor caller flags with `O_CREAT|O_EXCL`; authorize READ before exposing a read-only created/cache-enabled handle. | Access-mode, append/nonblocking, exclusivity, denial, and cache-mode tests. Writable opens remain direct-I/O. |
-| Read-only truncating open lacked callback-level write authorization. | Require WRITE when `O_RDONLY|O_TRUNC` reaches the open callback. | Defense in depth: default bundled FUSE dispatch strips `O_TRUNC` and invokes the already-write-authorized truncate callback. This is **not** a demonstrated exploit through the current mounted configuration. |
-| Valid xattr CREATE/REPLACE requests were blocked. | Validate and forward native flags rather than rejecting all nonzero flags. | Actual callback tests preserve success, `EEXIST`, `ENODATA`, and invalid-flag behavior. |
+- **Hardlinks:** creation requires source READ+WRITE and destination WRITE. Existing or host-created aliases still share content across policy paths; authorization is not inode-wide.
+- **Retained descriptors:** read/write/ftruncate compare device/inode with the exact authorized pathname and reject errors or mismatches rather than reopening by name. This catches deterministic replacement, not all concurrent host namespace races. Cached reads can bypass callbacks.
+- **Devices:** workers use private Bubblewrap `--dev /dev`, with only explicit resource imports overlaid afterward. Do not restore a whole-host `/dev` bind as a compatibility shortcut.
+- **Path identity:** Linux backslashes are filename characters; strip only `/` as a trailing separator. Incorrectly persisted old rules must be recreated, not guessed back into shape.
+- **Open/create behavior:** preserve caller access/status flags, authorize READ before exposing read-only created handles, and require WRITE for truncation. Writable opens remain direct-I/O. Valid xattr CREATE/REPLACE flags retain normal success/error behavior.
 
-In the original review, the mount-free C probe included the actual C native implementation, supplied a mocked FUSE context, and used real encoded snapshots and live control descriptors. After original C helper retirement, the retained C ABI fixture linked the actual Rust implementation through the then-retained C libfuse shim. The later shim replacement moves that production ABI layer to `native/rust/src/fuse/abi.rs`, with installed-header bindings generated by `native/rust/build.rs` and included through `native/rust/src/fuse/bindings.rs`; independent test-only C probes still exercise the production callbacks and real mount-free INIT negotiation. It does not substitute a simplified authorization algorithm or add a production test API. It cannot replace kernel/FUSE/Bubblewrap integration coverage. Callback names in this historical review refer to the then-current C source, now available in Git history.
+Implementation owners are `native/rust/src/fuse/{callbacks,abi}.rs`, `native/rust/src/fuse.rs`, `src/policy/path/validation.ts`, `src/policy/network/NetworkSandbox.ts`, and `src/policy/path/native/native-fuse-runner.ts`. Callback/contract tests exercise the production Rust static library; launch tests do not replace mounted FUSE/Bubblewrap integration.
 
-## Approval required before implementation
+## Changes requiring an explicit authority model
 
-### 1. Writable mmap and database locking
+### Writable mappings and database locks
 
-**Confirmed contract:** read-only shared mappings work on read-only descriptors. Writable descriptors use `direct_io`, which blocks shared mmap, including read-only shared mappings through `O_RDWR`. SQLite WAL shared memory is distinct from database read-mmap. Current SQLite DELETE-journal fixtures do not establish WAL compatibility.
+Production supports read-only shared mappings through read-only descriptors. Writable descriptors use direct I/O and reject shared mmap, including SQLite WAL shared memory. DELETE-journal fixtures do not establish WAL compatibility.
 
-**Separate integrity issue:** `filesystem_operations()` supplies neither `lock` nor `flock`. Locks are local to each FUSE mount, not coordinated with host processes or other calls. A naive POSIX `fcntl` forwarding callback is not sufficient: the daemon is one process, sandbox owners differ, and closing another descriptor can release process-owned locks. Define lock owners, dup/fork/close/flush, blocking cancellation, and backing-inode aliases before implementation.
+Backing POSIX/flock locks do not coordinate with host processes or separate Bash mounts. A naive daemon-process `fcntl` callback does not preserve client lock ownership or close/dup/fork semantics. Define ownership, blocking cancellation, aliases, and final release before adding forwarding.
 
-**Considered, but not the user's preferred direction:** explicit private per-call scratch storage, authorized input snapshots, and a policy-mediated output commit. The user clarified that the harness should remain a transparent gate over normal host access, not change workflows through copying/staging. Do not implement scratch storage as the default or silently substitute it for host files. It remains an optional design candidate, not approved. It is not a transparent fix for concurrently opened host databases.
+The [mmap investigation](transparent-mmap-feasibility.md) covers mapping authority, delayed writes, draining, and host/cross-mount coherence. Enabling a capability flag is not a complete design. The intended workflow is transparent host-file access; scratch copies or writable host binds must not silently substitute for it. A writable bind is a policy bypass for its subtree.
 
-Required contract:
-- Share scratch among processes within a call, but not between calls/principals.
-- Bound bytes/inodes and aggregate concurrent usage; tmpfs does not itself bound anonymous memory or process count.
-- Reject import/commit symlink and pathname escapes; authorize each input and every output/deletion.
-- Detect host/sibling changes before commit and define conflict handling, per-file atomicity, and multi-file partial failures.
-- Clean up on cancellation and verify no late resource/file creation.
+### Namespace and device authority
 
-**Transparent-host-access direction to investigate, still requiring explicit acceptance:** enable host writable mappings using handle/call-lifetime authority, accepting that ordinary FUSE callbacks cannot synchronously recheck every mapped store or reliably revoke an already writable mapped page. Keep ordinary syscall I/O live-checked; define mapping-specific authority and failure semantics rather than silently extending all descriptor permissions. Do not simply remove `direct_io`, enable writeback cache, or add modern `FUSE_DIRECT_IO_ALLOW_MMAP`. FUSE3/kernel negotiation improves compatibility, not per-store policy enforcement, backing-lock forwarding, or cross-mount coherence. The original investigation used bundled FUSE 2.9 with older protocol headers; the current implementation uses system libfuse >= 3.17.3 and still disables writable shared mmap.
+System V shared memory, queues, and semaphores remain host-visible where normal permissions allow. Adding `--unshare-ipc` changes compatibility and needs an explicit decision. GPU, hardware-token, serial, host-PTY, and shared-memory exceptions should be narrow resource grants. Imported credential sockets delegate host-service authority even when mounted read-only.
 
-The follow-up [transparent mmap feasibility investigation](transparent-mmap-feasibility.md) compares modern direct-I/O mmap and cached write-through, records mapping-authority and shared-host WAL limits, and recommends a test-only prototype pending approval. No mmap enforcement change was implemented.
+### Race-resistant filesystem authority
 
-Host writable bind mounts are an explicit policy bypass for their subtree, not an invisible compatibility fix.
+Descriptor-anchored operations and a model for inode aliases are needed beyond current replacement checks. Decide whether authority follows names, opened objects, or both, including rename, unlink, revocation, and host-created hardlinks. Do not present the current device/inode check as full TOCTOU protection.
 
-### 2. Namespace and device authority
+## Open operational issues
 
-Approve private IPC namespaces before adding `--unshare-ipc`: System V shared memory, queues, and semaphores currently remain host-visible where normal permissions allow. Any GPU, hardware-token, serial, host-PTY, or host-shared-memory exception should be explicit and narrowly scoped, never a restored whole-host `/dev` bind. Credential sockets retain delegated host-service authority regardless of read-only mount flags.
+| Issue | Current behavior and constraint |
+| --- | --- |
+| Startup cancellation | `NetworkSandbox.run()` installs cancellation/timeouts after `prepareRuntimeFiles()`. The credential D-Bus proxy readiness wait has no startup abort/deadline. Make preparation abortable at its owner and drain late resource creation before cleanup; merely racing the whole promise creates cleanup races. |
+| Broker backpressure | `NativeFuseSessionBroker` awaits START/STOP writes before timeout-protected response waits. Blocked writes need their own bounds and broker failure must reach all active calls. |
+| Metadata visibility | Readlink text, getattr and access probes are not comprehensively read-policy gated. Define metadata/traversal authority before changing symlink behavior. |
+| Cache/coherence | Existing handles/mappings can be stale after host changes; cached data survives revocation. Denied uncached mapping faults may produce `SIGBUS`. |
+| Opaque TCP | Full inspection rejects SSH/SMTP-style opaque traffic even with TCP approval. Inspection-off is the current compatibility mode; selective opaque forwarding needs an agreed enforcement contract. |
 
-### 3. Race-resistant filesystem authority
+## Validation
 
-Descriptor-anchored resolution/operations and an explicit policy model for inode aliases are needed to go beyond deterministic replacement checks. Decide whether authority follows names, opened objects, or both; specify renames, unlink-open handles, revocation, and host-created hardlinks. Do not represent the current device/inode check as full TOCTOU protection.
-
-## Bounded follow-up issues still open
-
-- **Startup cancellation:** network cancellation/timeouts are installed after runtime preparation. A D-Bus proxy that never signals readiness can strand preparation. Make startup abortable at the proxy owner, transfer ownership deliberately, and drain concurrently started preparation before removal. Racing the entire preparation promise against abort would create late-resource cleanup races.
-- **Broker command backpressure:** START/STOP writes can stall before their timeout-protected waits. Bound writes and propagate broker failure to all active calls.
-- **Same-revision integrity — resolved during the [Rust migration](native-rust-migration.md):** the new ONCE regression failed on both original C and Rust (ALLOW instead of DENY after a conflicting equal-revision update). Both implementations were fixed to accept only identical parsed authority contents at equal revisions and fail closed on conflicts, for both base and ONCE snapshots; Rust retains those checks. Normal publication increments revisions; no worker-controlled exploit was established.
-- **Metadata boundary:** `benchmark_readlink` returns symlink text without read authorization/control checks; getattr/access metadata is also not comprehensively gated. A dangling symlink can expose text under a read-denied scope. Approve a consistent metadata/traversal contract before changing symlink-resolution behavior, rather than assuming content policy already protects all metadata.
-- **Cache/coherence:** externally changed backing files can leave existing handles/mappings stale. Already-cached/faulted data survives policy revocation. Uncached denied mapping faults may signal `SIGBUS`; characterize this explicitly.
-- **Opaque TCP compatibility:** full inspection rejects SSH/SMTP-style opaque protocols despite generic TCP approval. The policy docs now say inspection must be off for those workflows. Selective opaque forwarding requires an approved enforcement contract.
-- **Conditional FD fallback — resolved during the [Rust migration](native-rust-migration.md):** a seccomp-driven regression proved that both original C and Rust leaked fd 512 after lowering `RLIMIT_NOFILE` to 64 and forcing `close_range` to return `ENOSYS`. Both were fixed to enumerate actual `/proc/self/fd` descriptors and abort before exec if enumeration fails; Rust retains that behavior. This is a proven cleanup defect, not an established production escape.
-
-## Rust migration follow-up
-
-The [native Rust migration](native-rust-migration.md) retains these enforcement limitations. Migration added shared C/Rust regression and differential coverage before removing the four old C implementations; their source and fixes remain in Git history, and independent expected-behavior regressions remain against Rust. Besides the two resolved bounded issues above, a deterministic fork-pause/subreaper regression proved the TCP relay's `getppid() == 1` check could miss parent death before `PDEATHSIG` registration. Both implementations were fixed to capture the parent PID before fork and reject a changed parent before connecting to the broker. The regression failed on both pre-fix implementations and passed on both corrected implementations.
-
-The verification counts below describe the original committee pass, not the later migration. The earlier user-reported host comparison (274 shared-contract tests and 88 direct tests, no failures/skips) had a scope limitation: its C-labeled network block selected the Rust queue/TCP gateway. After correcting the launch wiring and helper-failure tests, the user supplied **278 passed on C** and **278 passed on Rust**, with **0 failures/skips** in each block. The default Rust local Linux integration also passed **302 tests with 0 failures/skips**, with a successful build and **21 Rust unit tests**. These results cover the existing real FUSE/cache/mmap, broker teardown, network, cancellation, and helper-failure contracts, not live Pi session reload or experimental writable-mmap enablement. The latest output did not include the final direct-test block; its earlier agent-run 109-test pass is recorded separately. See the [migration verification record](native-rust-migration.md#local-linux-integration-and-c-retirement-completed). Original C helper retirement is completed, not awaiting another host run. Those user-reported mounted results precede the later replacement of the production C ABI shim with the Rust adapter and must not be extended to that new path. After the replacement, the user separately reported “all pass” for the requested local `npm run test:native:host` run, closing the new adapter’s mounted-contract validation gap. No counts or platform versions were supplied, and the agent did not independently rerun it without `/dev/fuse`; see the [separate ABI replacement scope](native-rust-migration.md#remaining-libfuse-c-abi-shim-replaced). Generated bindings reduce handwritten layout maintenance but do not eliminate unsafe FFI or the external C libraries, and do not change inode/mmap authority. The additional design investigations below remain separate.
-
-## Historical verification in the original review session
-
-- Native helpers build; TypeScript typecheck passes.
-- Main-agent runs of 43 non-mount test files: **312 passed, 1 skipped, 0 failed** (313 total), including a rebuild/rerun after the final xattr correction. The existing skip requires absolute symlink creation, unavailable in this sandbox.
-- An independent reviewer reproduced a timing-only failure twice in `native FUSE bounds waits for a truncated control frame`: total test duration was about 13.7s and 9.5s versus a 7s assertion. Both retained deny exit status; neither showed a fail-open decision. Those runs used the existing binary and included mediated fixture setup/cleanup; the main rebuilt runs pass. Later user-run local Linux suites passed the existing contract; those results do not independently diagnose the earlier reviewer's timing discrepancy, and no silently widened deadline is justified.
-- Native callback regressions: **27 passed, zero skipped**, including already-allowing opens/read/write/ftruncate failing closed after controller EOF. The implementer ran the original source against the initial 23 callback tests: 13 failed before the fixes.
-- Three corrected filename regressions failed before normalization was fixed and pass afterward; six mocked launch/lifecycle cases pass.
-- Four real mount/network integration files were deliberately excluded: `bash-sandbox.test.ts`, `native-fuse.test.ts`, `native-fuse-session-broker.test.ts`, and `network.test.ts`. This is **not** a passing full `npm test`.
-
-## Further design investigations
-
-Existing local Linux integration and the corrected pre-retirement C/Rust contract blocks have passed; they do not need to be repeated as a C-retirement gate. For future development, `npm run test:native:host` is the canonical native suite with real mounts/network, and the older `test:native:integration:host` name is only a compatibility alias. Run it in a terminal on your normal Linux machine with the prerequisites, outside pi.lot's Bash sandbox or any other restrictive sandbox. No separate server, testing host, or deployment rollout is required for this local Pi extension.
-
-The original research matrix included private `/dev` and socket imports, host-versus-worker/two-mount locking, SQLite WAL, writable-descriptor private/shared mmap, denied uncached page faults, compiler/linker smoke checks, and external backing-file coherence. Existing supported/rejected behaviors are covered by the passing integration suites. Proposed changes to mapping authority, backing locks, host/cross-mount coherence, and WAL still require separate disposable experiments and approval; the pass does not establish those new guarantees. Minimum Rust-toolchain, sanitizer/fuzzing, and independent security-audit work also remain unverified, not blockers for the completed local extension integration. Do not probe corruption on real databases or use real credentials.
-
-## Upstream references
-
-- [Linux FUSE I/O modes](https://www.kernel.org/doc/html/next/filesystems/fuse/fuse-io.html): direct I/O, shared mmap negotiation, cached/writeback behavior.
-- [libfuse operation contracts](https://libfuse.github.io/doxygen/structfuse__operations.html): lock ownership, local-only locks without callbacks, and flush semantics.
-- [SQLite WAL](https://sqlite.org/wal.html): shared-memory requirements and exclusive-locking exception, which does not fix uncoordinated host locks.
-- [LLVM output buffer](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Support/FileOutputBuffer.cpp): mmap-output failure can fall back to buffered output; compiler failures should not be generalized without versioned smoke tests.
-- [Bubblewrap security guidance](https://github.com/containers/bubblewrap): the caller's mount/namespace policy determines the boundary.
+Use disposable files/databases and no real credentials. Run mounted/network integration on a prepared host outside pi.lot or another restrictive sandbox. The [mmap host matrix](transparent-mmap-feasibility.md#required-host-test-matrix) is required before claiming new mapping, locking, or WAL behavior. Current integration, minimum-toolchain execution, sanitizer/fuzzing work, and independent auditing are distinct evidence; none should be inferred from migration history.

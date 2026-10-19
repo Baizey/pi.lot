@@ -31,6 +31,9 @@ language conventions that weaken types, encapsulation, ownership, or testability
 
 ## Types, invariants, and boundaries
 
+- Use complete existing types for owned dependencies, not `Pick`/`Omit` facades or substitute subset interfaces. Prefer
+  concrete instances and method mocks in tests rather than weakening production types for partial doubles. Keep genuine
+  partial data types where the data is incomplete.
 - Model the state and relationships the component actually owns. Do not conceal an incorrect model with `any` or chains
   of type assertions. Where interoperability requires an assertion, keep it narrow and local to that boundary.
 - Validate external inputs at their boundaries and enforce invariants in the component that owns them. Internal code

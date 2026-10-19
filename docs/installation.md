@@ -1,12 +1,12 @@
 # Installation and setup
 
-pi.lot is a Pi package for **Linux x86-64**. It overrides Pi's core file and shell tools, so install it only from a checkout you trust.
+pi.lot (npm package name `pilot`) is a local Pi extension for **Linux x86-64**, hosted at [Baizey/pi-sandbox](https://github.com/Baizey/pi-sandbox). It overrides Pi's core file and shell tools, so install it only from a checkout you trust. The package is private; use the source checkout, not `npm install -g pilot`.
 
 ## Requirements
 
 This checkout targets Pi `1.3.0` and requires:
 
-- Node.js and npm;
+- Node.js **22.19 or newer** and npm (Pi 1.3.0's Node requirement);
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
@@ -20,11 +20,7 @@ This checkout targets Pi `1.3.0` and requires:
 - `libnetfilter_queue` development files; and
 - the libclang shared library and matching Clang resource headers for build-time binding generation.
 
-Normal builds no longer compile C source, but Rust still needs its platform linker toolchain. Tests additionally use a C compiler for independent ABI/syscall fixtures.
-
-The native helper uses the modern 64-bit capability API (`FUSE_USE_VERSION=317`), including `fuse_unset_feature_flag` exported since libfuse 3.17.3. **Why not 3.17.2?** Its headers declare the capability helpers, but its shared library does not export them. Simply lowering the minimum version would therefore cause undefined-reference linker errors. The helper uses these functions to disable mmap, writeback, passthrough, and callback-bypassing capabilities while keeping libfuse's internal negotiation bookkeeping consistent; supporting 3.17.2 would require a separately implemented and tested compatibility path, not just a version-check change.
-
-The build resolves the system `fuse3` SDK with `pkg-config`; the old npm-bundled FUSE 2 library is not used. Avoid libfuse 3.18.0, which briefly used incompatible ELF symbol versions for the capability helpers; rebuild native helpers when upgrading from it. Build and run against matching system library installations. This migration does **not** enable writable shared mmap, writeback cache, or passthrough. The [current security limitations](security.md#known-limitations) still apply; the [mmap feasibility investigation](transparent-mmap-feasibility.md) is not production enablement.
+The builder resolves system `fuse3` and `libnetfilter_queue` SDKs with `pkg-config`. FUSE API `317` uses `fuse_unset_feature_flag`, requiring exported capability helpers from libfuse >= 3.17.3; 3.17.2 headers alone are insufficient. Keep the SDK and runtime installations matched. Avoid libfuse 3.18.0's incompatible capability-helper symbol versions, and rebuild helpers when upgrading from it.
 
 Typical Fedora packages:
 
@@ -52,14 +48,15 @@ sudo apt install \
   slirp4netns xdg-dbus-proxy libnetfilter-queue-dev
 ```
 
-Install a Rust toolchain providing Rust 1.85 or newer and Cargo using your distribution or rustup. Cargo dependencies are pinned in `native/rust/Cargo.lock`; normal builds use `cargo build --locked`. The only runtime Rust crate dependency is `libc`. Build-time dependencies are pinned `bindgen 0.72.1` and `clang-sys 1.9.1`; the latter supports locating the loaded library's matching resource headers. Binding generation loads libclang during compilation, not when running helpers. On Fedora, `clang-devel` is an alternative package providing the libclang development library. For nonstandard LLVM installations, set `LIBCLANG_PATH` to the directory containing `libclang.so` (or its versioned shared library). Installing only the `clang` executable is not sufficient.
+Install Rust >= 1.85 and Cargo using your distribution or rustup. Cargo dependencies are pinned in `native/rust/Cargo.lock`; builds use `cargo build --locked`. Normal native builds generate FUSE bindings and compile Rust, not a production C shim, but still need a native linker toolchain. Tests also compile independent C ABI/syscall fixtures.
 
-Normal native builds generate FUSE bindings and compile Rust; they no longer compile a production C shim. Native tests still need a C compiler (`gcc` on Fedora or `build-essential` on Debian/Ubuntu) for independent ABI/syscall fixtures.
+Binding generation loads libclang at build time, not at helper runtime. Installing only the `clang` executable is insufficient. For nonstandard LLVM installations, use `LIBCLANG_PATH` for the directory containing the shared library; see [libclang troubleshooting](#native-build-cannot-load-libclang).
 
 Package names vary by distribution. Verify the host before building:
 
 ```bash
-command -v cargo rustc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+command -v node npm cargo rustc cc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+node --version
 rustc --version
 cargo --version
 pkg-config --atleast-version=3.17.3 fuse3
@@ -84,24 +81,19 @@ pi
 
 Pi defaults to fullscreen mode. For the regular terminal UI, set `"tuiMode": "regular"` in Pi settings or start with `pi --tui-mode regular`.
 
-Subagents require at least one authenticated model with normal reasoning support. Provider-native web search requires an authenticated active model that supports native search.
-
 ## Build pi.lot
 
 ```bash
 git clone https://github.com/Baizey/pi-sandbox.git pilot
 cd pilot
 npm install
-npm run build
 ```
 
-The build generates bindings from the installed system FUSE headers with `bindgen`/libclang, compiles four Rust native helpers, then type-checks the extension. `native/rust/src/fuse/abi.rs` owns the libfuse callback table, configuration and file-info bitfield marshalling; `native/rust/src/fuse/bindings.rs` includes the header bindings generated by `native/rust/build.rs`. No production C shim is compiled. The existing executable names, protocols, high-level system-libfuse frontend, capability negotiation and filesystem enforcement semantics are retained. System libfuse and libnetfilter_queue remain external C libraries. See [Native Rust migration](native-rust-migration.md).
+`npm install` already builds the native helpers through its install hook. For an optional source check afterward, run `npm run typecheck`; `npm run build` is the explicit rebuild-plus-typecheck command, not an additional installation step. Pi loads the TypeScript entry point directly. Native compilation uses the host SDKs and may download locked Cargo dependencies on the first build; do not use `--ignore-scripts` for this checkout's install.
 
-`npm install`'s install hook and `npm run build` both build Rust helpers. A successful native build publishes `build/native-rust.json` with SHA-256 digests for all four helpers. The production runtime validates that receipt and resolves only this package's `build/`; old C primary binaries, missing receipts and changed binaries are rejected with rebuild guidance. The receipt detects stale local build artifacts, not malicious host modification or unbuilt source changes; it is not a security attestation.
+A successful build publishes four helpers and a SHA-256 receipt in this checkout's `build/`. Runtime rejects missing/mismatched artifacts, but does not check source freshness: an old binary and matching receipt can pass after source changes. Rebuild and restart Pi after native changes.
 
-`npm run build` does not delete working helpers before compilation. `npm run clean` is a separate, destructive operation; do not run it on a live installation when attempting a safe update.
-
-The four old C helper implementations, reference build, and implementation selector were removed after successful local Linux integration and corrected C/Rust comparison. The remaining production libfuse C ABI shim has subsequently been replaced by the Rust adapter; independent test-only C probes remain. The old implementations and comparison evidence remain in Git history. The earlier mounted results precede the ABI-adapter replacement and do not validate that new path; see the [ABI replacement verification scope](native-rust-migration.md#remaining-libfuse-c-abi-shim-replaced).
+Failed preflight/compilation preserves existing helpers. `npm run clean` is destructive and not part of normal updates. See the [native helper reference](native-rust-migration.md) for publication and receipt limitations.
 
 ## Install the package
 
@@ -111,27 +103,26 @@ Install the checkout for your user:
 pi install "$PWD"
 ```
 
-Install it only for the current project:
+Alternatively, install it only for a target project (run from that project, not the checkout):
 
 ```bash
-pi install -l "$PWD"
+cd /path/to/project
+pi install -l /absolute/path/to/pilot
 ```
 
-Try it for one invocation without installing:
+From the checkout, try it for one invocation without adding a package declaration:
 
 ```bash
 pi -e "$PWD"
 ```
 
-The checked-in `.pi/settings.json` also loads the repository root as a project-local package when Pi starts inside the checkout and the project is trusted.
+The checked-in `.pi/settings.json` already loads the repository root and disables the duplicate built-ins described below when Pi starts inside this trusted checkout. A local Pi package is loaded in place; Pi does not copy it or install its npm dependencies. Build it yourself first.
 
-Pilot imports Pi's built-in MCP and codemode implementations through the public factories `createMcpExtension()` and `createCodemodeExtension()`, adding its own presentation. Add `"-builtin:mcp"` and `"-builtin:codemode"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. These suppress Pi's separate automatic instances and their override warnings, **not MCP or codemode functionality**: Pilot still runs the built-in implementations. Without these entries, Pi omits the duplicate built-in instances because Pilot registers `/mcp` and `codemode`, and emits override warnings.
+Pilot provides wrappers around Pi's built-in MCP and codemode implementations. Add `"-builtin:mcp"` and `"-builtin:codemode"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. These suppress Pi's separate automatic instances and their override warnings, **not MCP or codemode functionality**: Pilot still runs the built-in implementations. Without these entries, Pi omits the duplicate built-in instances because Pilot registers `/mcp` and `codemode`, and emits override warnings.
 
-Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools alongside it, or use `--tools` for one invocation. MCP activates it automatically when its tools require scripts. Pi's `codemode.mode` and `codemode.inlineBudget` settings continue to apply. Pilot calls remain JSON `{purpose, code}`; [Pi's codemode documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the `code` body and API rather than this wrapper envelope. Root model calls are [outside policy mediation](security.md#codemode-model-calls); child codemode exposes no model globals.
+Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools, or `pi --tools +codemode` for one invocation. MCP activates it when server exposure requires scripts. Pilot calls use JSON `{purpose, code}`; [Pi's codemode documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the `code` body, not this wrapper. Review the [model-call policy boundary](security.md#codemode-model-calls).
 
-MCP OAuth credentials now belong to a server name plus URL. Pi handles legacy credential migration; multiple differently named servers sharing one URL may require separate `/mcp login <server>` calls afterward.
-
-Installing pi.lot does not modify live user configuration; make this loader setting change yourself.
+`pi install` writes the package declaration to Pi settings. The checkout's npm install/build hooks do not rewrite your Pi configuration; add the loader exclusions yourself, preserving unrelated entries.
 
 ## Verify the installation
 
@@ -142,16 +133,7 @@ cd /path/to/project
 pi
 ```
 
-Confirm these commands are available:
-
-```text
-/policy-defaults
-/subagent-defaults
-/mcp
-/network-inspection
-```
-
-Then inspect the initial state:
+Inspect the initial state with these commands. Their availability checks extension loading, not mounted filesystem/network enforcement:
 
 ```text
 /policy-defaults
@@ -174,46 +156,37 @@ A local Pi package points at the checkout rather than copying it. Update and reb
 ```bash
 cd /path/to/pilot
 git pull
-npm run build:native
 npm install
-npm run build
 ```
 
-For a FUSE2-to-FUSE3 upgrade in a running Pi session, install the host FUSE3 SDK first and successfully compile the new native helper **before** `npm install` or any dependency pruning. Until that succeeds, keep the existing native binary and physical `node_modules/fuse-shared-library*` directories intact; the running installation may still need them. Restart Pi after the upgrade.
+Install any newly required host SDKs before updating. `npm install` rebuilds helpers; use `npm run typecheck` for an optional TypeScript check, or `npm run build` when rebuilding without dependency installation. Stop active work and restart Pi after rebuilding; an existing broker can still hold the old executable/library mappings. Local path packages are updated with Git/npm here, not copied into a separate Pi deployment.
 
 ## Development and tests
 
 Load the working tree with `pi -e "$PWD"`, or start Pi inside the checkout and use its project-local package setting.
 
-Use a terminal on your normal Linux machine with the prerequisites above. pi.lot is a local Pi extension; testing does not require a separate server, testing host, or deployment rollout.
+Use a terminal on a prepared Linux host, **outside pi.lot's Bash sandbox or any other restrictive sandbox**. The full and host-native suites create FUSE mounts, Bubblewrap workers, network namespaces, and nftables/NFQUEUE state.
 
-```bash
-npm test
-```
+| Command | Scope |
+| --- | --- |
+| `npm run build` | Rebuild native helpers, then TypeScript no-emit check. |
+| `npm run typecheck` | TypeScript no-emit check only; no native build. |
+| `npm run test:native` | Build helpers, Rust unit tests, mount-free native contracts. |
+| `npm run test:native:rust` | Cargo unit tests only; does not publish runtime helpers. |
+| `npm run test:native:host` | Native suite plus real mounted/network contracts. |
+| `npm run test:runtime` | Discover all top-level `test/*.test.ts` and `test/*.test.mjs`; no automatic build. Includes host integration. |
+| `npm run test:network` | Build helpers, then the explicit network-related test subset. Includes host integration. |
+| `npm test` | Build/typecheck, mount-free native suite without rebuilding, then all remaining discovered runtime tests (without rerunning native files). |
 
-This builds/type-checks the extension, runs the canonical mount-free native suite without rebuilding, then runs the runtime suite, which discovers all existing `.test.ts` and `.test.mjs` files. The runtime suite includes real mount/network tests, so run it outside pi.lot's Bash sandbox or any other restrictive sandbox.
+`test:native:integration` and `test:native:integration:host` are compatibility aliases for the canonical native runner without/with `--host`, not extra gates. A mount-free pass is not a passing mounted/network or full suite.
 
 Native regression tests additionally require Python 3 for byte-preserving exec, seccomp, and deterministic subreaper launchers, plus a C compiler for ABI/syscall fixtures. The normal Rust helper build/runtime does not depend on Python.
 
-For mount-free native verification:
+Two mount-free INIT negotiation cases additionally need libfuse built with `-Denable-custom-io=true`. Distribution builds without it skip those cases on `-ENOTSUP`; other probe errors still fail. This optional transport is not required for production mounts. Use a matching custom-I/O-enabled SDK/runtime to run them without skips.
 
-```bash
-npm run test:native
-```
+The source-package test exercises the actual npm install hook using a fresh Cargo target and cached dependencies in Cargo offline mode. It does **not** test offline installation of npm dependencies. See [regression entry points](native-rust-migration.md#regression-entry-points) for the contract-to-test map.
 
-The canonical runner, `scripts/test-native.mjs`, builds the Rust helpers, runs Rust unit tests, callback/protocol/policy contracts, independent expected-behavior regressions, and build/runtime/source-package integration checks. The mount-free FUSE probes exercise production callbacks and real libfuse INIT negotiation; they do not replace kernel/mount integration.
-
-The two real mount-free INIT wire-negotiation cases additionally need libfuse built with `-Denable-custom-io=true`. Some distribution builds disable this optional transport even though their version and headers meet the requirements above. When the API reports `-ENOTSUP`, only those two cases are explicitly skipped; callback/ABI contracts still run, and other probe errors still fail. Custom I/O is not required for production mounts or mounted integration. To run the wire-negotiation cases without skips, use a matching libfuse SDK/runtime built with custom I/O enabled.
-
-The source-package check uses the actual npm install hook to build real Rust ELF helpers with a fresh Cargo target and cached dependencies in Cargo offline mode. It checks package contents, package-local resolution, protocol/exec smoke behavior, and preservation after a failed npm build. It tests the install hook, **not** offline installation of npm dependencies.
-
-For the same suite plus real mounted/network contract coverage:
-
-```bash
-npm run test:native:host
-```
-
-This requires accessible `/dev/fuse` and the local namespace/network prerequisites. A mount-free pass is not a passing mounted/network suite. `test:native:integration` and `test:native:integration:host` are retained compatibility aliases for the same canonical runner without/with `--host`; they are not extra verification gates. The [migration record](native-rust-migration.md#local-linux-integration-and-c-retirement-completed) records the successful user-run integration and pre-retirement C/Rust comparison.
+`test:native:host` fails preflight if `/dev/fuse` is absent; device presence alone does not establish usable mounts or namespace/network permissions. Record failures and skips from the actual run, rather than relying on historical test totals.
 
 To debug a specific test after building:
 
@@ -221,9 +194,7 @@ To debug a specific test after building:
 node --import jiti/register --test test/native-fuse-callbacks.test.ts
 ```
 
-Do **not** run integration from inside pi.lot's Bash sandbox or another restrictive sandbox. The tests create FUSE mounts, Bubblewrap workers, network namespaces, and nftables/NFQUEUE state; nesting those mechanisms produces misleading failures.
-
-`test/network.test.ts` first checks synthetic DNS and IPv4 HTTP forwarding against local fixture servers. Its curl probe has a two-second connection timeout and a three-second total timeout, with a five-second sandbox deadline. A failed preflight stops that file instead of repeating the same gateway failure through every HTTP, HTTPS, Git, and Java test. Other test files still run. The failure includes curl stderr and observed policy events; fix that prerequisite before interpreting the cancelled network tests. Some negative native-protocol tests deliberately exercise five-second fail-closed deadlines.
+`test/network.test.ts` first checks synthetic DNS and IPv4 HTTP forwarding against local fixtures. A failed preflight stops that file; inspect its curl stderr and policy events before interpreting cancelled network cases. Some negative native-protocol tests deliberately wait for fail-closed deadlines.
 
 ## Common setup failures
 
@@ -233,7 +204,7 @@ Ensure FUSE 3 is installed, `/usr/bin/fusermount3` and `/dev/fuse` exist, and th
 
 ### Rust helper is missing or outdated
 
-Run `npm run build:native` from the installed checkout, confirm it succeeds, and restart Pi. Do not copy legacy C executables into the primary `build/` paths or manually manufacture the Rust receipt. The old C comparison selection (`PILOT_NATIVE_IMPLEMENTATION=c`) and reference build no longer exist; remove any obsolete override from your environment.
+Run `npm run build:native` from the installed checkout, confirm it succeeds, and restart Pi. Do not copy binaries or manufacture a receipt to bypass the check.
 
 ### Namespace creation is denied
 

@@ -4,39 +4,32 @@ pi.lot provides retained child-agent conversations with separate model context, 
 
 ## Tools
 
-| Tool | Purpose |
+| Tool | Arguments and behaviour |
 | --- | --- |
-| `subagent_spawn` | Start a retained conversation and return its job ID immediately. |
-| `subagent_status` | Inspect the visible descendant tree or wait for selected active turns. |
-| `subagent_message` | Steer a running turn or queue an ordered follow-up turn. |
-| `subagent_stop` | Stop a job and all of its descendants. |
+| `subagent_spawn` | Required: `task`, `role`, `reasoning_skill`, `reasoning_amount`. Optional: `capabilities` (default `[]`), `cwd`, `timeoutSeconds` (default 900; range 1–3,600), `systemPrompt`, `contextPaths`. Returns a job ID without waiting for completion. |
+| `subagent_status` | Optional `jobIds` and `waitSeconds` (default 0; range 0–3,600). Omit IDs or pass `[]` for the invoking agent's descendant tree. Waiting ends when all selected jobs are idle/terminal or the wait budget expires; check their returned states. |
+| `subagent_message` | Required `jobId`, `task`. Steers a running turn when possible; otherwise queues an ordered follow-up. An idle job starts a new turn in the retained conversation. |
+| `subagent_stop` | Required `jobId`. Stops that job and its descendants, descendants first. |
 
-Jobs move through `queued`, `running`, `idle`, `failed`, `cancelled`, and `timed_out` states. An idle job retains its model conversation for follow-up work until it is stopped or the root session ends.
+`cwd` defaults to the invoking tool's working directory; relative values resolve from it. Relative `contextPaths` resolve from the child's `cwd`. Give a self-contained task and explicit file ownership when delegating concurrent edits: children share the host files, not isolated worktrees.
 
-Active jobs appear above the TUI editor. Running, queued, idle, and attention counts appear in the footer.
+Jobs are `queued`, `running`, `idle`, `failed`, `cancelled`, or `timed_out`. Idle jobs retain their conversations; failed, cancelled, and timed-out jobs reject follow-ups. Spawn success does not guarantee model/session setup or task success. A parent's failure/timeout does not automatically stop its descendants; use `subagent_stop` to cancel the subtree.
+
+Returned child answer text is capped at about 50,000 characters per job; status is not a complete transcript.
 
 ## Session history
 
-With a persistent root session, children save ordinary Pi JSONL sessions in the root's resolved session directory, including custom session-directory configuration. Each session keeps its child working directory and job ID, is named `Subagent: <role>`, and links to its immediate parent session. A `pilot.subagent` custom entry also records the parent agent ID.
+With a persistent root, children save ordinary Pi JSONL sessions in the root's resolved session directory, including custom session-directory settings. Sessions are named `Subagent: <role>`, retain the child's working directory, and link to their immediate parent. Inspect them with Pi's normal session tools.
 
-Pi records the complete conversation, including system/tool declarations, user tasks and delivered steering/follow-ups, assistant messages, tool calls/results, usage, and compaction entries. The history is not limited to the bounded output shown by `subagent_status`, and remains on disk after the child is stopped or the root session ends. These files can be inspected with Pi's normal session tools. As with normal Pi sessions, setup alone does not create a file; writing begins with the first user or assistant message.
+Files retain full conversation/tool history, including instructions and delivered steering—not just status previews. They survive child stops and root shutdown and can contain sensitive data. File creation starts with the first user or assistant message; storage failures fail the child rather than silently switching to memory-only history.
 
-Configured automatic session-end upload and explicit `/server upload current` archive the root session family, including discoverable nested children and persistent policy-approver sessions; `upload all` explicitly backfills local history. The independent automatic-upload hook runs after local child/runtime teardown and uses a bounded best-effort upload; it is not a per-child upload hook. Classification uses session-bound identity metadata so entries copied by native forks cannot impersonate another session. Unrecoverable legacy child identity/ancestry stays unknown with warnings rather than being inferred from ID shapes. Counts include all branches. There is no startup/periodic upload, archive search/researcher, or summary generation. See [Server archive](server.md).
+An ephemeral root (`--no-session`) keeps child histories in memory. In either mode, live jobs and child policy grants are not restored after root-session shutdown.
 
-Unknown archive ancestry does not disable delegation or policy reviewers. Children created from an unresolved legacy parent retain their explicit kind and immediate-parent identity without inventing a main-session root; archival remains unclassified until that ancestry can be recovered.
-
-An ephemeral root (`--no-session`) keeps all child histories in memory too. Saving history does not persist live jobs or policy grants, and does not change shutdown or delegation authority.
+Saved server configuration enables best-effort current-family upload on graceful root-session shutdown, after successful local teardown. Explicit `/server upload current` also includes discoverable descendants and persistent policy reviewers; `/server upload all` backfills history. These uploads send complete JSONL outside agent policy approval; `/server logout` disables future automatic uploads. See [Server archive](server.md) for upload, classification, and recovery rules.
 
 ## Child context
 
-A child receives:
-
-- Pilot's immutable subagent prompt;
-- its role, task, requested reasoning, and capability summary;
-- an optional parent-provided system prompt; and
-- optional suggested `contextPaths`.
-
-Ambient `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `SYSTEM.md`, skills, prompt templates, themes, and other extensions are not loaded into child sessions. `contextPaths` are prompt hints, not automatically copied file contents. A child must read them through policy-mediated tools.
+A child receives Pilot's subagent instructions plus its role, task, reasoning/capability summary, and any supplied `systemPrompt` or `contextPaths`—not the parent's conversation. Ambient `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `SYSTEM.md`, skills, prompt templates, themes, and other extensions are not loaded. Include necessary instructions explicitly. `contextPaths` are hints, not copied file contents; the child must read them through policy-mediated tools.
 
 ## Capability model
 
@@ -52,22 +45,20 @@ These are `fs_read`, `fs_write`, and all `web_*` policy areas. Selecting one sna
 - Omitting an area leaves that area blank rather than denied. The child can request policy later.
 - A nested snapshot cannot copy authority its immediate parent does not hold.
 
-`archive_list` and `archive_fetch` are root-only tools: neither policy-area snapshots, `mcp`, nor `delegate` grant them to children. They never upload or auto-import/resume remote histories. A parent may provide relevant data explicitly; remote transcripts remain untrusted data, not instructions.
-
-Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always available. Selecting a policy area changes initial policy state, not tool availability.
+Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always available, even with `capabilities: []`. Selecting a policy area changes initial policy state, not tool availability. `archive_list` and `archive_fetch` remain root-only regardless of capabilities; the parent must provide any needed archive evidence explicitly.
 
 ### Hard mechanism capabilities
 
-- `mcp` supplies child-callable MCP tool definitions from the root session's current native MCP servers at child creation. No ambient MCP configuration is loaded into the child. With Pi's native background startup, servers still connecting at child creation may contribute no tools to that snapshot; later discovery does not widen the child. Indirect snapshots provide both codemode and tool search, with namespace hints derived only from their granted definitions and instructions available through `describeNamespace()`. Newly exposed tools do not automatically enter an existing child's conversation; calls still check the root's latest hidden state and tool schema at execution. Native aggregate resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) are root-only, not delegated because their server scope is not snapshotted per child.
-- `delegate` exposes subagent tools and permits nested delegation.
+- `mcp` snapshots the root's currently exposed native MCP tools when the child session starts, not when a queued spawn is accepted. No child MCP configuration is loaded. Servers still connecting may contribute no tools; later discovery does not widen an existing child. Spawn a new child after discovery if needed. Withdrawn/hidden tools and changed schemas fail at execution rather than using stale definitions.
+- `delegate` exposes the four subagent tools and permits nested delegation.
 
-A child cannot request these mechanisms later. A nested child cannot receive either mechanism unless its parent already has it.
+A child cannot request these mechanisms later, and cannot grant a nested child a mechanism it lacks. An `mcp` grant is not a per-tool allowlist: a new nested session takes its own snapshot from the root's then-current catalog. Aggregate MCP resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) remain root-only.
 
-Child codemode uses the public `createCodemodeExtension()` factory with `models: false`: no model globals are exposed, even with an `mcp` grant. Root codemode's authenticated, potentially billable `models.classify()` and `models.generateImages()` calls are [outside filesystem/network mediation](security.md#codemode-model-calls). In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
+Indirect MCP tools are discoverable through codemode/tool search; use `describeNamespace()` for server instructions. Child codemode exposes no model globals. In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
 
-Root and child codemode share Pi 1.3's process-wide limit of two live workers. A parent script waiting for a child still counts, and cancelled workers count until they actually exit. Further scripts fail immediately at capacity; retained subagent conversations themselves are not limited to two. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
+Root and child codemode share a limit of two live workers; a parent script waiting for a child still occupies a slot, and cancellation releases it only when the worker exits. Further scripts fail immediately at capacity. This is not a two-subagent limit. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
 
-MCP remains an opaque capability outside filesystem/network mediation. Granting `mcp` does not cause MCP effects to inherit Pilot's path or network policies. See [MCP security boundary](security.md#mcp).
+MCP effects are opaque and **outside filesystem/network mediation**; policy-area grants do not restrict them. See [MCP security boundary](security.md#mcp).
 
 ## Reasoning and model selection
 
@@ -76,74 +67,40 @@ A spawn requests:
 - `reasoning_skill`: `min`, `low`, `mid`, `high`, or `max`; and
 - `reasoning_amount`: `low`, `mid`, or `high`.
 
-Skill chooses a model from Pi's authenticated reasoning-model catalogue. Amount chooses its normal thinking level after model selection. Automatic selection uses catalogue cost and capability metadata:
+Skill chooses from Pi's authenticated reasoning models; amount maps to `low`, `medium`, or `high` thinking after selection. All skills default to `auto`: `min` favours cost, `max` estimated performance, and the intermediate skills trade off both using catalogue metadata. This is a heuristic, not a benchmark or a guarantee of distinct models for each skill.
 
-- `min` favours estimated cost;
-- `max` favours estimated performance; and
-- `low`, `mid`, and `high` move across the estimated cost/performance frontier.
+| Command | Effect |
+| --- | --- |
+| `/subagent-defaults` | Show active mappings and resolve `auto` choices. |
+| `/subagent-defaults auto mid` | Use automatic selection for `mid`; use `all` for every skill. |
+| `/subagent-defaults <provider>/<model> high` | Pin an authenticated canonical model to `high` (or another skill/`all`). |
+| `/subagent-defaults save` | Persist active mappings. |
+| `/subagent-defaults reset` | Reload saved mappings. |
 
-This initial ranker is a heuristic, not a benchmark claim.
+Changes affect the current session until `save`; `reset` reloads `~/.pilot/subagent-defaults.json`, or restores all skills to `auto` if no file exists. A spawn snapshots its skill's mapping; later default changes do not mutate accepted jobs or retained conversations.
 
-Show active mappings:
-
-```text
-/subagent-defaults
-```
-
-Use automatic selection:
-
-```text
-/subagent-defaults auto mid
-/subagent-defaults auto all
-```
-
-Pin one authenticated canonical model to a skill:
-
-```text
-/subagent-defaults <provider>/<model> high
-```
-
-Persist or reload mappings:
-
-```text
-/subagent-defaults save
-/subagent-defaults reset
-```
-
-Mappings are stored in `~/.pilot/subagent-defaults.json`. A spawn snapshots the active mapping for its requested skill. Later default changes do not mutate accepted jobs.
-
-An exact mapping must be authenticated and available when used, and the model must support a normal reasoning amount. Unsupported requested amounts clamp to a supported `low`, `medium`, or `high` thinking level without changing the selected model.
+An exact model must be authenticated, available, and support a normal reasoning amount when used; otherwise the job fails without substituting another model. Unsupported requested amounts clamp to a supported `low`, `medium`, or `high` thinking level without changing models. Inspect status for the resolved model and thinking level.
 
 ## Policy requests from children
 
 Each child is a policy principal in one ancestry tree. See [Policy agent authority](policy.md#agent-authority-and-approvals) for the full flow.
 
-In summary:
-
-- an explicit denial is terminal;
-- a covering ancestor allow can route the request to a bounded ephemeral reviewer;
-- otherwise the root fallback chooses user review, model review, allow, or deny;
-- derived scope and lifetime cannot exceed the source authority; and
-- session grants apply only along the requesting branch, not to siblings.
-
-Policy reviewers receive bounded task and operation context and have only a structured decision tool. Failure or stale authority denies the pending operation.
+An explicit denial is terminal. Otherwise, a covering ancestor allow can route the request to a bounded reviewer; without ancestor authority, the root fallback chooses user review, model review, allow, or deny. Derived scope/lifetime cannot exceed source authority, and session grants stay on the requesting branch, not siblings. Reviewers have only a structured decision tool; failure or stale authority denies the operation.
 
 ## Turn and wait budgets
 
-`timeoutSeconds` is an execution budget for **each turn**, not a wall-clock lifetime for the retained conversation. A follow-up gets a fresh budget. Time spent waiting for user or model policy approval is excluded, and the clock resumes with its previous remainder after approval finishes. Both ancestor-authority review and the `ask_llm` fallback count as approval waits. Each approval still has its own independent [300-second deadline](policy.md#approval-waits-and-execution-budgets); user approval includes time queued behind other prompts and all prompt steps.
+`timeoutSeconds` is an execution budget for **each turn**, not a lifetime for the conversation; follow-ups get fresh budgets. User and model policy approval waits pause it without resetting the remainder. Each approval still has an independent [300-second deadline](policy.md#approval-waits-and-execution-budgets), including queued user prompts.
 
-`subagent_status` with `waitSeconds` pauses its wait budget while any **selected active job** has pending approval. If an invoking parent is waiting on those selected jobs, the same approval wait pauses that parent's turn budget too. Approval time does not reset either budget, and stopping a job or aborting a status call remains immediate.
-
-Each child turn owns a separate clock. Spawning a background descendant does not automatically pause the parent, and an unselected sibling's approval does not extend a status wait. Independent model transport, application, subprocess, and server deadlines remain active; pausing Pilot's source budget does not freeze all work or guarantee that an external operation survives the wait.
+`subagent_status` pauses its wait budget while a selected active job awaits approval. If a parent is waiting in that call, its turn budget pauses too. Background descendants and unselected siblings do not automatically pause the parent. Cancellation still works during approval waits. Independent model, subprocess, application, and server deadlines are not extended.
 
 ## Work-tree visibility
 
 The root agent can inspect and manage the whole tree. A child can inspect, message, and stop only its descendants; it cannot manage itself, ancestors, siblings, or unrelated jobs.
 
-Stopping a job stops descendants first. Root-session shutdown aborts all active children before policy and MCP resources close.
+Root-session shutdown aborts all active children before policy and MCP resources close.
 
 ## Current boundary
 
 Subagents are independent Pi SDK sessions, not separate operating-system processes. They share the trusted root Pi process and policy runtime while retaining separate model context and principal-specific policy state.
 
-Live jobs and policy state are not persisted across root-session shutdown; conversation history follows the [session-storage rules](#session-history) above. See [Security model and limitations](security.md).
+See [Security model and limitations](security.md).

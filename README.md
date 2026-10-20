@@ -103,7 +103,7 @@ Codemode is inactive by default; see [installation](docs/installation.md#install
 - Select the bundled `pilot-dark` theme in `/settings` for Pilot's thinking-level palette. The chat editor border remains at the theme's `thinkingXhigh` color; Bash mode has its own color.
 - Pilot uses Pi's custom-footer slot; another footer extension can replace it depending on load order.
 
-Display choices are **Conversation**, **Compact**, **Preview**, and **Full**. Conversation keeps active tool headers and running nested calls, but hides completed tools, tool-result images, thoughts, and internal summaries. While the agent is working without an active tool header, an animated **Working…** placeholder appears above the editor; the next tool header replaces it, and it disappears when the run ends. Conversation text/images, notifications, and approvals remain visible. Full still respects display safety limits.
+Display choices are **Conversation**, **Compact**, **Preview**, and **Full**. Conversation keeps active tool headers and running nested calls, but hides completed tools, tool-result images, thoughts, and internal summaries. While the agent is working without active tool or visible assistant content, an animated **Working…** placeholder appears inline at the end of the conversation, in the same scrollable area as tool rows—not in the editor dock. The next tool or visible assistant output replaces it, and it disappears when the run ends. Conversation text/images, notifications, and approvals remain visible. Full still respects display safety limits.
 
 Native per-tool mouse toggles use the same pair independently: a tool's text and images follow its own selected slot, while thoughts and internal summaries follow the global view.
 

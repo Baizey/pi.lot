@@ -12,7 +12,8 @@ import {
     type Theme,
     type ToolRendererResolver,
 } from "@earendil-works/pi-coding-agent";
-import {Container, getCapabilities, Image, setCapabilities, Text, TuiAltScreen, TuiMainScreen, type Component, type Terminal, type TUI} from "@earendil-works/pi-tui";
+import {Container, getCapabilities, Image, setCapabilities, Text, TuiAltScreen, TuiMainScreen, type Terminal, type TUI} from "@earendil-works/pi-tui";
+import {createChatViewport} from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
 import {ReadTool} from "../src/tools/builtin/ReadTool.js";
 import {TranscriptDisplayRuntime} from "../src/tui/TranscriptDisplayRuntime.js";
 import {ToolDisplayMode} from "../src/tui/tool/ToolDisplayMode.js";
@@ -61,7 +62,7 @@ test("hidden suppresses streaming thoughts as well as completed thoughts without
     const original = structuredClone(pending);
     const component = new AssistantMessageComponent(pending, true);
     harness.root.addChild(component);
-    assert.deepEqual(harness.root.render(80), [], "the working widget owns the transient busy indicator");
+    assert.deepEqual(harness.root.render(80), [], "hidden thoughts do not create transcript rows on their own");
     const grown = assistant([{type: "thinking", thinking: "new private streaming thought"}], "pending");
     component.updateContent(grown, true);
     assert.deepEqual(component.render(80), []);
@@ -81,7 +82,25 @@ test("hidden suppresses streaming thoughts as well as completed thoughts without
     assert.equal(grown.content[0]!.type, "thinking");
 });
 
-test("Conversation shows an animated working placeholder until tool headers can take over, including between batches", (t) => {
+test("the working placeholder is rendered inline with tool rows, not in the editor dock", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const nativeRoot = new TestTui();
+    const harness = createHarness(nativeRoot);
+    t.after(() => harness.close());
+    harness.root.addChild(new Text("Previous conversation", 0, 0));
+    harness.dock.addChild(new Text("Editor dock", 0, 0));
+    const children = [...harness.root.children];
+    harness.startWork();
+    assert.match(plain(harness.root.render(80)), /Previous conversation *\n\n.*Working…/);
+    assert.doesNotMatch(plain(harness.dock.render(80)), /Working…/);
+    const lines = plain(nativeRoot.render(80));
+    assert.ok(lines.indexOf("Working…") < lines.indexOf("Editor dock"));
+    assert.deepEqual(harness.root.children, children, "the placeholder is a transient render projection, not a stored row");
+    harness.endWork();
+    assert.equal(plain(harness.root.render(80)).trim(), "Previous conversation");
+});
+
+test("Conversation shows an animated working placeholder until tool headers or assistant content can take over, including between batches", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const nativeRoot = new TestTui();
     const redraw = t.mock.method(nativeRoot, "requestRender");
@@ -119,14 +138,41 @@ test("Conversation shows an animated working placeholder until tool headers can 
 
     thought.updateContent(assistant([{type: "text", text: "The final answer."}], "pending"), true);
     assert.match(view(), /The final answer/);
-    assert.match(view(), /Working…/);
+    assert.doesNotMatch(view(), /Working…/, "streaming assistant output replaces the placeholder too");
     harness.endWork();
     assert.doesNotMatch(view(), /Working…/);
     assert.match(view(), /The final answer/);
     const afterEnd = redraw.mock.callCount();
     t.mock.timers.tick(800);
     assert.equal(redraw.mock.callCount(), afterEnd, "ending or aborting a run stops the animation");
-    assert.doesNotMatch(plain(harness.root.render(80)), /Working…/, "the placeholder is not added to transcript rows");
+    assert.doesNotMatch(plain(harness.root.render(80)), /Working…/, "the placeholder leaves no completed transcript rows");
+});
+
+test("only visible live assistant content replaces the inline working placeholder", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const nativeRoot = new TestTui();
+    const redraw = t.mock.method(nativeRoot, "requestRender");
+    const harness = createHarness(nativeRoot);
+    t.after(() => harness.close());
+    const view = () => plain(harness.root.render(80));
+    harness.root.addChild(new AssistantMessageComponent(assistant([{type: "text", text: "Historical answer"}])));
+    harness.startWork();
+    assert.match(view(), /Historical answer/);
+    assert.match(view(), /Working…/, "historical text must not suppress progress for the new turn");
+    const response = new AssistantMessageComponent(assistant([], "pending"));
+    harness.root.addChild(response);
+    assert.match(view(), /Working…/);
+    response.updateContent(assistant([{type: "text", text: "  \n "}], "pending"), true);
+    assert.match(view(), /Working…/, "empty or whitespace-only streaming content is not visible output");
+    response.updateContent(assistant([{type: "thinking", thinking: "hidden live thinking"}], "pending"), true);
+    assert.match(view(), /Working…/);
+    assert.doesNotMatch(view(), /hidden live thinking/);
+    response.updateContent(assistant([{type: "text", text: "Visible live answer"}], "pending"), true);
+    assert.match(view(), /Visible live answer/);
+    assert.doesNotMatch(view(), /Working…/);
+    const afterHandoff = redraw.mock.callCount();
+    t.mock.timers.tick(800);
+    assert.equal(redraw.mock.callCount(), afterHandoff, "visible output also stops the placeholder's animation");
 });
 
 test("unavailable historical renderers do not suppress working, while current fallback tool headers still take over", (t) => {
@@ -204,7 +250,7 @@ test("the working placeholder follows the global view, respects any active tool'
     assert.doesNotMatch(view(), /Working…/);
     const afterStop = redraw.mock.callCount();
     t.mock.timers.tick(800);
-    assert.equal(redraw.mock.callCount(), afterStop, "shutdown removes the widget and its timer");
+    assert.equal(redraw.mock.callCount(), afterStop, "shutdown removes the inline placeholder and its timer");
     harness.runtime.stopSession();
     harness.runtime.startSession(harness.context);
     harness.runtime.attach(nativeRoot);
@@ -215,11 +261,12 @@ test("the working placeholder follows the global view, respects any active tool'
     assert.doesNotMatch(view(), /Working…/);
 });
 
-test("transcript display does not install a working widget outside a terminal UI", () => {
+test("transcript display does not add a working placeholder outside a terminal UI", () => {
     for (const mode of ["rpc", "json", "print"] as const) {
         const harness = createHarness(new TestTui(), mode);
         harness.startWork();
-        assert.equal(harness.widgetCount(), 0);
+        assert.deepEqual(harness.root.render(80), []);
+        assert.deepEqual(harness.dock.render(80), []);
         harness.close();
     }
 });
@@ -358,7 +405,51 @@ test("fullscreen discovers new rows before drawing layout frames that bypass the
     assert.match(plain(root.getScreenLines()), /completed private output/);
 });
 
+test("fullscreen scrolls the working placeholder with conversation instead of pinning it beside the editor", (t) => {
+    t.mock.timers.enable({apis: ["setInterval", "setTimeout"]});
+    const root = new TuiAltScreen(new TestTui().terminal, false, undefined, {mouse: false});
+    const harness = createHarness(root);
+    const editor = new Container();
+    editor.addChild(new Text("EDITOR", 0, 0));
+    harness.dock.addChild(new Text("ABOVE-EDITOR WIDGET", 0, 0));
+    const viewport = createChatViewport({
+        document: harness.root,
+        pendingMessages: new Container(),
+        status: new Container(),
+        widgetsAbove: harness.dock,
+        editor,
+        footer: new Container(),
+        scrollbar: "hidden",
+    });
+    root.setLayoutRoot(viewport.root);
+    harness.root.addChild(new Text(Array.from({length: 50}, (_, i) => `Earlier message ${i}`).join("\n"), 0, 0));
+    root.start();
+    t.after(() => { root.stop({preserveScreen: true}); harness.close(); });
+    harness.startWork();
+    root.renderNow();
+    const view = () => plain(root.getScreenLines());
+    assert.match(view(), /Working…/);
+    assert.match(view(), /EDITOR/);
+    assert.ok(view().indexOf("Working…") < view().indexOf("ABOVE-EDITOR WIDGET"));
+    viewport.transcript.scrollToStart();
+    root.renderNow();
+    assert.match(view(), /Earlier message 0/);
+    assert.doesNotMatch(view(), /Working…/, "the placeholder scrolls out of view with tool/message rows");
+    assert.match(view(), /ABOVE-EDITOR WIDGET/);
+    assert.match(view(), /EDITOR/);
+    viewport.transcript.scrollToEnd();
+    root.renderNow();
+    assert.match(view(), /Working…/);
+    const response = new AssistantMessageComponent(assistant([{type: "text", text: "Visible response"}], "pending"));
+    harness.root.addChild(response);
+    root.requestRender();
+    root.renderNow();
+    assert.match(view(), /Visible response/);
+    assert.doesNotMatch(view(), /Working…/);
+});
+
 test("transcript projection survives a stable TUI facade replacing its renderer without modifying facade methods", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
     let current = new TestTui();
     const facade = new Proxy(current, {
         get(_target, property) {
@@ -372,18 +463,22 @@ test("transcript projection survives a stable TUI facade replacing its renderer 
     t.after(() => harness.close());
     harness.root.addChild(new AssistantMessageComponent(assistant([{type: "thinking", thinking: "retained thought"}])));
     assert.deepEqual(current.render(80), []);
+    harness.startWork();
+    assert.match(plain(current.render(80)), /Working…/);
     const sources = [...current.children];
     current = new TestTui();
     for (const source of sources) current.addChild(source);
     harness.runtime.attach(facade);
     harness.root.addChild(new AssistantMessageComponent(assistant([{type: "thinking", thinking: "new thought"}])));
-    assert.deepEqual(current.render(80), []);
+    assert.equal(plain(current.render(80)).match(/Working…/g)?.length, 1);
+    assert.doesNotMatch(plain(harness.dock.render(80)), /Working…/);
     harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.FULL);
     assert.match(plain(current.render(80)), /retained thought/);
     assert.match(plain(current.render(80)), /new thought/);
     harness.rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
-    assert.deepEqual(current.render(80), []);
+    assert.match(plain(current.render(80)), /Working…/);
     harness.runtime.stopSession();
+    assert.doesNotMatch(plain(current.render(80)), /Working…/);
     assert.match(plain(current.render(80)), /retained thought/);
     assert.match(plain(current.render(80)), /new thought/);
 });
@@ -434,9 +529,9 @@ class TestTui extends TuiMainScreen {
 
 function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"] = "tui") {
     const transcript = new Container();
-    const widgets = new Container();
+    const dock = new Container();
     root.addChild(transcript);
-    root.addChild(widgets);
+    root.addChild(dock);
     const rows = new ToolDisplayRows();
     rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
     let expanded = false;
@@ -447,15 +542,9 @@ function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"]
         on(event: string, handler: (event: unknown) => void) { events.set(event, handler); },
     } as unknown as ExtensionAPI;
     const theme = {fg: (_color: string, text: string) => text, bold: (text: string) => text} as unknown as Theme;
-    let widget: (Component & {dispose?(): void}) | undefined;
     const context = {hasUI: true, mode, ui: {
         theme, getToolsExpanded: () => expanded, notify() {},
-        setWidget(_key: string, factory?: (tui: TUI, theme: Theme) => typeof widget) {
-            widget?.dispose?.();
-            widgets.clear();
-            widget = factory?.(root, theme);
-            if (widget) widgets.addChild(widget);
-        },
+        setWidget() { assert.fail("the working placeholder must not install an editor widget"); },
     }} as unknown as ExtensionContext;
     const runtime = new TranscriptDisplayRuntime(pi, rows.modes);
     runtime.register();
@@ -464,6 +553,7 @@ function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"]
     const read = new ReadTool(pi, () => assert.fail("rendering must not execute tools"), rows).toolDefinition();
     return {
         root: transcript,
+        dock,
         rows, runtime, context,
         startWork() { events.get("agent_start")?.({type: "agent_start"}); },
         endWork() { events.get("agent_end")?.({type: "agent_end", messages: []}); },
@@ -475,7 +565,6 @@ function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"]
         endTool(toolCallId: string, parentToolCallId?: string) {
             events.get("tool_execution_end")?.({type: "tool_execution_end", toolCallId, parentToolCallId});
         },
-        widgetCount() { return widgets.children.length; },
         get expanded() { return expanded; },
         set expanded(value: boolean) { expanded = value; },
         read(id: string) {

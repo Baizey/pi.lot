@@ -20,11 +20,9 @@ type Decoration = {
     refresh(hidden: boolean): void;
     restore(): void;
     toolHidden?(): boolean;
-    toolActive?(): boolean;
+    contentActive?(): boolean;
 };
 type ToolProbe = {partial?: boolean; expanded?: boolean};
-
-const WORKING_WIDGET_KEY = "pi.lot-working";
 
 /** UI-only projection of native rows; never changes the session transcript. */
 export class TranscriptDisplayRuntime {
@@ -39,6 +37,7 @@ export class TranscriptDisplayRuntime {
     private working = false;
     private workingSpinner: ToolCallSpinner | undefined;
     private readonly activeToolCalls = new Set<string>();
+    private readonly workingPlaceholder = renderLineFactory(() => this.renderWorkingPlaceholder(), 1);
 
     constructor(private readonly pi: ExtensionAPI, private readonly modes: ToolDisplayModes) {}
 
@@ -79,10 +78,6 @@ export class TranscriptDisplayRuntime {
         this.context = ctx;
         this.reportedUnknownPartial = false;
         if (ctx.hasUI && ctx.mode === "tui") {
-            ctx.ui.setWidget(WORKING_WIDGET_KEY, (tui) => ({
-                ...renderLineFactory(() => this.renderWorkingPlaceholder(tui), 1),
-                dispose: () => this.stopWorkingSpinner(),
-            }));
             this.unsubscribe = this.modes.subscribe(() => {
                 if (!this.tui) return;
                 this.scan();
@@ -107,8 +102,6 @@ export class TranscriptDisplayRuntime {
         this.unsubscribe?.();
         this.unsubscribe = undefined;
         this.setWorking(false);
-        const ctx = this.context;
-        if (ctx?.hasUI && ctx.mode === "tui") ctx.ui.setWidget(WORKING_WIDGET_KEY, undefined);
         const tui = this.tui;
         this.detach();
         this.context = undefined;
@@ -140,14 +133,13 @@ export class TranscriptDisplayRuntime {
         this.tui?.requestRender();
     }
 
-    private renderWorkingPlaceholder(tui: TUI): string[] {
-        this.scan();
+    private renderWorkingPlaceholder(): string[] {
         if (!this.working || !this.isHidden() || this.activeToolCalls.size > 0
-            || [...this.decorations.values()].some((decoration) => decoration.toolActive?.())) {
+            || [...this.decorations.values()].some((decoration) => decoration.contentActive?.())) {
             this.stopWorkingSpinner();
             return [];
         }
-        this.workingSpinner ??= new ToolCallSpinner(() => tui.requestRender());
+        this.workingSpinner ??= new ToolCallSpinner(() => this.tui?.requestRender());
         const theme = this.context!.ui.theme;
         return [
             `${theme.fg(ThemeColor.accent, this.workingSpinner.frame())} ${theme.fg(ThemeColor.toolTitle, theme.bold("Working…"))}`,
@@ -160,6 +152,7 @@ export class TranscriptDisplayRuntime {
     }
 
     private detach(): void {
+        this.stopWorkingSpinner();
         for (const decoration of this.decorations.values()) decoration.restore();
         this.decorations.clear();
         this.tui = undefined;
@@ -226,7 +219,12 @@ export class TranscriptDisplayRuntime {
         let active = true;
         const decorated: Component["render"] = (width) => {
             if (active) this.scan();
-            return render.call(component, width);
+            const lines = render.call(component, width);
+            // Pi mounts the scrollable document first; subsequent sources belong
+            // to the fixed input dock. Append only to that document's projection.
+            if (!active || component !== this.tui?.children[0]) return lines;
+            const placeholder = this.workingPlaceholder.render(width);
+            return placeholder.length > 0 ? [...lines, "", ...placeholder] : lines;
         };
         component.render = decorated;
         return {
@@ -259,6 +257,10 @@ export class TranscriptDisplayRuntime {
         // The exported API has no last-message getter. invalidate calls our updateContent.
         component.invalidate();
         return {
+            contentActive: () => streaming && !!(projection ?? source)?.content.some((block) => (
+                (block.type === "text" && block.text.trim())
+                || (block.type === "thinking" && block.thinking.trim())
+            )),
             refresh: (nextHidden) => {
                 if (hidden !== nextHidden && source && component.updateContent === decoratedUpdate) {
                     decoratedUpdate(source, streaming);
@@ -317,7 +319,7 @@ export class TranscriptDisplayRuntime {
         return {
             toolHidden,
             // Streamed argument headers take over even before execution starts.
-            toolActive: () => status.partial === true,
+            contentActive: () => status.partial === true,
             refresh: () => {
                 const nextHidden = toolHidden();
                 if (hidden !== nextHidden) component.invalidate();

@@ -3,12 +3,13 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import test from "node:test";
+import test, {afterEach, beforeEach, mock} from "node:test";
 import type {
     BeforeAgentStartEvent,
     BeforeAgentStartEventResult,
     ExtensionAPI,
     ExtensionContext,
+    ExtensionCommandContext,
     SessionShutdownEvent,
     SessionStartEvent,
     Theme,
@@ -27,6 +28,13 @@ import {UiDecisionFlowQueue} from "../src/tui/UiDecisionFlowQueue";
 import {SubagentRuntime} from "../src/subagents/SubagentRuntime.js";
 import {AgentCapabilitySet, AgentMechanismCapability} from "../src/subagents/AgentCapability.js";
 import {initialSubagentDefaults} from "../src/subagents/SubagentDefaults.js";
+import {DisplayDefaultsJsonStore, initialDisplayDefaults, type DisplayDefaultsStore} from "../src/tui/tool/DisplayDefaults.js";
+import {ToolDisplayMode, type ToolDisplayViews} from "../src/tui/tool/ToolDisplayMode.js";
+
+beforeEach(() => {
+    mock.method(DisplayDefaultsJsonStore.prototype, "load", () => ({...initialDisplayDefaults}));
+});
+afterEach(() => mock.restoreAll());
 
 const expectedToolNames = [
     "bash",
@@ -121,6 +129,7 @@ type ExtensionHarness = {
     registeredTools: RegisteredTool[];
     registeredToolNames: string[];
     registeredCommandNames: string[];
+    registeredCommands: Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>;
     hasShortcut: (key: string) => boolean;
     registeredEventNames: string[];
     appendedEntries: Array<{customType: string; data: unknown}>;
@@ -139,6 +148,7 @@ test("the production extension installs built-in overrides immediately but defer
 
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
     assert.ok(harness.registeredCommandNames.includes("server"));
+    assert.ok(harness.registeredCommandNames.includes("display"));
     assert.equal(harness.registeredTools.every((tool) => tool.renderShell === "self"), true);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
@@ -166,6 +176,87 @@ test("the production extension installs built-in overrides immediately but defer
     assert.equal(typeof harness.sessionShutdown(), "function");
     assert.ok(harness.registeredEventNames.includes("thinking_level_select"));
     assert.ok(harness.registeredEventNames.includes("model_select"));
+});
+
+test("display loads saved modes per session and shares hot-swapped preferences with production tools", async () => {
+    const harness = extensionHarness();
+    const ctx = {
+        cwd: process.cwd(), hasUI: false, mode: "print", ui: {notify() {}}, sessionManager: archiveSessionManager(),
+    } as unknown as ExtensionCommandContext;
+    let saved: ToolDisplayViews = {normal: ToolDisplayMode.HIDDEN, alternate: ToolDisplayMode.FULL};
+    let loads = 0;
+    let saves = 0;
+    const store: DisplayDefaultsStore = {
+        load() { loads++; return {...saved}; },
+        save(views) { saves++; saved = {...views}; },
+    };
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        displayDefaultsStore: store,
+        subagentDefaultsStore: {load: () => ({...initialSubagentDefaults}), save() {}},
+        createSessionRuntime(context) {
+            const policyRuntime = createPolicyRuntime(context);
+            return {
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                setFullNetworkInspection() {}, beginShutdown: () => policyRuntime.beginShutdown(), close() {},
+            };
+        },
+    }).register();
+    const display = harness.registeredCommands.get("display")!;
+    const read = registeredTool(harness, "read");
+    const args = {path: "fixture.txt"};
+    const theme = {fg: (_color: string, value: string) => value, bold: (value: string) => value} as unknown as Theme;
+    const renderCall = (expanded: boolean) => read.renderCall!(args, theme, toolRenderContext(args, {}, {expanded})).render(80);
+    const renderResult = (expanded: boolean) => read.renderResult!(
+        {content: [{type: "text", text: "fixture output"}]}, {expanded, isPartial: false}, theme,
+        toolRenderContext(args, {}, {expanded}),
+    ).render(80);
+    assert.equal(loads, 0, "registration must not read preferences");
+    await assert.rejects(async () => display.handler("compact full", ctx), /before session startup/);
+    await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+    try {
+        assert.equal(loads, 1);
+        assert.deepEqual(renderCall(false), []);
+        assert.deepEqual(renderResult(true), ["", "fixture output"]);
+        await display.handler("full compact", ctx);
+        assert.deepEqual(renderResult(false), ["", "fixture output"]);
+        assert.deepEqual(renderResult(true), []);
+        assert.equal(saves, 0);
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "new"}, ctx);
+        await harness.sessionStart()({type: "session_start", reason: "new"}, ctx);
+        assert.equal(loads, 2);
+        assert.deepEqual(renderCall(false), [], "unsaved changes must not leak into the next session");
+        await display.handler("compact conversation", ctx);
+        await display.handler("save", ctx);
+        assert.equal(saves, 1);
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "new"}, ctx);
+        await harness.sessionStart()({type: "session_start", reason: "new"}, ctx);
+        assert.equal(loads, 3);
+        assert.deepEqual(renderCall(false), ["  read | fixture.txt"]);
+        assert.deepEqual(renderCall(true), [], "saved Alternate mode must load too");
+    } finally {
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    }
+});
+
+test("invalid saved display preferences fail startup visibly and close the started runtime", async () => {
+    const harness = extensionHarness();
+    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {}} as unknown as ExtensionCommandContext;
+    let closed = 0;
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        displayDefaultsStore: {load() { throw new Error("Invalid display defaults"); }, save() {}},
+        createSessionRuntime(context) {
+            const policyRuntime = createPolicyRuntime(context);
+            return {
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                setFullNetworkInspection() {}, beginShutdown() {}, close() { closed++; },
+            };
+        },
+    }).register();
+    await assert.rejects(async () => harness.sessionStart()({type: "session_start", reason: "startup"}, ctx), /Invalid display defaults/);
+    assert.equal(closed, 1);
+    await assert.rejects(async () => harness.registeredCommands.get("display")!.handler("save", ctx), /before session startup/);
 });
 
 test("registered builtin and delegation collections supply the same child definitions without root-only tools", async (t) => {
@@ -1061,6 +1152,7 @@ function extensionHarness(): ExtensionHarness {
     const registeredTools: RegisteredTool[] = [];
     const registeredToolNames: string[] = [];
     const registeredCommandNames: string[] = [];
+    const registeredCommands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
     const appendedEntries: Array<{customType: string; data: unknown}> = [];
     const shortcuts = new Map<string, ShortcutHandler>();
     const startHandlers: SessionStartHandler[] = [];
@@ -1075,8 +1167,9 @@ function extensionHarness(): ExtensionHarness {
         registerShortcut(key: string, options: { handler: ShortcutHandler }) {
             shortcuts.set(key, options.handler);
         },
-        registerCommand(name: string) {
+        registerCommand(name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]) {
             registeredCommandNames.push(name);
+            registeredCommands.set(name, command);
         },
         registerToolRenderer() {
         },
@@ -1093,6 +1186,7 @@ function extensionHarness(): ExtensionHarness {
         registeredTools,
         registeredToolNames,
         registeredCommandNames,
+        registeredCommands,
         registeredEventNames,
         appendedEntries,
         hasShortcut(key) {

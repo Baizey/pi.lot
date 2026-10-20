@@ -109,6 +109,72 @@ test("hidden suppresses completed native images and partial image output without
     assert.deepEqual(result, original);
 });
 
+test("Conversation tool text and images follow native per-row mouse toggles on either global side", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const capabilities = getCapabilities();
+    setCapabilities({...capabilities, images: "kitty"});
+    t.after(() => setCapabilities(capabilities));
+    for (const globalExpanded of [false, true]) {
+        for (const globallyHidden of [false, true]) {
+            const harness = createHarness();
+            try {
+                harness.expanded = globalExpanded;
+                const normalHidden = globallyHidden !== globalExpanded;
+                harness.rows.modes.setViews(
+                    normalHidden ? ToolDisplayMode.HIDDEN : ToolDisplayMode.FULL,
+                    normalHidden ? ToolDisplayMode.FULL : ToolDisplayMode.HIDDEN,
+                );
+                const row = harness.read("mouse-toggle");
+                row.setExpanded(globalExpanded);
+                const result = {content: [
+                    {type: "text", text: "row-local output"},
+                    {type: "image", data: png, mimeType: "image/png"},
+                ], isError: false};
+                row.updateResult(result, true);
+                harness.root.addChild(row);
+                const before = harness.root.render(80);
+                assert.equal(before.some((line) => line.includes("\x1b_G")), !globallyHidden);
+                clickToolHeader(row);
+                const toggled = harness.root.render(80);
+                assert.equal(harness.expanded, globalExpanded, "a row click must not change the global slot");
+                assert.equal(plain(toggled).includes("row-local output"), globallyHidden);
+                assert.equal(toggled.some((line) => line.includes("\x1b_G")), globallyHidden,
+                    "images must follow the same mode as the row's text");
+                if (!globallyHidden) assert.equal(toggled.length, 2, "a hidden active row retains only its header");
+                row.updateResult(result);
+                const completed = harness.root.render(80);
+                if (globallyHidden) {
+                    assert.match(plain(completed), /row-local output/);
+                    assert.ok(completed.some((line) => line.includes("\x1b_G")));
+                } else {
+                    assert.deepEqual(completed, []);
+                }
+            } finally {
+                harness.close();
+            }
+        }
+    }
+});
+
+test("view hot-swaps retain existing row-local slots and restore native expansion methods on cleanup", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const row = harness.read("already-expanded");
+    const originalExpand = row.setExpanded;
+    row.setExpanded(true);
+    row.updateResult({content: [{type: "text", text: "locally expanded output"}], isError: false});
+    harness.root.addChild(row);
+    assert.match(plain(harness.root.render(80)), /locally expanded output/,
+        "initial classification must probe the row, not assume the global slot");
+    harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.HIDDEN);
+    assert.deepEqual(harness.root.render(80), []);
+    assert.equal(harness.expanded, false);
+    harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.FULL);
+    assert.match(plain(harness.root.render(80)), /locally expanded output/);
+    harness.runtime.stopSession();
+    assert.equal(row.setExpanded, originalExpand);
+});
+
 test("fullscreen discovers new rows before drawing layout frames that bypass the public root render method", (t) => {
     t.mock.timers.enable({apis: ["setInterval", "setTimeout"]});
     const terminal: Terminal = {
@@ -253,6 +319,16 @@ function assistant(content: AssistantMessage["content"], stopReason: AssistantMe
         usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
             cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
     };
+}
+
+function clickToolHeader(row: ToolExecutionComponent): void {
+    const lines = row.render(80);
+    assert.ok(lines.length >= 2, "the active row must have a clickable header");
+    const result = row.handleMouse({
+        type: "click", button: "left", x: 2, y: 1, screenX: 2, screenY: 1,
+        width: 80, height: lines.length, shift: false, alt: false, ctrl: false,
+    });
+    assert.equal(result?.handled, true);
 }
 
 function plain(lines: string[]): string {

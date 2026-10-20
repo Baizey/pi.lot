@@ -97,13 +97,24 @@ Codemode is inactive by default; see [installation](docs/installation.md#install
 
 ## Tool display
 
-- `Ctrl+O` toggles compact and expanded tool views. Nested codemode calls use the same tool layouts. Display truncation does not truncate the stored session history.
+- `Ctrl+O` toggles between **Normal** and **Alternate** views, initially **Compact** and **Preview**. `/display` opens a picker for the two slots. Changing either mode hot-swaps that slot without switching the active side. Nested codemode calls use the same tool layouts. Display truncation does not truncate the stored session history.
 - Active subagent work appears above the editor and in the footer.
 - The footer shows model, thinking level, context usage, token/cost totals, agent counts, and session name. It omits cwd and Git branch and adapts to terminal width.
 - Select the bundled `pilot-dark` theme in `/settings` for Pilot's thinking-level palette. The chat editor border remains at the theme's `thinkingXhigh` color; Bash mode has its own color.
 - Pilot uses Pi's custom-footer slot; another footer extension can replace it depending on load order.
 
-A hidden activity-only view exists internally but has no user-facing selection command. Do not invent a command or setting for it.
+Display choices are **Conversation**, **Compact**, **Preview**, and **Full**. Conversation keeps active tool headers and running nested calls, but hides completed tools, tool-result images, thoughts, and internal summaries. Conversation text/images, notifications, and approvals remain visible. Full still respects display safety limits.
+
+Native per-tool mouse toggles use the same pair independently: a tool's text and images follow its own selected slot, while thoughts and internal summaries follow the global view.
+
+```text
+/display                    # Pick Normal and Alternate modes
+/display conversation full  # Set the pair directly: Normal, then Alternate
+/display save               # Persist the current pair
+/display reset              # Reload the saved pair (or Compact/Preview if none is saved)
+```
+
+Changes are session-local until saved, just like `/subagent-defaults`. New sessions load the saved pair from `~/.pilot/display-defaults.json`. In non-TUI modes, plain `/display` reports the pair instead of opening a picker; direct changes, save, and reset remain available.
 
 ## Configuration reference
 
@@ -114,6 +125,7 @@ Pilot configuration is under `~/.pilot`, independently of Pi's configured agent 
 | `~/.pilot/pilot.sqlite` | Locally persisted policy rules |
 | `~/.pilot/policy-defaults.json` | Saved policy-area fallbacks |
 | `~/.pilot/subagent-defaults.json` | Saved reasoning-skill model mappings |
+| `~/.pilot/display-defaults.json` | Saved Normal/Alternate display modes |
 | `~/.pilot/web-search.json` | Search providers and credentials |
 | `~/.pilot/credential-ipc.json` | [Host D-Bus and Unix-socket passthrough](docs/policy.md#host-credential-ipc) |
 | `~/.pilot/server.json` | pi.server URL and API key |

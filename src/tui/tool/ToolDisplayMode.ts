@@ -6,7 +6,7 @@ export enum ToolDisplayMode {
 }
 
 export type ToolDisplayViews = {
-    primary: ToolDisplayMode;
+    normal: ToolDisplayMode;
     alternate: ToolDisplayMode;
 };
 
@@ -17,7 +17,7 @@ export function resolveToolDisplayMode(
 ): ToolDisplayMode {
     const mode = expanded
         ? (views?.alternate ?? ToolDisplayMode.TRUNCATED)
-        : (views?.primary ?? ToolDisplayMode.MINIMAL);
+        : (views?.normal ?? ToolDisplayMode.MINIMAL);
     // Hidden is conversation-only, including calls previously expanded individually.
     if (mode === ToolDisplayMode.HIDDEN) return mode;
     return state?.pilotFullDisplay ? ToolDisplayMode.FULL : mode;

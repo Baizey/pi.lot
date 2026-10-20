@@ -12,8 +12,8 @@ import {ToolDisplayMode} from "./tool/ToolDisplayMode.js";
 import {ToolDisplayModes} from "./tool/ToolDisplayModes.js";
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
-type Decoration = {refresh(hidden: boolean): void; restore(): void};
-type PartialProbe = {partial?: boolean};
+type Decoration = {refresh(hidden: boolean): void; restore(): void; toolHidden?(): boolean};
+type ToolProbe = {partial?: boolean; expanded?: boolean};
 
 /** UI-only projection of native rows; never changes the session transcript. */
 export class TranscriptDisplayRuntime {
@@ -22,7 +22,7 @@ export class TranscriptDisplayRuntime {
     private scanning = false;
     private unsubscribe: (() => void) | undefined;
     private readonly decorations = new Map<Component, Decoration>();
-    private probe: PartialProbe | undefined;
+    private probe: ToolProbe | undefined;
     private registered = false;
     private reportedUnknownPartial = false;
 
@@ -39,11 +39,11 @@ export class TranscriptDisplayRuntime {
             const call = renderers.renderCall;
             const result = renderers.renderResult;
             if (call) observed.renderCall = (args, theme, context) => {
-                if (this.probe) this.probe.partial = context.isPartial;
+                if (this.probe) Object.assign(this.probe, {partial: context.isPartial, expanded: context.expanded});
                 return call(args, theme, context);
             };
             if (result) observed.renderResult = (value, options, theme, context) => {
-                if (this.probe) this.probe.partial = context.isPartial;
+                if (this.probe) Object.assign(this.probe, {partial: context.isPartial, expanded: context.expanded});
                 return result(value, options, theme, context);
             };
             return observed;
@@ -97,7 +97,7 @@ export class TranscriptDisplayRuntime {
         try {
             const hidden = this.isHidden();
             const seen = new Set<Component>();
-            const visit = (component: Component, insideTool = false, source = false): void => {
+            const visit = (component: Component, toolHidden?: () => boolean, source = false): void => {
                 if (seen.has(component)) return;
                 seen.add(component);
                 const kind = nativeComponentKind(component);
@@ -123,20 +123,20 @@ export class TranscriptDisplayRuntime {
                     }
                     // Native result images are drawn independently of tool renderers. Hide
                     // those too, without hiding conversation images or changing image settings.
-                    if (!decoration && insideTool && (component instanceof Image || (
+                    if (!decoration && toolHidden && (component instanceof Image || (
                         component.constructor.name === Image.name
                         && "getImageId" in component && typeof component.getImageId === "function"
-                    ))) decoration = this.decorateSummary(component);
+                    ))) decoration = this.decorateSummary(component, toolHidden);
                     if (decoration) this.decorations.set(component, decoration);
                 }
                 decoration?.refresh(hidden);
                 // Container's children are public. MouseRegion/other private interiors are not traversed.
                 const children = (component as Component & {children?: Component[]}).children;
                 if (Array.isArray(children)) {
-                    for (const child of children) visit(child, insideTool || kind === "tool");
+                    for (const child of children) visit(child, decoration?.toolHidden ?? toolHidden);
                 }
             };
-            for (const child of this.tui?.children ?? []) visit(child, false, true);
+            for (const child of this.tui?.children ?? []) visit(child, undefined, true);
             for (const [component, decoration] of this.decorations) {
                 if (seen.has(component)) continue;
                 decoration.restore();
@@ -203,11 +203,17 @@ export class TranscriptDisplayRuntime {
     private decorateTool(component: ToolExecutionComponent): Decoration {
         const render = component.render;
         const update = component.updateResult;
-        const status: PartialProbe = {};
+        const expand = component.setExpanded;
+        const status: ToolProbe = {};
+        // Pi permits mouse overrides per tool. Text, images, and completion must
+        // resolve the same row-local slot, not the global default for other rows.
+        const toolHidden = () => this.modes.resolve(
+            status.expanded ?? this.context?.ui.getToolsExpanded() ?? false,
+        ) === ToolDisplayMode.HIDDEN;
         let active = true;
-        let hidden = this.isHidden();
+        let hidden = toolHidden();
         const decoratedRender: ToolExecutionComponent["render"] = (width) => {
-            const hidden = active && this.isHidden();
+            const hidden = active && toolHidden();
             if (hidden && status.partial === false) return [];
             const lines = render.call(component, width);
             // Removing partial-result images must not leave their trailing spacer rows.
@@ -218,8 +224,13 @@ export class TranscriptDisplayRuntime {
             status.partial = partial;
             update.call(component, result, partial);
         };
+        const decoratedExpand: ToolExecutionComponent["setExpanded"] = (expanded) => {
+            status.expanded = expanded;
+            expand.call(component, expanded);
+        };
         component.render = decoratedRender;
         component.updateResult = decoratedUpdate;
+        component.setExpanded = decoratedExpand;
         // Probe only the synchronous public renderer context emitted by this invalidate.
         // No tool identifiers, private status, or historic event inventories are needed.
         const previousProbe = this.probe;
@@ -230,7 +241,9 @@ export class TranscriptDisplayRuntime {
             this.probe = previousProbe;
         }
         return {
-            refresh: (nextHidden) => {
+            toolHidden,
+            refresh: () => {
+                const nextHidden = toolHidden();
                 if (hidden !== nextHidden) component.invalidate();
                 hidden = nextHidden;
                 if (hidden && status.partial === undefined) this.reportUnknownPartial();
@@ -239,15 +252,16 @@ export class TranscriptDisplayRuntime {
                 active = false;
                 if (component.render === decoratedRender) component.render = render;
                 if (component.updateResult === decoratedUpdate) component.updateResult = update;
+                if (component.setExpanded === decoratedExpand) component.setExpanded = expand;
             },
         };
     }
 
-    private decorateSummary(component: Component): Decoration {
+    private decorateSummary(component: Component, isHidden = () => this.isHidden()): Decoration {
         const render = component.render;
         let active = true;
         const decorated: Component["render"] = (width) =>
-            active && this.isHidden() ? [] : render.call(component, width);
+            active && isHidden() ? [] : render.call(component, width);
         component.render = decorated;
         return {
             refresh: () => {},

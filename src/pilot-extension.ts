@@ -6,6 +6,7 @@ import {ReadTool} from "./tools/builtin/ReadTool";
 import {WriteTool} from "./tools/builtin/WriteTool";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {SubagentDefaultsCommand} from "./commands/SubagentDefaultsCommand.js";
+import {DisplayCommand} from "./commands/DisplayCommand.js";
 import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
 import {ServerCommand} from "./commands/ServerCommand.js";
 import {ServerService} from "./server/ServerService.js";
@@ -22,6 +23,7 @@ import {SubagentMessageTool} from "./tools/subagent/SubagentMessageTool";
 import {SubagentStopTool} from "./tools/subagent/SubagentStopTool";
 import {ToolDisplayRows} from "./tui/tool/ToolDisplayRows.js";
 import type {ToolDisplayViews} from "./tui/tool/ToolDisplayMode.js";
+import {DisplayDefaultsRuntime, type DisplayDefaultsStore} from "./tui/tool/DisplayDefaults.js";
 import {TranscriptDisplayRuntime} from "./tui/TranscriptDisplayRuntime.js";
 import {WebSearchTool} from "./tools/web-search/WebSearchTool.js";
 import {ArchiveTools} from "./tools/server/ArchiveTools.js";
@@ -36,6 +38,7 @@ export type PilotExtensionOptions = {
     subagentModelRanker?: SubagentModelPerformanceRanker;
     subagentDefaultsStore?: SubagentDefaultsStore;
     toolDisplayViews?: ToolDisplayViews;
+    displayDefaultsStore?: DisplayDefaultsStore;
 };
 
 // noinspection JSUnusedGlobalSymbols
@@ -46,6 +49,9 @@ export default function pilotExtension(pi: ExtensionAPI): void {
 export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
     private readonly displayRows = new ToolDisplayRows();
+    private readonly displayDefaultsStore: DisplayDefaultsStore | undefined;
+    private readonly initialDisplayViews: ToolDisplayViews | undefined;
+    private displayDefaults: DisplayDefaultsRuntime | undefined;
     private readonly documentation = new PilotDocumentation();
     private readonly transcriptDisplayRuntime: TranscriptDisplayRuntime;
     private readonly thinkingLevelUiRuntime: ThinkingLevelUiRuntime;
@@ -68,8 +74,10 @@ export class PilotExtension {
         options: PilotExtensionOptions = {},
     ) {
         this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
+        this.displayDefaultsStore = options.displayDefaultsStore;
+        this.initialDisplayViews = options.toolDisplayViews;
         if (options.toolDisplayViews) {
-            this.displayRows.modes.setViews(options.toolDisplayViews.primary, options.toolDisplayViews.alternate);
+            this.displayRows.modes.setViews(options.toolDisplayViews.normal, options.toolDisplayViews.alternate);
         }
         this.transcriptDisplayRuntime = new TranscriptDisplayRuntime(pi, this.displayRows.modes);
         this.thinkingLevelUiRuntime = new ThinkingLevelUiRuntime((tui) => this.transcriptDisplayRuntime.attach(tui));
@@ -124,6 +132,7 @@ export class PilotExtension {
             () => this.subagentRuntime.availableModels(),
             (level) => this.subagentRuntime.resolveAutomaticModel(level),
         ).register();
+        new DisplayCommand(this.pi, () => this.requireDisplayDefaults()).register();
         new NetworkInspectionCommand(this.pi, runtimeProvider).register();
         this.serverCommand.register();
         this.archiveTools.register();
@@ -158,6 +167,7 @@ export class PilotExtension {
         this.sessionRuntime = runtime;
         return Promise.resolve(runtime.start?.()).then(() => this.startOwnedExtensions(ctx)).catch(async (error) => {
             this.sessionRuntime = undefined;
+            this.displayDefaults = undefined;
             await this.stopOwnedExtensions().catch(() => undefined);
             this.displayRows.clear();
             await runtime.close();
@@ -176,12 +186,17 @@ export class PilotExtension {
             await this.stopOwnedExtensions();
         } finally {
             if (this.sessionRuntime === runtime) this.sessionRuntime = undefined;
+            this.displayDefaults = undefined;
             this.displayRows.clear();
             await runtime?.close();
         }
     }
 
     private async startOwnedExtensions(ctx: ExtensionContext): Promise<void> {
+        this.displayDefaults = new DisplayDefaultsRuntime(this.displayRows.modes, this.displayDefaultsStore);
+        if (this.initialDisplayViews) {
+            this.displayDefaults.setViews(this.initialDisplayViews.normal, this.initialDisplayViews.alternate);
+        }
         recordMainSessionIdentity(this.pi, ctx.sessionManager);
         await this.mcpExtension.startSession(ctx);
         await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
@@ -218,6 +233,11 @@ export class PilotExtension {
             firstError ??= error;
         }
         if (firstError !== undefined) throw firstError;
+    }
+
+    private requireDisplayDefaults(): DisplayDefaultsRuntime {
+        if (!this.displayDefaults) throw new Error("pi.lot display defaults are not available before session startup");
+        return this.displayDefaults;
     }
 
     private requireSessionRuntime(): PilotSessionRuntimeInterface {

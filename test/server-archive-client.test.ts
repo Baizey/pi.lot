@@ -9,6 +9,7 @@ import {
     type Binding, type Publication, type Receipt, type SessionMetadata,
 } from "../src/server/ArchiveProtocol.js";
 import {SessionKind} from "../src/sessions/SessionIdentity.js";
+import {MAX_RETRY_AFTER_MS, type ServerErrorCode} from "../src/server/ServerResponses.js";
 
 const CONFIG = {url: "https://archive.example.test", apiKey: "private-archive-test-key"};
 const BINDING: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "generation"};
@@ -230,8 +231,14 @@ test("all publish failures remain uncertain, including local integrity errors an
     const archive = new ArchiveClient(CONFIG, {fetch: async () => { calls++; return accepted(); }});
     const error = await failure(archive.publish(PUBLICATION, Buffer.from("wrong")), /protocol/);
     assert.equal(error.publicationUncertain, true);
+    assert.equal(error.kind, "protocol");
+    assert.equal(error.retryable, false);
+    assert.equal(error.retryAfterMs, undefined);
     assert.equal(calls, 0);
-    assert.equal((await failure(client(Response.json({status: "unknown"})).publish(PUBLICATION, BODY))).publicationUncertain, true);
+    const unknown = await failure(client(Response.json({status: "unknown"})).publish(PUBLICATION, BODY));
+    assert.equal(unknown.publicationUncertain, true);
+    assert.equal(unknown.kind, "protocol");
+    assert.equal(unknown.retryable, false);
 });
 
 test("publication/receipt responses must match the entire immutable fingerprint and revision binding", async () => {
@@ -308,13 +315,19 @@ test("streaming accepts arbitrary byte splits, ignores future response fields an
 
 test("malformed JSON, fatal UTF-8, invalid schema, headers and transport failures are safe", async () => {
     for (const body of [CONFIG.apiKey, "", '{"binding":', "null", "[]", "{}", Buffer.from([0xff])]) {
-        await failure(client(new Response(body, {headers: {"Content-Type": "application/json"}})).binding());
+        const error = await failure(client(new Response(body, {headers: {"Content-Type": "application/json"}})).binding());
+        assert.equal(error.kind, "protocol");
+        assert.equal(error.retryable, false);
     }
     await failure(client(Response.json({binding: BINDING, head: 1})).binding(), /protocol/);
     await failure(client(Response.json({binding: BINDING, head: "1"}, {headers: {"Content-Encoding": "gzip"}})).binding(), /protocol/);
     await failure(client(new Response(null)).binding(), /protocol/);
     for (const cause of [new TypeError(CONFIG.apiKey), CONFIG.apiKey]) {
-        await failure(new ArchiveClient(CONFIG, {fetch: async () => { throw cause; }}).binding(), /connection or response failed/);
+        const error = await failure(new ArchiveClient(CONFIG, {fetch: async () => { throw cause; }}).binding(), /connection or response failed/);
+        assert.equal(error.kind, "transport");
+        assert.equal(error.retryable, true);
+        assert.equal(error.retryAfterMs, undefined);
+        assert.equal(error.publicationUncertain, false);
     }
 });
 
@@ -322,7 +335,9 @@ test("body read failures cancel and release the reader without exposing the unde
     const body = new ReadableStream<Uint8Array>({
         pull(controller) { controller.error(new Error(CONFIG.apiKey)); },
     });
-    await failure(client(new Response(body, {headers: {"Content-Type": "application/json"}})).binding(), /connection or response failed/);
+    const error = await failure(client(new Response(body, {headers: {"Content-Type": "application/json"}})).binding(), /connection or response failed/);
+    assert.equal(error.kind, "transport");
+    assert.equal(error.retryable, true);
     assert.equal(body.locked, false);
 });
 
@@ -342,12 +357,211 @@ test("control and list responses accept their exact byte caps and reject inconsi
     }
 });
 
+test("all validated server codes expose retry permission independently of publication uncertainty", async () => {
+    const cases: [ServerErrorCode, number, boolean][] = [
+        ["invalid_request", 400, false], ["integrity", 400, false], ["unauthorized", 401, false],
+        ["rate_limited", 429, true], ["method_not_allowed", 405, false], ["unsupported_media_type", 415, false],
+        ["payload_too_large", 413, false], ["binding_mismatch", 409, false], ["cursor_mismatch", 409, false],
+        ["stale_base", 409, false], ["already_exists", 409, false], ["operation_id_mismatch", 409, false],
+        ["capacity", 507, true], ["overloaded", 503, true], ["corruption", 500, false], ["not_found", 404, false],
+        ["uncertain_commit", 503, true], ["internal", 500, false],
+    ];
+    for (const [code, status, retryable] of cases) {
+        for (const publish of [false, true]) {
+            const archive = client(Response.json({error: {code, retryable, publication_outcome: "unconfirmed"}},
+                {status, headers: {"Retry-After": "7"}}));
+            const error = await failure(publish ? archive.publish(PUBLICATION, BODY) : archive.binding());
+            assert.equal(error.code, code);
+            assert.equal(error.kind, "server");
+            assert.equal(error.retryable, retryable);
+            assert.equal(error.retryAfterMs, retryable ? 7000 : undefined);
+            assert.equal(error.publicationUncertain, publish);
+        }
+    }
+});
+
+test("retry hints are validated, capped, and survive the publication error wrapper", async () => {
+    for (const [header, expected] of [
+        ["0", 0], ["000001", 1000], ["86399", 86_399_000], ["86400", MAX_RETRY_AFTER_MS],
+        ["86401", MAX_RETRY_AFTER_MS], ["999999999", MAX_RETRY_AFTER_MS],
+        ["1000000000", undefined], ["-1", undefined], ["1.5", undefined], ["1e2", undefined],
+        ["Wed, 21 Oct 2015 07:28:00 GMT", undefined], ["1, 2", undefined],
+        [CONFIG.apiKey, undefined], [null, undefined],
+    ] as const) {
+        const headers = new Headers();
+        if (header !== null) headers.set("Retry-After", header);
+        const error = await failure(client(Response.json({error: {code: "overloaded", retryable: true,
+            publication_outcome: "unconfirmed"}}, {status: 503, headers})).publish(PUBLICATION, BODY));
+        assert.equal(error.retryAfterMs, expected, String(header));
+        assert.equal(error.retryable, true);
+        assert.equal(error.kind, "server");
+        assert.equal(error.publicationUncertain, true);
+    }
+});
+
+test("unknown or malformed HTTP errors never grant retries based on status, headers, or text", async () => {
+    const valid = {code: "overloaded", retryable: true, publication_outcome: "unconfirmed"};
+    for (const [status, body] of [
+        [503, {error: {...valid, code: "future_error"}}], [503, {error: {...valid, code: "toString"}}],
+        [503, {error: {...valid, retryable: false}}], [429, {error: valid}],
+        [503, {error: {...valid, publication_outcome: "confirmed"}}],
+        [502, {message: `retryable overloaded ${CONFIG.apiKey}`}], [500, {}],
+    ] as const) {
+        const error = await failure(client(Response.json(body, {status, headers: {"Retry-After": "7"}})).binding());
+        assert.equal(error.kind, "protocol");
+        assert.equal(error.retryable, false);
+        assert.equal(error.code, undefined);
+        assert.equal(error.retryAfterMs, undefined);
+        assert.equal(error.publicationUncertain, false);
+    }
+    for (const body of ["<html>proxy overloaded</html>", CONFIG.apiKey, Buffer.from([0xff])]) {
+        const error = await failure(client(new Response(body, {status: 503, headers: {"Retry-After": "7"}})).publish(PUBLICATION, BODY));
+        assert.equal(error.kind, "protocol");
+        assert.equal(error.retryable, false);
+        assert.equal(error.retryAfterMs, undefined);
+        assert.equal(error.publicationUncertain, true);
+    }
+});
+
+test("all local request validation is classified before authorization or fetch", async () => {
+    let authorized = 0;
+    let fetched = 0;
+    const archive = new ArchiveClient(CONFIG, {beforeRequest: async () => { authorized++; },
+        fetch: async () => { fetched++; throw new Error("Must not fetch invalid local requests"); }});
+    for (const [call, uncertain] of [
+        [() => archive.list({binding: BINDING, limit: 0}), false],
+        [() => archive.receipt({...PUBLICATION, byte_length: -1}), false],
+        [() => archive.download(BINDING, ""), false],
+        [() => archive.download({...BINDING, namespace_id: ""}, PUBLICATION.session_id), false],
+        [() => archive.publish(PUBLICATION, Buffer.from("wrong bytes")), true],
+    ] as const) {
+        const error = await failure(call());
+        assert.equal(error.kind, "protocol");
+        assert.equal(error.retryable, false);
+        assert.equal(error.code, undefined);
+        assert.equal(error.retryAfterMs, undefined);
+        assert.equal(error.publicationUncertain, uncertain);
+    }
+    assert.equal(authorized, 0);
+    assert.equal(fetched, 0);
+});
+
+test("fetch and stream error provenance cannot forge validated server or protocol classification", async () => {
+    for (const cause of [new Error(CONFIG.apiKey), new ArchiveProtocolError(),
+        new ArchiveClientError(CONFIG.apiKey, "overloaded", false, {kind: "server", retryAfterMs: 7000})]) {
+        for (const readFailure of [false, true]) {
+            for (const publish of [false, true]) {
+                const archive = new ArchiveClient(CONFIG, {fetch: () => {
+                    if (!readFailure) throw cause;
+                    const body = new ReadableStream<Uint8Array>({pull(controller) { controller.error(cause); }});
+                    return Promise.resolve(new Response(body, {headers: {"Content-Type": "application/json"}}));
+                }});
+                const error = await failure(publish ? archive.publish(PUBLICATION, BODY) : archive.binding());
+                assert.equal(error.kind, "transport");
+                assert.equal(error.retryable, true);
+                assert.equal(error.code, undefined);
+                assert.equal(error.retryAfterMs, undefined);
+                assert.equal(error.publicationUncertain, publish);
+                assert.equal(error.message, "Archive server connection or response failed.");
+            }
+        }
+    }
+});
+
+test("server error classification requires the protocol JSON media type", async () => {
+    for (const contentType of [undefined, "text/html", "application/octet-stream"]) {
+        const body = JSON.stringify({error: {code: "overloaded", retryable: true, publication_outcome: "unconfirmed"}});
+        const headers = new Headers({"Retry-After": "7"});
+        if (contentType) headers.set("Content-Type", contentType);
+        const error = await failure(client(new Response(Buffer.from(body), {status: 503, headers})).publish(PUBLICATION, BODY));
+        assert.equal(error.kind, "protocol");
+        assert.equal(error.retryable, false);
+        assert.equal(error.code, undefined);
+        assert.equal(error.retryAfterMs, undefined);
+        assert.equal(error.publicationUncertain, true);
+    }
+});
+
+test("configuration and protocol failures are terminal even when HTTP says retry later", async () => {
+    for (const create of [
+        () => new ArchiveClient({...CONFIG, url: "https://user:password@archive.example.test"}),
+        () => new ArchiveClient(CONFIG, {timeoutMs: 0}),
+    ]) assert.throws(create, (error: unknown) => {
+        assert.ok(error instanceof ArchiveClientError);
+        assert.equal(error.kind, "configuration");
+        assert.equal(error.retryable, false);
+        assert.equal(error.publicationUncertain, false);
+        return true;
+    });
+    for (const response of [
+        new Response(CONFIG.apiKey, {status: 307, headers: {"Retry-After": "7"}}),
+        Response.json({binding: BINDING, head: "1"}, {headers: {"Content-Length": "65537", "Retry-After": "7"}}),
+        Response.json({binding: BINDING, head: "1"}, {headers: {"Content-Encoding": "gzip", "Retry-After": "7"}}),
+        downloaded({...SNAPSHOT, sha256: "0".repeat(64)}, BODY, {"Retry-After": "7"}),
+    ]) {
+        const error = await failure(client(response).download(BINDING, PUBLICATION.session_id));
+        assert.equal(error.kind, "protocol");
+        assert.equal(error.retryable, false);
+        assert.equal(error.retryAfterMs, undefined);
+    }
+});
+
+test("publish preserves transport, timeout, cancellation and authorization classification", async (t) => {
+    t.mock.timers.enable({apis: ["setTimeout"]});
+    const transport = await failure(new ArchiveClient(CONFIG, {fetch: async () => { throw new Error(CONFIG.apiKey); }})
+        .publish(PUBLICATION, BODY));
+    assert.equal(transport.kind, "transport");
+    assert.equal(transport.retryable, true);
+    assert.equal(transport.publicationUncertain, true);
+    const archive = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>(() => {})});
+    const caller = new AbortController();
+    const pendingTimeout = archive.publish(PUBLICATION, BODY, caller.signal);
+    t.mock.timers.tick(100);
+    // A later caller cancellation must not turn an already elapsed deadline into a cancellation.
+    caller.abort(CONFIG.apiKey);
+    const timeout = await failure(pendingTimeout);
+    assert.equal(timeout.kind, "timeout");
+    assert.equal(timeout.retryable, true);
+    assert.equal(timeout.publicationUncertain, true);
+    const pendingCancelled = archive.publish(PUBLICATION, BODY, AbortSignal.abort(CONFIG.apiKey));
+    t.mock.timers.tick(100);
+    const cancelled = await failure(pendingCancelled);
+    assert.equal(cancelled.kind, "cancelled");
+    assert.equal(cancelled.retryable, false);
+    assert.equal(cancelled.publicationUncertain, true);
+    const denied = await failure(new ArchiveClient(CONFIG, {beforeRequest: async () => { throw new Error(CONFIG.apiKey); }})
+        .publish(PUBLICATION, BODY));
+    assert.equal(denied.kind, "authorization");
+    assert.equal(denied.retryable, false);
+    assert.equal(denied.publicationUncertain, true);
+});
+
+test("error construction keeps retry classification independent of arbitrary presentation strings", () => {
+    assert.equal(new ArchiveClientError("retry after 7 seconds: overloaded").retryable, false);
+    assert.equal(new ArchiveClientError("not retryable", "overloaded").retryable, true);
+    assert.equal(new ArchiveClientError("retryable", "unauthorized").retryable, false);
+    for (const code of ["toString", "future_error", CONFIG.apiKey]) {
+        assert.equal(new ArchiveClientError("retryable", code as ServerErrorCode).retryable, false);
+    }
+    for (const delay of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        const error = new ArchiveClientError("safe", "overloaded", false, {kind: "server", retryAfterMs: delay});
+        assert.equal(error.retryAfterMs, undefined);
+    }
+    assert.equal(new ArchiveClientError("safe", "overloaded", false,
+        {kind: "server", retryAfterMs: MAX_RETRY_AFTER_MS + 1}).retryAfterMs, MAX_RETRY_AFTER_MS);
+    assert.equal(new ArchiveClientError("safe", "unauthorized", false,
+        {kind: "server", retryAfterMs: 1000}).retryAfterMs, undefined);
+});
+
 test("native server errors validate status, code and retry semantics without reflecting server strings", async () => {
     for (const [code, status, retryable] of [["uncertain_commit", 503, true], ["binding_mismatch", 409, false], ["unauthorized", 401, false]] as const) {
         const response = Response.json({error: {code, retryable, publication_outcome: "unconfirmed", message: CONFIG.apiKey}},
             {status, headers: {"Retry-After": CONFIG.apiKey}});
         const error = await failure(client(response).publish(PUBLICATION, BODY));
         assert.equal(error.code, code);
+        assert.equal(error.kind, "server");
+        assert.equal(error.retryable, retryable);
+        assert.equal(error.retryAfterMs, undefined);
         assert.equal(error.publicationUncertain, true);
     }
     for (const error of [
@@ -396,12 +610,18 @@ test("caller abort propagates before fetch, during fetch and while reading stall
         transportSignal = init?.signal;
         return new Promise<Response>(() => {}); // Deliberately does not cooperate with abort.
     }});
-    await failure(archive.binding(AbortSignal.abort(CONFIG.apiKey)), /cancelled/);
+    const preAborted = await failure(archive.binding(AbortSignal.abort(CONFIG.apiKey)), /cancelled/);
+    assert.equal(preAborted.kind, "cancelled");
+    assert.equal(preAborted.retryable, false);
+    assert.equal(preAborted.publicationUncertain, false);
     assert.equal(calls, 0);
     const caller = new AbortController();
     const pending = archive.binding(caller.signal);
     caller.abort(CONFIG.apiKey);
-    await failure(pending, /cancelled/);
+    const cancelled = await failure(pending, /cancelled/);
+    assert.equal(cancelled.kind, "cancelled");
+    assert.equal(cancelled.retryable, false);
+    assert.equal(cancelled.retryAfterMs, undefined);
     assert.equal(transportSignal?.aborted, true);
     const source = stream([], {stall: true});
     const readerAbort = new AbortController();
@@ -409,7 +629,9 @@ test("caller abort propagates before fetch, during fetch and while reading stall
     await Promise.resolve();
     await Promise.resolve();
     readerAbort.abort(CONFIG.apiKey);
-    await failure(reading, /cancelled/);
+    const readCancelled = await failure(reading, /cancelled/);
+    assert.equal(readCancelled.kind, "cancelled");
+    assert.equal(readCancelled.retryable, false);
     assert.equal(source.cancellations(), 1);
     assert.equal(source.body.locked, false);
 });
@@ -418,7 +640,11 @@ test("one finite deadline covers fetch and body; cancellation cannot prolong it"
     t.mock.timers.enable({apis: ["setTimeout"]});
     const pendingFetch = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: async () => new Promise<Response>(() => {})}).binding();
     t.mock.timers.tick(100);
-    await failure(pendingFetch, /timed out/);
+    const fetchTimeout = await failure(pendingFetch, /timed out/);
+    assert.equal(fetchTimeout.kind, "timeout");
+    assert.equal(fetchTimeout.retryable, true);
+    assert.equal(fetchTimeout.retryAfterMs, undefined);
+    assert.equal(fetchTimeout.publicationUncertain, false);
     const source = stream([], {stall: true, cancelNeverSettles: true});
     const archive = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>((resolve) => {
         setTimeout(() => resolve(source.response), 80);
@@ -429,7 +655,9 @@ test("one finite deadline covers fetch and body; cancellation cannot prolong it"
     await Promise.resolve();
     assert.equal(source.body.locked, true);
     t.mock.timers.tick(20);
-    await failure(pending, /timed out/);
+    const readTimeout = await failure(pending, /timed out/);
+    assert.equal(readTimeout.kind, "timeout");
+    assert.equal(readTimeout.retryable, true);
     assert.equal(source.cancellations(), 1);
     assert.equal(source.body.locked, false);
 });
@@ -477,10 +705,14 @@ test("policy approval precedes fetch and HTTP timer, and completed operations cl
 test("policy denial and cancellation perform no network request and expose no policy reason", async () => {
     let calls = 0;
     const fetcher: typeof fetch = async () => { calls++; return accepted(); };
-    await failure(new ArchiveClient(CONFIG, {fetch: fetcher, beforeRequest: async () => { throw new Error(CONFIG.apiKey); }}).binding(), /authorization failed/);
+    const denied = await failure(new ArchiveClient(CONFIG, {fetch: fetcher, beforeRequest: async () => { throw new Error(CONFIG.apiKey); }}).binding(), /authorization failed/);
+    assert.equal(denied.kind, "authorization");
+    assert.equal(denied.retryable, false);
     const caller = new AbortController();
     const pending = new ArchiveClient(CONFIG, {fetch: fetcher, beforeRequest: () => new Promise<void>(() => {})}).binding(caller.signal);
     caller.abort(CONFIG.apiKey);
-    await failure(pending, /cancelled/);
+    const cancelled = await failure(pending, /cancelled/);
+    assert.equal(cancelled.kind, "cancelled");
+    assert.equal(cancelled.retryable, false);
     assert.equal(calls, 0);
 });

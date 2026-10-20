@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-    decodeServerError, decodeVersionResponse, formatServerError, formatServerErrorCode,
+    decodeRetryAfterMs, decodeServerError, decodeVersionResponse, formatServerError, formatServerErrorCode,
+    isRetryableServerErrorCode, MAX_RETRY_AFTER_MS,
     type ServerError, type ServerErrorCode, type ServerVersionResponse,
 } from "../src/server/ServerResponses.js";
 
@@ -36,6 +37,7 @@ for (const [code, expected] of Object.entries(ERRORS)) {
         const value = envelope(code, expected.retryable);
         const error = decodeServerError(value, expected.status);
         assert.deepEqual(error, value.error);
+        assert.equal(isRetryableServerErrorCode(code), expected.retryable);
         assert.ok(error);
         assert.notEqual(error, value.error, "return an owned typed value, not the untrusted object");
         for (const status of [200, 400, 401, 403, 404, 405, 409, 413, 415, 429, 500, 502, 503, 504, 507, NaN]) {
@@ -65,6 +67,7 @@ test("code-only diagnostics regenerate local messages and reject unknown or inhe
     for (const code of [undefined, null, true, 401, {}, [], "", "future_error", "__proto__", "constructor", "toString",
         "unauthorized\n", {code: "not_found", message: "private-api-key\u001b[31m"}]) {
         assert.equal(formatServerErrorCode(code), undefined);
+        assert.equal(isRetryableServerErrorCode(code), false);
     }
     assert.doesNotMatch(formatServerErrorCode("already_exists")!, /use its current revision/i);
 });
@@ -113,6 +116,20 @@ test("Retry-After accepts only one to nine ASCII digits and only for retryable e
     const unauthorized: ServerError = {code: "unauthorized", retryable: false, publication_outcome: "unconfirmed"};
     assert.equal(formatServerError(unauthorized, "5"), formatServerError(unauthorized, null));
     assert.equal(formatServerError({...retryable, retryable: false}, "5"), formatServerError(retryable, null));
+});
+
+test("Retry-After scheduling hints validate delta-seconds and cap long delays without changing diagnostics", () => {
+    assert.equal(MAX_RETRY_AFTER_MS, 86_400_000);
+    for (const [header, milliseconds] of [
+        ["0", 0], ["1", 1000], ["000001", 1000], ["86399", 86_399_000],
+        ["86400", MAX_RETRY_AFTER_MS], ["86401", MAX_RETRY_AFTER_MS], ["999999999", MAX_RETRY_AFTER_MS],
+    ] as const) assert.equal(decodeRetryAfterMs(header), milliseconds, header);
+    for (const header of [null, "", "1000000000", "0000000000", "-1", "+1", "1.0", "1e2", " 1", "1 ", "1\n", "1\r\n",
+        "1\u2028", "1\u2029", "١", "１", "1, 2", "Wed, 21 Oct 2015 07:28:00 GMT", "private-api-key\u001b[31m"]) {
+        assert.equal(decodeRetryAfterMs(header), undefined, JSON.stringify(header));
+    }
+    const error: ServerError = {code: "overloaded", retryable: true, publication_outcome: "unconfirmed"};
+    assert.ok(formatServerError(error, "999999999").endsWith("Retry after 999999999 seconds."));
 });
 
 test("version decoder accepts SemVer and extra fields, returning only the typed version", () => {

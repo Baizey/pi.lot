@@ -47,7 +47,11 @@ Metadata is extracted locally without model calls: title, persisted timestamps, 
 
 The private journal is `~/.pilot/server-archive/archive.sqlite`; downloaded snapshots and large list pages are under `~/.pilot/server-archive/downloads/`. They are created when needed, not at startup.
 
-The journal retains accepted revisions and pending publications for each server binding. A lost response is reconciled or replayed from frozen bytes before a fresh successor is captured. **Recovery can still publish a pending snapshot even if its source file has since been deleted or become unreadable.** `current` recovers only the relevant family; `all` can recover every pending publication for that destination/binding.
+The journal retains accepted revisions and pending publications for each server binding. The foreground upload path reconciles or replays a lost response from frozen bytes before capturing a fresh successor. **Recovery can still publish a pending snapshot even if its source file has since been deleted or become unreadable.** `current` recovers only the relevant family; `all` can recover every pending publication for that destination/binding.
+
+If a newer snapshot reaches the journal while a predecessor remains unresolved, its exact bytes and metadata are retained as a separate immutable capture. Capturing it does not replace the predecessor, authorize a remote overwrite, or count as an uploaded file. A predecessor's late receipt cannot clear that capture. Retained captures are foundations for background archival; there is **no independent worker or autonomous capture-inventory drain yet**.
+
+Pending and captured bodies share a **512 MiB logical backlog budget**. New capture admission can fail when it is full; existing unsent bytes are never evicted. Legacy bodies already above the limit remain recoverable. This is not a hard database-file, WAL, or memory limit.
 
 Do not delete the journal to bypass a conflict: it contains the evidence needed for safe retries. Logout deliberately retains it. An observed remote revision is never silently adopted as a trusted upload base.
 

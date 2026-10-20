@@ -7,6 +7,7 @@ import path from "node:path";
 import test, {type TestContext} from "node:test";
 import {SessionManager} from "@earendil-works/pi-coding-agent";
 import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
+import {captureArchiveSourceScope, decodeArchiveSourceScope} from "../src/server/ArchiveSourceScope.js";
 import {decodeArchiveMetadata, MAX_ARCHIVE_BYTES} from "../src/server/ArchiveProtocol.js";
 import {getSessionRootId, recordMainSessionIdentity, SessionKind} from "../src/sessions/SessionIdentity.js";
 import {createNativeExtensionApi} from "./fixtures/NativeExtensionApi.js";
@@ -259,10 +260,69 @@ test("an unpersisted current root still resolves children, while ephemeral curre
     assert.deepEqual((await f.archive.discover("current")).files, [child]);
     assert.equal((await f.archive.snapshot(child)).metadata.root_session_id, ROOT);
     const global = f.save(OTHER, [], {}, f.globalProject);
-    const ephemeral = new ArchiveSessions(SessionManager.inMemory(f.directory));
+    const ephemeral = new ArchiveSessions(decodeArchiveSourceScope(JSON.parse(JSON.stringify(
+        captureArchiveSourceScope(SessionManager.inMemory(f.directory)),
+    ))));
     assert.deepEqual((await ephemeral.discover("current")).files, []);
     assert.match((await ephemeral.discover("current")).warnings.join(" "), /--no-session/);
     assert.ok((await ephemeral.discover("all")).files.includes(global));
+});
+
+test("manager constructor captures once and never consults later manager state", async (t) => {
+    const f = fixture(t);
+    const archive = new ArchiveSessions(f.manager);
+    const child = f.save("subagent-detached-manager", [custom({parentAgentIdentifier: ROOT})]);
+    for (const method of ["getSessionId", "getSessionFile", "getSessionDir", "getHeader", "getEntries"] as const) {
+        t.mock.method(f.manager, method, () => { throw new Error("The live session manager is no longer available."); });
+    }
+    assert.deepEqual((await archive.discover("current")).files.sort(), [f.rootFile, child].sort());
+    assert.equal((await archive.snapshot(child)).metadata.root_session_id, ROOT);
+    assert.equal((await archive.discover("current")).rootSessionId, ROOT);
+});
+
+test("serialized all scope retains captured collection roots and custom directory despite later context changes", async (t) => {
+    const f = fixture(t);
+    const global = f.save(OTHER, [mainIdentity(OTHER)], {}, f.globalProject);
+    const child = f.save("subagent-serialized", [custom({parentAgentIdentifier: ROOT})]);
+    const source = decodeArchiveSourceScope(JSON.parse(JSON.stringify(captureArchiveSourceScope(f.manager, "all"))));
+    const archive = new ArchiveSessions(source);
+    const laterAgent = path.join(f.directory, "later-agent");
+    const unrelated = f.save(FORK, [mainIdentity(FORK)], {}, path.join(laterAgent, "sessions", "--later-workspace--"));
+    process.env.PI_CODING_AGENT_DIR = laterAgent;
+    t.mock.method(f.manager, "getSessionDir", () => path.dirname(unrelated));
+    t.mock.method(f.manager, "getSessionId", () => FORK);
+    t.mock.method(f.manager, "getSessionFile", () => unrelated);
+    // The constructor also owns a detached copy of already-deserialized input.
+    source.defaultSessionRoots[0] = path.join(laterAgent, "sessions");
+    source.sessionDirectory = path.dirname(unrelated);
+    source.sessionFile = unrelated;
+    source.activeSession.sessionId = FORK;
+    const all = await archive.discover();
+    assert.deepEqual(all.files.sort(), [f.rootFile, child, global].sort());
+    assert.equal(all.rootSessionId, ROOT);
+    assert.equal((await archive.snapshot(child)).metadata.root_session_id, ROOT);
+    assert.deepEqual((await archive.discover("current")).files.sort(), [f.rootFile, child].sort());
+});
+
+test("serialized legacy scope resolves a missing active child's recorded parent only through the catalog", async (t) => {
+    const f = fixture(t);
+    writeFileSync(f.rootFile, [header(ROOT), mainIdentity(ROOT)].map((row) => JSON.stringify(row)).join("\n") + "\n");
+    const child = f.save("subagent-missing-active", [], {parentSession: path.basename(f.rootFile)});
+    const nested = f.save("subagent-descendant", [custom({parentAgentIdentifier: "subagent-missing-active"})]);
+    const manager = SessionManager.open(child);
+    const source = JSON.parse(JSON.stringify(captureArchiveSourceScope(manager)));
+    assert.equal(source.parentSession, path.basename(f.rootFile));
+    rmSync(child);
+    const archive = new ArchiveSessions(decodeArchiveSourceScope(source));
+    const discovered = await archive.discover();
+    assert.equal(discovered.rootSessionId, ROOT);
+    assert.deepEqual(discovered.files.sort(), [f.rootFile, nested].sort());
+    assert.equal((await archive.snapshot(nested)).metadata.root_session_id, ROOT);
+    const outside = f.save(OTHER, [mainIdentity(OTHER)], {}, path.join(f.directory, "unowned"));
+    source.parentSession = outside;
+    const unowned = await new ArchiveSessions(decodeArchiveSourceScope(source)).discover();
+    assert.equal(unowned.rootSessionId, undefined);
+    assert.deepEqual(unowned.files, []);
 });
 
 test("unsafe files, oversize sessions, invalid UTF-8, and malformed JSONL fail without exposing content", async (t) => {
@@ -426,7 +486,8 @@ function fixture(t: TestContext) {
     mkdirSync(sessionDir, {recursive: true});
     writeFileSync(rootFile, JSON.stringify(header(ROOT)) + "\n");
     return {
-        directory, sessionDir, globalProject, manager, rootFile, archive: new ArchiveSessions(manager),
+        directory, sessionDir, globalProject, manager, rootFile,
+        archive: new ArchiveSessions(decodeArchiveSourceScope(JSON.parse(JSON.stringify(captureArchiveSourceScope(manager))))),
         save(id: string, entries: unknown[], overrides: Record<string, unknown> = {}, target = sessionDir): string {
             mkdirSync(target, {recursive: true});
             const file = path.join(target, `${id}.jsonl`);

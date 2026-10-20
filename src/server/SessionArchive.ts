@@ -7,7 +7,7 @@ import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {ArchiveClient} from "./ArchiveClient.js";
 import {ArchiveJournal, ensureArchiveDirectory, type ArchivePendingUpload, type ArchiveUploadSnapshot} from "./ArchiveJournal.js";
 import {ArchiveSessions} from "./ArchiveSessions.js";
-import {getSessionRootId} from "../sessions/SessionIdentity.js";
+import {captureArchiveSourceScope} from "./ArchiveSourceScope.js";
 import type {ServerConfig} from "./ServerConfig.js";
 import {
     decodeArchiveId, decodeArchiveListParameters, decodeArchiveMetadata,
@@ -47,7 +47,8 @@ export class SessionArchive {
         signal?: AbortSignal,
     ): Promise<ArchiveUploadReport> {
         signal?.throwIfAborted();
-        const sessions = this.options.createSessions?.(manager) ?? new ArchiveSessions(manager);
+        const source = captureArchiveSourceScope(manager, scope);
+        const sessions = this.options.createSessions?.(manager) ?? new ArchiveSessions(source);
         const report: ArchiveUploadReport = {uploaded: 0, unchanged: 0, failed: 0, warnings: [], failures: []};
         let binding: Binding | undefined;
         let journal: ArchiveJournal | undefined;
@@ -60,9 +61,9 @@ export class SessionArchive {
             if (fs.existsSync(path.join(this.directory, "archive.sqlite"))) {
                 binding = (await this.client.binding(signal)).binding;
                 journal = new ArchiveJournal(this.directory);
-                const root = getSessionRootId(manager);
+                const root = source.rootSessionId;
                 await this.recoverPending(journal, binding, (request) => scope === "all"
-                    || request.session_id === manager.getSessionId()
+                    || request.session_id === source.activeSession.sessionId
                     || (root !== undefined && request.metadata?.root_session_id === root), recovery, signal);
             }
             const discovered = await sessions.discover(scope, signal);
@@ -72,7 +73,7 @@ export class SessionArchive {
             // those whose source files no longer exist. The independent first pass
             // above still runs before any potentially failing live-file discovery.
             if (scope === "current" && journal && binding && discovered.rootSessionId !== undefined
-                && discovered.rootSessionId !== getSessionRootId(manager)) {
+                && discovered.rootSessionId !== source.rootSessionId) {
                 await this.recoverPending(journal, binding,
                     (request) => request.metadata?.root_session_id === discovered.rootSessionId, recovery, signal);
             }

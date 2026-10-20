@@ -2,6 +2,9 @@ const MAX_VERSION_LENGTH = 128;
 // SemVer identifiers exclude whitespace, terminal controls, and arbitrary server text.
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?![\s\S])/;
 
+/** Bound scheduling hints to one day; longer delays must not overflow timers or pause work for years. */
+export const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+
 export type ServerVersionResponse = {version: string};
 
 export function decodeVersionResponse(value: unknown): ServerVersionResponse | undefined {
@@ -45,6 +48,20 @@ function isServerErrorCode(value: unknown): value is ServerErrorCode {
     return typeof value === "string" && Object.hasOwn(ERROR_DEFINITIONS, value);
 }
 
+/** Retry permission comes from the owned code table, never an HTTP status or diagnostic text. */
+export function isRetryableServerErrorCode(code: unknown): boolean {
+    return isServerErrorCode(code) && ERROR_DEFINITIONS[code].retryable;
+}
+
+/**
+ * pi.server uses delta-seconds, not HTTP dates. Keep the bounded ASCII grammar used by diagnostics,
+ * then cap the scheduling hint independently of presentation. Zero is a valid hint, not a missing one.
+ */
+export function decodeRetryAfterMs(retryAfter: string | null): number | undefined {
+    const seconds = retryAfterSeconds(retryAfter);
+    return seconds === undefined ? undefined : Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+}
+
 /** Decode only the owned pi.server error envelope, not proxy or arbitrary error bodies. */
 export function decodeServerError(value: unknown, httpStatus: number): ServerError | undefined {
     if (typeof value !== "object" || value === null || Array.isArray(value) || !("error" in value)) return undefined;
@@ -67,8 +84,12 @@ export function formatServerErrorCode(code: unknown): string | undefined {
 /** Format only local messages; never reflect server text or an arbitrary Retry-After header. */
 export function formatServerError(error: ServerError, retryAfter: string | null): string {
     const definition = ERROR_DEFINITIONS[error.code];
-    // The end assertion also rejects a trailing newline, unlike JavaScript's $ anchor.
-    const retry = error.retryable && retryAfter !== null && /^[0-9]{1,9}(?![\s\S])/.test(retryAfter)
-        ? ` Retry after ${Number(retryAfter)} seconds.` : "";
+    const seconds = retryAfterSeconds(retryAfter);
+    const retry = error.retryable && seconds !== undefined ? ` Retry after ${seconds} seconds.` : "";
     return `${definition.message} (${error.code}; HTTP ${definition.status}). ${definition.action}${retry}`;
+}
+
+function retryAfterSeconds(retryAfter: string | null): number | undefined {
+    // The end assertion also rejects a trailing newline, unlike JavaScript's $ anchor.
+    return retryAfter !== null && /^[0-9]{1,9}(?![\s\S])/.test(retryAfter) ? Number(retryAfter) : undefined;
 }

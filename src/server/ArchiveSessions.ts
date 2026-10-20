@@ -1,16 +1,20 @@
 import {constants} from "node:fs";
 import {lstat, open, readdir, realpath} from "node:fs/promises";
 import path from "node:path";
-import {getAgentDir, type ExtensionContext} from "@earendil-works/pi-coding-agent";
+import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {MAX_ARCHIVE_BYTES, type ArchiveMetadata} from "./ArchiveProtocol.js";
-import {getSessionRootId, isNativeSessionId, SessionIdentity, SessionKind} from "../sessions/SessionIdentity.js";
+import {
+    captureArchiveSourceIdentity, captureArchiveSourceScope, decodeArchiveSourceScope,
+    type ArchiveSourceIdentity, type ArchiveSourceScope,
+} from "./ArchiveSourceScope.js";
+import {isNativeSessionId, SessionIdentity, SessionKind} from "../sessions/SessionIdentity.js";
 
 // Pi exposes this native readonly view through ExtensionContext, not its barrel exports.
 type ReadonlySessionManager = ExtensionContext["sessionManager"];
 type CatalogEntry = {
     file: string;
     parentSession?: string;
-    session: SessionIdentity;
+    session: ArchiveSourceIdentity;
 };
 type ParsedSession = {entry: CatalogEntry; metadata: ArchiveMetadata};
 type Snapshot = {file: string; sessionId: string; body: Buffer; metadata: ArchiveMetadata; warnings: string[]};
@@ -21,20 +25,25 @@ export class ArchiveSessions {
     private readonly catalog = new Map<string, CatalogEntry>();
     private readonly byId = new Map<string, CatalogEntry>();
     private readonly collisions = new Set<string>();
+    private readonly source: ArchiveSourceScope;
     private currentRootSessionId: string | undefined;
 
-    constructor(private readonly manager: ReadonlySessionManager) {
-        this.currentRootSessionId = getSessionRootId(manager);
+    constructor(source: ArchiveSourceScope | ReadonlySessionManager) {
+        // Compatibility callers may still pass a manager, but it is never retained.
+        this.source = source !== null && typeof source === "object"
+            && "getSessionId" in source && typeof source.getSessionId === "function"
+            ? captureArchiveSourceScope(source) : decodeArchiveSourceScope(source);
+        this.currentRootSessionId = this.source.rootSessionId;
     }
 
-    async discover(scope: "current" | "all", signal?: AbortSignal): Promise<{files: string[]; warnings: string[]; rootSessionId?: string}> {
+    async discover(scope: "current" | "all" = this.source.scope, signal?: AbortSignal): Promise<{files: string[]; warnings: string[]; rootSessionId?: string}> {
         checkAbort(signal);
         this.catalog.clear();
         this.byId.clear();
         this.collisions.clear();
-        this.currentRootSessionId = getSessionRootId(this.manager);
+        this.currentRootSessionId = this.source.rootSessionId;
         const warnings: string[] = [];
-        const currentFile = this.manager.getSessionFile();
+        const currentFile = this.source.sessionFile;
         if (scope === "current" && !currentFile) {
             return {files: [], warnings: ["The current session has no persisted history (--no-session)."]};
         }
@@ -54,19 +63,20 @@ export class ArchiveSessions {
         if (scope === "all") {
             // Mirror SessionManager.listAll's directory layout without its unbounded
             // transcript-text accumulation or following file symlinks/FIFOs.
-            const globalDirectory = path.join(getAgentDir(), "sessions");
-            try {
-                for (const entry of await readdir(globalDirectory, {withFileTypes: true})) {
+            for (const globalDirectory of this.source.defaultSessionRoots) {
+                try {
+                    for (const entry of await readdir(globalDirectory, {withFileTypes: true})) {
+                        checkAbort(signal);
+                        if (entry.isDirectory()) await addDirectory(path.join(globalDirectory, entry.name));
+                    }
+                } catch (error) {
                     checkAbort(signal);
-                    if (entry.isDirectory()) await addDirectory(path.join(globalDirectory, entry.name));
+                    if (!hasCode(error, "ENOENT")) unreadableDirectories++;
                 }
-            } catch (error) {
-                checkAbort(signal);
-                if (!hasCode(error, "ENOENT")) unreadableDirectories++;
             }
         }
         if (currentFile) {
-            await addDirectory(path.resolve(this.manager.getSessionDir()));
+            await addDirectory(this.source.sessionDirectory);
             candidates.add(path.resolve(currentFile));
         }
         let skippedFiles = 0;
@@ -89,11 +99,10 @@ export class ArchiveSessions {
         // A resumed legacy/partial child may need the catalog's parent chain to
         // recover its originating main session. Unknown is not an empty family.
         if (this.currentRootSessionId === undefined) {
-            const parentSession = this.manager.getHeader()?.parentSession;
             this.currentRootSessionId = this.resolveFamily({
-                file: this.manager.getSessionFile() ?? "",
-                parentSession: typeof parentSession === "string" ? parentSession : undefined,
-                session: SessionIdentity.fromManager(this.manager),
+                file: currentFile ?? "",
+                parentSession: this.source.parentSession,
+                session: this.source.activeSession,
             })?.rootSessionId;
         }
         let unresolvedChildren = 0;
@@ -141,10 +150,10 @@ export class ArchiveSessions {
         const session = entry.session;
         if (this.collisions.has(session.sessionId) || session.identityConflict) return undefined;
         const activeRootId = this.currentRootSessionId;
-        const currentId = this.manager.getSessionId();
+        const currentId = this.source.activeSession.sessionId;
         if (!session.childKind) {
             // UUID shape and native fork provenance do not establish Pilot identity.
-            return session.identity?.kind === SessionKind.Main || (session.sessionId === currentId && activeRootId === currentId)
+            return session.main || (session.sessionId === currentId && activeRootId === currentId)
                 ? {kind: SessionKind.Main, rootSessionId: session.sessionId}
                 : undefined;
         }
@@ -152,11 +161,11 @@ export class ArchiveSessions {
         let expectedRoot: string | undefined;
         let cursor: CatalogEntry | undefined = entry;
         while (cursor) {
-            const ancestor: SessionIdentity = cursor.session;
+            const ancestor: ArchiveSourceIdentity = cursor.session;
             if (seen.has(ancestor.sessionId) || this.collisions.has(ancestor.sessionId) || ancestor.identityConflict) return undefined;
             seen.add(ancestor.sessionId);
             if (!ancestor.childKind) {
-                const isRoot = ancestor.identity?.kind === SessionKind.Main
+                const isRoot = ancestor.main
                     || (ancestor.sessionId === currentId && activeRootId === currentId)
                     || ancestor.sessionId === expectedRoot;
                 return isRoot && (!expectedRoot || expectedRoot === ancestor.sessionId)
@@ -190,7 +199,7 @@ export class ArchiveSessions {
                 cursor = indexedParent;
                 continue;
             }
-            const currentFile = this.manager.getSessionFile();
+            const currentFile = this.source.sessionFile;
             const pathLinksToCurrent = parentPath && currentFile && parentPath === path.resolve(currentFile);
             if (pathLinksToCurrent && ancestor.parentAgentIdentifier && ancestor.parentAgentIdentifier !== currentId) return undefined;
             const linksToCurrent = ancestor.parentAgentIdentifier === currentId || pathLinksToCurrent;
@@ -259,7 +268,7 @@ export class ArchiveSessions {
         }
         const lines = text.split("\n");
         let header: Record<string, unknown> | undefined;
-        let entry: CatalogEntry | undefined;
+        let session: SessionIdentity | undefined;
         const metadata: ArchiveMetadata = {counts: {user_messages: 0, assistant_messages: 0, tool_calls: 0}};
         let lastActivity: number | undefined;
         let firstUserText: string | undefined;
@@ -281,8 +290,7 @@ export class ArchiveSessions {
                     throw new Error("Archive session must start with a native session header.");
                 }
                 header = value;
-                entry = {file, session: new SessionIdentity(value.id)};
-                if (typeof value.parentSession === "string") entry.parentSession = value.parentSession;
+                session = new SessionIdentity(value.id);
                 const started = persistedTime(value.timestamp);
                 if (started !== undefined) {
                     metadata.started_at = new Date(started).toISOString();
@@ -294,8 +302,8 @@ export class ArchiveSessions {
             const time = persistedTime(value.timestamp);
             if (time !== undefined) lastActivity = Math.max(lastActivity ?? time, time);
             if (value.type === "session_info") name = typeof value.name === "string" ? shortTitle(value.name) : undefined;
-            if (value.type === "custom" && typeof value.customType === "string" && entry) {
-                entry.session.applyRecord(value.customType, value.data);
+            if (value.type === "custom" && typeof value.customType === "string" && session) {
+                session.applyRecord(value.customType, value.data);
             }
             if (value.type !== "message" || !isRecord(value.message)) continue;
             const message = value.message;
@@ -311,11 +319,12 @@ export class ArchiveSessions {
                 }
             }
         }
-        if (!entry) throw new Error("Archive session has no native header.");
+        if (!session || !header) throw new Error("Archive session has no native header.");
         if (lastActivity !== undefined) metadata.last_activity_at = new Date(lastActivity).toISOString();
         const title = name ?? firstUserText;
         if (title) metadata.title = title;
-        return {entry, metadata};
+        return {entry: {file, session: captureArchiveSourceIdentity(session),
+            ...(typeof header.parentSession === "string" ? {parentSession: header.parentSession} : {})}, metadata};
     }
 }
 

@@ -1143,6 +1143,7 @@ function toolDisplayUi() {
         },
         setStatus() {},
         setFooter() {},
+        setWidget() {},
         setToolsExpanded() {},
     };
 }

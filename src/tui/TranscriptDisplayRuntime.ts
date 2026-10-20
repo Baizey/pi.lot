@@ -5,15 +5,26 @@ import {
     ToolExecutionComponent,
     type ExtensionAPI,
     type ExtensionContext,
+    type MessageUpdateEvent,
     type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import {Image, type Component, type TUI} from "@earendil-works/pi-tui";
+import {ThemeColor} from "./Color.js";
+import {renderLineFactory} from "./terminalText.js";
+import {ToolCallSpinner} from "./tool/ToolCallSpinner.js";
 import {ToolDisplayMode} from "./tool/ToolDisplayMode.js";
 import {ToolDisplayModes} from "./tool/ToolDisplayModes.js";
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
-type Decoration = {refresh(hidden: boolean): void; restore(): void; toolHidden?(): boolean};
+type Decoration = {
+    refresh(hidden: boolean): void;
+    restore(): void;
+    toolHidden?(): boolean;
+    toolActive?(): boolean;
+};
 type ToolProbe = {partial?: boolean; expanded?: boolean};
+
+const WORKING_WIDGET_KEY = "pi.lot-working";
 
 /** UI-only projection of native rows; never changes the session transcript. */
 export class TranscriptDisplayRuntime {
@@ -25,6 +36,9 @@ export class TranscriptDisplayRuntime {
     private probe: ToolProbe | undefined;
     private registered = false;
     private reportedUnknownPartial = false;
+    private working = false;
+    private workingSpinner: ToolCallSpinner | undefined;
+    private readonly activeToolCalls = new Set<string>();
 
     constructor(private readonly pi: ExtensionAPI, private readonly modes: ToolDisplayModes) {}
 
@@ -32,6 +46,16 @@ export class TranscriptDisplayRuntime {
     register(): void {
         if (this.registered) throw new Error("Transcript display runtime is already registered");
         this.registered = true;
+        this.pi.on("agent_start", () => this.setWorking(true));
+        this.pi.on("agent_end", () => this.setWorking(false));
+        this.pi.on("message_update", (event) => this.observeToolCalls(event.message));
+        this.pi.on("message_end", (event) => this.observeToolCalls(event.message));
+        this.pi.on("tool_execution_start", (event) => {
+            if (!event.parentToolCallId) this.setToolActive(event.toolCallId, true);
+        });
+        this.pi.on("tool_execution_end", (event) => {
+            if (!event.parentToolCallId) this.setToolActive(event.toolCallId, false);
+        });
         this.pi.registerToolRenderer((_name, next) => {
             const renderers = next();
             if (!renderers) return undefined;
@@ -55,6 +79,10 @@ export class TranscriptDisplayRuntime {
         this.context = ctx;
         this.reportedUnknownPartial = false;
         if (ctx.hasUI && ctx.mode === "tui") {
+            ctx.ui.setWidget(WORKING_WIDGET_KEY, (tui) => ({
+                ...renderLineFactory(() => this.renderWorkingPlaceholder(tui), 1),
+                dispose: () => this.stopWorkingSpinner(),
+            }));
             this.unsubscribe = this.modes.subscribe(() => {
                 if (!this.tui) return;
                 this.scan();
@@ -78,11 +106,57 @@ export class TranscriptDisplayRuntime {
     stopSession(): void {
         this.unsubscribe?.();
         this.unsubscribe = undefined;
+        this.setWorking(false);
+        const ctx = this.context;
+        if (ctx?.hasUI && ctx.mode === "tui") ctx.ui.setWidget(WORKING_WIDGET_KEY, undefined);
         const tui = this.tui;
         this.detach();
         this.context = undefined;
         tui?.invalidate();
         tui?.requestRender();
+    }
+
+    private setWorking(working: boolean): void {
+        this.activeToolCalls.clear();
+        this.working = working;
+        if (!working) this.stopWorkingSpinner();
+        this.tui?.requestRender();
+    }
+
+    private observeToolCalls(message: MessageUpdateEvent["message"]): void {
+        if (message.role !== "assistant") return;
+        // Pi finishes assistant streaming before executing that message's tools.
+        // Track only current calls: unavailable historical renderers cannot be probed.
+        for (const block of message.content) {
+            if (block.type === "toolCall") this.setToolActive(block.id, true);
+        }
+    }
+
+    private setToolActive(toolCallId: string, active: boolean): void {
+        if (!this.working || !this.context?.hasUI || this.context.mode !== "tui"
+            || this.activeToolCalls.has(toolCallId) === active) return;
+        if (active) this.activeToolCalls.add(toolCallId);
+        else this.activeToolCalls.delete(toolCallId);
+        this.tui?.requestRender();
+    }
+
+    private renderWorkingPlaceholder(tui: TUI): string[] {
+        this.scan();
+        if (!this.working || !this.isHidden() || this.activeToolCalls.size > 0
+            || [...this.decorations.values()].some((decoration) => decoration.toolActive?.())) {
+            this.stopWorkingSpinner();
+            return [];
+        }
+        this.workingSpinner ??= new ToolCallSpinner(() => tui.requestRender());
+        const theme = this.context!.ui.theme;
+        return [
+            `${theme.fg(ThemeColor.accent, this.workingSpinner.frame())} ${theme.fg(ThemeColor.toolTitle, theme.bold("Working…"))}`,
+        ];
+    }
+
+    private stopWorkingSpinner(): void {
+        this.workingSpinner?.stop();
+        this.workingSpinner = undefined;
     }
 
     private detach(): void {
@@ -178,7 +252,7 @@ export class TranscriptDisplayRuntime {
             streaming = isStreaming ?? (source ? streaming : original.stopReason === "pending");
             source = original;
             hidden = active && this.isHidden();
-            projection = hidden ? this.projectThoughts(original, streaming) : undefined;
+            projection = hidden ? this.projectThoughts(original) : undefined;
             update.call(component, projection ?? original, streaming);
         };
         component.updateContent = decoratedUpdate;
@@ -242,6 +316,8 @@ export class TranscriptDisplayRuntime {
         }
         return {
             toolHidden,
+            // Streamed argument headers take over even before execution starts.
+            toolActive: () => status.partial === true,
             refresh: () => {
                 const nextHidden = toolHidden();
                 if (hidden !== nextHidden) component.invalidate();
@@ -272,14 +348,8 @@ export class TranscriptDisplayRuntime {
         };
     }
 
-    private projectThoughts(message: AssistantMessage, streaming: boolean): AssistantMessage {
-        const content = message.content.filter((block) => block.type !== "thinking");
-        if (streaming && message.content.at(-1)?.type === "thinking") {
-            // Text keeps the indicator compact even with native collapsed-thinking labels.
-            // We never change hideThinkingBlock or its per-run mouse overrides.
-            content.push({type: "text", text: "Thinking…"});
-        }
-        return {...message, content};
+    private projectThoughts(message: AssistantMessage): AssistantMessage {
+        return {...message, content: message.content.filter((block) => block.type !== "thinking")};
     }
 
     private isHidden(): boolean {

@@ -3,9 +3,10 @@ import {mkdtempSync, rmSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
-import {SessionManager} from "@earendil-works/pi-coding-agent";
+import {getAgentDir, SessionManager} from "@earendil-works/pi-coding-agent";
 import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
-import {captureArchiveSourceScope, decodeArchiveSourceScope} from "../src/server/ArchiveSourceScope.js";
+import {decodeArchiveSourceScope} from "../src/server/ArchiveSourceScope.js";
+import {captureArchiveSourceScope} from "../src/server/ArchiveSourceScopeCapture.js";
 import {SessionKind} from "../src/sessions/SessionIdentity.js";
 
 const ROOT = "archive-root";
@@ -26,6 +27,16 @@ test("source scope captures resolved local paths, identity and default collectio
     assert.equal(Object.getPrototypeOf(scope), Object.prototype);
     assert.equal(Object.getPrototypeOf(scope.activeSession), Object.prototype);
     assert.ok(!JSON.stringify(scope).includes("getSession"));
+});
+
+test("foreground scope factory matches pinned Pi agent-directory path conventions", (t) => {
+    const f = fixture(t);
+    const manager = SessionManager.inMemory(f.directory, {id: ROOT});
+    for (const configured of [undefined, "", "~", "~/archive-test", "relative-agent", `file://${f.directory}/agent`]) {
+        if (configured === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = configured;
+        assert.deepEqual(captureArchiveSourceScope(manager).defaultSessionRoots, [path.resolve(getAgentDir(), "sessions")]);
+    }
 });
 
 test("scope retains legacy creation intent and bound child roots, including unresolved/conflicting identity", (t) => {

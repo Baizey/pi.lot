@@ -8,8 +8,10 @@ import {
     ArchiveProtocolError, MAX_ARCHIVE_BYTES, decodeArchiveBinding, decodeArchiveBindingResponse,
     decodeArchiveId, decodeArchiveListPage, decodeArchiveListRequest, decodeArchivePublication,
     decodeArchiveReceiptOutcome, decodeArchiveSessionMetadata, sameArchiveBinding, sameArchivePublication,
+    decodeArchivePreservation, decodeArchivePreservationReceiptOutcome, sameArchivePreservation,
+    type Preservation, type PreservationReceipt, type PreservationReceiptOutcome,
     type Binding, type BindingResponse, type ListPage, type ListRequest, type Publication,
-    type Receipt, type ReceiptOutcome, type SessionMetadata,
+    type Receipt, type ReceiptOutcome, type Snapshot,
 } from "./ArchiveProtocol.js";
 
 export type ArchiveClientOptions = {
@@ -86,8 +88,10 @@ export class ArchiveClient {
     async list(request: ListRequest, signal?: AbortSignal): Promise<ListPage> {
         const normalized = localRequest(() => decodeArchiveListRequest(request));
         return this.exchange("POST", "/v1/list", control(normalized), "application/json", JSON_BYTES, (_response, body) => {
-            const page = decodeArchiveListPage(json(body));
-            if (!sameArchiveBinding(normalized.binding, page.binding) || page.sessions.length > normalized.limit) {
+            const page = decodeArchiveListPage(json(body), normalized.include_preserved);
+            if (!sameArchiveBinding(normalized.binding, page.binding) || page.sessions.length > normalized.limit
+                || (normalized.filters?.session_id !== undefined
+                    && page.sessions.some((session) => session.session_id !== normalized.filters?.session_id))) {
                 throw new ArchiveProtocolError();
             }
             return page;
@@ -98,6 +102,7 @@ export class ArchiveClient {
         try {
             const {normalized, bytes, publication} = localRequest(() => {
                 const normalized = decodeArchivePublication(request);
+                if (!(body instanceof Uint8Array) || body.byteLength !== normalized.byte_length) throw new ArchiveProtocolError();
                 const bytes = Buffer.from(body);
                 if (bytes.length !== normalized.byte_length || sha256(bytes) !== normalized.sha256) throw new ArchiveProtocolError();
                 const publication = Buffer.from(JSON.stringify(normalized));
@@ -124,10 +129,47 @@ export class ArchiveClient {
             (_response, body) => matchingOutcome(json(body), normalized), signal);
     }
 
-    async download(binding: Binding, sessionId: string, signal?: AbortSignal): Promise<{snapshot: SessionMetadata; body: Buffer}> {
+    async preserve(request: Preservation, body?: Uint8Array, signal?: AbortSignal): Promise<PreservationReceipt> {
+        try {
+            const {normalized, payload} = localRequest(() => {
+                const normalized = decodeArchivePreservation(request);
+                let payload: Payload;
+                if (normalized.mode === "uploaded") {
+                    if (!(body instanceof Uint8Array) || body.byteLength !== normalized.byte_length) throw new ArchiveProtocolError();
+                    const bytes = Buffer.from(body);
+                    if (bytes.length !== normalized.byte_length || sha256(bytes) !== normalized.sha256) throw new ArchiveProtocolError();
+                    const header = Buffer.from(JSON.stringify(normalized)).toString("base64url");
+                    if (header.length > CONTROL_BYTES) throw new ArchiveProtocolError();
+                    payload = {body: bytes, headers: {"Content-Type": "application/octet-stream", "X-Pi-Preservation": header}};
+                } else {
+                    if (body !== undefined) throw new ArchiveProtocolError();
+                    payload = control(normalized);
+                }
+                return {normalized, payload};
+            });
+            return await this.exchange("POST", "/v1/preserve", payload, "application/json", CONTROL_BYTES, (_response, bytes) => {
+                const outcome = matchingPreservationOutcome(json(bytes), normalized);
+                if (outcome.status !== "accepted") throw new ArchiveProtocolError();
+                return outcome.receipt;
+            }, signal);
+        } catch (error) {
+            const safe = safeError(error);
+            throw new ArchiveClientError(safe.message, safe.code, true, safe);
+        }
+    }
+
+    async preserveReceipt(request: Preservation, signal?: AbortSignal): Promise<PreservationReceiptOutcome> {
+        const normalized = localRequest(() => decodeArchivePreservation(request));
+        return this.exchange("POST", "/v1/preserve-receipt", control(normalized), "application/json", CONTROL_BYTES,
+            (_response, body) => matchingPreservationOutcome(json(body), normalized), signal);
+    }
+
+    async download(binding: Binding, sessionId: string, signal?: AbortSignal,
+        variantId?: string): Promise<{snapshot: Snapshot; body: Buffer}> {
         const normalized = localRequest(() => decodeArchiveBinding(binding));
         const id = localRequest(() => decodeArchiveId(sessionId));
-        return this.exchange("POST", "/v1/download", control({binding: normalized, session_id: id}),
+        const variant = localRequest(() => variantId === undefined ? undefined : decodeArchiveId(variantId));
+        return this.exchange("POST", "/v1/download", control({binding: normalized, session_id: id, variant_id: variant}),
             "application/octet-stream", MAX_ARCHIVE_BYTES, (response, body) => {
                 const header = response.headers.get("x-pi-snapshot");
                 if (header === null || header.length > CONTROL_BYTES || !/^[A-Za-z0-9_-]+(?![\s\S])/u.test(header)) throw new ArchiveProtocolError();
@@ -135,6 +177,7 @@ export class ArchiveClient {
                 if (decoded.toString("base64url") !== header) throw new ArchiveProtocolError();
                 const snapshot = decodeArchiveSessionMetadata(json(decoded), false);
                 if (!sameArchiveBinding(normalized, snapshot.revision.binding) || snapshot.session_id !== id
+                    || snapshot.variant_id !== variant || (variant !== undefined && snapshot.metadata === undefined)
                     || contentLength(response) !== snapshot.byte_length || body.length !== snapshot.byte_length
                     || sha256(body) !== snapshot.sha256) throw new ArchiveProtocolError();
                 return {snapshot, body};
@@ -273,6 +316,12 @@ function json(bytes: Uint8Array): unknown {
 function matchingOutcome(value: unknown, request: Publication): ReceiptOutcome {
     const outcome = decodeArchiveReceiptOutcome(value);
     if (outcome.status === "accepted" && !sameArchivePublication(outcome.receipt.request, request)) throw new ArchiveProtocolError();
+    return outcome;
+}
+
+function matchingPreservationOutcome(value: unknown, request: Preservation): PreservationReceiptOutcome {
+    const outcome = decodeArchivePreservationReceiptOutcome(value);
+    if (outcome.status === "accepted" && !sameArchivePreservation(outcome.receipt.request, request)) throw new ArchiveProtocolError();
     return outcome;
 }
 

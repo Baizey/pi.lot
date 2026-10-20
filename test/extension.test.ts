@@ -14,10 +14,12 @@ import type {
     SessionStartEvent,
     Theme,
 } from "@earendil-works/pi-coding-agent";
-import {initTheme} from "@earendil-works/pi-coding-agent";
+import {initTheme, SessionManager} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
 import {ServerService} from "../src/server/ServerService.js";
 import {ServerConfigStore} from "../src/server/ServerConfig.js";
+import {ArchiveBackground} from "../src/server/ArchiveBackground.js";
+import {ServerSessionLifecycle} from "../src/server/ServerSessionLifecycle.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime";
 import {PolicyArea, PolicyFallbackResponse} from "../src/policy/types.js";
 import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
@@ -33,6 +35,8 @@ import {ToolDisplayMode, type ToolDisplayViews} from "../src/tui/tool/ToolDispla
 
 beforeEach(() => {
     mock.method(DisplayDefaultsJsonStore.prototype, "load", () => ({...initialDisplayDefaults}));
+    mock.method(ArchiveBackground.prototype, "initialize", async () => {});
+    mock.method(ArchiveBackground.prototype, "wake", async () => {});
 });
 afterEach(() => mock.restoreAll());
 
@@ -239,24 +243,100 @@ test("display loads saved modes per session and shares hot-swapped preferences w
     }
 });
 
-test("invalid saved display preferences fail startup visibly and close the started runtime", async () => {
+for (const stage of ["runtime construction", "runtime startup", "display defaults"] as const) {
+    test(`${stage} failure preserves the synchronously cached outgoing source for shutdown`, async (t) => {
+        const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-startup-archive-"));
+        t.after(() => rmSync(directory, {recursive: true, force: true}));
+        const harness = extensionHarness();
+        const manager = SessionManager.create(directory, path.join(directory, "sessions"));
+        const ctx = {cwd: directory, hasUI: false, mode: "print", ui: {notify() {}}, sessionManager: manager} as unknown as ExtensionCommandContext;
+        t.mock.method(harness.pi, "appendEntry", (customType: string, data: unknown) => {
+            manager.appendCustomEntry(customType, data);
+        });
+        t.mock.method(ServerConfigStore.prototype, "load", () => ({url: "https://sessions.example.com", apiKey: "test-key"}));
+        const enqueue = t.mock.method(ArchiveBackground.prototype, "enqueue", async (..._args: Parameters<ArchiveBackground["enqueue"]>) => ({queued: true as const}));
+        const failure = new Error(`Failed ${stage}`);
+        let closed = 0;
+        new PilotExtension(harness.pi, {
+            createMcpExtension: createNoopMcpExtension,
+            displayDefaultsStore: {
+                load() {
+                    if (stage === "display defaults") throw failure;
+                    return {...initialDisplayDefaults};
+                },
+                save() {},
+            },
+            createSessionRuntime(context) {
+                if (stage === "runtime construction") throw failure;
+                const policyRuntime = createPolicyRuntime(context);
+                return {
+                    policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                    async start() { if (stage === "runtime startup") throw failure; },
+                    setFullNetworkInspection() {}, beginShutdown() {}, close() { closed++; },
+                };
+            },
+        }).register();
+        await assert.rejects(async () => harness.sessionStart()({type: "session_start", reason: "startup"}, ctx), failure);
+        assert.equal(closed, stage === "runtime construction" ? 0 : 1);
+        await assert.rejects(async () => harness.registeredCommands.get("display")!.handler("save", ctx), /before session startup/);
+        await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+        assert.equal(enqueue.mock.callCount(), 1);
+        const source = enqueue.mock.calls[0]!.arguments[0];
+        assert.equal(source.activeSession.sessionId, manager.getSessionId());
+        assert.equal(source.activeSession.main, true);
+        assert.equal(source.rootSessionId, manager.getSessionId());
+        assert.equal(source.sessionFile, manager.getSessionFile());
+        assert.equal(source.sessionDirectory, manager.getSessionDir());
+    });
+}
+
+test("identity and source are cached before runtime construction or deferred startup can mutate the manager", async (t) => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-deferred-startup-archive-"));
+    t.after(() => rmSync(directory, {recursive: true, force: true}));
     const harness = extensionHarness();
-    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {}} as unknown as ExtensionCommandContext;
-    let closed = 0;
+    const manager = SessionManager.create(directory, path.join(directory, "sessions"));
+    const originalId = manager.getSessionId();
+    const originalFile = manager.getSessionFile();
+    const ctx = {cwd: directory, hasUI: false, mode: "print", ui: {notify() {}}, sessionManager: manager} as unknown as ExtensionContext;
+    t.mock.method(harness.pi, "appendEntry", (customType: string, data: unknown) => {
+        manager.appendCustomEntry(customType, data);
+    });
+    const capture = t.mock.method(ServerSessionLifecycle.prototype, "captureSource");
+    t.mock.method(ServerConfigStore.prototype, "load", () => ({url: "https://sessions.example.com", apiKey: "test-key"}));
+    const enqueue = t.mock.method(ArchiveBackground.prototype, "enqueue", async (..._args: Parameters<ArchiveBackground["enqueue"]>) => ({queued: true as const}));
+    let finishStart!: () => void;
+    const barrier = new Promise<void>((resolve) => { finishStart = resolve; });
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
-        displayDefaultsStore: {load() { throw new Error("Invalid display defaults"); }, save() {}},
+        subagentDefaultsStore: {load: () => ({...initialSubagentDefaults}), save() {}},
         createSessionRuntime(context) {
+            assert.equal(capture.mock.callCount(), 1, "capture precedes even runtime construction");
+            assert.equal(manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "pilot.archive"), true);
             const policyRuntime = createPolicyRuntime(context);
             return {
                 policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
-                setFullNetworkInspection() {}, beginShutdown() {}, close() { closed++; },
+                start() { started(); return barrier; },
+                setFullNetworkInspection() {}, beginShutdown() {}, close() {},
             };
         },
     }).register();
-    await assert.rejects(async () => harness.sessionStart()({type: "session_start", reason: "startup"}, ctx), /Invalid display defaults/);
-    assert.equal(closed, 1);
-    await assert.rejects(async () => harness.registeredCommands.get("display")!.handler("save", ctx), /before session startup/);
+    const starting = harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
+    await Promise.race([ready, starting]);
+    assert.equal(capture.mock.callCount(), 1, "source is cached while runtime startup is still pending");
+    manager.newSession();
+    assert.notEqual(manager.getSessionId(), originalId);
+    finishStart();
+    await starting;
+    assert.equal(capture.mock.callCount(), 1, "later owned startup must not recapture the mutable manager");
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    assert.equal(enqueue.mock.callCount(), 1);
+    const source = enqueue.mock.calls[0]!.arguments[0];
+    assert.equal(source.activeSession.sessionId, originalId);
+    assert.equal(source.activeSession.main, true);
+    assert.equal(source.rootSessionId, originalId);
+    assert.equal(source.sessionFile, originalFile);
 });
 
 test("registered builtin and delegation collections supply the same child definitions without root-only tools", async (t) => {
@@ -306,9 +386,23 @@ test("registered builtin and delegation collections supply the same child defini
     }
 });
 
-test("startup records session-bound main identity before owned child infrastructure without archive network", async (t) => {
+test("startup caches session-bound identity before asynchronous child infrastructure and background initialization", async (t) => {
     const harness = extensionHarness();
-    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {}, sessionManager: archiveSessionManager()} as unknown as ExtensionContext;
+    const manager = SessionManager.inMemory(process.cwd());
+    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {notify() {}}, sessionManager: manager} as unknown as ExtensionContext;
+    const append = harness.pi.appendEntry;
+    t.mock.method(harness.pi, "appendEntry", (customType: string, data: unknown) => {
+        append(customType, data);
+        manager.appendCustomEntry(customType, data);
+    });
+    const events: string[] = [];
+    const capture = ServerSessionLifecycle.prototype.captureSource;
+    t.mock.method(ServerSessionLifecycle.prototype, "captureSource", function (this: ServerSessionLifecycle, context: ExtensionContext) {
+        assert.equal(manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "pilot.archive"), true);
+        events.push("capture");
+        capture.call(this, context);
+    });
+    t.mock.method(ArchiveBackground.prototype, "initialize", async () => { events.push("initialize"); });
     const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("No startup or shutdown archive network"); });
     let infrastructureStarted = false;
     new PilotExtension(harness.pi, {
@@ -320,20 +414,23 @@ test("startup records session-bound main identity before owned child infrastruct
             ...createNoopMcpExtension(),
             async startSession() {
                 assert.deepEqual(harness.appendedEntries, [{customType: "pilot.archive", data: {
-                    version: 1, sessionId: "extension-test-agent", kind: "main", rootSessionId: "extension-test-agent",
+                    version: 1, sessionId: manager.getSessionId(), kind: "main", rootSessionId: manager.getSessionId(),
                 }}]);
+                assert.deepEqual(events, ["capture"]);
+                events.push("children");
                 infrastructureStarted = true;
             },
         }),
     }).register();
     await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
     assert.equal(infrastructureStarted, true);
+    assert.deepEqual(events, ["capture", "children", "initialize"]);
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     assert.equal(fetch.mock.callCount(), 0);
 });
 
 for (const reason of ["quit", "reload", "new", "resume", "fork"] as const) {
-    test(`${reason} shutdown awaits child teardown before uploading the outgoing session`, async (t) => {
+    test(`${reason} shutdown awaits child teardown before enqueueing the cached outgoing session`, async (t) => {
         const harness = extensionHarness();
         const ctx = {
             cwd: process.cwd(), hasUI: false, mode: "print", ui: {notify() {}},
@@ -360,12 +457,13 @@ for (const reason of ["quit", "reload", "new", "resume", "fork"] as const) {
             await stopChildren.call(this);
             events.push("children stopped");
         });
-        t.mock.method(ServerService.prototype, "upload", async (...[_config, manager, scope, signal]: Parameters<ServerService["upload"]>) => {
-            assert.equal(manager, ctx.sessionManager, "archive uses the outgoing manager, not the destination");
-            assert.equal(scope, "current");
-            assert.equal(signal?.aborted, false);
-            events.push("upload");
-            return {uploaded: 1, unchanged: 0, failed: 0, warnings: [], failures: []};
+        t.mock.method(ArchiveBackground.prototype, "enqueue", async (...args: Parameters<ArchiveBackground["enqueue"]>) => {
+            const [source] = args;
+            assert.equal(source.sessionFile, "/outgoing.jsonl", "queue uses cached outgoing data, not destination");
+            assert.equal(source.scope, "current");
+            assert.equal(args.length, 1, "no session cancellation is inherited");
+            events.push("enqueue");
+            return {queued: true as const};
         });
         new PilotExtension(harness.pi, {
             createMcpExtension: () => ({...createNoopMcpExtension(), async stopSession() { events.push("mcp stopped"); }}),
@@ -390,20 +488,23 @@ for (const reason of ["quit", "reload", "new", "resume", "fork"] as const) {
         assert.deepEqual(events, ["server cancelled", "runtime stopping", "children stopping"]);
         finishChildren();
         await Promise.all([ending, repeated]);
-        assert.deepEqual(events, ["server cancelled", "runtime stopping", "children stopping", "children stopped", "mcp stopped", "runtime closed", "upload"]);
+        assert.deepEqual(events, ["server cancelled", "runtime stopping", "children stopping", "children stopped", "mcp stopped", "runtime closed", "enqueue"]);
     });
 }
 
-test("failed owned teardown skips automatic upload but still closes the session runtime", async (t) => {
+test("failed owned teardown still queues cached source after closing the session runtime", async (t) => {
     const harness = extensionHarness();
-    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {}, sessionManager: archiveSessionManager()} as unknown as ExtensionContext;
+    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {},
+        sessionManager: {...archiveSessionManager(), getSessionFile: () => "/outgoing.jsonl"}} as unknown as ExtensionContext;
+    t.mock.method(ServerConfigStore.prototype, "load", () => ({url: "https://sessions.example.com", apiKey: "test-key"}));
     const notifications: Array<{message: string; type: string}> = [];
     ctx.ui.notify = (message, type = "info") => { notifications.push({message, type}); };
     const failure = new Error("teardown failed");
-    const upload = t.mock.method(ServerService.prototype, "upload", async () => {
-        throw new Error("Must not upload after teardown failure");
-    });
     let closed = false;
+    const enqueue = t.mock.method(ArchiveBackground.prototype, "enqueue", async () => {
+        assert.equal(closed, true);
+        return {queued: true as const};
+    });
     new PilotExtension(harness.pi, {
         createMcpExtension: () => ({...createNoopMcpExtension(), async stopSession() { throw failure; }}),
         createSessionRuntime(runtimeContext) {
@@ -416,9 +517,9 @@ test("failed owned teardown skips automatic upload but still closes the session 
     await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
     await assert.rejects(Promise.resolve(harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx)), failure);
     assert.equal(closed, true);
-    assert.equal(upload.mock.callCount(), 0);
+    assert.equal(enqueue.mock.callCount(), 1);
     assert.deepEqual(notifications, [{
-        message: "Automatic archive upload skipped because local session shutdown failed.", type: "warning",
+        message: "Local session shutdown failed. Archive capture may not include all final writes.", type: "warning",
     }]);
 });
 
@@ -430,10 +531,10 @@ test("the same extension instance resets owned shutdown and server lifecycle for
         cwd: process.cwd(), hasUI: false, mode: "print", ui: {notify() {}}, sessionManager: firstManager,
     } as unknown as ExtensionContext;
     t.mock.method(ServerConfigStore.prototype, "load", () => ({url: "https://sessions.example.com", apiKey: "test-key"}));
-    const managers: ExtensionContext["sessionManager"][] = [];
-    t.mock.method(ServerService.prototype, "upload", async (...[_config, manager]: Parameters<ServerService["upload"]>) => {
-        managers.push(manager);
-        return {uploaded: 1, unchanged: 0, failed: 0, warnings: [], failures: []};
+    const files: Array<string | undefined> = [];
+    t.mock.method(ArchiveBackground.prototype, "enqueue", async (...[source]: Parameters<ArchiveBackground["enqueue"]>) => {
+        files.push(source.sessionFile);
+        return {queued: true as const};
     });
     let starts = 0;
     let closes = 0;
@@ -454,7 +555,7 @@ test("the same extension instance resets owned shutdown and server lifecycle for
     await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     assert.equal(starts, 2);
     assert.equal(closes, 2, "the second local shutdown must not reuse the first session's cached promise");
-    assert.deepEqual(managers, [firstManager, secondManager]);
+    assert.deepEqual(files, ["/first.jsonl", "/second.jsonl"]);
 });
 
 test("Bash always routes through a native filesystem policy view", async () => {
@@ -1117,7 +1218,8 @@ function toolRenderContext(
 }
 
 function archiveSessionManager() {
-    return {getSessionId: () => "extension-test-agent", getSessionFile: () => undefined, getHeader: () => null, getEntries: () => []};
+    return {getSessionId: () => "extension-test-agent", getSessionFile: () => undefined,
+        getSessionDir: () => "/sessions", getHeader: () => null, getEntries: () => []};
 }
 
 function createNoopMcpExtension() {

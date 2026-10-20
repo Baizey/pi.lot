@@ -1,24 +1,24 @@
 # Background session archival: implementation plan
 
-Status: **reviewed implementation plan** (revision 3). Three subagent reviewers completed
-independent design input and two review/improvement rounds; no architectural blockers
-remain. **Implementation has started with slice 1 only.** The guarantees below describe
-the completed target, not current background behavior.
+Status: **all six production slices implemented and independently reviewed**, following
+the reviewed revision-3 design. Core correctness convergence and the combined local suite
+have passed. Remaining work is the bounded removal of retired source APIs and the final
+post-cleanup validation record—not additional features. This is not a claim of a passing
+full host suite, production-WAL qualification, or physical durability.
 
-Implemented foundations: validated serializable source scopes, manager-independent
-archive discovery, structured transport retry classification and capped Retry-After,
-additive immutable capture storage, atomic capture-to-pending transfer, and read-only
-legacy pending enumeration across destinations/generations. Captures preserve bytes
-and metadata separately from unresolved predecessors; acknowledgments cannot clear them.
-The journal enforces a 512 MiB logical retained-body admission budget without evicting
-legacy work. Focused tests use isolated rollback-journal fixtures, not production WAL
-or multiprocess qualification.
+The reviewed foundation checkpoint is `e220a58`. Subsequent work adds the bounded durable
+inbox, detached Node/jiti worker and kernel election, transactional source obligations,
+immutable operations and coverage, persisted retries, destination-pinned authorization,
+lightweight lifecycle/manual queueing, byte/metadata reconciliation with preservation
+dependencies, and canonical/preserved archive selectors. pi.server implements additive
+`preserved_variants_v1` storage, receipts, quotas, migration, pagination, and restore fencing
+while retaining stable 0.2.x canonical compatibility.
 
-**Not implemented:** inbox/source obligations, independent worker, scheduling/backoff,
-working-byte reservations, configuration-generation authorization, lifecycle cutover,
-or automatic reconciliation/server preservation. Existing foreground upload ordering
-and the ten-second session-end upload remain in place. The foreground service does not
-yet drain the retained-capture inventory independently of live discovery.
+Foreground publication/draining and the ten-second session-end upload have been removed.
+`SessionArchive` is now solely a list/fetch/cache service; the foreground-only source
+capture factory is separate from the worker's serializable source model. Focused SQLite
+fixtures explicitly use rollback journaling; production retains WAL. Real bootstrap,
+election, and detached-lifetime tests are distinct from WAL/physical-durability evidence.
 
 This plan covers `/var/home/lsm/repos/pilot` and `/var/home/lsm/repos/pi.server`.
 Current behavior remains documented in [server.md](server.md). The goal is seamless,
@@ -68,9 +68,9 @@ Reuse:
 | Existing component | Keep / change |
 | --- | --- |
 | `src/server/ArchiveClient.ts` | Keep bounded authenticated HTTP, redirect refusal, integrity and receipt checks; expose structured retry information. |
-| `ArchiveJournal.ts` | Keep FULL SQLite durability and immutable pending bodies/requests; add candidate, queue, scheduling, coverage, and operation-dependency state. |
-| `ArchiveSessions.ts` | Keep stable reads, byte preservation, metadata extraction, family interpretation; remove dependence on a live session-manager object. |
-| `SessionArchive.ts` | Extract reusable capture/reconciliation/publication orchestration. No fake ExtensionContext in the worker. |
+| `ArchiveJournal.ts` | Keep FULL SQLite durability, immutable captures/pending bodies/requests, and legacy recovery. `ArchiveWorkerState.ts` owns additive queue, scheduling, coverage, authorization, and dependency tables in the same database. |
+| `ArchiveSessions.ts` | Keep stable reads, byte preservation, metadata extraction, and family interpretation. Worker construction takes only a serialized source scope; the foreground SDK factory lives separately in `ArchiveSourceScopeCapture.ts`. |
+| `SessionArchive.ts` | Retain lazy list/fetch/cache only. `ArchiveWorkerEngine.ts` owns capture/reconciliation/publication orchestration, without a fake ExtensionContext. |
 | `ServerSessionLifecycle.ts` | Replace the ten-second network drain/upload with durable enqueue plus best-effort worker launch. |
 | `ServerService.ts` | Separate session-owned foreground requests from independently owned committed archive work. |
 | `SdkSubagentSessionFactory` | Existing descendants/policy reviewers already persist in the root's resolved session directory. No new child lifecycle protocol is required initially. |
@@ -168,15 +168,27 @@ inbox -> scan/capture due -> captured candidate
                               -> retry due / authorization blocked / invalid
 ```
 
-Operations have durable `ready/uncertain`, `accepted`, `rejected`, or `fenced` state.
-Only `ready/uncertain` in the currently authorized binding can execute. A definitive
-CAS rejection atomically retires that operation while retaining its candidate. Generation
-change fences old operations and invalidates their preservation dependencies. Body-bearing
-operations can yield new-generation candidates; preserve-current operations contain no
-body and require fresh comparison against the new canonical version. Restart enumeration
-cannot resurrect retired legacy work; obsolete receipts record historical outcomes only.
+Operations have durable `ready/uncertain`, `accepted`, `rejected`, `fenced`, or locally
+`invalid/blocked` state. Only `ready/uncertain` in the currently authorized binding can
+execute. Persist write-ahead dispatch provenance separately from readiness: receipt
+`unknown`, replay, ancestry changes, or a malformed response cannot turn a potentially
+dispatched request into never-dispatched work. Stale ancestry or protocol faults can
+restrict it to bounded receipt-only recovery. Corrupt owned evidence retains a blocked
+unresolved slot; a genuinely never-dispatched invalid request may be terminal locally.
+Validate stored request/candidate relationships before dispatch and receipt-driven coverage.
 
-One unresolved executable operation per `(binding, native session ID)` locally.
+A definitive CAS rejection atomically retires that operation while retaining its candidate.
+Generation change fences old operations and invalidates their preservation dependencies.
+Body-bearing operations can yield new-generation candidates; preserve-current operations
+contain no body and require fresh comparison against the new canonical version. Restart
+enumeration cannot resurrect retired legacy work; obsolete receipts record historical
+outcomes only.
+
+One unresolved operation per `(complete binding, native session ID)` locally, including
+blocked unresolved work and destinations reached through different verified origins.
+This exclusion does not transfer origin-pinned credentials, execution authority, accepted
+bases, or bodies. A URL migration may therefore pause new-origin work until the original
+operation settles through its authorized origin or is legitimately fenced.
 Capturing a successor never replaces the predecessor or drops either body's unique
 history. Coalesce only after equality or proper-prefix coverage has been verified.
 `ArchiveJournal.prepare()` returning an old pending operation is not preservation of
@@ -224,9 +236,11 @@ helper before releasing/rechecking; uncertainty is not permission to process wor
    importing, acknowledging, or mutating anything. If new work appeared, reacquire or let
    a winning contender own it. A pre-unlock check alone loses enqueue/configuration wakeups.
 
-`fs.watch` is only a latency hint; recheck at least every five seconds while alive, including
-long backoff. Startup, enqueue, configuration replacement/login/logout, and manual upload
-use this shared durable-wakeup path. A worker retains a live timer for future retryable
+`fs.watch` is only a latency hint. During backoff, scheduler sleeps are capped at five
+seconds before checking new work/configuration. An in-progress capture, directory replay,
+or HTTP attempt can delay the next check; authorization is reloaded before every request.
+Startup, enqueue, configuration replacement/login/logout, and manual upload use this
+shared durable-wakeup path. A worker retains a live timer for future retryable
 work; if all work is done, invalid, source-lost, or authorization-blocked, it exits.
 Future wakeup recovers a crashed worker. No systemd service, auto-installed supervisor,
 socket protocol, or boot persistence is required for this first implementation.
@@ -333,9 +347,9 @@ revision (the new snapshot header described below):
 - Unknown/incoherent remote metadata: byte coverage may be known, but metadata completion
   or replacement waits for coherent evidence/preservation; do not infer equivalence.
 
-On 0.2, matching `/list` and download revisions can establish coherent metadata when
-available; a raced row requires retry. Unsupported metadata-preservation obligations
-remain captured locally. Accepted-prefix fast paths retain normal snapshot-description
+On legacy 0.2 servers without `preserved_variants_v1`, matching `/list` and download
+revisions can establish coherent metadata when available; a raced row requires retry.
+Unsupported metadata-preservation obligations remain captured locally. Accepted-prefix fast paths retain normal snapshot-description
 replacement semantics; this is not a historical metadata ledger.
 
 For divergent bodies, preserve the nonselected version before completing the candidate
@@ -348,7 +362,8 @@ old request. Bound attempts and defer contention with jitter.
 
 ## 8. Minimal pi.server preservation extension
 
-0.2 keeps only one body per native ID; receipts do not preserve overwritten bodies.
+Legacy 0.2 servers without `preserved_variants_v1` keep only one body per native ID;
+publication receipts do not preserve overwritten bodies.
 Invented `session_id~conflict` aliases are not an acceptable substitute: they falsify
 native identity, break main/root validation, and collide with unrestricted native IDs.
 
@@ -419,8 +434,9 @@ where practical; charge retained bodies, metadata, and receipts to explicit quot
 automatic eviction of unique variants. Include them in migration, backup/restore, and
 generation rotation. `/v1/discover` remains latest-canonical discovery, not a history feed.
 
-Negotiate capability/version before relying on this extension. On 0.2, verified byte
-coverage/extension can proceed when metadata disposition is also established; divergence
+Negotiate capability/version before relying on this extension. On legacy 0.2 servers
+without `preserved_variants_v1`, verified byte coverage/extension can proceed when
+metadata disposition is also established; divergence
 and unsupported metadata preservation remain durably deferred, never forced or aliased.
 A changed history generation fences old operations; retained candidates may be freshly
 reconciled under the new generation for the same authorized server/namespace. An
@@ -510,5 +526,61 @@ without claiming full native-session synchronization or editing historical revie
   local/transport error provenance; fixes normalize failures at their origins and require
   the protocol JSON media type for server-error classification. Added direct quota-lock
   contention and real-discovery/outgoing-identity regressions. All three reviewers returned
-  clean/ready after the second round; 52 focused client/capture tests passed. The manager
-  constructor remains an intentional compatibility API; production uses serialized scopes.
+  clean/ready after the second round; 52 focused client/capture tests passed. At that
+  foundation checkpoint the manager constructor remained a compatibility API; the full
+  worker cutover subsequently removed it in favor of serialized scopes.
+- Full implementation convergence: independent runner/configuration, lifecycle/manual,
+  read-service/tool, source/discovery, state/durability, reconciliation, and server reviews
+  completed. Confirmed findings were fixed with regressions, including working-body
+  reservations and fingerprints; incremental ancestry, cached missing-root evidence,
+  incomplete-versus-invalid JSON and trusted seed aliases; uncertainty through replay and
+  malformed replies; persisted request relationships; binding-wide and disputed-key
+  exclusion; and exact preservation dependencies at execution and acceptance. Final frozen
+  state/reconciliation delta reviews returned ready with no remaining concrete blocker.
+  Dead source API removal is a separate behavior-preserving cleanup, not another feature.
+
+## 12. Local implementation validation
+
+At the full-worker checkpoint, the parent ran:
+
+```bash
+mapfile -t tests < <(find test -maxdepth 1 -name 'server-*.test.ts' | sort)
+node --import jiti/register --test --test-concurrency=1 \
+  "${tests[@]}" test/session-identity.test.ts \
+  test/extension.test.ts test/managed-child-process.test.ts
+npm run typecheck
+```
+
+Result: **525 tests, 519 passed, six sandbox symlink-fixture skips, zero failures**.
+Global typechecking and scoped diff whitespace checks passed. Runtime/election tests run
+serially rather than increasing production lock/launch deadlines. A packaging dry run
+with lifecycle scripts disabled confirmed the bootstrap and worker/source modules ship.
+
+The server implementation checkpoint is `254db4f`; `240339f` adds the reviewed publication-
+base documentation clarification. Ordinary-sandbox server validation was:
+
+```bash
+cargo test --offline --lib preservation -- --test-threads=1
+cargo test --offline --test archive_protocol --test config
+cargo clippy --offline --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+Result: **23 preservation + 12 protocol + 12 configuration tests passed**; clippy,
+formatting, and whitespace checks passed. These focused tests are not a full server suite.
+
+Qualification boundaries:
+
+- SQLite fixtures explicitly use **DELETE journaling**. Production WAL is unchanged;
+  transactional rollback/reopen tests do not qualify WAL/shared-memory or power loss.
+- Production bootstrap/election tests exercise actual installation-relative loading and
+  kernel contention. A separate delayed-fake-worker smoke proves its own lifetime only.
+- The actual-worker integration uses the real worker/engine/state/source/client after
+  ordinary launcher exit, fake HTTP, source deletion after capture, lost-response receipt
+  recovery, same-worker SQLite connection close/reopen, and verified body release/exit.
+  It does not prove worker crash/restart or real socket/pi.server transport.
+- Trusted-alias behavior has controlled filesystem-boundary coverage; actual symlink
+  fixture creation remains skipped where the sandbox returns `EPERM`/`EACCES`.
+- No host/MCP fallback, native-sandbox integration suite, machine/cgroup lifetime, physical
+  storage, or power-loss qualification is claimed. Exploratory nested-sandbox execution is
+  excluded from this evidence. Logical quotas are not RSS or physical-disk caps.

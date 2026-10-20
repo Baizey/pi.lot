@@ -155,13 +155,15 @@ export class PilotExtension {
         this.pi.on("session_compact", () => this.displayRows.clear());
         this.pi.on("session_tree", () => this.displayRows.clear());
         this.pi.on("session_shutdown", () => this.stopSession());
-        // Pi awaits hooks in registration order: archive after local writers close.
+        // Pi awaits hooks in registration order: enqueue after local writers close.
         this.serverLifecycle.register();
     }
 
     private startSession(ctx: ExtensionContext): Promise<void> {
         if (this.sessionRuntime) throw new Error("pi.lot session runtime is already started");
         this.sessionShutdown = undefined;
+        recordMainSessionIdentity(this.pi, ctx.sessionManager);
+        this.serverLifecycle.captureSource(ctx);
 
         const runtime = this.createSessionRuntime(ctx);
         this.sessionRuntime = runtime;
@@ -197,7 +199,6 @@ export class PilotExtension {
         if (this.initialDisplayViews) {
             this.displayDefaults.setViews(this.initialDisplayViews.normal, this.initialDisplayViews.alternate);
         }
-        recordMainSessionIdentity(this.pi, ctx.sessionManager);
         await this.mcpExtension.startSession(ctx);
         await this.subagentRuntime.startSession(ctx, this.requireSessionRuntime().policyRuntime);
         await this.subagentUiRuntime.startSession(ctx, this.subagentRuntime.coordinator());

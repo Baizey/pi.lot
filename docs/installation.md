@@ -10,7 +10,7 @@ This checkout targets Pi `1.3.0` and requires:
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
-- `unshare` and `nsenter` from util-linux;
+- `flock`, `unshare`, and `nsenter` from util-linux;
 - `slirp4netns`;
 - `xdg-dbus-proxy`;
 - unprivileged user and network namespaces;
@@ -19,6 +19,8 @@ This checkout targets Pi `1.3.0` and requires:
 - libfuse3 development files, version 3.17.3 or newer;
 - `libnetfilter_queue` development files; and
 - the libclang shared library and matching Clang resource headers for build-time binding generation.
+
+Background session archival requires an external `node` executable >=22.19 on an absolute `PATH` entry, even when Pi itself is a compiled Bun executable. Startup/configuration validates that Node can load the package-local production `jiti` bootstrap and compatible `better-sqlite3`. Missing runtime support does not discard a durable queue item; a warning reports that launch must resume on a later wakeup. The detached worker uses util-linux `flock`, not Pi session-owned process lifetime. See [server archive](server.md).
 
 The builder resolves system `fuse3` and `libnetfilter_queue` SDKs with `pkg-config`. FUSE API `317` uses `fuse_unset_feature_flag`, requiring exported capability helpers from libfuse >= 3.17.3; 3.17.2 headers alone are insufficient. Keep the SDK and runtime installations matched. Avoid libfuse 3.18.0's incompatible capability-helper symbol versions, and rebuild helpers when upgrading from it.
 
@@ -55,7 +57,7 @@ Binding generation loads libclang at build time, not at helper runtime. Installi
 Package names vary by distribution. Verify the host before building:
 
 ```bash
-command -v node npm cargo rustc cc pkg-config bwrap fusermount3 nft ip unshare nsenter slirp4netns xdg-dbus-proxy
+command -v node npm cargo rustc cc pkg-config bwrap fusermount3 nft ip flock unshare nsenter slirp4netns xdg-dbus-proxy
 node --version
 rustc --version
 cargo --version

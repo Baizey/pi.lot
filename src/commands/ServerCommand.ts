@@ -1,10 +1,8 @@
 import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
 import {ServerConfigError} from "../server/ServerConfig.js";
 import {ServerService} from "../server/ServerService.js";
-import {archiveUploadNotification} from "../server/ArchiveUploadPresentation.js";
+import {captureArchiveSourceScope} from "../server/ArchiveSourceScopeCapture.js";
 import {SERVER_VERSION_REQUIREMENT} from "../server/ServerCompatibility.js";
-import {ArchiveClientError} from "../server/ArchiveClient.js";
-import {formatServerErrorCode} from "../server/ServerResponses.js";
 
 const ACTIONS = ["login", "logout", "upload"] as const;
 const USAGE = "Usage: /server [login|logout|upload [current|all]]";
@@ -21,7 +19,7 @@ export class ServerCommand {
         this.registered = true;
 
         this.pi.registerCommand("server", {
-            description: "Manage pi.server credentials, check status, or manually upload session archives",
+            description: "Manage pi.server credentials, check status, or queue session archives for background upload",
             getArgumentCompletions: (prefix) => this.completions(prefix),
             handler: async (input, ctx) => {
                 this.cancelStatusCheck();
@@ -39,6 +37,7 @@ export class ServerCommand {
                         case "logout":
                             this.server.store.logout();
                             ctx.ui.notify("Removed the local server configuration. Session files are unchanged; the server API key has not been revoked.", "info");
+                            await this.wakeAfterConfiguration(ctx, controller);
                             return;
                         case "upload":
                         case "upload current":
@@ -53,10 +52,8 @@ export class ServerCommand {
                 } catch (error) {
                     if (this.pendingCheck !== controller || controller.signal.aborted) return;
                     const archiveOperation = input.trim().toLowerCase().startsWith("upload");
-                    const diagnostic = archiveOperation && error instanceof ArchiveClientError
-                        ? formatServerErrorCode(error.code) : undefined;
-                    ctx.ui.notify(error instanceof ServerConfigError ? error.message
-                        : archiveOperation ? `Server archive operation failed.${diagnostic ? ` ${diagnostic}` : ""}`
+                    ctx.ui.notify(archiveOperation ? "Server archive work could not be queued. Local session files are unchanged."
+                        : error instanceof ServerConfigError ? error.message
                             : "Server configuration operation failed.", "error");
                 } finally {
                     this.server.finishRequest(controller);
@@ -99,10 +96,17 @@ export class ServerCommand {
             ctx.ui.notify("Server is not configured. Use /server login first.", "error");
             return;
         }
-        const report = await this.server.upload(config, ctx.sessionManager, scope, controller.signal);
+        const source = captureArchiveSourceScope(ctx.sessionManager, scope);
+        if (scope === "current" && !source.sessionFile) {
+            ctx.ui.notify("Current session is ephemeral and was not queued. Use /server upload all to queue persisted history.", "warning");
+            return;
+        }
+        // Request cancellation suppresses presentation, not committed background work.
+        const result = await this.server.background.enqueue(source);
         if (this.pendingCheck !== controller || controller.signal.aborted) return;
-        const notification = archiveUploadNotification(report, scope, config.apiKey);
-        ctx.ui.notify(notification.message, notification.type);
+        ctx.ui.notify(result.warning !== undefined
+            ? `Server archive work (${scope}) is queued, but its background worker could not be launched. It will resume on a later wakeup.`
+            : `Server archive work (${scope}) queued for background upload.`, result.warning !== undefined ? "warning" : "info");
     }
 
     private cancelStatusCheck(): void {
@@ -120,7 +124,19 @@ export class ServerCommand {
         const apiKey = await ctx.ui.input("pi.server API key");
         if (apiKey === undefined || this.pendingCheck !== controller || controller.signal.aborted) return;
         this.server.store.save({url, apiKey});
-        ctx.ui.notify("Saved the server URL and API key locally. Connection and compatibility have not been checked. Persistent session families will upload automatically when their session ends; complete history can contain sensitive data. Use /server logout to disable uploads.", "info");
+        ctx.ui.notify("Saved the server URL and API key locally. Connection and compatibility have not been checked. Persistent session families will be queued automatically when their session ends; complete history can contain sensitive data. Use /server logout to disable uploads.", "info");
+        await this.wakeAfterConfiguration(ctx, controller);
+    }
+
+    private async wakeAfterConfiguration(ctx: ExtensionCommandContext, controller: AbortController): Promise<void> {
+        try {
+            // Initialization validates the local runner and wakes retained work;
+            // its runtime probe is cached, but configuration wakeups are not.
+            await this.server.background.initialize();
+        } catch {
+            if (this.pendingCheck !== controller || controller.signal.aborted) return;
+            ctx.ui.notify("Server configuration changed, but the background archive worker could not be started. Queued work is retained for a later wakeup.", "warning");
+        }
     }
 
     private completions(input: string): Array<{value: string; label: string}> | null {

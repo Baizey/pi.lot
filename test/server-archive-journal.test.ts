@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
-import {test, type TestContext} from "node:test";
+import {afterEach, beforeEach, mock, test, type TestContext} from "node:test";
 import {ArchiveJournal, type ArchiveUploadSnapshot} from "../src/server/ArchiveJournal.js";
 import type {Binding, Publication, Receipt} from "../src/server/ArchiveProtocol.js";
 import {SessionKind} from "../src/sessions/SessionIdentity.js";
@@ -11,6 +11,36 @@ import {SqliteDatabase} from "../src/storage/sqlite.js";
 
 const binding: Binding = {server_id: randomUUID(), namespace_id: randomUUID(), history_generation: randomUUID()};
 const origin = "https://archive.example";
+const openDatabase = SqliteDatabase.test;
+
+// These private fixtures cover transactions, fsync ordering, and reopen persistence,
+// not production WAL/shared-memory or cross-mount concurrency qualification.
+beforeEach(() => {
+    mock.method(SqliteDatabase, "test", (readonly: boolean, file: string) => {
+        const database = openDatabase(readonly, file);
+        try {
+            if (!readonly) database.exec("PRAGMA journal_mode=DELETE");
+            return database;
+        } catch (error) {
+            database.close();
+            throw error;
+        }
+    });
+});
+afterEach(() => mock.restoreAll());
+
+function createSymlink(t: TestContext, target: string, link: string): boolean {
+    try {
+        fs.symlinkSync(target, link);
+        return true;
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EPERM" && code !== "EACCES") throw error;
+        t.skip("Sandbox does not permit creating the symlink fixture.");
+        return false;
+    }
+}
+
 function fixture() {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pilot-archive-journal-"));
     return {directory, clean: () => fs.rmSync(directory, {recursive: true, force: true})};
@@ -190,7 +220,7 @@ test("journal initialization rejects directory symlinks, including an ancestor o
         const target = path.join(f.directory, "target");
         const link = path.join(f.directory, "link");
         fs.mkdirSync(target, {mode: 0o700});
-        fs.symlinkSync(target, link);
+        if (!createSymlink(t, target, link)) return;
         assert.throws(() => new ArchiveJournal(link), /private directory/);
         assert.throws(() => new ArchiveJournal(path.join(link, "archive")));
         assert.equal(fs.existsSync(path.join(target, "archive")), false);
@@ -215,7 +245,7 @@ test("a directory left by a failed first use is revalidated before retrying", (t
         fs.chmodSync(directory, 0o700);
         const moved = path.join(f.directory, "moved");
         fs.renameSync(directory, moved);
-        fs.symlinkSync(moved, directory);
+        if (!createSymlink(t, moved, directory)) return;
         assert.throws(() => new ArchiveJournal(directory), /private directory/);
         assert.equal(fs.existsSync(path.join(moved, "archive.sqlite")), false);
         assert.equal(descriptors.size, 0);

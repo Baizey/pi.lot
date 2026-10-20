@@ -1,6 +1,6 @@
 import {SessionKind} from "../sessions/SessionIdentity.js";
 
-// pi.server v0.2 archive wire types. Sequences must never pass through a JS number.
+// pi.server v0.2 archive wire types, including preserved_variants_v1. Sequences never pass through a JS number.
 export type Binding = {server_id: string; namespace_id: string; history_generation: string};
 export type Revision = {binding: Binding; seq: string};
 export type Condition = {kind: "absent"} | {kind: "exact_base_revision"; revision: Revision};
@@ -23,9 +23,20 @@ export type Publication = {
     sha256: string;
     metadata?: ArchiveMetadata;
 };
-export type SessionMetadata = {session_id: string; revision: Revision; byte_length: number; sha256: string};
+export type SessionMetadata = {
+    session_id: string;
+    revision: Revision;
+    byte_length: number;
+    sha256: string;
+    variant_id?: string;
+    /** Absence means legacy/unknown, whereas null is coherent absent metadata. */
+    metadata?: ArchiveMetadata | null;
+    uploaded_at?: string | null;
+};
+export type Snapshot = SessionMetadata;
 export type ArchiveSession = SessionMetadata & {metadata: ArchiveMetadata | null; uploaded_at: string | null};
 export type ListFilters = {
+    session_id?: string;
     kind?: SessionKind;
     root_session_id?: string;
     started_from?: string;
@@ -33,12 +44,24 @@ export type ListFilters = {
     activity_from?: string;
     activity_to?: string;
 };
-export type ListParameters = {filters?: ListFilters; cursor?: string | null; limit: number};
+export type ListParameters = {filters?: ListFilters; cursor?: string | null; limit: number; include_preserved?: boolean};
 export type ListRequest = ListParameters & {binding: Binding};
 export type ListPage = {binding: Binding; sessions: ArchiveSession[]; next_cursor: string | null};
-export type BindingResponse = {binding: Binding; head: string};
+export type BindingResponse = {binding: Binding; head: string; capabilities?: string[]};
 export type Receipt = {request: Publication; revision: Revision};
 export type ReceiptOutcome = {status: "accepted"; receipt: Receipt} | {status: "unknown"};
+
+export type Preservation =
+    | {mode: "uploaded"; binding: Binding; session_id: string; operation_id: string;
+        byte_length: number; sha256: string; metadata?: ArchiveMetadata}
+    | {mode: "current"; binding: Binding; session_id: string; operation_id: string; revision: Revision};
+export type PreservationReceipt = {
+    request: Preservation;
+    variant: ArchiveSession & {variant_id: string};
+    source_revision?: Revision;
+    source_uploaded_at?: string | null;
+};
+export type PreservationReceiptOutcome = {status: "accepted"; receipt: PreservationReceipt} | {status: "unknown"};
 
 export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_SEQ = 9223372036854775807n;
@@ -102,9 +125,7 @@ export function decodeArchivePublication(value: unknown, strict = true): Publica
     const row = object(value, ["binding", "session_id", "operation_id", "condition", "byte_length", "sha256", "metadata"], strict);
     const binding = decodeArchiveBinding(row.binding, strict);
     const session_id = decodeArchiveId(row.session_id);
-    requireValid(typeof row.operation_id === "string"
-        && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\s\S])/u.test(row.operation_id));
-    if (typeof row.operation_id !== "string") throw new ArchiveProtocolError();
+    const operation_id = operationId(row.operation_id);
     const conditionRow = object(row.condition, ["kind", "revision"], false);
     let condition: Condition;
     if (conditionRow.kind === "absent") {
@@ -117,7 +138,7 @@ export function decodeArchivePublication(value: unknown, strict = true): Publica
         requireValid(sameArchiveBinding(binding, revision.binding));
         condition = {kind: "exact_base_revision", revision};
     }
-    const result: Publication = {binding, session_id, operation_id: row.operation_id, condition,
+    const result: Publication = {binding, session_id, operation_id, condition,
         byte_length: integer(row.byte_length, MAX_ARCHIVE_BYTES), sha256: digest(row.sha256)};
     if (present(row.metadata)) result.metadata = decodeArchiveMetadata(row.metadata, session_id, strict);
     return result;
@@ -135,21 +156,81 @@ export function decodeArchiveReceipt(value: unknown, strict = true): Receipt {
 }
 
 export function decodeArchiveSessionMetadata(value: unknown, strict = true): SessionMetadata {
-    const row = object(value, ["session_id", "revision", "byte_length", "sha256"], strict);
-    return {session_id: decodeArchiveId(row.session_id), revision: decodeArchiveRevision(row.revision, strict),
+    const row = object(value, ["session_id", "revision", "byte_length", "sha256", "variant_id", "metadata", "uploaded_at"], strict);
+    const result: SessionMetadata = {session_id: decodeArchiveId(row.session_id), revision: decodeArchiveRevision(row.revision, strict),
         byte_length: integer(row.byte_length, MAX_ARCHIVE_BYTES), sha256: digest(row.sha256)};
+    if (row.variant_id !== undefined) result.variant_id = decodeArchiveId(row.variant_id);
+    // A snapshot either carries coherent descriptive data or is a legacy header.
+    requireValid((row.metadata !== undefined) === (row.uploaded_at !== undefined));
+    if (row.metadata !== undefined) {
+        result.metadata = row.metadata === null ? null : decodeArchiveMetadata(row.metadata, result.session_id, strict);
+        result.uploaded_at = row.uploaded_at === null ? null : timestamp(row.uploaded_at);
+    }
+    return result;
 }
 
-export function decodeArchiveSession(value: unknown): ArchiveSession {
+export function decodeArchiveSession(value: unknown, strict = false): ArchiveSession {
+    const snapshot = decodeArchiveSessionMetadata(value, strict);
+    return {...snapshot, metadata: snapshot.metadata ?? null, uploaded_at: snapshot.uploaded_at ?? null};
+}
+
+export function decodeArchivePreservation(value: unknown, strict = true): Preservation {
     const row = object(value, [], false);
-    const snapshot = decodeArchiveSessionMetadata(value, false);
-    return {...snapshot, metadata: present(row.metadata) ? decodeArchiveMetadata(row.metadata, snapshot.session_id, false) : null,
-        uploaded_at: present(row.uploaded_at) ? timestamp(row.uploaded_at) : null};
+    if (row.mode === "uploaded") {
+        object(value, ["mode", "binding", "session_id", "operation_id", "byte_length", "sha256", "metadata"], strict);
+        const publication = decodeArchivePublication({binding: row.binding, session_id: row.session_id,
+            operation_id: row.operation_id, condition: {kind: "absent"}, byte_length: row.byte_length,
+            sha256: row.sha256, metadata: row.metadata}, strict);
+        const {condition: _condition, ...fields} = publication;
+        return {mode: "uploaded", ...fields};
+    }
+    requireValid(row.mode === "current");
+    object(value, ["mode", "binding", "session_id", "operation_id", "revision"], strict);
+    const binding = decodeArchiveBinding(row.binding, strict);
+    const revision = decodeArchiveRevision(row.revision, strict);
+    requireValid(sameArchiveBinding(binding, revision.binding));
+    return {mode: "current", binding, session_id: decodeArchiveId(row.session_id),
+        operation_id: operationId(row.operation_id), revision};
+}
+
+export function decodeArchivePreservationReceipt(value: unknown, strict = true): PreservationReceipt {
+    const row = object(value, ["request", "variant", "source_revision", "source_uploaded_at"], strict);
+    const request = decodeArchivePreservation(row.request, strict);
+    const variantRow = object(row.variant, [], false);
+    requireValid(variantRow.metadata !== undefined && variantRow.uploaded_at !== undefined);
+    const session = decodeArchiveSession(row.variant, strict);
+    const variant_id = decodeArchiveId(session.variant_id);
+    requireValid(session.session_id === request.session_id && sameArchiveBinding(session.revision.binding, request.binding)
+        && session.uploaded_at !== null);
+    const result: PreservationReceipt = {request, variant: {...session, variant_id}};
+    if (request.mode === "current") {
+        const source = decodeArchiveRevision(row.source_revision, strict);
+        requireValid(sameArchiveBinding(source.binding, request.binding) && source.seq === request.revision.seq);
+        result.source_revision = source;
+        result.source_uploaded_at = row.source_uploaded_at === null ? null : timestamp(row.source_uploaded_at);
+    } else {
+        requireValid(row.source_revision === undefined && row.source_uploaded_at === undefined
+            && session.byte_length === request.byte_length && session.sha256 === request.sha256
+            && JSON.stringify(session.metadata) === JSON.stringify(request.metadata ?? null));
+    }
+    return result;
+}
+
+export function decodeArchivePreservationReceiptOutcome(value: unknown): PreservationReceiptOutcome {
+    const row = object(value, [], false);
+    if (row.status === "unknown") return {status: "unknown"};
+    requireValid(row.status === "accepted");
+    return {status: "accepted", receipt: decodeArchivePreservationReceipt(row.receipt, false)};
+}
+
+export function sameArchivePreservation(left: Preservation, right: Preservation): boolean {
+    return JSON.stringify(decodeArchivePreservation(left)) === JSON.stringify(decodeArchivePreservation(right));
 }
 
 export function decodeArchiveListFilters(value: unknown, strict = true): ListFilters {
-    const row = object(value, ["kind", "root_session_id", "started_from", "started_to", "activity_from", "activity_to"], strict);
+    const row = object(value, ["session_id", "kind", "root_session_id", "started_from", "started_to", "activity_from", "activity_to"], strict);
     const result: ListFilters = {};
+    if (present(row.session_id)) result.session_id = decodeArchiveId(row.session_id);
     if (present(row.kind)) result.kind = kind(row.kind);
     if (present(row.root_session_id)) result.root_session_id = decodeArchiveId(row.root_session_id);
     if (present(row.started_from)) result.started_from = timestamp(row.started_from);
@@ -162,21 +243,25 @@ export function decodeArchiveListFilters(value: unknown, strict = true): ListFil
 }
 
 export function decodeArchiveListParameters(value: unknown): ListParameters {
-    const row = object(value, ["filters", "cursor", "limit"], true);
+    const row = object(value, ["filters", "cursor", "limit", "include_preserved"], true);
     const result: ListParameters = {limit: integer(row.limit, 4294967295)};
     requireValid(result.limit > 0);
     if (row.filters !== undefined) result.filters = decodeArchiveListFilters(row.filters);
     if (row.cursor !== undefined) result.cursor = row.cursor === null ? null : cursor(row.cursor);
+    if (row.include_preserved !== undefined) {
+        requireValid(typeof row.include_preserved === "boolean");
+        if (row.include_preserved) result.include_preserved = true;
+    }
     return result;
 }
 
 export function decodeArchiveListRequest(value: unknown): ListRequest {
-    const row = object(value, ["binding", "filters", "cursor", "limit"], true);
+    const row = object(value, ["binding", "filters", "cursor", "limit", "include_preserved"], true);
     return {binding: decodeArchiveBinding(row.binding),
-        ...decodeArchiveListParameters({filters: row.filters, cursor: row.cursor, limit: row.limit})};
+        ...decodeArchiveListParameters({filters: row.filters, cursor: row.cursor, limit: row.limit, include_preserved: row.include_preserved})};
 }
 
-export function decodeArchiveListPage(value: unknown): ListPage {
+export function decodeArchiveListPage(value: unknown, includePreserved = false): ListPage {
     const row = object(value, [], false);
     const binding = decodeArchiveBinding(row.binding, false);
     requireValid(Array.isArray(row.sessions));
@@ -184,15 +269,23 @@ export function decodeArchiveListPage(value: unknown): ListPage {
     const sessions = row.sessions.map((value: unknown) => decodeArchiveSession(value));
     const ids = new Set<string>();
     for (const session of sessions) {
-        requireValid(sameArchiveBinding(binding, session.revision.binding) && !ids.has(session.session_id));
-        ids.add(session.session_id);
+        const selector = JSON.stringify([session.session_id, session.variant_id ?? null]);
+        requireValid(sameArchiveBinding(binding, session.revision.binding) && !ids.has(selector)
+            && (includePreserved || session.variant_id === undefined));
+        ids.add(selector);
     }
     return {binding, sessions, next_cursor: row.next_cursor === null ? null : cursor(row.next_cursor)};
 }
 
 export function decodeArchiveBindingResponse(value: unknown): BindingResponse {
     const row = object(value, [], false);
-    return {binding: decodeArchiveBinding(row.binding, false), head: decodeArchiveSequence(row.head)};
+    const result: BindingResponse = {binding: decodeArchiveBinding(row.binding, false), head: decodeArchiveSequence(row.head)};
+    if (row.capabilities !== undefined) {
+        requireValid(Array.isArray(row.capabilities));
+        if (!Array.isArray(row.capabilities)) throw new ArchiveProtocolError();
+        result.capabilities = row.capabilities.map((value: unknown) => text(value, 512, true));
+    }
+    return result;
 }
 
 export function decodeArchiveReceiptOutcome(value: unknown): ReceiptOutcome {
@@ -210,6 +303,13 @@ export function sameArchiveBinding(left: Binding, right: Binding): boolean {
 /** Decoding establishes a fixed field order and canonical timestamps, not server JSON property order. */
 export function sameArchivePublication(left: Publication, right: Publication): boolean {
     return JSON.stringify(decodeArchivePublication(left)) === JSON.stringify(decodeArchivePublication(right));
+}
+
+function operationId(value: unknown): string {
+    requireValid(typeof value === "string"
+        && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\s\S])/u.test(value));
+    if (typeof value !== "string") throw new ArchiveProtocolError();
+    return value;
 }
 
 function object(value: unknown, keys: readonly string[], strict: boolean): Record<string, unknown> {

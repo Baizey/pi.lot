@@ -4,12 +4,18 @@ import path from "node:path";
 import test from "node:test";
 import {ManagedChildProcess} from "../src/runtime/ManagedChildProcess.js";
 
-test("production subprocess creation is centralized in the managed owner", () => {
+test("production subprocess creation has explicit session or archive ownership", () => {
     const imports = sourceFiles(path.resolve("src"))
         .filter((file) => readFileSync(file, "utf8").includes("node:child_process"))
         .map((file) => path.relative(process.cwd(), file));
 
-    assert.deepEqual(imports, [path.join("src", "runtime", "ManagedChildProcess.ts")]);
+    // Archive workers must outlive the Pi session; their launcher cannot use its
+    // managed-process lifetime. The lock owner separately reaps short flock helpers.
+    assert.deepEqual(imports, [
+        path.join("src", "runtime", "ManagedChildProcess.ts"),
+        path.join("src", "server", "ArchiveLock.ts"),
+        path.join("src", "server", "ArchiveRuntime.ts"),
+    ]);
 });
 
 test("managed child processes own input, output, and normal completion", async () => {

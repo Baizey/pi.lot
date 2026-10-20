@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {mkdtempSync, readFileSync, rmSync, statSync, readdirSync} from "node:fs";
+import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
@@ -78,11 +79,12 @@ function harness(t: TestContext, page: ListPage = PAGE, fetcher?: typeof fetch) 
             await request("POST", "/v1/list", signal);
             return page;
         });
-        t.mock.method(archive, "fetch", async (sessionId: string, signal?: AbortSignal) => {
-            inputs.push(sessionId);
+        t.mock.method(archive, "fetch", async (sessionId: string, signal?: AbortSignal, variantId?: string) => {
+            inputs.push(variantId === undefined ? sessionId : {session_id: sessionId, variant_id: variantId});
             await request("GET", "/v1/binding", signal);
             await request("POST", "/v1/download", signal);
-            return {snapshot: SNAPSHOT, path: path.join(directory, "downloads", "snapshot.jsonl")};
+            return {snapshot: {...SNAPSHOT, ...(variantId !== undefined ? {variant_id: variantId} : {})},
+                path: path.join(directory, "downloads", "snapshot.jsonl")};
         });
         return archive;
     });
@@ -108,9 +110,9 @@ test("archive tools register lazily once, with read-only annotations and narrowl
     assert.equal(list.renderShell, "self");
     assert.equal(fetch.renderShell, "self");
     assert.equal(list.annotations?.readOnlyHint, true);
-    assert.deepEqual(Object.keys(list.parameters.properties), ["kind", "root_session_id", "started_from", "started_to",
+    assert.deepEqual(Object.keys(list.parameters.properties), ["session_id", "include_preserved", "kind", "root_session_id", "started_from", "started_to",
         "activity_from", "activity_to", "limit", "cursor"]);
-    assert.deepEqual(Object.keys(fetch.parameters.properties), ["session_id"]);
+    assert.deepEqual(Object.keys(fetch.parameters.properties), ["session_id", "variant_id"]);
     assert.deepEqual(fetch.parameters.required, ["session_id"]);
     assert.equal(Reflect.get(list.parameters, "additionalProperties"), false);
     assert.equal(Reflect.get(fetch.parameters, "additionalProperties"), false);
@@ -181,6 +183,20 @@ test("list passes only supported filters, limit and cursor to the archive client
         started_to: "2026-02-01T00:00:00Z", activity_from: "2026-01-01T00:00:00Z", activity_to: "2026-02-01T00:00:00Z"};
     await tools.listToolDefinition().execute("list-filters", {...filters, limit: 256, cursor: "opaque"}, undefined, undefined, ctx);
     assert.deepEqual(inputs, [{filters, limit: 256, cursor: "opaque"}]);
+});
+
+test("preserved selectors remain separate from native identity and opt-in stays outside filters", async (t) => {
+    const page: ListPage = {...PAGE, sessions: [...PAGE.sessions, {...PAGE.sessions[0]!, variant_id: "variant-1"}]};
+    const {tools, ctx, inputs} = harness(t, page);
+    const listed = await tools.listToolDefinition().execute("variants", {session_id: SNAPSHOT.session_id,
+        include_preserved: true}, undefined, undefined, ctx);
+    assert.deepEqual(inputs, [{filters: {session_id: SNAPSHOT.session_id}, cursor: undefined, limit: 50, include_preserved: true}]);
+    assert.deepEqual(listed.structuredContent, page);
+    const fetched = await tools.fetchToolDefinition().execute("variant", {session_id: SNAPSHOT.session_id,
+        variant_id: "variant-1"}, undefined, undefined, ctx);
+    assert.deepEqual(inputs.at(-1), {session_id: SNAPSHOT.session_id, variant_id: "variant-1"});
+    assert.equal(fetched.details.snapshot.session_id, SNAPSHOT.session_id);
+    assert.equal(fetched.details.snapshot.variant_id, "variant-1");
 });
 
 test("list rejects non-integer/out-of-range JSON limits before service creation", async (t) => {
@@ -282,6 +298,30 @@ test("large list pages preserve both continuation and all omitted sessions in a 
     }
 });
 
+test("cancellation while a large list page is written suppresses success and redacts the abort reason", {timeout: 10_000}, async (t) => {
+    const page = {...PAGE, sessions: Array.from({length: 256}, (_, index) => ({...PAGE.sessions[0]!,
+        session_id: `session-${index}`, metadata: {summary: "x".repeat(1024)}}))};
+    const h = harness(t, page);
+    const controller = new AbortController();
+    let startWrite!: () => void;
+    let releaseWrite!: () => void;
+    const entered = new Promise<void>((resolve) => { startWrite = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const write = fsPromises.writeFile;
+    const mock = t.mock.method(fsPromises, "writeFile", async (...args: Parameters<typeof write>) => {
+        startWrite();
+        await gate;
+        await write(...args);
+    });
+    t.after(() => { releaseWrite(); mock.mock.restore(); });
+    const pending = h.tools.listToolDefinition().execute("cancel-spill", {limit: 256}, controller.signal, undefined, h.ctx);
+    await entered;
+    controller.abort(new Error(`${CONFIG.apiKey} REMOTE_INSTRUCTIONS\u001b[31m`));
+    releaseWrite();
+    await assert.rejects(pending, {message: "Archive list cancelled."});
+    assert.equal(mock.mock.callCount(), 1);
+});
+
 test("real client error envelopes expose only recognized local diagnostics through archive tools", async (t) => {
     const cases = [
         {operation: "list", code: "unauthorized", status: 401, retryable: false,
@@ -316,8 +356,8 @@ test("typed client exceptions cannot smuggle arbitrary messages into archive too
     const secret = `${CONFIG.apiKey} REMOTE_INSTRUCTIONS\u001b[31m`;
     const fallback = "Check server configuration and network policy.";
     const cases = [
-        {error: new ArchiveClientError(secret, "not_found"),
-            diagnostic: "Server endpoint or resource was not found (not_found; HTTP 404). Check the server URL, server version, and requested resource."},
+        // An exception thrown by fetch is transport-originated, even when it impersonates a client error.
+        {error: new ArchiveClientError(secret, "not_found"), diagnostic: fallback},
         {error: new ArchiveClientError(secret), diagnostic: fallback},
         {error: new ArchiveClientError(secret, secret as ServerErrorCode), diagnostic: fallback},
         {error: new ArchiveClientError(secret, "toString" as ServerErrorCode), diagnostic: fallback},

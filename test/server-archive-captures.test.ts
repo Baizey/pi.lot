@@ -4,10 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import {createHash, randomUUID} from "node:crypto";
 import {afterEach, beforeEach, mock, test} from "node:test";
-import {SessionManager} from "@earendil-works/pi-coding-agent";
-import {ArchiveClient} from "../src/server/ArchiveClient.js";
-import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
-import {SessionArchive} from "../src/server/SessionArchive.js";
 import {ArchiveJournal, type ArchivePendingUpload, type ArchiveUploadSnapshot} from "../src/server/ArchiveJournal.js";
 import {type Binding, type Publication, type Receipt} from "../src/server/ArchiveProtocol.js";
 import {SessionKind} from "../src/sessions/SessionIdentity.js";
@@ -380,75 +376,6 @@ test("pending inventory permits receipt acceptance during iteration and spans bo
         assert.deepEqual(observed, new Set(operations.map((operation) => operation.request.operation_id)));
         assert.deepEqual([...journal.pendingOperations()], []);
     } finally { journal.close(); f.clean(); }
-});
-
-test("foreground recovery uses the captured outgoing identity after the manager changes during HTTP", async (t) => {
-    const f = fixture();
-    const journal = new ArchiveJournal(f.directory);
-    const original = pending(journal.prepare(origin, binding, snapshot(f.file)));
-    journal.close();
-    try {
-        const manager = SessionManager.inMemory(f.directory, {id: "root"});
-        let active = "root";
-        t.mock.method(manager, "getSessionId", () => active);
-        const client = new ArchiveClient({url: origin, apiKey: "synthetic-key"});
-        t.mock.method(client, "binding", async () => { active = "newly-selected-session"; return {binding, head: "1"}; });
-        const lookup = t.mock.method(client, "receipt", async () => ({status: "accepted" as const, receipt: receipt(original)}));
-        const publish = t.mock.method(client, "publish", async () => { throw new Error("No replay required for accepted operation"); });
-        const sessions = new ArchiveSessions(manager);
-        t.mock.method(sessions, "discover", async () => ({files: [], warnings: []}));
-        const service = new SessionArchive({url: origin, apiKey: "synthetic-key"},
-            {client, stateDirectory: f.directory, createSessions: () => sessions});
-        const report = await service.upload(manager, "current");
-        assert.deepEqual(report, {uploaded: 1, unchanged: 0, failed: 0, warnings: [], failures: []});
-        assert.deepEqual(lookup.mock.calls.map((call) => call.arguments[0]), [original.request]);
-        assert.equal(publish.mock.callCount(), 0);
-    } finally { f.clean(); }
-});
-
-test("real discovery and pending recovery stay with the serialized outgoing family across HTTP", async (t) => {
-    const f = fixture();
-    try {
-        const aFile = path.join(f.directory, "a.jsonl");
-        const bFile = path.join(f.directory, "b.jsonl");
-        const header = (id: string) => JSON.stringify({type: "session", version: 3, id,
-            timestamp: "2026-01-01T00:00:00Z", cwd: f.directory}) + "\n";
-        const aPrefix = header("a");
-        const aBody = aPrefix + JSON.stringify({type: "session_info", id: "name", parentId: null,
-            timestamp: "2026-01-01T00:00:01Z", name: "Outgoing"}) + "\n";
-        fs.writeFileSync(aFile, aBody, {mode: 0o600});
-        fs.writeFileSync(bFile, header("b"), {mode: 0o600});
-        const journal = new ArchiveJournal(f.directory);
-        let other: ArchivePendingUpload;
-        try {
-            pending(journal.prepare(origin, binding, {file: aFile, sessionId: "a", body: Buffer.from(aPrefix), metadata: {}}));
-            other = pending(journal.prepare(origin, binding, {file: bFile, sessionId: "b", body: Buffer.from(header("b")), metadata: {}}));
-        } finally { journal.close(); }
-        const manager = SessionManager.open(aFile, f.directory);
-        let active = {id: "a", file: aFile};
-        t.mock.method(manager, "getSessionId", () => active.id);
-        t.mock.method(manager, "getSessionFile", () => active.file);
-        const client = new ArchiveClient({url: origin, apiKey: "synthetic-key"});
-        t.mock.method(client, "binding", async () => { active = {id: "b", file: bFile}; return {binding, head: "0"}; });
-        const lookups: Publication[] = [];
-        t.mock.method(client, "receipt", async (request: Publication) => { lookups.push(request); return {status: "unknown" as const}; });
-        const published: Array<{request: Publication; body: Buffer}> = [];
-        t.mock.method(client, "publish", async (request: Publication, body: Uint8Array): Promise<Receipt> => {
-            published.push({request, body: Buffer.from(body)});
-            return {request, revision: {binding, seq: String(published.length)}};
-        });
-        const report = await new SessionArchive({url: origin, apiKey: "synthetic-key"},
-            {client, stateDirectory: f.directory}).upload(manager, "current");
-        assert.equal(report.failed, 0);
-        assert.equal(report.uploaded, 1);
-        assert.equal(published.length, 2);
-        assert.ok(published.every(({request}) => request.session_id === "a"));
-        assert.ok(lookups.every((request) => request.session_id === "a"));
-        assert.deepEqual(published.at(-1)!.body, Buffer.from(aBody));
-        const reopened = new ArchiveJournal(f.directory);
-        try { assert.deepEqual(reopened.pending(origin, binding, "b", other.request.operation_id), other); }
-        finally { reopened.close(); }
-    } finally { f.clean(); }
 });
 
 test("capture rejects invalid paths, identities, metadata, and budget configuration", () => {

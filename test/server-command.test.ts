@@ -3,54 +3,53 @@ import {existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
-import {SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {SessionManager, type ExtensionAPI, type ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
 import {ServerCommand} from "../src/commands/ServerCommand.js";
 import {ServerService} from "../src/server/ServerService.js";
 import {ServerConfigStore, type ServerConfig} from "../src/server/ServerConfig.js";
 import {SERVER_VERSION_REQUIREMENT} from "../src/server/ServerCompatibility.js";
 import type {ServerStatus} from "../src/server/ServerConnection.js";
-import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
-import {SessionArchive} from "../src/server/SessionArchive.js";
+import {ArchiveBackground, type ArchiveEnqueueResult} from "../src/server/ArchiveBackground.js";
+import {ArchiveRuntime} from "../src/server/ArchiveRuntime.js";
+import {ArchiveInbox} from "../src/server/ArchiveInbox.js";
 import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
 
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-command-test-key"};
 const SERVER_VERSION = "1.2.3";
-const OTHER_VERSION = "9.8.7";
 type RegisteredCommand = Parameters<ExtensionAPI["registerCommand"]>[1];
 type VersionCheck = NonNullable<ConstructorParameters<typeof ServerService>[1]>;
-type UploadArchive = NonNullable<ConstructorParameters<typeof ServerService>[2]>;
-const REPORT = {uploaded: 2, unchanged: 1, failed: 0, warnings: [], failures: []};
 
 function harness(
     t: TestContext,
     answers: Array<string | undefined> = [],
     hasUI = true,
     checkVersion: VersionCheck = async () => ({kind: "compatible", version: SERVER_VERSION}),
-    uploadArchive: UploadArchive = async () => REPORT,
 ) {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-server-command-"));
     t.after(() => rmSync(directory, {recursive: true, force: true}));
     const store = new ServerConfigStore(directory);
+    const runtime = new ArchiveRuntime();
+    t.mock.method(runtime, "initialize", async () => {});
+    t.mock.method(runtime, "launch", async () => {});
+    const background = new ArchiveBackground(store, {runtime});
+    const wake = t.mock.method(background, "wake", async () => {});
+    const initialize = t.mock.method(background, "initialize", async () => { await background.wake(); });
+    const enqueue = t.mock.method(background, "enqueue", async (..._args: Parameters<ArchiveBackground["enqueue"]>): Promise<ArchiveEnqueueResult> => ({queued: true}));
     const commands = new Map<string, RegisteredCommand>();
     const hooks: string[] = [];
     const pi = {
-        on(event: string) {
-            hooks.push(event);
-        },
-        registerCommand(name: string, options: RegisteredCommand) {
-            commands.set(name, options);
-        },
+        on(event: string) { hooks.push(event); },
+        registerCommand(name: string, options: RegisteredCommand) { commands.set(name, options); },
     } as unknown as ExtensionAPI;
     const checks: Array<{config: ServerConfig; signal: AbortSignal | undefined}> = [];
     const server = new ServerService(store, (config, signal) => {
         checks.push({config: {...config}, signal});
         return checkVersion(config, signal);
-    }, uploadArchive);
+    }, background);
     const instance = new ServerCommand(pi, server);
     instance.register();
-    assert.deepEqual(hooks, [], "commands must not register lifecycle hooks");
-    const command = commands.get("server");
-    assert.ok(command);
+    assert.deepEqual(hooks, [], "commands do not own lifecycle hooks");
+    const command = commands.get("server")!;
     const prompts: Array<{title: string; placeholder?: string}> = [];
     const notifications: Array<{message: string; type: string}> = [];
     const ctx = {
@@ -61,408 +60,334 @@ function harness(
                 prompts.push({title, placeholder});
                 return answers.shift();
             },
-            notify(message: string, type: "info" | "warning" | "error" = "info") {
-                notifications.push({message, type});
-            },
+            notify(message: string, type = "info") { notifications.push({message, type}); },
         },
     } as unknown as ExtensionCommandContext;
-    return {directory, store, server, instance, command, prompts, notifications, checks, ctx};
+    return {directory, store, runtime, background, initialize, wake, enqueue, server, instance, command, prompts, notifications, checks, ctx,
+        persisted() { ctx.sessionManager = SessionManager.create(directory, path.join(directory, "sessions")); }};
 }
 
-test("server command with no config shows only unconfigured status and makes no request", async (t) => {
-    const {command, ctx, directory, notifications, prompts, checks} = harness(t);
-    assert.deepEqual(readdirSync(directory), []);
-    await command.handler("", ctx);
-    assert.deepEqual(notifications, [{message: "Config: none\nStatus: Not configured.", type: "info"}]);
-    assert.deepEqual(checks, []);
-    assert.deepEqual(prompts, []);
-    assert.deepEqual(readdirSync(directory), []);
+test("bare server with no config makes no request, queue, or startup probe", async (t) => {
+    const h = harness(t);
+    await h.command.handler("", h.ctx);
+    assert.deepEqual(h.notifications, [{message: "Config: none\nStatus: Not configured.", type: "info"}]);
+    assert.deepEqual(h.checks, []);
+    assert.deepEqual(h.prompts, []);
+    assert.deepEqual(readdirSync(h.directory), []);
+    assert.equal(h.initialize.mock.callCount(), 0);
+    assert.equal(h.enqueue.mock.callCount(), 0);
 });
 
-test("login stores inputs locally; bare server shows the complete config and checked status", async (t) => {
-    const {command, ctx, store, notifications, prompts, checks} = harness(t, [CONFIG.url, CONFIG.apiKey]);
-    await command.handler(" LOGIN ", ctx);
-    assert.deepEqual(prompts, [
+test("login saves credentials before background initialization/wake; status intentionally displays the key", async (t) => {
+    const h = harness(t, [CONFIG.url, CONFIG.apiKey]);
+    t.mock.method(h.background, "initialize", async () => {
+        assert.deepEqual(h.store.load(), CONFIG);
+        await h.background.wake();
+    });
+    await h.command.handler(" LOGIN ", h.ctx);
+    assert.deepEqual(h.prompts, [
         {title: "pi.server URL", placeholder: "https://sessions.example.com"},
         {title: "pi.server API key", placeholder: undefined},
     ]);
-    assert.deepEqual(JSON.parse(readFileSync(store.file, "utf8")), CONFIG);
-    assert.match(notifications.at(-1)?.message ?? "", /Saved/);
-    assert.equal(checks.length, 0);
-    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
-    await command.handler("", ctx);
-    assert.deepEqual(checks.map((check) => check.config), [CONFIG]);
-    assert.deepEqual(notifications.at(-1), {
-        message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: Connected (pi.server ${SERVER_VERSION}; compatible).`,
-        type: "info",
+    assert.deepEqual(h.store.load(), CONFIG);
+    assert.ok(h.store.connection()?.generation);
+    assert.equal(h.wake.mock.callCount(), 1);
+    assert.equal(h.enqueue.mock.callCount(), 0, "login does not backfill history");
+    assert.equal(h.checks.length, 0);
+    assert.equal(JSON.stringify(h.notifications).includes(CONFIG.apiKey), false);
+    assert.match(h.notifications[0]!.message, /queued automatically/);
+    await h.command.handler("", h.ctx);
+    assert.deepEqual(h.checks.map((check) => check.config), [CONFIG]);
+    assert.deepEqual(h.notifications.at(-1), {
+        message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: Connected (pi.server ${SERVER_VERSION}; compatible).`, type: "info",
     });
-    assert.equal(notifications.at(-1)?.message.includes("Usage:"), false);
 });
 
-test("login accepts an explicitly configured HTTP server outside loopback without connecting", async (t) => {
+test("configured HTTP origins are accepted locally and login atomically replaces previous config", async (t) => {
     const url = "http://192.168.1.10:8080";
-    const {command, ctx, store, checks} = harness(t, [url, CONFIG.apiKey]);
-    await command.handler("login", ctx);
-    assert.deepEqual(store.load(), {...CONFIG, url});
-    assert.deepEqual(checks, []);
+    const h = harness(t, [url, CONFIG.apiKey]);
+    h.store.save({url: "https://previous.example.com", apiKey: "old-key"});
+    const previous = h.store.connection()!.generation;
+    await h.command.handler("login", h.ctx);
+    assert.deepEqual(h.store.load(), {...CONFIG, url});
+    assert.notEqual(h.store.connection()!.generation, previous);
+    assert.deepEqual(h.checks, []);
 });
 
-test("checked status reports incompatible versions and failures without changing the config", async (t) => {
-    const cases: Array<{status: ServerStatus; message: string; type: string}> = [
-        {status: {kind: "incompatible", version: OTHER_VERSION}, message: `Incompatible: server ${OTHER_VERSION}; required ${SERVER_VERSION_REQUIREMENT}.`, type: "warning"},
+test("status retains incompatible and failure presentation without changing stored config", async (t) => {
+    for (const entry of [
+        {status: {kind: "incompatible", version: "9.8.7"}, message: `Incompatible: server 9.8.7; required ${SERVER_VERSION_REQUIREMENT}.`, type: "warning"},
         {status: {kind: "failure", message: "Authentication rejected (HTTP 401)."}, message: "Authentication rejected (HTTP 401).", type: "error"},
         {status: {kind: "failure", message: "Server connection failed."}, message: "Server connection failed.", type: "error"},
-    ];
-    for (const entry of cases) {
-        const {command, ctx, store, notifications} = harness(t, [], true, async () => entry.status);
-        store.save(CONFIG);
-        const before = readFileSync(store.file);
-        await command.handler("", ctx);
-        assert.deepEqual(notifications, [{
-            message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: ${entry.message}`,
-            type: entry.type,
-        }]);
-        assert.deepEqual(readFileSync(store.file), before);
+    ] satisfies Array<{status: ServerStatus; message: string; type: string}>) {
+        const h = harness(t, [], true, async () => entry.status);
+        h.store.save(CONFIG);
+        const before = readFileSync(h.store.file);
+        await h.command.handler("", h.ctx);
+        assert.deepEqual(h.notifications, [{message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: ${entry.message}`, type: entry.type}]);
+        assert.deepEqual(readFileSync(h.store.file), before);
     }
 });
 
-test("login can atomically replace an existing configuration", async (t) => {
-    const {command, ctx, store} = harness(t, [CONFIG.url, CONFIG.apiKey]);
-    store.save({url: "https://previous.example.com", apiKey: "previous-key"});
-    await command.handler("login", ctx);
-    assert.deepEqual(store.load(), CONFIG);
-});
-
-test("canceling either login input preserves the previous file byte for byte", async (t) => {
-    for (const answers of [[undefined], [CONFIG.url, undefined]]) {
-        const {command, ctx, store, notifications} = harness(t, answers);
-        store.save(CONFIG);
-        const before = readFileSync(store.file);
-        await command.handler("login", ctx);
-        assert.deepEqual(readFileSync(store.file), before);
-        assert.deepEqual(notifications, []);
+test("cancelled or invalid login never changes previous credentials or starts background work", async (t) => {
+    for (const answers of [[undefined], [CONFIG.url, undefined], [CONFIG.url, ""], ["not-a-url", CONFIG.apiKey],
+        ["https://user:private-command-test-key@sessions.example.com", CONFIG.apiKey]]) {
+        const h = harness(t, answers);
+        h.store.save(CONFIG);
+        const before = readFileSync(h.store.file);
+        await h.command.handler("login", h.ctx);
+        assert.deepEqual(readFileSync(h.store.file), before);
+        assert.equal(h.initialize.mock.callCount(), 0);
+        assert.equal(h.wake.mock.callCount(), 0);
+        assert.equal(JSON.stringify(h.notifications).includes(CONFIG.apiKey), false);
     }
+    const h = harness(t, [CONFIG.url, undefined]);
+    await h.command.handler("login", h.ctx);
+    assert.deepEqual(readdirSync(h.directory), []);
 });
 
-test("canceling first-time login does not create a config", async (t) => {
-    const {command, ctx, directory} = harness(t, [CONFIG.url, undefined]);
-    await command.handler("login", ctx);
-    assert.deepEqual(readdirSync(directory), []);
+test("login rejects unavailable UI and redacts unexpected dialog failures", async (t) => {
+    const h = harness(t, [CONFIG.url, CONFIG.apiKey], false);
+    await h.command.handler("login", h.ctx);
+    assert.deepEqual(h.prompts, []);
+    assert.deepEqual(readdirSync(h.directory), []);
+    assert.equal(h.notifications[0]!.type, "error");
+    const interactive = harness(t);
+    interactive.ctx.ui.input = async () => { throw new Error(CONFIG.apiKey); };
+    await interactive.command.handler("login", interactive.ctx);
+    assert.deepEqual(interactive.notifications, [{message: "Server configuration operation failed.", type: "error"}]);
 });
 
-test("invalid login input leaves existing credentials untouched and is not reflected", async (t) => {
-    for (const answers of [[CONFIG.url, ""], ["not-a-url", CONFIG.apiKey], ["https://user:private-command-test-key@sessions.example.com", CONFIG.apiKey]]) {
-        const {command, ctx, store, notifications} = harness(t, answers);
-        store.save(CONFIG);
-        await command.handler("login", ctx);
-        assert.deepEqual(store.load(), CONFIG);
-        assert.equal(notifications.at(-1)?.type, "error");
-        assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
-    }
-});
-
-test("logout deletes only connection configuration, without connecting to a server", async (t) => {
-    const fetch = t.mock.method(globalThis, "fetch", async () => {
-        throw new Error("Commands must not perform network requests");
+test("logout durably removes authorization before wake, without network or deleting archives", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    const inbox = new ArchiveInbox(h.store.archiveDirectory);
+    const oldControl = inbox.control()!.token;
+    for (const file of ["session.jsonl", "archive.sqlite", "download.jsonl"]) writeFileSync(path.join(h.directory, file), file);
+    const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("No command network"); });
+    t.mock.method(h.background, "wake", async () => {
+        assert.equal(h.store.connection(), undefined, "future worker auth is revoked before wake");
+        assert.notEqual(inbox.control()!.token, oldControl);
     });
-    const {command, ctx, store, directory, notifications, checks} = harness(t, [CONFIG.url, CONFIG.apiKey]);
-    const session = path.join(directory, "session.jsonl");
-    writeFileSync(session, "synthetic session");
-    await command.handler("login", ctx);
-    await command.handler("logout", ctx);
-    await command.handler("logout", ctx);
-    assert.match(notifications.at(-1)?.message ?? "", /has not been revoked/);
-    await command.handler("", ctx);
-    assert.deepEqual(checks, []);
-    assert.equal(existsSync(store.file), false);
-    assert.equal(readFileSync(session, "utf8"), "synthetic session");
+    await h.command.handler("logout", h.ctx);
+    await h.command.handler("logout", h.ctx);
+    for (const file of ["session.jsonl", "archive.sqlite", "download.jsonl"]) assert.equal(readFileSync(path.join(h.directory, file), "utf8"), file);
+    assert.equal(existsSync(h.store.file), false);
+    assert.match(h.notifications.at(-1)!.message, /has not been revoked/);
     assert.equal(fetch.mock.callCount(), 0);
-    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
+    assert.deepEqual(h.checks, []);
 });
 
-test("malformed credential JSON is not leaked and can still be logged out", async (t) => {
-    const {command, ctx, store, notifications} = harness(t);
-    writeFileSync(store.file, CONFIG.apiKey, {mode: 0o600});
-    await command.handler("", ctx);
-    assert.equal(notifications.at(-1)?.type, "error");
-    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
-    await command.handler("logout", ctx);
-    assert.equal(existsSync(store.file), false);
+test("malformed config is not leaked and can still be removed", async (t) => {
+    const h = harness(t);
+    writeFileSync(h.store.file, CONFIG.apiKey, {mode: 0o600});
+    await h.command.handler("", h.ctx);
+    assert.equal(h.notifications[0]!.type, "error");
+    assert.equal(JSON.stringify(h.notifications).includes(CONFIG.apiKey), false);
+    await h.command.handler("logout", h.ctx);
+    assert.equal(h.store.load(), undefined);
 });
 
-test("login refuses unsupported UI modes without creating a config", async (t) => {
-    const {command, ctx, directory, prompts, notifications} = harness(t, [CONFIG.url, CONFIG.apiKey], false);
-    await command.handler("login", ctx);
-    assert.deepEqual(prompts, []);
-    assert.deepEqual(readdirSync(directory), []);
-    assert.equal(notifications.at(-1)?.type, "error");
-});
-
-test("unexpected input errors do not expose their messages", async (t) => {
-    const {command, ctx, directory, notifications} = harness(t);
-    ctx.ui.input = async () => { throw new Error(CONFIG.apiKey); };
-    await command.handler("login", ctx);
-    assert.deepEqual(readdirSync(directory), []);
-    assert.deepEqual(notifications, [{message: "Server configuration operation failed.", type: "error"}]);
-});
-
-test("manual upload scopes are offered; update and credential arguments are not implemented", async (t) => {
-    const {command, ctx, directory, notifications, prompts} = harness(t);
-    assert.ok(command.getArgumentCompletions);
-    assert.deepEqual(await command.getArgumentCompletions(""), [
-        {value: "login", label: "login"}, {value: "logout", label: "logout"}, {value: "upload", label: "upload"},
-    ]);
-    assert.deepEqual(await command.getArgumentCompletions(" LOGI"), [{value: "login", label: "login"}]);
-    assert.deepEqual(await command.getArgumentCompletions("login "), []);
-    assert.deepEqual(await command.getArgumentCompletions("upload "), [
-        {value: "upload current", label: "upload current"}, {value: "upload all", label: "upload all"},
-    ]);
-    assert.deepEqual(await command.getArgumentCompletions("upload a"), [{value: "upload all", label: "upload all"}]);
-    assert.equal(await command.getArgumentCompletions("update"), null);
-    for (const input of ["update", "login https://sessions.example.com", `login ${CONFIG.apiKey}`, "logout extra", "upload elsewhere", "upload all extra"]) {
-        await command.handler(input, ctx);
-        assert.deepEqual(notifications.at(-1), {message: "Usage: /server [login|logout|upload [current|all]]", type: "error"});
+for (const action of ["login", "logout"] as const) {
+    for (const method of ["initialize", "wake"] as const) {
+        test(`${action} committed configuration is not misreported as failed when background ${method} fails`, async (t) => {
+            const h = harness(t, [CONFIG.url, CONFIG.apiKey]);
+            if (action === "logout") h.store.save(CONFIG);
+            t.mock.method(h.background, method, async () => { throw new Error(`${CONFIG.apiKey}\u001b[31m`); });
+            await h.command.handler(action, h.ctx);
+            assert.deepEqual(h.store.load(), action === "login" ? CONFIG : undefined);
+            assert.deepEqual(h.notifications.map((notice) => notice.type), ["info", "warning"]);
+            assert.match(h.notifications[1]!.message, /configuration changed/);
+            assert.doesNotMatch(JSON.stringify(h.notifications), /operation failed|private-command-test-key|31m/);
+        });
     }
-    assert.deepEqual(prompts, []);
-    assert.deepEqual(readdirSync(directory), []);
+}
+
+test("manual upload enqueues current by default and all only explicitly, without validation or foreground archive work", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    h.persisted();
+    const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("No HTTP"); });
+    const discoverPage = t.mock.method(ArchiveSessions.prototype, "discoverPage", async () => { throw new Error("No scan"); });
+    const captureSource = t.mock.method(ArchiveSessions.prototype, "captureSource", async () => { throw new Error("No hash/copy"); });
+    for (const input of ["upload", "upload current", " UPLOAD ALL "]) await h.command.handler(input, h.ctx);
+    assert.deepEqual(h.enqueue.mock.calls.map((call) => call.arguments[0].scope), ["current", "current", "all"]);
+    for (const call of h.enqueue.mock.calls) {
+        assert.equal(call.arguments.length, 1, "no cancellation signal belongs to background work");
+        assert.equal(call.arguments[0].sessionFile, h.ctx.sessionManager.getSessionFile());
+        assert.equal(call.arguments[0].activeSession.sessionId, h.ctx.sessionManager.getSessionId());
+    }
+    assert.equal(h.notifications.length, 3);
+    for (const notice of h.notifications) {
+        assert.match(notice.message, /queued for background upload/);
+        assert.doesNotMatch(notice.message, /uploaded|unchanged|failed/);
+        assert.equal(notice.type, "info");
+    }
+    for (const method of [fetch, discoverPage, captureSource, h.initialize]) assert.equal(method.mock.callCount(), 0);
+    assert.deepEqual(h.checks, []);
 });
 
-test("logout cancels an outstanding status check and suppresses its stale config", async (t) => {
-    let finish!: (status: ServerStatus) => void;
-    const {command, ctx, store, notifications, checks} = harness(t, [], true,
-        () => new Promise((resolve) => { finish = resolve; }));
-    store.save(CONFIG);
-    const pending = command.handler("", ctx);
-    assert.equal(checks.length, 1);
-    await command.handler("logout", ctx);
-    assert.equal(checks[0]?.signal?.aborted, true);
-    finish({kind: "compatible", version: SERVER_VERSION});
+test("manual all permits ephemeral context; current explains that it was not queued", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    await h.command.handler("upload current", h.ctx);
+    assert.equal(h.enqueue.mock.callCount(), 0);
+    assert.match(h.notifications[0]!.message, /ephemeral and was not queued/);
+    await h.command.handler("upload all", h.ctx);
+    assert.equal(h.enqueue.mock.callCount(), 1);
+    assert.equal(h.enqueue.mock.calls[0]!.arguments[0].sessionFile, undefined);
+    assert.equal(h.enqueue.mock.calls[0]!.arguments[0].scope, "all");
+});
+
+test("enqueue requires configuration and failures produce fixed bounded warnings without exception data", async (t) => {
+    const h = harness(t);
+    await h.command.handler("upload all", h.ctx);
+    assert.equal(h.enqueue.mock.callCount(), 0);
+    assert.match(h.notifications[0]!.message, /not configured/);
+    h.store.save(CONFIG);
+    t.mock.method(h.background, "enqueue", async () => { throw new Error(`${CONFIG.apiKey}\u001b[31m${"x".repeat(10000)}`); });
+    await h.command.handler("upload all", h.ctx);
+    assert.deepEqual(h.notifications.at(-1), {message: "Server archive work could not be queued. Local session files are unchanged.", type: "error"});
+});
+
+test("durable admission followed by launch failure reports queued and retains the manifest", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    h.enqueue.mock.restore();
+    // Deliberately unavailable runtime: enqueue must not initialize it on the manual path.
+    await h.command.handler("upload all", h.ctx);
+    const inbox = new ArchiveInbox(h.background.directory);
+    assert.equal(inbox.ids().length, 1);
+    assert.equal(inbox.readManifest(inbox.ids()[0]!)!.source.scope, "all");
+    assert.match(h.notifications[0]!.message, /is queued, but/);
+    assert.doesNotMatch(h.notifications[0]!.message, /could not be queued/);
+    assert.equal(h.notifications[0]!.type, "warning");
+    assert.equal(h.initialize.mock.callCount(), 0);
+});
+
+test("committed manual work survives request shutdown and logout while its local launcher is still pending", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    h.enqueue.mock.restore();
+    h.initialize.mock.restore();
+    h.wake.mock.restore();
+    await h.background.initialize();
+    let finishLaunch!: () => void;
+    t.mock.method(h.runtime, "launch", (...args: Parameters<ArchiveRuntime["launch"]>) => {
+        assert.equal(args.length, 2, "the launcher receives archive/config roots, not request cancellation");
+        return new Promise<void>((resolve) => { finishLaunch = resolve; });
+    });
+    const pending = h.command.handler("upload all", h.ctx);
+    const inbox = new ArchiveInbox(h.background.directory);
+    const ids = inbox.ids();
+    assert.equal(ids.length, 1, "admission commits before waiting for launch outcome");
+    const original = inbox.readManifest(ids[0]!);
+    h.server.beginShutdown();
+    h.store.logout();
+    assert.equal(h.store.connection(), undefined);
+    assert.deepEqual(inbox.readManifest(ids[0]!), original, "logout pauses authorization without deleting committed work");
+    finishLaunch();
     await pending;
-    assert.equal(notifications.length, 1);
-    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
-    assert.equal(existsSync(store.file), false);
+    assert.deepEqual(h.notifications, [], "cancelled command cannot publish a stale queued result");
+    assert.deepEqual(inbox.ids(), ids);
 });
 
-test("a newer status check supersedes an older response", async (t) => {
-    let finish!: (status: ServerStatus) => void;
-    let calls = 0;
-    const {command, ctx, store, notifications, checks} = harness(t, [], true, () => {
-        calls++;
-        return calls === 1
-            ? new Promise((resolve) => { finish = resolve; })
-            : Promise.resolve({kind: "compatible", version: SERVER_VERSION});
-    });
-    store.save(CONFIG);
-    const older = command.handler("", ctx);
-    await command.handler("", ctx);
-    finish({kind: "incompatible", version: OTHER_VERSION});
-    await older;
-    assert.equal(checks[0]?.signal?.aborted, true);
-    assert.equal(notifications.length, 1);
-    assert.match(notifications[0]?.message ?? "", /Status: Connected/);
+test("queue warning text is never reflected, even when it contains credentials or terminal control sequences", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    t.mock.method(h.background, "enqueue", async () => ({queued: true as const, warning: `${CONFIG.apiKey}\u001b[31m${"x".repeat(10000)}`}));
+    await h.command.handler("upload all", h.ctx);
+    assert.match(h.notifications[0]!.message, /is queued, but/);
+    assert.ok(h.notifications[0]!.message.length < 250);
+    assert.doesNotMatch(JSON.stringify(h.notifications), /private-command-test-key|31m/);
 });
 
-test("upload defaults to current family and all is an explicit backfill", async (t) => {
-    const calls: Array<{scope: string; config: ServerConfig; manager: ExtensionContext["sessionManager"]; signal?: AbortSignal}> = [];
-    const {command, ctx, store, checks, notifications} = harness(t, [], true, undefined,
-        async (config, manager, scope, signal) => {
-            calls.push({scope, config, manager, signal});
-            return {...REPORT, failed: 1, failures: [{file: "session.jsonl", message: "Safe conflict"}], warnings: ["Legacy child kind unknown"]};
-        });
-    store.save(CONFIG);
-    for (const input of ["upload", "upload current", " UPLOAD ALL "]) await command.handler(input, ctx);
-    assert.deepEqual(calls.map((call) => call.scope), ["current", "current", "all"]);
-    assert.ok(calls.every((call) => call.manager === ctx.sessionManager && call.config.apiKey === CONFIG.apiKey && !call.signal?.aborted));
-    assert.deepEqual(checks, []);
-    assert.equal(notifications.length, 3);
-    assert.match(notifications[0]!.message, /2 uploaded, 1 unchanged, 1 failed/);
-    assert.match(notifications[0]!.message, /Legacy child kind unknown/);
-    assert.match(notifications[0]!.message, /Failed: session\.jsonl: Safe conflict/);
-    assert.equal(notifications[0]!.type, "warning");
-    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
-});
-
-test("upload shows bounded failure paths and reasons with credentials and terminal controls removed", async (t) => {
-    const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => ({
-        ...REPORT,
-        failed: 25,
-        warnings: [`Warning contains ${CONFIG.apiKey}\u001b[31m\ncontrol`],
-        failures: Array.from({length: 25}, (_, index) => ({
-            file: `/sessions/${CONFIG.apiKey}\u001b[31m\n${index}.jsonl`,
-            message: `Restore or fork: ${CONFIG.apiKey}\u001b[0m\r\u0000${"x".repeat(2000)}`,
-        })),
-    }));
-    store.save(CONFIG);
-    await command.handler("upload", ctx);
-    const output = notifications[0]!.message;
-    assert.equal(output.includes(CONFIG.apiKey), false);
-    assert.doesNotMatch(output, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
-    assert.doesNotMatch(output, /\[31m|\[0m/);
-    assert.match(output, /Failed: \/sessions\/\[redacted\] 0\.jsonl: Restore or fork: \[redacted\]/);
-    assert.match(output, /Warning: Warning contains \[redacted\] control/);
-    const failures = output.split("\n").filter((line) => line.startsWith("Failed: "));
-    assert.equal(failures.length, 20);
-    assert.ok(failures.every((line) => line.length <= 7 + 512 + 2 + 1024));
-    assert.ok(failures.every((line) => line.endsWith("…")));
-});
-
-test("upload requires configuration and archive exceptions are sanitized", async (t) => {
-    let calls = 0;
-    const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => {
-        calls++;
-        throw new Error(CONFIG.apiKey);
-    });
-    await command.handler("upload", ctx);
-    assert.equal(calls, 0);
-    assert.match(notifications.at(-1)!.message, /not configured/i);
-    store.save(CONFIG);
-    await command.handler("upload", ctx);
-    assert.deepEqual(notifications.at(-1), {message: "Server archive operation failed.", type: "error"});
-    assert.equal(JSON.stringify(notifications).includes(CONFIG.apiKey), false);
-});
-
-test("initial upload binding failures show local authentication and overload diagnostics without creating a journal", async (t) => {
-    for (const entry of [
-        {code: "unauthorized", status: 401, retryable: false, diagnostic: /API key is missing, invalid, or revoked/, action: /Check the configured API key/},
-        {code: "overloaded", status: 503, retryable: true, diagnostic: /Server is overloaded/, action: /Retry later/},
-    ]) {
-        const requests: Array<{url: string; method?: string}> = [];
-        const secret = `${CONFIG.apiKey}\u001b[31m\r\nserver supplied secret`;
-        const snapshot = t.mock.fn(async () => { throw new Error("Binding failure must precede reading a snapshot"); });
-        const {command, ctx, store, directory, notifications, checks} = harness(t, [], true, undefined,
-            (config, context, scope, signal) => {
-                const client = new ArchiveClient(config, {fetch: async (input, init) => {
-                    requests.push({url: String(input), method: init?.method});
-                    return new Response(JSON.stringify({error: {
-                        code: entry.code, retryable: entry.retryable, publication_outcome: "unconfirmed", message: secret,
-                    }}), {status: entry.status, headers: {"Content-Type": "application/json", "Retry-After": "17"}});
-                }});
-                return new SessionArchive(config, {
-                    client,
-                    stateDirectory: path.join(directory, "archive"),
-                    createSessions(manager) {
-                        const sessions = new ArchiveSessions(manager);
-                        t.mock.method(sessions, "discover", async () => ({files: [path.join(directory, "session.jsonl")], warnings: []}));
-                        t.mock.method(sessions, "snapshot", snapshot);
-                        return sessions;
-                    },
-                }).upload(context, scope, signal);
-            });
-        store.save(CONFIG);
-        const before = readFileSync(store.file);
-        await command.handler("upload", ctx);
-        assert.deepEqual(requests, [{url: `${CONFIG.url}/v1/binding`, method: "GET"}]);
-        assert.equal(snapshot.mock.callCount(), 0);
-        assert.equal(existsSync(path.join(directory, "archive")), false);
-        assert.deepEqual(checks, []);
-        assert.deepEqual(readFileSync(store.file), before);
-        assert.equal(notifications.length, 1);
-        assert.equal(notifications[0]!.type, "error");
-        const output = notifications[0]!.message;
-        assert.match(output, /^Server archive operation failed\./);
-        assert.match(output, entry.diagnostic);
-        assert.match(output, entry.action);
-        assert.ok(output.includes(`(${entry.code}; HTTP ${entry.status})`));
-        assert.equal(output.includes(CONFIG.apiKey), false);
-        assert.doesNotMatch(output, /server supplied secret|\[31m|[\u0000-\u001f\u007f-\u009f]/);
-        assert.doesNotMatch(output, /uploaded|Retry after 17 seconds/);
-    }
-});
-
-test("recognized archive error codes use local advice instead of a forged exception message", async (t) => {
-    const secret = `${CONFIG.apiKey}\u001b]0;forged diagnostic\u0007\r\nserver supplied secret`;
-    for (const entry of [
-        {code: "unauthorized", diagnostic: /API key is missing, invalid, or revoked/, action: /Check the configured API key/},
-        {code: "overloaded", diagnostic: /Server is overloaded/, action: /Retry later/},
-        {code: "already_exists", diagnostic: /Server session already exists/, action: /Keep the original upload state intact; recover its receipt or fork a new session/},
-    ] as const) {
-        const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => {
-            throw new ArchiveClientError(secret, entry.code);
-        });
-        store.save(CONFIG);
-        await command.handler(" UPLOAD ALL ", ctx);
-        assert.equal(notifications.length, 1);
-        assert.equal(notifications[0]!.type, "error");
-        const output = notifications[0]!.message;
-        assert.match(output, /^Server archive operation failed\./);
-        assert.match(output, entry.diagnostic);
-        assert.match(output, entry.action);
-        assert.equal(output.includes(CONFIG.apiKey), false);
-        assert.doesNotMatch(output, /forged diagnostic|server supplied secret|[\u0000-\u001f\u007f-\u009f]/);
-    }
-});
-
-test("unknown, missing, or untrusted archive error codes remain generic without reflecting messages", async (t) => {
-    const secret = `${CONFIG.apiKey}\u001b[31m\u0000\r\nserver supplied secret`;
-    const unknownCodes = ["future_code", "toString", "__proto__", secret].map((code) => {
-        const error = new ArchiveClientError(secret);
-        // Simulate a malformed runtime exception without widening the production error-code type.
-        Object.defineProperty(error, "code", {value: code});
-        return error;
-    });
-    for (const error of [
-        ...unknownCodes,
-        new ArchiveClientError(secret),
-        new Error(secret),
-        Object.assign(new Error(secret), {code: "unauthorized"}),
-        {name: "ArchiveClientError", code: "overloaded", message: secret},
-    ]) {
-        const {command, ctx, store, notifications} = harness(t, [], true, undefined, async () => { throw error; });
-        store.save(CONFIG);
-        await command.handler("upload current", ctx);
-        assert.deepEqual(notifications, [{message: "Server archive operation failed.", type: "error"}]);
-    }
-});
-
-test("every new command and shutdown cancel uploads and suppress late results or errors", async (t) => {
+test("superseding commands and shutdown suppress late queue results/errors without cancelling owned work", async (t) => {
     for (const next of ["", "login", "logout", "invalid", "shutdown"]) {
-        for (const error of [undefined, new Error(CONFIG.apiKey),
-            new ArchiveClientError(`${CONFIG.apiKey}\u001b[31m`, "unauthorized"),
-            new ArchiveClientError(`${CONFIG.apiKey}\u001b[31m`, "overloaded")]) {
+        for (const fail of [false, true]) {
+            const h = harness(t, [undefined]);
+            h.store.save(CONFIG);
             let finish!: () => void;
-            let uploadSignal: AbortSignal | undefined;
-            const {command, ctx, store, notifications, server} = harness(t, [undefined], true, undefined,
-                (_config, _ctx, _scope, signal) => {
-                    uploadSignal = signal;
-                    return new Promise((resolve, fail) => { finish = () => error ? fail(error) : resolve(REPORT); });
+            let completed = false;
+            t.mock.method(h.background, "enqueue", (...args: Parameters<ArchiveBackground["enqueue"]>) => {
+                assert.equal(args.length, 1);
+                return new Promise<ArchiveEnqueueResult>((resolve, reject) => {
+                    finish = () => {
+                        completed = true;
+                        if (fail) reject(new Error(CONFIG.apiKey));
+                        else resolve({queued: true});
+                    };
                 });
-            store.save(CONFIG);
-            const pending = command.handler("upload", ctx);
-            if (next === "shutdown") server.beginShutdown();
-            else await command.handler(next, ctx);
-            assert.equal(uploadSignal?.aborted, true);
-            const count = notifications.length;
+            });
+            const pending = h.command.handler("upload all", h.ctx);
+            if (next === "shutdown") h.server.beginShutdown();
+            else await h.command.handler(next, h.ctx);
+            const count = h.notifications.length;
             finish();
             await pending;
-            assert.equal(notifications.length, count);
+            assert.equal(completed, true);
+            assert.equal(h.notifications.length, count);
         }
     }
 });
 
-test("logout preserves archive journal and downloads", async (t) => {
-    const {command, ctx, store, directory} = harness(t);
-    store.save(CONFIG);
-    const journal = path.join(directory, "archive.sqlite");
-    const download = path.join(directory, "download.jsonl");
-    writeFileSync(journal, "journal");
-    writeFileSync(download, "download");
-    await command.handler("logout", ctx);
-    assert.equal(readFileSync(journal, "utf8"), "journal");
-    assert.equal(readFileSync(download, "utf8"), "download");
+test("logout suppresses an outstanding status result and invalidates credentials before it completes", async (t) => {
+    let finish!: (status: ServerStatus) => void;
+    const h = harness(t, [], true, () => new Promise((resolve) => { finish = resolve; }));
+    h.store.save(CONFIG);
+    const pending = h.command.handler("", h.ctx);
+    await h.command.handler("logout", h.ctx);
+    assert.equal(h.checks[0]!.signal!.aborted, true);
+    assert.equal(h.store.connection(), undefined);
+    finish({kind: "compatible", version: SERVER_VERSION});
+    await pending;
+    assert.equal(h.notifications.length, 1);
+    assert.equal(JSON.stringify(h.notifications).includes(CONFIG.apiKey), false);
 });
 
-test("a superseded login cannot save credentials after logout", async (t) => {
-    const {command, ctx, store} = harness(t);
+test("superseded login cannot save credentials after logout or publish a stale wake failure", async (t) => {
+    const h = harness(t);
     let finish!: (value: string) => void;
-    ctx.ui.input = () => new Promise((resolve) => { finish = resolve; });
-    const pending = command.handler("login", ctx);
-    await command.handler("logout", ctx);
+    h.ctx.ui.input = () => new Promise((resolve) => { finish = resolve; });
+    const pending = h.command.handler("login", h.ctx);
+    await h.command.handler("logout", h.ctx);
     finish(CONFIG.url);
     await pending;
-    assert.equal(store.load(), undefined);
+    assert.equal(h.store.load(), undefined);
+    assert.equal(h.notifications.length, 1);
+
+    const second = harness(t, [CONFIG.url, CONFIG.apiKey]);
+    let rejectWake!: () => void;
+    let initialized!: () => void;
+    const ready = new Promise<void>((resolve) => { initialized = resolve; });
+    t.mock.method(second.background, "initialize", () => new Promise<void>((_resolve, reject) => {
+        initialized();
+        rejectWake = () => reject(new Error(CONFIG.apiKey));
+    }));
+    const login = second.command.handler("login", second.ctx);
+    await ready;
+    await second.command.handler("invalid", second.ctx);
+    const count = second.notifications.length;
+    rejectWake();
+    await login;
+    assert.equal(second.notifications.length, count);
+    assert.deepEqual(second.store.load(), CONFIG);
 });
 
-test("server command rejects duplicate registration", (t) => {
-    const {instance} = harness(t);
-    assert.throws(() => instance.register(), /already registered/);
+test("manual scopes are offered and unsupported credential arguments are not reflected", async (t) => {
+    const h = harness(t);
+    assert.deepEqual(await h.command.getArgumentCompletions!(""), [
+        {value: "login", label: "login"}, {value: "logout", label: "logout"}, {value: "upload", label: "upload"},
+    ]);
+    assert.deepEqual(await h.command.getArgumentCompletions!("upload "), [
+        {value: "upload current", label: "upload current"}, {value: "upload all", label: "upload all"},
+    ]);
+    assert.deepEqual(await h.command.getArgumentCompletions!("upload a"), [{value: "upload all", label: "upload all"}]);
+    assert.equal(await h.command.getArgumentCompletions!("update"), null);
+    for (const input of ["update", `login ${CONFIG.apiKey}`, "logout extra", "upload elsewhere", "upload all extra"]) {
+        await h.command.handler(input, h.ctx);
+        assert.deepEqual(h.notifications.at(-1), {message: "Usage: /server [login|logout|upload [current|all]]", type: "error"});
+    }
+    assert.deepEqual(readdirSync(h.directory), []);
+    assert.throws(() => h.instance.register(), /already registered/);
 });

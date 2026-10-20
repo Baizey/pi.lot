@@ -25,7 +25,7 @@ Files retain full conversation/tool history, including instructions and delivere
 
 An ephemeral root (`--no-session`) keeps child histories in memory. In either mode, live jobs and child policy grants are not restored after root-session shutdown.
 
-Saved server configuration enables best-effort current-family upload on graceful root-session shutdown, after successful local teardown. Explicit `/server upload current` also includes discoverable descendants and persistent policy reviewers; `/server upload all` backfills history. These uploads send complete JSONL outside agent policy approval; `/server logout` disables future automatic uploads. See [Server archive](server.md) for upload, classification, and recovery rules.
+Saved server configuration enables current-family background archival on graceful root-session shutdown. After local teardown—even if teardown reports failure—the root queues its cached source descriptor; an independent worker later captures discoverable descendants and persistent policy reviewers. `/server upload current` and explicit `all` use the same queue and report queued, not uploaded. Complete JSONL is sent outside agent policy approval, potentially after Pi exits; `/server logout` pauses retained work. The descriptor is not an exact departure image, and uncaptured files can still be lost. See [Server archive](server.md) for lifetime limits, classification, variants, and recovery.
 
 ## Child context
 

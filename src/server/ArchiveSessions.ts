@@ -1,22 +1,31 @@
 import {constants} from "node:fs";
 import {lstat, open, readdir, realpath} from "node:fs/promises";
 import path from "node:path";
-import type {ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {MAX_ARCHIVE_BYTES, type ArchiveMetadata} from "./ArchiveProtocol.js";
 import {
-    captureArchiveSourceIdentity, captureArchiveSourceScope, decodeArchiveSourceScope,
+    captureArchiveSourceIdentity, decodeArchiveSourceIdentity, decodeArchiveSourceScope,
     type ArchiveSourceIdentity, type ArchiveSourceScope,
 } from "./ArchiveSourceScope.js";
 import {isNativeSessionId, SessionIdentity, SessionKind} from "../sessions/SessionIdentity.js";
+import {ArchiveDiscovery, type ArchiveDiscoveryPage} from "./ArchiveDiscovery.js";
+import {ArchiveSourceError, checkArchiveSourceAbort as checkAbort} from "./ArchiveSourceError.js";
+import {isIncompleteArchiveJsonPrefix} from "./ArchiveSourceJson.js";
 
-// Pi exposes this native readonly view through ExtensionContext, not its barrel exports.
-type ReadonlySessionManager = ExtensionContext["sessionManager"];
-type CatalogEntry = {
+export {ArchiveSourceError} from "./ArchiveSourceError.js";
+
+export type ArchiveSourceEvidence = {
     file: string;
     parentSession?: string;
     session: ArchiveSourceIdentity;
 };
+type CatalogEntry = ArchiveSourceEvidence;
 type ParsedSession = {entry: CatalogEntry; metadata: ArchiveMetadata};
+export type ArchiveSourceCapture = Snapshot & {
+    evidence: ArchiveSourceEvidence;
+    membership: "included" | "excluded" | "unresolved";
+    ancestryDependencies: {files: string[]; sessionIds: string[]};
+};
+type AncestryDependencies = {files: Set<string>; sessionIds: Set<string>};
 type Snapshot = {file: string; sessionId: string; body: Buffer; metadata: ArchiveMetadata; warnings: string[]};
 type Family = {kind: SessionKind; rootSessionId: string};
 
@@ -26,14 +35,61 @@ export class ArchiveSessions {
     private readonly byId = new Map<string, CatalogEntry>();
     private readonly collisions = new Set<string>();
     private readonly source: ArchiveSourceScope;
+    private readonly discovery: ArchiveDiscovery;
     private currentRootSessionId: string | undefined;
 
-    constructor(source: ArchiveSourceScope | ReadonlySessionManager) {
-        // Compatibility callers may still pass a manager, but it is never retained.
-        this.source = source !== null && typeof source === "object"
-            && "getSessionId" in source && typeof source.getSessionId === "function"
-            ? captureArchiveSourceScope(source) : decodeArchiveSourceScope(source);
+    constructor(source: ArchiveSourceScope) {
+        this.source = decodeArchiveSourceScope(source);
         this.currentRootSessionId = this.source.rootSessionId;
+        this.discovery = new ArchiveDiscovery(this.source);
+    }
+
+    /** Path-only discovery; commit the returned observations and cursor together. */
+    async discoverPage(cursor: string | null, capacity: number, signal?: AbortSignal): Promise<ArchiveDiscoveryPage> {
+        return this.discovery.discoverPage(cursor, capacity, signal);
+    }
+
+    /** One body only. Catalog evidence is reconstructable from durable source rows. */
+    async captureSource(file: string, catalog: readonly ArchiveSourceEvidence[], signal?: AbortSignal): Promise<ArchiveSourceCapture> {
+        checkAbort(signal);
+        if (!this.discovery.ownsFile(file)) throw new ArchiveSourceError("invalid", "Archive source is outside the recorded scope.");
+        const stable = await this.readStable(file, signal);
+        // Keep the observed path as the candidate key even when trusted ancestor
+        // directories resolve through an alias. Native ID is not a source key.
+        const parsed = this.parse(file, stable.body, signal);
+        const entries = catalog.map(decodeArchiveSourceEvidence)
+            .filter((entry) => this.discovery.ownsFile(entry.file) && entry.file !== file);
+        entries.push(parsed.entry);
+        const dependencies: AncestryDependencies = {files: new Set(), sessionIds: new Set()};
+        const active = entries.find((entry) => entry.file === this.source.sessionFile
+            && entry.session.sessionId === this.source.activeSession.sessionId);
+        const root = this.source.rootSessionId ?? this.resolveSourceFamily(active ?? {
+            file: this.source.sessionFile ?? "", session: this.source.activeSession,
+            ...(this.source.parentSession !== undefined ? {parentSession: this.source.parentSession} : {}),
+        }, entries, dependencies)?.rootSessionId;
+        const family = this.resolveSourceFamily(parsed.entry, entries, dependencies, root);
+        const warnings: string[] = [];
+        if (family) {
+            parsed.metadata.kind = family.kind;
+            parsed.metadata.root_session_id = family.rootSessionId;
+        } else if (parsed.entry.session.childKind || parsed.entry.session.identityConflict) {
+            warnings.push("Session root ancestry is unresolved or conflicting; kind and root session metadata were omitted.");
+        }
+        let membership: ArchiveSourceCapture["membership"] = "included";
+        if (this.source.scope === "current") {
+            const identity = parsed.entry.session;
+            const unrelatedPlainSession = identity.sessionId !== this.source.activeSession.sessionId
+                && identity.sessionId !== root && !identity.main && !identity.childKind && !identity.identityConflict
+                && !identity.rootSessionId && !identity.parentAgentIdentifier && !parsed.entry.parentSession;
+            // No family evidence is not pending ancestry for an unrelated plain
+            // native session. Exclude it without inventing Pilot main metadata.
+            membership = unrelatedPlainSession ? "excluded"
+                : !root || !family ? "unresolved" : root === family.rootSessionId ? "included" : "excluded";
+        }
+        checkAbort(signal);
+        return {file, sessionId: parsed.entry.session.sessionId, body: stable.body, metadata: parsed.metadata,
+            evidence: parsed.entry, membership, warnings,
+            ancestryDependencies: {files: [...dependencies.files].sort(), sessionIds: [...dependencies.sessionIds].sort()}};
     }
 
     async discover(scope: "current" | "all" = this.source.scope, signal?: AbortSignal): Promise<{files: string[]; warnings: string[]; rootSessionId?: string}> {
@@ -146,6 +202,78 @@ export class ArchiveSessions {
         return {file: stable.file, sessionId: parsed.entry.session.sessionId, body: stable.body, metadata: parsed.metadata, warnings};
     }
 
+    private resolveSourceFamily(
+        entry: ArchiveSourceEvidence,
+        catalog: readonly ArchiveSourceEvidence[],
+        dependencies: AncestryDependencies,
+        activeRoot = this.source.rootSessionId,
+    ): Family | undefined {
+        const byPath = new Map(catalog.map((candidate) => [candidate.file, candidate]));
+        const byId = new Map<string, ArchiveSourceEvidence[]>();
+        for (const candidate of byPath.values()) {
+            const candidates = byId.get(candidate.session.sessionId) ?? [];
+            candidates.push(candidate);
+            byId.set(candidate.session.sessionId, candidates);
+        }
+        const seen = new Set<string>();
+        let cursor: ArchiveSourceEvidence | undefined = entry;
+        while (cursor) {
+            if (cursor.file) dependencies.files.add(cursor.file);
+            const identity: ArchiveSourceIdentity = cursor.session;
+            if (seen.has(cursor.file) || identity.identityConflict) return undefined;
+            seen.add(cursor.file);
+            const kind = entry.session.childKind ?? SessionKind.Main;
+            // A sibling body with the same ID cannot erase or supply this body's
+            // explicit classification. Conflicting assertions remain candidates.
+            if (identity.main) return {kind, rootSessionId: identity.sessionId};
+            if (identity.childKind && identity.rootSessionId) return {kind, rootSessionId: identity.rootSessionId};
+            if (!identity.childKind) {
+                return cursor.file === this.source.sessionFile && identity.sessionId === this.source.activeSession.sessionId
+                    && activeRoot === identity.sessionId
+                    ? {kind, rootSessionId: identity.sessionId} : undefined;
+            }
+            const parentId = identity.parentAgentIdentifier;
+            const parentPath: string | undefined = cursor.parentSession
+                ? path.resolve(path.dirname(cursor.file), cursor.parentSession) : undefined;
+            if (parentPath && this.discovery.ownsFile(parentPath)) {
+                dependencies.files.add(parentPath);
+                const pathParent = byPath.get(parentPath);
+                // Only the recorded active path has independent cached root evidence
+                // when absent. An observed parent always takes precedence over it.
+                if (!pathParent && parentPath === this.source.sessionFile
+                    && (!parentId || parentId === this.source.activeSession.sessionId) && activeRoot) {
+                    return {kind, rootSessionId: activeRoot};
+                }
+                // Other owned paths must await their own observation, never a sole
+                // same-ID substitute or an arbitrary header-supplied file open.
+                if (!pathParent || (parentId && pathParent.session.sessionId !== parentId)) return undefined;
+                cursor = pathParent;
+                continue;
+            }
+            if (parentId) dependencies.sessionIds.add(parentId);
+            const candidates: ArchiveSourceEvidence[] = parentId ? byId.get(parentId) ?? [] : [];
+            if (candidates.length === 1) {
+                cursor = candidates[0];
+            } else if (candidates.length > 1) {
+                return undefined;
+            } else {
+                if (isNativeSessionId(cursor.parentSession)) dependencies.sessionIds.add(cursor.parentSession);
+                const headerCandidates: ArchiveSourceEvidence[] = cursor.parentSession ? byId.get(cursor.parentSession) ?? [] : [];
+                if (headerCandidates.length === 1 && (!parentId || headerCandidates[0]!.session.sessionId === parentId)) {
+                    cursor = headerCandidates[0];
+                    continue;
+                }
+                const linksToActive = parentId === this.source.activeSession.sessionId
+                    || (parentPath === this.source.sessionFile && (!parentId || parentId === this.source.activeSession.sessionId));
+                if (linksToActive && headerCandidates.length <= 1 && activeRoot) {
+                    return {kind, rootSessionId: activeRoot};
+                }
+                return undefined;
+            }
+        }
+        return undefined;
+    }
+
     private resolveFamily(entry: CatalogEntry): Family | undefined {
         const session = entry.session;
         if (this.collisions.has(session.sessionId) || session.identityConflict) return undefined;
@@ -214,18 +342,21 @@ export class ArchiveSessions {
     }
 
     private async readStable(file: string, signal?: AbortSignal): Promise<{file: string; body: Buffer}> {
+        let sawChange = false;
         for (let attempt = 0; attempt < 3; attempt++) {
             checkAbort(signal);
             let changed = false;
+            let observed = false;
             try {
                 const original = await lstat(file, {bigint: true});
-                if (!original.isFile()) throw new Error("Archive source must be a regular, non-symlink file.");
+                observed = true;
+                if (!original.isFile()) throw new ArchiveSourceError("invalid", "Archive source must be a regular, non-symlink file.");
                 const canonical = await realpath(file);
                 const handle = await open(canonical, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
                 try {
                     const before = await handle.stat({bigint: true});
-                    if (!before.isFile()) throw new Error("Archive source must be a regular file.");
-                    if (before.size > BigInt(MAX_ARCHIVE_BYTES)) throw new Error("Archive session exceeds the 64 MiB limit.");
+                    if (!before.isFile()) throw new ArchiveSourceError("invalid", "Archive source must be a regular file.");
+                    if (before.size > BigInt(MAX_ARCHIVE_BYTES)) throw new ArchiveSourceError("invalid", "Archive session exceeds the 64 MiB limit.");
                     changed = original.dev !== before.dev || original.ino !== before.ino;
                     const body = Buffer.allocUnsafe(Number(before.size));
                     let offset = 0;
@@ -240,31 +371,49 @@ export class ArchiveSessions {
                     const extra = changed ? {bytesRead: 0} : await handle.read(probe, 0, 1, offset);
                     const after = await handle.stat({bigint: true});
                     const named = await lstat(canonical, {bigint: true});
-                    changed ||= offset !== body.length || extra.bytesRead !== 0 || !named.isFile()
+                    const originalName = canonical === file ? named : await lstat(file, {bigint: true});
+                    changed ||= !originalName.isFile() || named.dev !== originalName.dev || named.ino !== originalName.ino
+                        || offset !== body.length || extra.bytesRead !== 0 || !named.isFile()
                         || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
                         || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs
                         || after.dev !== named.dev || after.ino !== named.ino || after.size !== named.size
                         || after.mtimeNs !== named.mtimeNs || after.ctimeNs !== named.ctimeNs;
                     if (!changed) return {file: canonical, body};
+                    sawChange = true;
                 } finally {
                     await handle.close();
                 }
             } catch (error) {
                 checkAbort(signal);
-                // Never expose OS paths or parser snippets in upload diagnostics.
-                if (error instanceof Error && error.message.startsWith("Archive ")) throw error;
-                throw new Error("Archive session could not be safely read.");
+                const failure = ArchiveSourceError.fromFilesystem(error);
+                // Disappearance after observation is an unstable read, not evidence
+                // that the original source obligation was already missing.
+                if (failure.code === "missing" && (observed || sawChange)) {
+                    sawChange = true;
+                    continue;
+                }
+                throw failure;
             }
         }
-        throw new Error("Archive session changed during all three snapshot attempts; try again when it is idle.");
+        throw new ArchiveSourceError("changing", "Archive session changed during all three snapshot attempts; try again when it is idle.");
     }
 
     private parse(file: string, body: Buffer, signal?: AbortSignal): ParsedSession {
+        if (body.length === 0) throw new ArchiveSourceError("changing", "Archive session header is not yet complete.");
         let text: string;
+        const decoder = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true});
         try {
-            text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(body);
+            text = decoder.decode(body, {stream: true});
         } catch {
-            throw new Error("Archive session is not valid UTF-8.");
+            throw new ArchiveSourceError("invalid", "Archive session is not valid UTF-8.");
+        }
+        let incompleteUtf8 = false;
+        try {
+            decoder.decode();
+        } catch {
+            // A stable descriptor can still belong to a paused writer. Validate
+            // earlier complete records before treating its truncated suffix as due.
+            incompleteUtf8 = true;
         }
         const lines = text.split("\n");
         let header: Record<string, unknown> | undefined;
@@ -281,13 +430,16 @@ export class ArchiveSessions {
             try {
                 value = JSON.parse(line);
             } catch {
-                throw new Error("Archive session contains invalid JSONL.");
+                if (index === lines.length - 1 && isIncompleteArchiveJsonPrefix(line, signal)) {
+                    throw new ArchiveSourceError("changing", "Archive session ends with an incomplete JSONL record.");
+                }
+                throw new ArchiveSourceError("invalid", "Archive session contains invalid JSONL.");
             }
-            if (!isRecord(value) || typeof value.type !== "string") throw new Error("Archive session contains invalid native entries.");
+            if (!isRecord(value) || typeof value.type !== "string") throw new ArchiveSourceError("invalid", "Archive session contains invalid native entries.");
             if (!header) {
                 if (value.type !== "session" || !isNativeSessionId(value.id)
                     || (value.version !== undefined && (!Number.isInteger(value.version) || Number(value.version) < 1))) {
-                    throw new Error("Archive session must start with a native session header.");
+                    throw new ArchiveSourceError("invalid", "Archive session must start with a native session header.");
                 }
                 header = value;
                 session = new SessionIdentity(value.id);
@@ -298,7 +450,7 @@ export class ArchiveSessions {
                 }
                 continue;
             }
-            if (value.type === "session") throw new Error("Archive session contains more than one native header.");
+            if (value.type === "session") throw new ArchiveSourceError("invalid", "Archive session contains more than one native header.");
             const time = persistedTime(value.timestamp);
             if (time !== undefined) lastActivity = Math.max(lastActivity ?? time, time);
             if (value.type === "session_info") name = typeof value.name === "string" ? shortTitle(value.name) : undefined;
@@ -319,20 +471,33 @@ export class ArchiveSessions {
                 }
             }
         }
-        if (!session || !header) throw new Error("Archive session has no native header.");
+        if (incompleteUtf8) throw new ArchiveSourceError("changing", "Archive session ends with an incomplete UTF-8 sequence.");
+        if (!session || !header) {
+            throw new ArchiveSourceError(text.endsWith("\n") ? "invalid" : "changing", "Archive session has no complete native header.");
+        }
         if (lastActivity !== undefined) metadata.last_activity_at = new Date(lastActivity).toISOString();
         const title = name ?? firstUserText;
         if (title) metadata.title = title;
         return {entry: {file, session: captureArchiveSourceIdentity(session),
-            ...(typeof header.parentSession === "string" ? {parentSession: header.parentSession} : {})}, metadata};
+            ...(typeof header.parentSession === "string" && Buffer.byteLength(header.parentSession) <= 4096
+                ? {parentSession: header.parentSession} : {})}, metadata};
     }
 }
 
-function checkAbort(signal?: AbortSignal): void {
-    if (!signal?.aborted) return;
-    const error = new Error("Archive operation was aborted.");
-    error.name = "AbortError";
-    throw error;
+/** Validate body-free catalog evidence reconstructed from durable source rows. */
+export function decodeArchiveSourceEvidence(value: unknown): ArchiveSourceEvidence {
+    if (!isRecord(value) || typeof value.file !== "string" || !path.isAbsolute(value.file)
+        || value.file.includes("\0") || path.resolve(value.file) !== value.file
+        || Buffer.from(value.file).toString("utf8") !== value.file
+        || (value.parentSession !== undefined && (typeof value.parentSession !== "string" || Buffer.byteLength(value.parentSession) > 4096))) {
+        throw new ArchiveSourceError("invalid", "Invalid archive source evidence.");
+    }
+    try {
+        return {file: value.file, session: decodeArchiveSourceIdentity(value.session),
+            ...(value.parentSession !== undefined ? {parentSession: value.parentSession} : {})};
+    } catch {
+        throw new ArchiveSourceError("invalid", "Invalid archive source evidence.");
+    }
 }
 
 function hasCode(error: unknown, code: string): boolean {

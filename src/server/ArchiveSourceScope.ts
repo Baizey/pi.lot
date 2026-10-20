@@ -1,6 +1,5 @@
 import path from "node:path";
-import {getAgentDir, type ExtensionContext} from "@earendil-works/pi-coding-agent";
-import {isNativeSessionId, SessionIdentity, SessionKind, type ChildSessionKind} from "../sessions/SessionIdentity.js";
+import {isNativeSessionId, SessionKind, type SessionIdentity, type ChildSessionKind} from "../sessions/SessionIdentity.js";
 
 /** Interpreted identity only: no transcript entries or live session-manager state. */
 export type ArchiveSourceIdentity = {
@@ -27,25 +26,6 @@ export type ArchiveSourceScope = {
     defaultSessionRoots: string[];
 };
 
-/** Capture after identity registration, not by traversing manager entries at departure. */
-export function captureArchiveSourceScope(
-    manager: ExtensionContext["sessionManager"],
-    scope: "current" | "all" = "current",
-): ArchiveSourceScope {
-    const activeSession = captureArchiveSourceIdentity(SessionIdentity.fromManager(manager));
-    const file = manager.getSessionFile();
-    const parentSession = manager.getHeader()?.parentSession;
-    const rootSessionId = knownRoot(activeSession);
-    return decodeArchiveSourceScope({
-        version: 1, scope, activeSession,
-        ...(file ? {sessionFile: path.resolve(file)} : {}),
-        sessionDirectory: path.resolve(manager.getSessionDir()),
-        ...(rootSessionId !== undefined ? {rootSessionId} : {}),
-        ...(typeof parentSession === "string" ? {parentSession} : {}),
-        defaultSessionRoots: [path.resolve(getAgentDir(), "sessions")],
-    });
-}
-
 export function captureArchiveSourceIdentity(identity: SessionIdentity): ArchiveSourceIdentity {
     return {
         sessionId: identity.sessionId,
@@ -68,7 +48,19 @@ export function decodeArchiveSourceScope(value: unknown): ArchiveSourceScope {
         || (value.parentSession !== undefined && typeof value.parentSession !== "string")) {
         throw new Error("Invalid archive source scope.");
     }
-    const identity = value.activeSession;
+    const activeSession = decodeArchiveSourceIdentity(value.activeSession);
+    if (value.rootSessionId !== knownRoot(activeSession)) throw new Error("Invalid archive source root identity.");
+    return {
+        version: 1, scope: value.scope, activeSession,
+        sessionDirectory: value.sessionDirectory,
+        defaultSessionRoots: [...value.defaultSessionRoots],
+        ...(value.sessionFile !== undefined ? {sessionFile: value.sessionFile} : {}),
+        ...(value.rootSessionId !== undefined ? {rootSessionId: value.rootSessionId} : {}),
+        ...(value.parentSession !== undefined ? {parentSession: value.parentSession} : {}),
+    };
+}
+
+export function decodeArchiveSourceIdentity(identity: unknown): ArchiveSourceIdentity {
     if (!isRecord(identity) || !isNativeSessionId(identity.sessionId)
         || typeof identity.main !== "boolean" || typeof identity.identityConflict !== "boolean"
         || (identity.childKind !== undefined && identity.childKind !== SessionKind.Subagent && identity.childKind !== SessionKind.PolicyApprover)
@@ -83,20 +75,11 @@ export function decodeArchiveSourceScope(value: unknown): ArchiveSourceScope {
                 || identity.parentAgentIdentifier === identity.sessionId))) {
         throw new Error("Invalid archive source identity.");
     }
-    const activeSession: ArchiveSourceIdentity = {
+    return {
         sessionId: identity.sessionId, main: identity.main, identityConflict: identity.identityConflict,
         ...(identity.childKind !== undefined ? {childKind: identity.childKind} : {}),
         ...(identity.parentAgentIdentifier !== undefined ? {parentAgentIdentifier: identity.parentAgentIdentifier} : {}),
         ...(identity.rootSessionId !== undefined ? {rootSessionId: identity.rootSessionId} : {}),
-    };
-    if (value.rootSessionId !== knownRoot(activeSession)) throw new Error("Invalid archive source root identity.");
-    return {
-        version: 1, scope: value.scope, activeSession,
-        sessionDirectory: value.sessionDirectory,
-        defaultSessionRoots: [...value.defaultSessionRoots],
-        ...(value.sessionFile !== undefined ? {sessionFile: value.sessionFile} : {}),
-        ...(value.rootSessionId !== undefined ? {rootSessionId: value.rootSessionId} : {}),
-        ...(value.parentSession !== undefined ? {parentSession: value.parentSession} : {}),
     };
 }
 

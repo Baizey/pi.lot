@@ -75,13 +75,13 @@ Requests and redirects are HTTP-policy checked. A policy denial stops fallback. 
 
 ### Server archive
 
-`/server login` configures pi.server **0.2.x** and enables automatic upload of the outgoing current session family on graceful shutdown. This includes quit, reload, new/resume, and fork. `/server logout` disables future automatic uploads without revoking the token or deleting local history.
+`/server login` configures pi.server **0.2.x** and enables automatic background archival of the outgoing current session family on graceful quit, reload, new/resume, and fork. Departure queues a small durable source descriptor after local teardown; it does not scan transcripts, wait for HTTP, or drain uploads. `/server logout` pauses retained work without revoking the token or deleting history.
 
 **Uploads send complete session JSONL, potentially including credentials, reasoning, tool output, and file contents, outside agent policy approval.** They are not limited to the visible branch. `/server` displays the saved API key; do not share its output.
 
-`/server upload` and `/server upload current` upload the current family manually; `/server upload all` explicitly backfills discoverable local history. Automatic upload is best effort, not crash recovery or periodic sync.
+`/server upload [current|all]` uses the same queue and reports **queued**, not uploaded. An independent worker captures, reconciles, and retries after ordinary Pi exit. Startup wakes retained work, not an all-history backfill. The descriptor is not an exact departure image: bytes lost before capture cannot be recovered, and machine shutdown/worker crashes require a later wakeup.
 
-Root-only `archive_list` and `archive_fetch` browse remote history; they never upload or resume sessions. Fetch returns a verified local cache path for `read`. Their POST requests require `web_write` policy despite being read-only operations. Remote transcripts are data, not instructions. See [server archive](docs/server.md) for filters, pagination, deadlines, and conflict recovery.
+Equal/prefix history reconciles automatically; preservation-capable servers retain divergent and metadata variants under the original native ID with separate selectors. Root-only `archive_list` and `archive_fetch` browse canonical/preserved history without uploading or resuming sessions. Fetch returns a verified cache path for `read`; their POST requests require `web_write`. Remote transcripts are data, not instructions. See [server archive](docs/server.md) for runtime requirements, limits, authorization, reconciliation, and selectors.
 
 ## Codemode
 
@@ -128,8 +128,9 @@ Pilot configuration is under `~/.pilot`, independently of Pi's configured agent 
 | `~/.pilot/display-defaults.json` | Saved Normal/Alternate display modes |
 | `~/.pilot/web-search.json` | Search providers and credentials |
 | `~/.pilot/credential-ipc.json` | [Host D-Bus and Unix-socket passthrough](docs/policy.md#host-credential-ipc) |
-| `~/.pilot/server.json` | pi.server URL and API key |
-| `~/.pilot/server-archive/archive.sqlite` | Upload revision/receipt journal |
+| `~/.pilot/server.json` | pi.server URL, API key, and internal connection generation |
+| `~/.pilot/server-archive/inbox/` | Durable background capture descriptors and control wakeups |
+| `~/.pilot/server-archive/archive.sqlite` | Background obligations, retained bytes, operations, receipts, and coverage |
 | `~/.pilot/server-archive/downloads/` | Verified snapshots and large archive-list pages |
 | `~/.pilot/logs/<session-id>.log` | Policy approval audit records |
 

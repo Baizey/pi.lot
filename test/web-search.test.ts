@@ -172,6 +172,74 @@ test("DuckDuckGo HTML parsing needs no DOM dependency and resolves redirect URLs
     assert.deepEqual(response.results.map((result) => result.url), ["https://docs.example.com/guide"]);
 });
 
+test("DuckDuckGo parsing preserves attribute matching, snippet boundaries, and repeated-call results", () => {
+    const html = `
+        <a data-class="result__a" href="https://ignored.example/data-class">Ignored</a>
+        <a class="result__a-extra" href="https://ignored.example/class-suffix">Ignored</a>
+        <a class="result__a" data-href="https://ignored.example/data-href">Ignored</a>
+        <a CLASS="other result__a" data-href="https://ignored.example/decoy" HREF='https://docs.example/first?a=1&amp;b=2#fragment'>First</a>
+        <span data-class="result__snippet">Not the snippet</span>
+        <span CLASS='other result__snippet'>First <b>snippet</b></span>
+        <a class=result__a href=https://docs.example/second>Second</a>
+        <a class=result__snippet>Second snippet</a>
+        <a class='result__a' href='https://docs.example/third' href='https://ignored.example/duplicate'>Third</a>`;
+    const expected = [
+        {title: "First", url: "https://docs.example/first?a=1&b=2", snippet: "First snippet"},
+        {title: "Second", url: "https://docs.example/second", snippet: "Second snippet"},
+        {title: "Third", url: "https://docs.example/third", snippet: ""},
+    ];
+    assert.deepEqual(parseDuckDuckGoResults(html), expected);
+    assert.deepEqual(parseDuckDuckGoResults(html), expected);
+});
+
+test("DuckDuckGo parsing preserves named and numeric entity decoding and unknown entities", () => {
+    const text = "&AMP; &apos; &gt; &lt; &nbsp; &QuOt; &#65; &#x1F642; &unknown; &#1114112; &#x110000; &#xZZ; &amp";
+    const decoded = "& ' > < \" A 🙂 &unknown; &#1114112; &#x110000; &#xZZ; &amp";
+    assert.deepEqual(parseDuckDuckGoResults(`
+        <a class="result__a" href="https://docs.example/entities">${text}</a>
+        <span class="result__snippet">${text}</span>`), [
+        {title: decoded, url: "https://docs.example/entities", snippet: decoded},
+    ]);
+});
+
+test("DuckDuckGo parsing leaves unknown prototype-named entities literal in titles and snippets", () => {
+    const text = "Literal &constructor; &CONSTRUCTOR;";
+    assert.deepEqual(parseDuckDuckGoResults(`
+        <a class="result__a" href="https://docs.example/unknown-entities">${text}</a>
+        <span class="result__snippet">${text}</span>`), [
+        {title: text, url: "https://docs.example/unknown-entities", snippet: text},
+    ]);
+});
+
+test("DuckDuckGo parsing rejects unsafe direct and redirect URLs and preserves safe result order", async () => {
+    const hrefs = [
+        "javascript:alert(1)",
+        "ftp://docs.example/file",
+        "https://user:password@docs.example/private",
+        "https://[invalid",
+        "//duckduckgo.com/l/?rut=missing-destination",
+        "//duckduckgo.com/l/?uddg=javascript%3Aalert(1)",
+        "//duckduckgo.com/l/?uddg=https%3A%2F%2Fuser%3Apassword%40docs.example%2Fprivate",
+        "https://ads.docs.example/excluded",
+        "https://docs.example/first#fragment",
+        "//duckduckgo.com/l/?uddg=https%3A%2F%2Fsub.docs.example%2Fsecond%23fragment&amp;rut=x",
+        "https://docs.example/third",
+    ];
+    const html = hrefs.map((href, index) => `<a class="result__a" href="${href}">Result ${index}</a>`).join("\n");
+    assert.deepEqual(parseDuckDuckGoResults(html).map((result) => result.url), [
+        "https://ads.docs.example/excluded",
+        "https://docs.example/first",
+        "https://sub.docs.example/second",
+        "https://docs.example/third",
+    ]);
+    const response = await new DuckDuckGoSearchProvider().search({
+        query: "docs", maxResults: 2, domains: ["docs.example", "-ads.docs.example"],
+    }, fakeHttp(async () => httpResponse(html, "text/html")));
+    assert.deepEqual(response.results.map((result) => result.url), [
+        "https://docs.example/first", "https://sub.docs.example/second",
+    ]);
+});
+
 test("router hides fallback mechanics while normalizing, filtering, and deduplicating results", async () => {
     const providers: WebSearchProvider[] = [
         fakeProvider(WebSearchProviderId.SEARXNG, false, []),

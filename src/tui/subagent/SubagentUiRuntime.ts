@@ -63,7 +63,7 @@ export class SubagentUiRuntime {
         const ctx = this.context;
         if (!ctx?.hasUI) return;
         if (typeof ctx.ui.setStatus === "function") {
-            const status = formatFooterStatus(this.sortedJobs(), ctx);
+            const status = formatFooterStatus(this.jobs.values(), ctx);
             ctx.ui.setStatus(UI_KEY, status || undefined);
         }
         this.requestRender?.();
@@ -74,7 +74,7 @@ export class SubagentUiRuntime {
     }
 }
 
-function formatFooterStatus(jobs: readonly SubagentJobSnapshot[], ctx: ExtensionContext): string {
+function formatFooterStatus(jobs: Iterable<SubagentJobSnapshot>, ctx: ExtensionContext): string {
     const counts = subagentStatusCounts(jobs);
     const parts = [
         counts.running > 0 ? ctx.ui.theme.fg("accent", `●${counts.running}`) : "",

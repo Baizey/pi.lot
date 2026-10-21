@@ -25,6 +25,10 @@ export type ArchiveSourceCapture = Snapshot & {
     ancestryDependencies: {files: string[]; sessionIds: string[]};
 };
 type AncestryDependencies = {files: Set<string>; sessionIds: Set<string>};
+type AncestryCatalog = {
+    byPath: Map<string, ArchiveSourceEvidence>;
+    byId: Map<string, ArchiveSourceEvidence[]>;
+};
 type Snapshot = {file: string; sessionId: string; body: Buffer; metadata: ArchiveMetadata; warnings: string[]};
 type Family = {kind: SessionKind; rootSessionId: string};
 
@@ -54,14 +58,21 @@ export class ArchiveSessions {
         const entries = catalog.map(decodeArchiveSourceEvidence)
             .filter((entry) => this.discovery.ownsFile(entry.file) && entry.file !== file);
         entries.push(parsed.entry);
+        const ancestry: AncestryCatalog = {byPath: new Map(), byId: new Map()};
+        for (const entry of entries) ancestry.byPath.set(entry.file, entry);
+        for (const entry of ancestry.byPath.values()) {
+            const candidates = ancestry.byId.get(entry.session.sessionId);
+            if (candidates) candidates.push(entry);
+            else ancestry.byId.set(entry.session.sessionId, [entry]);
+        }
         const dependencies: AncestryDependencies = {files: new Set(), sessionIds: new Set()};
         const active = entries.find((entry) => entry.file === this.source.sessionFile
             && entry.session.sessionId === this.source.activeSession.sessionId);
         const root = this.source.rootSessionId ?? this.resolveSourceFamily(active ?? {
             file: this.source.sessionFile ?? "", session: this.source.activeSession,
             ...(this.source.parentSession !== undefined ? {parentSession: this.source.parentSession} : {}),
-        }, entries, dependencies)?.rootSessionId;
-        const family = this.resolveSourceFamily(parsed.entry, entries, dependencies, root);
+        }, ancestry, dependencies)?.rootSessionId;
+        const family = this.resolveSourceFamily(parsed.entry, ancestry, dependencies, root);
         const warnings: string[] = [];
         if (family) {
             parsed.metadata.kind = family.kind;
@@ -88,25 +99,19 @@ export class ArchiveSessions {
 
     private resolveSourceFamily(
         entry: ArchiveSourceEvidence,
-        catalog: readonly ArchiveSourceEvidence[],
+        catalog: AncestryCatalog,
         dependencies: AncestryDependencies,
         activeRoot = this.source.rootSessionId,
     ): Family | undefined {
-        const byPath = new Map(catalog.map((candidate) => [candidate.file, candidate]));
-        const byId = new Map<string, ArchiveSourceEvidence[]>();
-        for (const candidate of byPath.values()) {
-            const candidates = byId.get(candidate.session.sessionId) ?? [];
-            candidates.push(candidate);
-            byId.set(candidate.session.sessionId, candidates);
-        }
+        const {byPath, byId} = catalog;
         const seen = new Set<string>();
+        const kind = entry.session.childKind ?? SessionKind.Main;
         let cursor: ArchiveSourceEvidence | undefined = entry;
         while (cursor) {
             if (cursor.file) dependencies.files.add(cursor.file);
             const identity: ArchiveSourceIdentity = cursor.session;
             if (seen.has(cursor.file) || identity.identityConflict) return undefined;
             seen.add(cursor.file);
-            const kind = entry.session.childKind ?? SessionKind.Main;
             // A sibling body with the same ID cannot erase or supply this body's
             // explicit classification. Conflicting assertions remain candidates.
             if (identity.main) return {kind, rootSessionId: identity.sessionId};

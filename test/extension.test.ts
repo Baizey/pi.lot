@@ -724,8 +724,9 @@ test("custom-message starts keep the user's policy task while still adding Pilot
     }
 });
 
-test("reusable mediated builtin definitions resolve paths from the invoking child context", async () => {
+test("the registered read override uses the invoking cwd rather than the session startup cwd", async () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-child-tools-"));
+    const childDirectory = mkdtempSync(path.join(directory, "child-"));
     const harness = extensionHarness();
     const ctx = {
         cwd: directory,
@@ -734,13 +735,14 @@ test("reusable mediated builtin definitions resolve paths from the invoking chil
         ui: {},
         sessionManager: archiveSessionManager(),
     } as unknown as ExtensionContext;
-    writeFileSync(path.join(directory, "target.txt"), "old value", "utf8");
+    const childContext = {...ctx, cwd: childDirectory};
+    writeFileSync(path.join(directory, "target.txt"), "startup directory", "utf8");
+    writeFileSync(path.join(childDirectory, "target.txt"), "child directory", "utf8");
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
         createSessionRuntime(runtimeContext) {
             const policyRuntime = createPolicyRuntime(runtimeContext);
-            policyRuntime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.allow);
             return {
                 policyRuntime,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
@@ -762,27 +764,9 @@ test("reusable mediated builtin definitions resolve paths from the invoking chil
             {path: "target.txt"},
             undefined,
             undefined,
-            ctx,
+            childContext,
         ) as { content: Array<{ type: string; text?: string }> };
-        assert.equal(read.content[0]?.text, "old value");
-
-        await registeredTool(harness, "write").execute(
-            "child-write",
-            {path: "created.txt", content: "created in child cwd"},
-            undefined,
-            undefined,
-            ctx,
-        );
-        assert.equal(readFileSync(path.join(directory, "created.txt"), "utf8"), "created in child cwd");
-
-        await registeredTool(harness, "edit").execute(
-            "child-edit",
-            {path: "target.txt", edits: [{oldText: "old value", newText: "new value"}]},
-            undefined,
-            undefined,
-            ctx,
-        );
-        assert.equal(readFileSync(path.join(directory, "target.txt"), "utf8"), "new value");
+        assert.equal(read.content[0]?.text, "child directory");
     } finally {
         await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
         rmSync(directory, {recursive: true, force: true});

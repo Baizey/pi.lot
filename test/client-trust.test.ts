@@ -13,7 +13,6 @@ import {
 } from "../src/policy/network/trust/ClientTrustAdapters.js";
 import {ClientTrust} from "../src/policy/network/trust/ClientTrust.js";
 import {JAVA_TRUST_STORE_PASSWORD} from "../src/policy/network/trust/JavaTrustStore.js";
-import {TlsCertificateAuthority} from "../src/policy/network/TlsCertificateAuthority.js";
 
 const JAVA_TRUSTED_KEY_USAGE_OID = "2.16.840.1.113894.746875.1.1";
 const ANY_EXTENDED_KEY_USAGE_OID = "2.5.29.37.0";
@@ -66,8 +65,10 @@ test("client trust adapters are declarative, unique, and install their documente
 test("client trust materializes a read-only PEM bundle and Java trusted-certificate store", async (context) => {
     const workspace = mkdtempSync(path.join(os.tmpdir(), "pilot-client-trust-test-"));
     const hostBundleFile = path.join(workspace, "host-ca.pem");
-    const authority = new TlsCertificateAuthority();
-    writeFileSync(hostBundleFile, authority.certificatePem);
+    // Generated once for tests; the private key was discarded. Unlike a public root,
+    // this CA is absent from system trust, so inclusion proves configured-bundle ingestion.
+    const certificatePem = readFileSync(new URL("./fixtures/pilot-test-ca.pem", import.meta.url), "utf8");
+    writeFileSync(hostBundleFile, certificatePem);
 
     try {
         const trust = await ClientTrust.create({
@@ -79,7 +80,7 @@ test("client trust materializes a read-only PEM bundle and Java trusted-certific
         const combinedPem = readFileSync(trust.combinedPemFile, "utf8");
         const combinedCertificates = combinedPem.match(/-----BEGIN CERTIFICATE-----/g) ?? [];
         assert.equal(combinedCertificates.length > 0, true);
-        assert.equal(combinedPem.includes(authority.certificatePem.trim()), true);
+        assert.equal(combinedPem.includes(certificatePem.trim()), true);
         assert.equal(trust.javaTrustStoreAliases.length, combinedCertificates.length);
 
         const pkcs12Bytes = readFileSync(trust.javaPkcs12File);

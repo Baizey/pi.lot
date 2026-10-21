@@ -55,14 +55,20 @@ export class CatalogueSubagentModelPerformanceRanker implements SubagentModelPer
     readonly source = "catalogue-cost-capability";
 
     async rank(models: readonly SubagentModel[]): Promise<readonly SubagentModelPerformance[]> {
-        const ordered = [...models].sort(compareCataloguePerformance);
+        const ordered = models.map((model) => ({
+            model,
+            cost: effectiveModelCost(model),
+            thinkingLevelCount: supportedThinkingLevelCount(model),
+            contextWindow: model.contextWindow,
+            maxTokens: model.maxTokens,
+        })).sort(compareCataloguePerformance);
         const scores = new Map<SubagentModel, number>();
         let score = 0;
-        let previous: SubagentModel | undefined;
-        for (const model of ordered) {
-            if (previous && compareCataloguePerformance(previous, model) !== 0) score++;
-            scores.set(model, score);
-            previous = model;
+        let previous: CatalogueModelPerformance | undefined;
+        for (const entry of ordered) {
+            if (previous && compareCataloguePerformance(previous, entry) !== 0) score++;
+            scores.set(entry.model, score);
+            previous = entry;
         }
         return models.map((model) => ({model, score: scores.get(model)!}));
     }
@@ -213,9 +219,17 @@ type ModelCandidate = {
     score: number;
 };
 
-function compareCataloguePerformance(left: SubagentModel, right: SubagentModel): number {
-    return effectiveModelCost(left) - effectiveModelCost(right)
-        || supportedThinkingLevelCount(left) - supportedThinkingLevelCount(right)
+type CatalogueModelPerformance = {
+    model: SubagentModel;
+    cost: number;
+    thinkingLevelCount: number;
+    contextWindow: number;
+    maxTokens: number;
+};
+
+function compareCataloguePerformance(left: CatalogueModelPerformance, right: CatalogueModelPerformance): number {
+    return left.cost - right.cost
+        || left.thinkingLevelCount - right.thinkingLevelCount
         || left.contextWindow - right.contextWindow
         || left.maxTokens - right.maxTokens;
 }

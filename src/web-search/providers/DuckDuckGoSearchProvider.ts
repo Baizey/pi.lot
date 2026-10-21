@@ -14,6 +14,18 @@ import {
 import {requireSuccessfulProviderResponse} from "./ProviderResponse.js";
 
 const SEARCH_URL = "https://html.duckduckgo.com/html/";
+const ATTRIBUTE_PATTERNS = {
+    class: /(?:^|\s)class\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i,
+    href: /(?:^|\s)href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i,
+};
+const HTML_ENTITIES: Readonly<Record<string, string>> = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    lt: "<",
+    nbsp: " ",
+    quot: "\"",
+};
 
 export class DuckDuckGoSearchProvider implements WebSearchProvider {
     readonly id = WebSearchProviderId.DUCKDUCKGO;
@@ -113,9 +125,8 @@ function duckDuckGoResultUrl(href: string): string | null {
     return url.toString();
 }
 
-function htmlAttribute(attributes: string, name: string): string | null {
-    const pattern = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
-    const match = pattern.exec(attributes);
+function htmlAttribute(attributes: string, name: keyof typeof ATTRIBUTE_PATTERNS): string | null {
+    const match = ATTRIBUTE_PATTERNS[name].exec(attributes);
     return match ? (match[1] ?? match[2] ?? match[3] ?? "") : null;
 }
 
@@ -133,15 +144,8 @@ function decodeHtml(value: string): string {
     return value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (entity, decimal, hexadecimal, named) => {
         if (decimal) return safeCodePoint(Number(decimal), entity);
         if (hexadecimal) return safeCodePoint(Number.parseInt(hexadecimal, 16), entity);
-        const entities: Record<string, string> = {
-            amp: "&",
-            apos: "'",
-            gt: ">",
-            lt: "<",
-            nbsp: " ",
-            quot: "\"",
-        };
-        return entities[String(named).toLowerCase()] ?? entity;
+        const name = String(named).toLowerCase();
+        return Object.hasOwn(HTML_ENTITIES, name) ? HTML_ENTITIES[name] : entity;
     });
 }
 

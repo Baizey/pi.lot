@@ -67,21 +67,31 @@ function activeSubagentTree(jobs: readonly SubagentJobSnapshot[]) {
     )));
 }
 
-export function subagentStatusCounts(jobs: readonly SubagentJobSnapshot[]): {
+export function subagentStatusCounts(jobs: Iterable<SubagentJobSnapshot>): {
     running: number;
     queued: number;
     idle: number;
     attention: number;
 } {
-    return {
-        running: jobs.filter((job) => job.status === SubagentJobStatus.RUNNING).length,
-        queued: jobs.filter((job) => job.status === SubagentJobStatus.QUEUED).length,
-        idle: jobs.filter((job) => job.status === SubagentJobStatus.IDLE).length,
-        attention: jobs.filter((job) => (
-            job.status === SubagentJobStatus.FAILED
-            || job.status === SubagentJobStatus.TIMED_OUT
-        )).length,
-    };
+    const counts = {running: 0, queued: 0, idle: 0, attention: 0};
+    for (const job of jobs) {
+        switch (job.status) {
+            case SubagentJobStatus.RUNNING:
+                counts.running++;
+                break;
+            case SubagentJobStatus.QUEUED:
+                counts.queued++;
+                break;
+            case SubagentJobStatus.IDLE:
+                counts.idle++;
+                break;
+            case SubagentJobStatus.FAILED:
+            case SubagentJobStatus.TIMED_OUT:
+                counts.attention++;
+                break;
+        }
+    }
+    return counts;
 }
 
 function compact(value: string, maximum: number): string {

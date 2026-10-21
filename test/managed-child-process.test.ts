@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {readdirSync, readFileSync} from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, {type TestContext} from "node:test";
 import {ManagedChildProcess} from "../src/runtime/ManagedChildProcess.js";
 
 test("production subprocess creation has explicit session or archive ownership", () => {
@@ -69,6 +69,7 @@ test("process startup errors are reported through managed completion", async () 
     await assert.rejects(child.wait(), /missing fixture process failed: spawn .* ENOENT/);
     assert.equal(failures.length, 1);
     assert.equal((failures[0]?.cause as NodeJS.ErrnoException | undefined)?.code, "ENOENT");
+    assert.equal(await child.settle(), true);
 });
 
 test("planned shutdown suppresses teardown stream resets and still permits termination", async () => {
@@ -89,6 +90,127 @@ test("planned shutdown suppresses teardown stream resets and still permits termi
     assert.equal(result.signal, "SIGKILL");
     assert.deepEqual(failures, []);
 });
+
+test("settle cancels its unreferenced watchdog when process completion wins", async (t) => {
+    const child = waitingChild(t);
+    const clock = new WatchdogClock(t);
+    const settling = child.settle(100);
+    let settled = false;
+    void settling.then(() => { settled = true; });
+
+    clock.advance(99);
+    await Promise.resolve();
+    assert.equal(settled, false);
+    child.end(0);
+    assert.equal(await settling, true);
+    clock.advance(1_000);
+    assert.deepEqual(clock.timers, [{milliseconds: 100, unrefs: 1, fired: false}]);
+    assert.equal((await child.wait()).exitCode, 0);
+});
+
+test("settle times out without terminating the child and a later call can observe completion", async (t) => {
+    const child = waitingChild(t);
+    const clock = new WatchdogClock(t);
+    const settling = child.settle(100);
+    let settled = false;
+    void settling.then(() => { settled = true; });
+
+    clock.advance(99);
+    await Promise.resolve();
+    assert.equal(settled, false);
+    clock.advance(1);
+    assert.equal(await settling, false);
+    assert.equal(child.failure, undefined);
+
+    const retry = child.settle(500);
+    child.end(0);
+    assert.equal(await retry, true);
+    assert.equal((await child.wait()).exitCode, 0);
+    clock.advance(1_000);
+    assert.deepEqual(clock.timers, [
+        {milliseconds: 100, unrefs: 1, fired: true},
+        {milliseconds: 500, unrefs: 1, fired: false},
+    ]);
+});
+
+test("settle handles completed children repeatedly, including zero and default delays", async (t) => {
+    const child = waitingChild(t);
+    child.end(0);
+    await child.wait();
+    const clock = new WatchdogClock(t);
+
+    assert.equal(await child.settle(0), true);
+    assert.equal(await child.settle(), true);
+    assert.equal(await child.settle(25), true);
+    clock.advance(1_000);
+    assert.deepEqual(clock.timers, [
+        {milliseconds: 0, unrefs: 1, fired: false},
+        {milliseconds: 1_000, unrefs: 1, fired: false},
+        {milliseconds: 25, unrefs: 1, fired: false},
+    ]);
+});
+
+test("settle favors completed children when the zero-delay watchdog is also ready", async (t) => {
+    const child = waitingChild(t);
+    child.end(0);
+    await child.wait();
+    const clock = new WatchdogClock(t);
+
+    const settling = child.settle(0);
+    clock.advance(0);
+    assert.equal(await settling, true);
+    assert.deepEqual(clock.timers, [{milliseconds: 0, unrefs: 1, fired: true}]);
+});
+
+test("settle rejects invalid delays without registering a watchdog", async (t) => {
+    const child = waitingChild(t);
+    const clock = new WatchdogClock(t);
+
+    for (const milliseconds of [-1, NaN, Infinity, -Infinity]) {
+        await assert.rejects(
+            child.settle(milliseconds),
+            /Managed child-process settle timeout must be a non-negative finite number/,
+        );
+    }
+    assert.deepEqual(clock.timers, []);
+});
+
+class WatchdogClock {
+    readonly timers: Array<{milliseconds: number; unrefs: number; fired: boolean}> = [];
+
+    constructor(private readonly context: TestContext) {
+        context.mock.timers.enable({apis: ["setTimeout"]});
+        const schedule = globalThis.setTimeout;
+        context.mock.method(globalThis, "setTimeout", (callback: () => void, milliseconds: number) => {
+            const timer = {milliseconds, unrefs: 0, fired: false};
+            this.timers.push(timer);
+            const handle = schedule(() => {
+                timer.fired = true;
+                callback();
+            }, milliseconds);
+            context.mock.method(handle, "unref", () => { timer.unrefs++; return handle; });
+            return handle;
+        });
+    }
+
+    advance(milliseconds: number): void {
+        this.context.mock.timers.tick(milliseconds);
+    }
+}
+
+function waitingChild(context: TestContext): ManagedChildProcess {
+    const child = ManagedChildProcess.spawn({
+        name: "settle fixture",
+        command: process.execPath,
+        arguments: ["-e", "process.stdin.resume()"],
+        spawnOptions: {stdio: ["pipe", "ignore", "ignore"]},
+    });
+    context.after(async () => {
+        child.terminate();
+        await child.waitForExit();
+    });
+    return child;
+}
 
 function sourceFiles(directory: string): string[] {
     return readdirSync(directory, {withFileTypes: true}).flatMap((entry) => {

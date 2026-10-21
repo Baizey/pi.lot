@@ -155,10 +155,18 @@ export class ManagedChildProcess {
         if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds < 0) {
             throw new Error("Managed child-process settle timeout must be a non-negative finite number");
         }
-        return await Promise.race([
-            this.exitPromise.then(() => true),
-            delay(timeoutMilliseconds).then(() => false),
-        ]);
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+            return await Promise.race([
+                this.exitPromise.then(() => true),
+                new Promise<void>((resolve) => {
+                    timeout = setTimeout(resolve, timeoutMilliseconds);
+                    timeout.unref();
+                }).then(() => false),
+            ]);
+        } finally {
+            clearTimeout(timeout);
+        }
     }
 
     private stream(index: number): Readable | Writable | undefined {
@@ -192,11 +200,4 @@ function streamDescriptor(index: number): ManagedChildProcessDescriptor {
 
 function asError(error: unknown): Error {
     return error instanceof Error ? error : new Error(String(error));
-}
-
-function delay(milliseconds: number): Promise<void> {
-    return new Promise((resolve) => {
-        const timeout = setTimeout(resolve, milliseconds);
-        timeout.unref();
-    });
 }

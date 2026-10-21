@@ -23,6 +23,88 @@ class FixedPerformanceRanker implements SubagentModelPerformanceRanker {
     }
 }
 
+test("catalogue ranking applies cost, thinking capacity, context, and output limits in order", async () => {
+    const nonReasoning = model("non-reasoning", 1, {reasoning: false, contextWindow: 1_000_000});
+    const restricted = model("restricted", 1, {
+        thinkingLevelMap: {off: null, minimal: null, xhigh: null, max: null},
+        contextWindow: 1_000_000,
+    });
+    const normal = model("normal", 1);
+    const tied = model("tied", 1, {provider: "other"});
+    const extended = model("extended", 1, {thinkingLevelMap: {xhigh: "xhigh", max: null}});
+    const largerContext = model("larger-context", 1, {
+        thinkingLevelMap: {max: "max"},
+        contextWindow: 256_000,
+    });
+    const largerOutput = model("larger-output", 1, {
+        thinkingLevelMap: {max: "max"},
+        contextWindow: 256_000,
+        maxTokens: 64_000,
+    });
+    const expensive = model("expensive", 2, {reasoning: false});
+    const models = Object.freeze([
+        largerOutput, tied, expensive, restricted, extended, nonReasoning, largerContext, normal,
+    ]);
+    const ranked = await new CatalogueSubagentModelPerformanceRanker().rank(models);
+
+    assert.deepEqual(ranked.map(({score}) => score), [5, 2, 6, 1, 3, 0, 4, 2]);
+    for (const [index, entry] of ranked.entries()) assert.equal(entry.model, models[index]);
+});
+
+test("catalogue ranking selects the highest applicable cost tier and clamps negative rates", async () => {
+    const tiered = model("tiered", 5, {
+        cost: {
+            input: 1, output: 5, cacheRead: 0, cacheWrite: 0,
+            tiers: [
+                {inputTokensAbove: 50_000, input: 3, output: 15, cacheRead: 0, cacheWrite: 0},
+                {inputTokensAbove: 100_000, input: 100, output: 500, cacheRead: 0, cacheWrite: 0},
+                {inputTokensAbove: 20_000, input: 2, output: 10, cacheRead: 0, cacheWrite: 0},
+            ],
+        },
+    });
+    const boundary = model("boundary", 5, {
+        cost: {
+            input: 1, output: 5, cacheRead: 0, cacheWrite: 0,
+            tiers: [{inputTokensAbove: 100_000, input: 100, output: 500, cacheRead: 0, cacheWrite: 0}],
+        },
+    });
+    const models = [tiered, model("free", 0), boundary, model("equivalent-tier", 15), model("negative", -1)];
+    const ranked = await new CatalogueSubagentModelPerformanceRanker().rank(models);
+
+    assert.deepEqual(ranked.map(({score}) => score), [2, 0, 1, 2, 0]);
+});
+
+test("catalogue ranking recomputes keys when the same model changes between calls", async () => {
+    const changing = model("changing", 3);
+    const models = [changing, model("steady", 1)];
+    const ranker = new CatalogueSubagentModelPerformanceRanker();
+
+    assert.deepEqual((await ranker.rank(models)).map(({score}) => score), [1, 0]);
+    changing.cost = {...changing.cost, input: 0, output: 0};
+    assert.deepEqual((await ranker.rank(models)).map(({score}) => score), [0, 1]);
+    changing.cost = {...models[1]!.cost};
+    changing.thinkingLevelMap = {high: null};
+    assert.deepEqual((await ranker.rank(models)).map(({score}) => score), [0, 1]);
+    changing.thinkingLevelMap = undefined;
+    changing.contextWindow = 256_000;
+    assert.deepEqual((await ranker.rank(models)).map(({score}) => score), [1, 0]);
+});
+
+test("catalogue ranking preserves existing non-finite comparison and score semantics", async () => {
+    const ranker = new CatalogueSubagentModelPerformanceRanker();
+    const incomparableCosts = [model("nan-cost", NaN), model("finite-cost", 1)];
+    assert.deepEqual((await ranker.rank(incomparableCosts)).map(({score}) => score), [0, 0]);
+
+    const incomparableLimits = [
+        model("first", 1, {maxTokens: NaN}),
+        model("second", 1, {maxTokens: NaN}),
+        model("third", 1, {maxTokens: NaN}),
+    ];
+    assert.deepEqual((await ranker.rank(incomparableLimits)).map(({score}) => score), [0, 1, 2]);
+    assert.deepEqual(await ranker.rank([]), []);
+    assert.deepEqual(await ranker.rank([incomparableLimits[0]!]), [{model: incomparableLimits[0], score: 0}]);
+});
+
 test("reasoning skills select five positions across the available performance-cost frontier", async (t) => {
     const models = [
         model("economy", 1),

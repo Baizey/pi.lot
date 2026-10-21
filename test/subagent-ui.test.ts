@@ -48,6 +48,15 @@ test("subagent activity widget shows bounded active work and omits retained idle
     assert.deepEqual(subagentStatusCounts(jobs), {running: 1, queued: 1, idle: 1, attention: 0});
 });
 
+test("subagent status counts include failures and timeouts but exclude cancellations", () => {
+    const jobs = Object.values(SubagentJobStatus).map((status) => job({id: status, status}));
+    const original = structuredClone(jobs);
+    assert.deepEqual(subagentStatusCounts([]), {running: 0, queued: 0, idle: 0, attention: 0});
+    assert.deepEqual(subagentStatusCounts(jobs), {running: 1, queued: 1, idle: 1, attention: 2});
+    assert.deepEqual(subagentStatusCounts([...jobs, ...jobs]), {running: 2, queued: 2, idle: 2, attention: 4});
+    assert.deepEqual(jobs, original, "counting must not mutate the job snapshots or their order");
+});
+
 test("subagent activity widget renders active jobs in depth-first parent order", () => {
     const jobs = [
         job({id: "parent-a", role: "parent A", status: SubagentJobStatus.RUNNING, createdAt: 1}),
@@ -130,6 +139,51 @@ test("subagent UI runtime keeps the above-editor widget and footer synchronized"
     assert.equal(statuses.length, statusCount);
 });
 
+test("subagent footer counts follow updates and removals without changing chronological widget order", () => {
+    const jobs = [
+        job({id: "child", role: "child A", parentId: "parent", depth: 1, createdAt: 3}),
+        job({id: "later", role: "parent B", status: SubagentJobStatus.RUNNING, createdAt: 2}),
+        job({id: "parent", role: "parent A", status: SubagentJobStatus.RUNNING, createdAt: 1}),
+        job({id: "idle", status: SubagentJobStatus.IDLE}),
+        job({id: "failed", status: SubagentJobStatus.FAILED}),
+        job({id: "timeout", status: SubagentJobStatus.TIMED_OUT}),
+        job({id: "cancelled", status: SubagentJobStatus.CANCELLED}),
+    ];
+    const monitor = new FakeMonitor(jobs);
+    let status: string | undefined;
+    let widget: SubagentActivityWidget | undefined;
+    const ctx = {
+        mode: "tui", hasUI: true,
+        ui: {
+            theme: plainTheme,
+            setStatus(_key: string, value: string | undefined) { status = value; },
+            setWidget(_key: string, factory: unknown) {
+                if (typeof factory === "function") widget = factory({requestRender() {}}, plainTheme);
+            },
+        },
+    } as unknown as ExtensionContext;
+    const runtime = new SubagentUiRuntime();
+    try {
+        runtime.startSession(ctx, monitor);
+        assert.equal(status, "agents ●2 ◌1 ○1 !2");
+        assert.ok(widget);
+        assert.deepEqual(widget.render(120).slice(1).map((line) => line.replace(/ —.*$/, "")), [
+            "● parent A", "  └─ ◌ child A", "● parent B",
+        ]);
+        monitor.upsert(job({id: "later", role: "parent B", status: SubagentJobStatus.IDLE, createdAt: 2}));
+        assert.equal(status, "agents ●1 ◌1 ○2 !2");
+        monitor.remove("timeout");
+        assert.equal(status, "agents ●1 ◌1 ○2 !1");
+        monitor.remove("failed");
+        assert.equal(status, "agents ●1 ◌1 ○2");
+        for (const value of jobs) monitor.remove(value.id);
+        assert.equal(status, undefined);
+        assert.deepEqual(widget.render(120), []);
+    } finally {
+        runtime.stopSession();
+    }
+});
+
 class FakeMonitor implements SubagentJobMonitor {
     private readonly jobs = new Map<string, SubagentJobSnapshot>();
     private readonly listeners = new Set<(change: SubagentJobChange) => void>();
@@ -150,6 +204,11 @@ class FakeMonitor implements SubagentJobMonitor {
     upsert(value: SubagentJobSnapshot): void {
         this.jobs.set(value.id, value);
         for (const listener of this.listeners) listener({kind: "upsert", job: value});
+    }
+
+    remove(jobId: string): void {
+        this.jobs.delete(jobId);
+        for (const listener of this.listeners) listener({kind: "remove", jobId});
     }
 }
 

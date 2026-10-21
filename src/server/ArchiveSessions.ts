@@ -1,5 +1,5 @@
 import {constants} from "node:fs";
-import {lstat, open, readdir, realpath} from "node:fs/promises";
+import {lstat, open, realpath} from "node:fs/promises";
 import path from "node:path";
 import {MAX_ARCHIVE_BYTES, type ArchiveMetadata} from "./ArchiveProtocol.js";
 import {
@@ -18,8 +18,7 @@ export type ArchiveSourceEvidence = {
     parentSession?: string;
     session: ArchiveSourceIdentity;
 };
-type CatalogEntry = ArchiveSourceEvidence;
-type ParsedSession = {entry: CatalogEntry; metadata: ArchiveMetadata};
+type ParsedSession = {entry: ArchiveSourceEvidence; metadata: ArchiveMetadata};
 export type ArchiveSourceCapture = Snapshot & {
     evidence: ArchiveSourceEvidence;
     membership: "included" | "excluded" | "unresolved";
@@ -29,18 +28,13 @@ type AncestryDependencies = {files: Set<string>; sessionIds: Set<string>};
 type Snapshot = {file: string; sessionId: string; body: Buffer; metadata: ArchiveMetadata; warnings: string[]};
 type Family = {kind: SessionKind; rootSessionId: string};
 
-/** Owns one upload's catalog, retaining ancestry only, never other sessions' bodies. */
+/** Discovers source paths and captures one body using caller-owned ancestry evidence. */
 export class ArchiveSessions {
-    private readonly catalog = new Map<string, CatalogEntry>();
-    private readonly byId = new Map<string, CatalogEntry>();
-    private readonly collisions = new Set<string>();
     private readonly source: ArchiveSourceScope;
     private readonly discovery: ArchiveDiscovery;
-    private currentRootSessionId: string | undefined;
 
     constructor(source: ArchiveSourceScope) {
         this.source = decodeArchiveSourceScope(source);
-        this.currentRootSessionId = this.source.rootSessionId;
         this.discovery = new ArchiveDiscovery(this.source);
     }
 
@@ -90,116 +84,6 @@ export class ArchiveSessions {
         return {file, sessionId: parsed.entry.session.sessionId, body: stable.body, metadata: parsed.metadata,
             evidence: parsed.entry, membership, warnings,
             ancestryDependencies: {files: [...dependencies.files].sort(), sessionIds: [...dependencies.sessionIds].sort()}};
-    }
-
-    async discover(scope: "current" | "all" = this.source.scope, signal?: AbortSignal): Promise<{files: string[]; warnings: string[]; rootSessionId?: string}> {
-        checkAbort(signal);
-        this.catalog.clear();
-        this.byId.clear();
-        this.collisions.clear();
-        this.currentRootSessionId = this.source.rootSessionId;
-        const warnings: string[] = [];
-        const currentFile = this.source.sessionFile;
-        if (scope === "current" && !currentFile) {
-            return {files: [], warnings: ["The current session has no persisted history (--no-session)."]};
-        }
-        const candidates = new Set<string>();
-        let unreadableDirectories = 0;
-        const addDirectory = async (directory: string) => {
-            checkAbort(signal);
-            try {
-                for (const entry of await readdir(directory, {withFileTypes: true})) {
-                    if (entry.name.endsWith(".jsonl")) candidates.add(path.resolve(directory, entry.name));
-                }
-            } catch (error) {
-                checkAbort(signal);
-                if (!hasCode(error, "ENOENT")) unreadableDirectories++;
-            }
-        };
-        if (scope === "all") {
-            // Mirror SessionManager.listAll's directory layout without its unbounded
-            // transcript-text accumulation or following file symlinks/FIFOs.
-            for (const globalDirectory of this.source.defaultSessionRoots) {
-                try {
-                    for (const entry of await readdir(globalDirectory, {withFileTypes: true})) {
-                        checkAbort(signal);
-                        if (entry.isDirectory()) await addDirectory(path.join(globalDirectory, entry.name));
-                    }
-                } catch (error) {
-                    checkAbort(signal);
-                    if (!hasCode(error, "ENOENT")) unreadableDirectories++;
-                }
-            }
-        }
-        if (currentFile) {
-            await addDirectory(this.source.sessionDirectory);
-            candidates.add(path.resolve(currentFile));
-        }
-        let skippedFiles = 0;
-        for (const candidate of [...candidates].sort()) {
-            checkAbort(signal);
-            try {
-                const {file, body} = await this.readStable(candidate, signal);
-                if (this.catalog.has(file)) continue;
-                const {entry} = this.parse(file, body, signal);
-                this.catalog.set(file, entry);
-                const previous = this.byId.get(entry.session.sessionId);
-                if (previous && previous.file !== file) this.collisions.add(entry.session.sessionId);
-                else this.byId.set(entry.session.sessionId, entry);
-            } catch {
-                checkAbort(signal);
-                skippedFiles++;
-            }
-        }
-        for (const id of this.collisions) this.byId.delete(id);
-        // A resumed legacy/partial child may need the catalog's parent chain to
-        // recover its originating main session. Unknown is not an empty family.
-        if (this.currentRootSessionId === undefined) {
-            this.currentRootSessionId = this.resolveFamily({
-                file: currentFile ?? "",
-                parentSession: this.source.parentSession,
-                session: this.source.activeSession,
-            })?.rootSessionId;
-        }
-        let unresolvedChildren = 0;
-        const files: string[] = [];
-        for (const entry of this.catalog.values()) {
-            if (this.collisions.has(entry.session.sessionId)) continue;
-            const family = this.resolveFamily(entry);
-            if ((entry.session.childKind || entry.session.identityConflict) && !family) unresolvedChildren++;
-            if (scope === "all" || (family && family.rootSessionId === this.currentRootSessionId)) files.push(entry.file);
-        }
-        if (skippedFiles) warnings.push(`Skipped ${skippedFiles} unreadable, unsafe, changing, or invalid session file(s).`);
-        if (unreadableDirectories) warnings.push(`Could not scan ${unreadableDirectories} session directory/directories.`);
-        if (this.collisions.size) warnings.push(`Skipped ${this.collisions.size} duplicate session ID(s) found in different files.`);
-        if (unresolvedChildren) warnings.push(`Could not resolve root ancestry for ${unresolvedChildren} child session(s).`);
-        if (scope === "current" && files.length === 0) warnings.push("The current session has no persisted session family to upload yet.");
-        checkAbort(signal);
-        return {files: files.sort(), warnings,
-            ...(this.currentRootSessionId !== undefined ? {rootSessionId: this.currentRootSessionId} : {})};
-    }
-
-    async snapshot(file: string, signal?: AbortSignal): Promise<Snapshot> {
-        const stable = await this.readStable(file, signal);
-        const parsed = this.parse(stable.file, stable.body, signal);
-        const indexed = this.catalog.get(stable.file);
-        if (indexed && indexed.session.sessionId !== parsed.entry.session.sessionId) {
-            throw new Error("Session identity changed after archive discovery; discover again before uploading.");
-        }
-        if (this.collisions.has(parsed.entry.session.sessionId)
-            || (this.byId.has(parsed.entry.session.sessionId) && this.byId.get(parsed.entry.session.sessionId)?.file !== stable.file)) {
-            throw new Error("Duplicate session ID in different files; archive upload is ambiguous.");
-        }
-        const warnings: string[] = [];
-        const family = this.resolveFamily(parsed.entry);
-        if (family) {
-            parsed.metadata.kind = family.kind;
-            parsed.metadata.root_session_id = family.rootSessionId;
-        } else if (parsed.entry.session.childKind || parsed.entry.session.identityConflict) {
-            warnings.push("Session root ancestry is unresolved or conflicting; kind and root session metadata were omitted.");
-        }
-        checkAbort(signal);
-        return {file: stable.file, sessionId: parsed.entry.session.sessionId, body: stable.body, metadata: parsed.metadata, warnings};
     }
 
     private resolveSourceFamily(
@@ -270,73 +154,6 @@ export class ArchiveSessions {
                 }
                 return undefined;
             }
-        }
-        return undefined;
-    }
-
-    private resolveFamily(entry: CatalogEntry): Family | undefined {
-        const session = entry.session;
-        if (this.collisions.has(session.sessionId) || session.identityConflict) return undefined;
-        const activeRootId = this.currentRootSessionId;
-        const currentId = this.source.activeSession.sessionId;
-        if (!session.childKind) {
-            // UUID shape and native fork provenance do not establish Pilot identity.
-            return session.main || (session.sessionId === currentId && activeRootId === currentId)
-                ? {kind: SessionKind.Main, rootSessionId: session.sessionId}
-                : undefined;
-        }
-        const seen = new Set<string>();
-        let expectedRoot: string | undefined;
-        let cursor: CatalogEntry | undefined = entry;
-        while (cursor) {
-            const ancestor: ArchiveSourceIdentity = cursor.session;
-            if (seen.has(ancestor.sessionId) || this.collisions.has(ancestor.sessionId) || ancestor.identityConflict) return undefined;
-            seen.add(ancestor.sessionId);
-            if (!ancestor.childKind) {
-                const isRoot = ancestor.main
-                    || (ancestor.sessionId === currentId && activeRootId === currentId)
-                    || ancestor.sessionId === expectedRoot;
-                return isRoot && (!expectedRoot || expectedRoot === ancestor.sessionId)
-                    ? {kind: session.childKind, rootSessionId: ancestor.sessionId} : undefined;
-            }
-            if (ancestor.rootSessionId) {
-                if (expectedRoot && expectedRoot !== ancestor.rootSessionId) return undefined;
-                expectedRoot = ancestor.rootSessionId;
-                const root = this.byId.get(expectedRoot)?.session;
-                if (seen.has(expectedRoot) || this.collisions.has(expectedRoot) || root?.identityConflict || root?.childKind) return undefined;
-            }
-            if (ancestor.parentAgentIdentifier && this.collisions.has(ancestor.parentAgentIdentifier)) return undefined;
-            const parentById: CatalogEntry | undefined = ancestor.parentAgentIdentifier
-                ? this.byId.get(ancestor.parentAgentIdentifier) : undefined;
-            if (parentById) {
-                cursor = parentById;
-                continue;
-            }
-            if (ancestor.parentAgentIdentifier === currentId && activeRootId && !this.collisions.has(activeRootId)) {
-                return !expectedRoot || expectedRoot === activeRootId
-                    ? {kind: session.childKind, rootSessionId: activeRootId} : undefined;
-            }
-            // Never open parentSession: only look up paths/IDs already in the owned catalog.
-            const parentPath: string | undefined = cursor.parentSession
-                ? path.resolve(path.dirname(cursor.file), cursor.parentSession) : undefined;
-            const parentByPath: CatalogEntry | undefined = parentPath ? this.catalog.get(parentPath) : undefined;
-            const parentByHeaderId: CatalogEntry | undefined = cursor.parentSession ? this.byId.get(cursor.parentSession) : undefined;
-            const indexedParent: CatalogEntry | undefined = parentByPath ?? parentByHeaderId;
-            if (indexedParent) {
-                if (ancestor.parentAgentIdentifier && indexedParent.session.sessionId !== ancestor.parentAgentIdentifier) return undefined;
-                cursor = indexedParent;
-                continue;
-            }
-            const currentFile = this.source.sessionFile;
-            const pathLinksToCurrent = parentPath && currentFile && parentPath === path.resolve(currentFile);
-            if (pathLinksToCurrent && ancestor.parentAgentIdentifier && ancestor.parentAgentIdentifier !== currentId) return undefined;
-            const linksToCurrent = ancestor.parentAgentIdentifier === currentId || pathLinksToCurrent;
-            if (linksToCurrent && activeRootId && !this.collisions.has(currentId) && !this.collisions.has(activeRootId)) {
-                return !expectedRoot || expectedRoot === activeRootId
-                    ? {kind: session.childKind, rootSessionId: activeRootId} : undefined;
-            }
-            // A self-bound root remains usable when its parent history is unavailable.
-            return expectedRoot ? {kind: session.childKind, rootSessionId: expectedRoot} : undefined;
         }
         return undefined;
     }
@@ -498,10 +315,6 @@ export function decodeArchiveSourceEvidence(value: unknown): ArchiveSourceEviden
     } catch {
         throw new ArchiveSourceError("invalid", "Invalid archive source evidence.");
     }
-}
-
-function hasCode(error: unknown, code: string): boolean {
-    return isRecord(error) && error.code === code;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

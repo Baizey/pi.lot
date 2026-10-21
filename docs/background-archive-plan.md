@@ -1,13 +1,13 @@
 # Background session archival: implementation plan
 
-Status: **all six production slices implemented and independently reviewed**, following
-the reviewed revision-3 design. Core correctness convergence and the combined local suite
-have passed. Remaining work is the bounded removal of retired source APIs and the final
-post-cleanup validation record—not additional features. This is not a claim of a passing
-full host suite, production-WAL qualification, or physical durability.
+Status: **implemented, independently reviewed, and locally validated**, following the
+reviewed revision-3 design. All six production slices and the bounded retirement of unused
+source APIs are complete. Core convergence, the combined local suite, and post-cleanup
+validation passed. Qualification limits are recorded below; this is not a claim of a
+passing full host suite, production-WAL qualification, or physical durability.
 
-The reviewed foundation checkpoint is `e220a58`. Subsequent work adds the bounded durable
-inbox, detached Node/jiti worker and kernel election, transactional source obligations,
+The reviewed foundation checkpoint is `e220a58`. The full-worker checkpoint `da87889` adds
+the bounded durable inbox, detached Node/jiti worker and kernel election, source obligations,
 immutable operations and coverage, persisted retries, destination-pinned authorization,
 lightweight lifecycle/manual queueing, byte/metadata reconciliation with preservation
 dependencies, and canonical/preserved archive selectors. pi.server implements additive
@@ -537,11 +537,16 @@ without claiming full native-session synchronization or editing historical revie
   malformed replies; persisted request relationships; binding-wide and disputed-key
   exclusion; and exact preservation dependencies at execution and acceptance. Final frozen
   state/reconciliation delta reviews returned ready with no remaining concrete blocker.
-  Dead source API removal is a separate behavior-preserving cleanup, not another feature.
+- Post-checkpoint cleanup removed unused `discover()`/`snapshot()`, the duplicate family
+  resolver, and their private state/helpers. Applicable tests now exercise worker APIs.
+  Independent review confirmed all five retained worker methods are text-identical to
+  `da87889`; no production behavior changed. The combined suite and typecheck passed again.
+  This closes the bounded cleanup without adding features.
 
 ## 12. Local implementation validation
 
-At the full-worker checkpoint, the parent ran:
+The parent ran the following both at full-worker checkpoint `da87889` and after the
+separately reviewed source API cleanup:
 
 ```bash
 mapfile -t tests < <(find test -maxdepth 1 -name 'server-*.test.ts' | sort)
@@ -551,7 +556,7 @@ node --import jiti/register --test --test-concurrency=1 \
 npm run typecheck
 ```
 
-Result: **525 tests, 519 passed, six sandbox symlink-fixture skips, zero failures**.
+Both runs: **525 tests, 519 passed, six sandbox symlink-fixture skips, zero failures**.
 Global typechecking and scoped diff whitespace checks passed. Runtime/election tests run
 serially rather than increasing production lock/launch deadlines. A packaging dry run
 with lifecycle scripts disabled confirmed the bootstrap and worker/source modules ship.

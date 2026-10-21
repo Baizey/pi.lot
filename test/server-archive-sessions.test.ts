@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
-import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync} from "node:fs";
+import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync} from "node:fs";
 import {open} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,9 +39,10 @@ test("archive snapshots retain exact native bytes and count every branch, not pr
         JSON.stringify(entry("future_native_entry", {secret: "preserve this too"})),
     ].join("\r\n") + "\r\n");
     writeFileSync(f.rootFile, body);
-    const catalog = await f.archive.discover("current");
-    assert.deepEqual(catalog.files, [realpathSync(f.rootFile)]);
-    const snapshot = await f.archive.snapshot(catalog.files[0]!);
+    const page = await f.archive.discoverPage(null, 64);
+    assert.equal(page.complete, true);
+    assert.deepEqual([...new Set(page.files)], [f.rootFile]);
+    const snapshot = await f.archive.captureSource(f.rootFile, []);
     assert.deepEqual(snapshot.body, body);
     assert.deepEqual(snapshot.metadata, {
         counts: {user_messages: 1, assistant_messages: 2, tool_calls: 3},
@@ -59,32 +60,32 @@ test("titles use the last session name, explicit clears, and a control-free UTF-
     const user = entry("message", {message: {role: "user", content: "\u0000Task\u001b\n " + "😀".repeat(100)}});
     for (const clear of [{name: ""}, {}, {name: "\u0000\u007f"}]) {
         const file = f.save(ROOT, [user, entry("session_info", {name: "old title"}), entry("session_info", clear)]);
-        const snapshot = await f.archive.snapshot(file);
+        const snapshot = await f.archive.captureSource(file, []);
         assert.equal(snapshot.metadata.title, "Task " + "😀".repeat(62));
         assert.equal(Buffer.byteLength(snapshot.metadata.title!), 253);
         assert.doesNotMatch(snapshot.metadata.title!, /[\u0000-\u001f\u007f-\u009f]/u);
         decodeArchiveMetadata(snapshot.metadata, ROOT);
     }
     let file = f.save(ROOT, [user, entry("session_info", {name: "\u0001Named\n session"})]);
-    assert.equal((await f.archive.snapshot(file)).metadata.title, "Named session");
+    assert.equal((await f.archive.captureSource(file, [])).metadata.title, "Named session");
     file = f.save(ROOT, [entry("message", {message: {role: "assistant", content: [{type: "text", text: "not a title"}]}})]);
-    assert.equal((await f.archive.snapshot(file)).metadata.title, undefined);
+    assert.equal((await f.archive.captureSource(file, [])).metadata.title, undefined);
 });
 
 test("timestamps use valid persisted header/entry times, accept epoch zero, and omit unknown dates", async (t) => {
     const f = fixture(t);
     let file = f.save(ROOT, [entry("custom", {timestamp: "1969-12-31T23:59:59Z"}),
         entry("message", {timestamp: "invalid", message: {role: "user", content: "x", timestamp: 9999999999999}})]);
-    let metadata = (await f.archive.snapshot(file)).metadata;
+    let metadata = (await f.archive.captureSource(file, [])).metadata;
     assert.equal(metadata.started_at, EPOCH);
     assert.equal(metadata.last_activity_at, EPOCH);
     file = f.save(ROOT, [entry("custom", {timestamp: "2024-02-30T00:00:00Z"})], {timestamp: "invalid"});
-    metadata = (await f.archive.snapshot(file)).metadata;
+    metadata = (await f.archive.captureSource(file, [])).metadata;
     assert.equal(metadata.started_at, undefined);
     assert.equal(metadata.last_activity_at, undefined);
     file = f.save(ROOT, [entry("custom", {timestamp: "2024-04-02T12:00:00+02:00"}),
         entry("custom", {timestamp: "2024-04-02T09:00:00Z"})]);
-    assert.equal((await f.archive.snapshot(file)).metadata.last_activity_at, "2024-04-02T10:00:00.000Z");
+    assert.equal((await f.archive.captureSource(file, [])).metadata.last_activity_at, "2024-04-02T10:00:00.000Z");
 });
 
 test("current family includes nested legacy children and policy reviewers across workspaces; all includes other roots", async (t) => {
@@ -99,25 +100,30 @@ test("current family includes nested legacy children and policy reviewers across
     const other = f.save(OTHER, [mainIdentity(OTHER)], {}, f.globalProject);
     const orphan = f.save("subagent-orphan", [], {parentSession: "/unowned/private/session.jsonl"});
     const unknown = f.save("custom-unknown", []);
-    const current = await f.archive.discover("current");
-    assert.deepEqual(current.files.sort(), [f.rootFile, parent, nested, reviewer, explicit, byPath, byHeaderId].map((file) => realpathSync(file)).sort());
-    for (const file of current.files) {
-        const snapshot = await f.archive.snapshot(file);
+    const all = new ArchiveSessions(captureArchiveSourceScope(f.manager, "all"));
+    const familyFiles = [f.rootFile, parent, nested, reviewer, explicit, byPath, byHeaderId];
+    const catalog = await observeSources(all, [...familyFiles, fork, other, orphan, unknown]);
+    for (const file of familyFiles) {
+        const snapshot = await f.archive.captureSource(file, catalog);
+        assert.equal(snapshot.membership, "included");
         assert.equal(snapshot.metadata.root_session_id, ROOT);
         assert.equal(snapshot.metadata.kind, file === f.rootFile ? SessionKind.Main
             : file === reviewer ? SessionKind.PolicyApprover : SessionKind.Subagent);
     }
-    const all = await f.archive.discover("all");
-    for (const file of [fork, other, orphan, unknown]) assert.ok(all.files.includes(realpathSync(file)));
-    const forkSnapshot = await f.archive.snapshot(fork);
+    assert.equal((await f.archive.captureSource(fork, catalog)).membership, "excluded");
+    const page = await all.discoverPage(null, 64);
+    assert.equal(page.complete, true);
+    for (const file of [fork, other, orphan, unknown]) assert.ok(page.files.includes(file));
+    assert.equal((await all.captureSource(other, catalog)).membership, "included");
+    const forkSnapshot = await all.captureSource(fork, catalog);
     assert.equal(forkSnapshot.metadata.kind, SessionKind.Main);
     assert.equal(forkSnapshot.metadata.root_session_id, FORK);
-    const orphanSnapshot = await f.archive.snapshot(orphan);
+    const orphanSnapshot = await all.captureSource(orphan, catalog);
     assert.equal(orphanSnapshot.metadata.kind, undefined);
     assert.equal(orphanSnapshot.metadata.root_session_id, undefined);
     assert.equal(orphanSnapshot.warnings.length, 1);
     assert.deepEqual(orphanSnapshot.body, readFileSync(orphan));
-    const unknownSnapshot = await f.archive.snapshot(unknown);
+    const unknownSnapshot = await all.captureSource(unknown, catalog);
     assert.equal(unknownSnapshot.metadata.kind, undefined);
     assert.equal(unknownSnapshot.metadata.root_session_id, undefined);
     assert.deepEqual(unknownSnapshot.warnings, []);
@@ -128,8 +134,9 @@ test("session-bound child identity retains creation intent when its original roo
     const id = "intent-defined-child";
     const file = f.save(id, [custom({version: 1, sessionId: id, kind: SessionKind.PolicyApprover,
         parentAgentIdentifier: "subagent-missing-parent"})]);
-    assert.ok((await f.archive.discover("all")).files.includes(file));
-    const unresolved = await f.archive.snapshot(file);
+    assert.ok((await f.archive.discoverPage(null, 64)).files.includes(file));
+    const unresolved = await f.archive.captureSource(file, []);
+    assert.equal(unresolved.membership, "unresolved");
     assert.equal(unresolved.metadata.kind, undefined);
     assert.equal(unresolved.metadata.root_session_id, undefined);
     assert.equal(unresolved.warnings.length, 1);
@@ -140,9 +147,10 @@ test("session-bound child identity retains creation intent when its original roo
     t.mock.method(pi, "appendEntry", (customType: string, data: unknown) => { appended.push({customType, data}); });
     recordMainSessionIdentity(pi, manager);
     assert.deepEqual(appended, [], "an explicitly known child must not be relabelled main");
-    f.save("subagent-missing-parent", [custom({parentAgentIdentifier: ROOT})]);
-    assert.ok((await f.archive.discover("current")).files.includes(file));
-    const resolved = await f.archive.snapshot(file);
+    const parent = f.save("subagent-missing-parent", [custom({parentAgentIdentifier: ROOT})]);
+    const catalog = await observeSources(f.archive, [parent]);
+    const resolved = await f.archive.captureSource(file, catalog);
+    assert.equal(resolved.membership, "included");
     assert.equal(resolved.metadata.kind, SessionKind.PolicyApprover);
     assert.equal(resolved.metadata.root_session_id, ROOT);
     assert.deepEqual(resolved.warnings, []);
@@ -158,14 +166,16 @@ for (const bound of [false, true]) {
         const child = f.save(id, [identity], {parentSession: f.rootFile});
         const nested = f.save("subagent-nested-resumed", [custom({parentAgentIdentifier: id})]);
         const reviewer = f.save("policy-approver-resumed", [custom({parentAgentIdentifier: id})]);
-        f.save(OTHER, [mainIdentity(OTHER)]);
+        const other = f.save(OTHER, [mainIdentity(OTHER)]);
         const archive = new ArchiveSessions(captureArchiveSourceScope(SessionManager.open(child)));
-        const discovered = await archive.discover("current");
-        assert.equal(discovered.rootSessionId, ROOT);
-        assert.deepEqual(discovered.files.sort(), [f.rootFile, child, nested, reviewer].sort());
-        for (const file of discovered.files) {
-            assert.equal((await archive.snapshot(file)).metadata.root_session_id, ROOT);
+        const files = [f.rootFile, child, nested, reviewer];
+        const catalog = await observeSources(archive, [...files, other]);
+        for (const file of files) {
+            const captured = await archive.captureSource(file, catalog);
+            assert.equal(captured.membership, "included");
+            assert.equal(captured.metadata.root_session_id, ROOT);
         }
+        assert.equal((await archive.captureSource(other, catalog)).membership, "excluded");
     });
 }
 
@@ -175,10 +185,10 @@ for (const link of ["path", "id"] as const) {
         writeFileSync(f.rootFile, [header(ROOT), mainIdentity(ROOT)].map((row) => JSON.stringify(row)).join("\n") + "\n");
         const child = f.save("subagent-header-only-resumed", [], {parentSession: link === "path" ? f.rootFile : ROOT});
         const archive = new ArchiveSessions(captureArchiveSourceScope(SessionManager.open(child)));
-        const discovered = await archive.discover("current");
-        assert.equal(discovered.rootSessionId, ROOT);
-        assert.deepEqual(discovered.files.sort(), [f.rootFile, child].sort());
-        assert.equal((await archive.snapshot(child)).metadata.root_session_id, ROOT);
+        const catalog = await observeSources(archive, [f.rootFile]);
+        const captured = await archive.captureSource(child, catalog);
+        assert.equal(captured.membership, "included");
+        assert.equal(captured.metadata.root_session_id, ROOT);
     });
 }
 
@@ -188,43 +198,46 @@ test("current-family fallback does not adopt conflicting, cyclic, or colliding a
     const conflicting = f.save("subagent-resumed-conflict", [boundChild("subagent-resumed-conflict", ROOT, ROOT),
         boundChild("subagent-resumed-conflict", ROOT, OTHER)]);
     const cycle = f.save("subagent-resumed-cycle", [custom({parentAgentIdentifier: "subagent-cycle-parent"})]);
-    f.save("subagent-cycle-parent", [custom({parentAgentIdentifier: "subagent-resumed-cycle"})]);
+    const cycleParent = f.save("subagent-cycle-parent", [custom({parentAgentIdentifier: "subagent-resumed-cycle"})]);
     const headerMismatch = f.save("subagent-resumed-header-mismatch", [custom({parentAgentIdentifier: "missing-parent"})],
         {parentSession: f.rootFile});
+    const catalog = await observeSources(f.archive, [f.rootFile, conflicting, cycle, cycleParent, headerMismatch]);
     for (const file of [conflicting, cycle, headerMismatch]) {
-        const discovered = await new ArchiveSessions(captureArchiveSourceScope(SessionManager.open(file))).discover("current");
-        assert.equal(discovered.rootSessionId, undefined);
-        assert.deepEqual(discovered.files, []);
+        const captured = await new ArchiveSessions(captureArchiveSourceScope(SessionManager.open(file))).captureSource(file, catalog);
+        assert.equal(captured.membership, "unresolved");
+        assert.equal(captured.metadata.root_session_id, undefined);
     }
     const child = f.save("subagent-resumed-collision", [custom({parentAgentIdentifier: ROOT})]);
-    f.save(ROOT, [mainIdentity(ROOT)]);
-    const collision = await new ArchiveSessions(captureArchiveSourceScope(SessionManager.open(child))).discover("current");
-    assert.equal(collision.rootSessionId, undefined);
-    assert.deepEqual(collision.files, []);
-    assert.match(collision.warnings.join(" "), /duplicate session ID/);
+    const duplicate = f.save(ROOT, [mainIdentity(ROOT)]);
+    catalog.push((await f.archive.captureSource(duplicate, [])).evidence);
+    const collision = await new ArchiveSessions(captureArchiveSourceScope(SessionManager.open(child))).captureSource(child, catalog);
+    assert.equal(collision.membership, "unresolved");
+    assert.equal(collision.metadata.root_session_id, undefined);
 });
 
-test("legacy parent paths never open arbitrary files, cycles stay unclassified, and ID collisions are skipped", async (t) => {
+test("legacy parent paths remain inert, cycles stay unclassified, and duplicate paths remain observations", async (t) => {
     const f = fixture(t);
     const outside = f.save(OTHER, [], {}, path.join(f.directory, "unowned"));
     const orphan = f.save("subagent-private-parent", [], {parentSession: outside});
     const a = f.save("subagent-cycle-a", [custom({parentAgentIdentifier: "subagent-cycle-b"})]);
-    f.save("subagent-cycle-b", [custom({parentAgentIdentifier: "subagent-cycle-a"})]);
+    const b = f.save("subagent-cycle-b", [custom({parentAgentIdentifier: "subagent-cycle-a"})]);
     const duplicateOne = f.save(OTHER, []);
     const duplicateTwo = f.save(OTHER, [], {}, f.globalProject);
     const dependent = f.save("subagent-ambiguous", [custom({parentAgentIdentifier: OTHER})]);
-    const all = await f.archive.discover("all");
-    assert.ok(all.warnings.some((warning) => /duplicate session ID/.test(warning)));
-    assert.ok(!all.files.includes(duplicateOne));
-    assert.ok(!all.files.includes(duplicateTwo));
+    const all = new ArchiveSessions(captureArchiveSourceScope(f.manager, "all"));
+    const page = await all.discoverPage(null, 64);
+    assert.ok(page.files.includes(duplicateOne));
+    assert.ok(page.files.includes(duplicateTwo));
+    assert.ok(!page.files.includes(outside));
+    const catalog = await observeSources(all, [orphan, a, b, duplicateOne, duplicateTwo, dependent]);
     for (const file of [orphan, a, dependent]) {
-        const snapshot = await f.archive.snapshot(file);
+        const snapshot = await all.captureSource(file, catalog);
         assert.equal(snapshot.metadata.kind, undefined);
         assert.equal(snapshot.metadata.root_session_id, undefined);
         assert.equal(snapshot.warnings.length, 1);
+        assert.ok(!JSON.stringify(snapshot.warnings).includes(outside));
     }
-    await assert.rejects(f.archive.snapshot(duplicateOne), /Duplicate session ID/);
-    assert.ok(!JSON.stringify(all.warnings).includes(outside));
+    for (const file of [duplicateOne, duplicateTwo]) assert.deepEqual((await all.captureSource(file, catalog)).body, readFileSync(file));
 });
 
 test("legacy path fallback cannot contradict a recorded parent agent ID", async (t) => {
@@ -232,21 +245,20 @@ test("legacy path fallback cannot contradict a recorded parent agent ID", async 
     const other = f.save(OTHER, [mainIdentity(OTHER)]);
     const mismatched = f.save("subagent-wrong-path", [custom({parentAgentIdentifier: "subagent-missing-parent"})], {parentSession: other});
     const mismatchedCurrent = f.save("subagent-wrong-current-path", [custom({parentAgentIdentifier: "subagent-missing-parent"})], {parentSession: f.rootFile});
-    const validById = f.save("subagent-valid-id-stale-path", [custom({parentAgentIdentifier: ROOT})], {parentSession: other});
-    const all = await f.archive.discover("all");
-    for (const file of [mismatched, mismatchedCurrent]) {
-        assert.ok(all.files.includes(file), "unclassified sessions remain available for full-byte uploads");
-        const snapshot = await f.archive.snapshot(file);
+    const stalePath = f.save("subagent-valid-id-stale-path", [custom({parentAgentIdentifier: ROOT})], {parentSession: other});
+    const all = new ArchiveSessions(captureArchiveSourceScope(f.manager, "all"));
+    const catalog = await observeSources(all, [f.rootFile, other]);
+    for (const file of [mismatched, mismatchedCurrent, stalePath]) {
+        const snapshot = await all.captureSource(file, catalog);
+        assert.equal(snapshot.membership, "included", "all retains unclassified bytes");
         assert.equal(snapshot.metadata.kind, undefined);
         assert.equal(snapshot.metadata.root_session_id, undefined);
         assert.equal(snapshot.warnings.length, 1);
         assert.deepEqual(snapshot.body, readFileSync(file));
+        assert.equal((await f.archive.captureSource(file, catalog)).membership, "unresolved");
     }
-    assert.equal((await f.archive.snapshot(validById)).metadata.root_session_id, ROOT);
-    assert.deepEqual((await f.archive.discover("current")).files.sort(), [f.rootFile, validById].sort());
     rmSync(f.rootFile);
-    assert.deepEqual((await f.archive.discover("current")).files, [validById]);
-    const missingRootSnapshot = await f.archive.snapshot(mismatchedCurrent);
+    const missingRootSnapshot = await f.archive.captureSource(mismatchedCurrent, []);
     assert.equal(missingRootSnapshot.metadata.kind, undefined);
     assert.equal(missingRootSnapshot.metadata.root_session_id, undefined);
     assert.equal(missingRootSnapshot.warnings.length, 1);
@@ -255,19 +267,17 @@ test("legacy path fallback cannot contradict a recorded parent agent ID", async 
 test("an unpersisted current root still resolves children, while ephemeral current discovery is empty", async (t) => {
     const f = fixture(t);
     rmSync(f.rootFile);
-    const empty = await f.archive.discover("current");
-    assert.deepEqual(empty.files, []);
-    assert.ok(empty.warnings.some((warning) => /no persisted/.test(warning)));
+    const missing = await f.archive.discoverPage(null, 64);
+    assert.deepEqual(missing.files, [f.rootFile], "missing active history remains a source obligation");
+    await assert.rejects(f.archive.captureSource(f.rootFile, []), {code: "missing"});
     const child = f.save("subagent-first", [custom({parentAgentIdentifier: ROOT})]);
-    assert.deepEqual((await f.archive.discover("current")).files, [child]);
-    assert.equal((await f.archive.snapshot(child)).metadata.root_session_id, ROOT);
+    assert.equal((await f.archive.captureSource(child, [])).metadata.root_session_id, ROOT);
     const global = f.save(OTHER, [], {}, f.globalProject);
-    const ephemeral = new ArchiveSessions(decodeArchiveSourceScope(JSON.parse(JSON.stringify(
-        captureArchiveSourceScope(SessionManager.inMemory(f.directory)),
-    ))));
-    assert.deepEqual((await ephemeral.discover("current")).files, []);
-    assert.match((await ephemeral.discover("current")).warnings.join(" "), /--no-session/);
-    assert.ok((await ephemeral.discover("all")).files.includes(global));
+    const source = decodeArchiveSourceScope(JSON.parse(JSON.stringify(captureArchiveSourceScope(SessionManager.inMemory(f.directory)))));
+    const ephemeral = new ArchiveSessions(source);
+    assert.deepEqual(await ephemeral.discoverPage(null, 64), {files: [], issues: [], cursor: null, complete: true});
+    const all = new ArchiveSessions({...source, scope: "all"});
+    assert.ok((await all.discoverPage(null, 64)).files.includes(global));
 });
 
 test("DTO constructor never consults manager state after foreground scope capture", async (t) => {
@@ -277,9 +287,10 @@ test("DTO constructor never consults manager state after foreground scope captur
     for (const method of ["getSessionId", "getSessionFile", "getSessionDir", "getHeader", "getEntries"] as const) {
         t.mock.method(f.manager, method, () => { throw new Error("The live session manager is no longer available."); });
     }
-    assert.deepEqual((await archive.discover("current")).files.sort(), [f.rootFile, child].sort());
-    assert.equal((await archive.snapshot(child)).metadata.root_session_id, ROOT);
-    assert.equal((await archive.discover("current")).rootSessionId, ROOT);
+    assert.deepEqual([...new Set((await archive.discoverPage(null, 64)).files)].sort(), [f.rootFile, child].sort());
+    const captured = await archive.captureSource(child, []);
+    assert.equal(captured.membership, "included");
+    assert.equal(captured.metadata.root_session_id, ROOT);
 });
 
 test("serialized all scope retains captured collection roots and custom directory despite later context changes", async (t) => {
@@ -288,6 +299,7 @@ test("serialized all scope retains captured collection roots and custom director
     const child = f.save("subagent-serialized", [custom({parentAgentIdentifier: ROOT})]);
     const source = decodeArchiveSourceScope(JSON.parse(JSON.stringify(captureArchiveSourceScope(f.manager, "all"))));
     const archive = new ArchiveSessions(source);
+    const current = new ArchiveSessions({...source, scope: "current"});
     const laterAgent = path.join(f.directory, "later-agent");
     const unrelated = f.save(FORK, [mainIdentity(FORK)], {}, path.join(laterAgent, "sessions", "--later-workspace--"));
     process.env.PI_CODING_AGENT_DIR = laterAgent;
@@ -299,11 +311,10 @@ test("serialized all scope retains captured collection roots and custom director
     source.sessionDirectory = path.dirname(unrelated);
     source.sessionFile = unrelated;
     source.activeSession.sessionId = FORK;
-    const all = await archive.discover();
-    assert.deepEqual(all.files.sort(), [f.rootFile, child, global].sort());
-    assert.equal(all.rootSessionId, ROOT);
-    assert.equal((await archive.snapshot(child)).metadata.root_session_id, ROOT);
-    assert.deepEqual((await archive.discover("current")).files.sort(), [f.rootFile, child].sort());
+    const all = await archive.discoverPage(null, 64);
+    assert.deepEqual([...new Set(all.files)].sort(), [f.rootFile, child, global].sort());
+    assert.equal((await archive.captureSource(child, [])).metadata.root_session_id, ROOT);
+    assert.deepEqual([...new Set((await current.discoverPage(null, 64)).files)].sort(), [f.rootFile, child].sort());
 });
 
 test("serialized legacy scope resolves a missing active child's recorded parent only through the catalog", async (t) => {
@@ -316,15 +327,15 @@ test("serialized legacy scope resolves a missing active child's recorded parent 
     assert.equal(source.parentSession, path.basename(f.rootFile));
     rmSync(child);
     const archive = new ArchiveSessions(decodeArchiveSourceScope(source));
-    const discovered = await archive.discover();
-    assert.equal(discovered.rootSessionId, ROOT);
-    assert.deepEqual(discovered.files.sort(), [f.rootFile, nested].sort());
-    assert.equal((await archive.snapshot(nested)).metadata.root_session_id, ROOT);
+    const catalog = await observeSources(archive, [f.rootFile]);
+    const captured = await archive.captureSource(nested, catalog);
+    assert.equal(captured.membership, "included");
+    assert.equal(captured.metadata.root_session_id, ROOT);
     const outside = f.save(OTHER, [mainIdentity(OTHER)], {}, path.join(f.directory, "unowned"));
     source.parentSession = outside;
-    const unowned = await new ArchiveSessions(decodeArchiveSourceScope(source)).discover();
-    assert.equal(unowned.rootSessionId, undefined);
-    assert.deepEqual(unowned.files, []);
+    const unowned = await new ArchiveSessions(decodeArchiveSourceScope(source)).captureSource(nested, catalog);
+    assert.equal(unowned.membership, "unresolved");
+    assert.equal(unowned.metadata.root_session_id, undefined);
 });
 
 test("unsafe files, oversize sessions, invalid UTF-8, and malformed JSONL fail without exposing content", async (t) => {
@@ -338,15 +349,15 @@ test("unsafe files, oversize sessions, invalid UTF-8, and malformed JSONL fail w
     const notHeader = path.join(f.sessionDir, "not-header.jsonl");
     writeFileSync(notHeader, JSON.stringify(entry("message", {message: {role: "user", content: "DO_NOT_DUMP_SECRET"}})));
     for (const file of [large, invalidUtf8, invalidJson, notHeader]) {
-        await assert.rejects(f.archive.snapshot(file), (error: Error) => {
+        await assert.rejects(f.archive.captureSource(file, []), (error: Error) => {
             assert.doesNotMatch(error.message, /DO_NOT_DUMP_SECRET/);
             assert.ok(!error.message.includes(f.directory));
             return true;
         });
     }
-    const discovered = await f.archive.discover("all");
-    assert.deepEqual(discovered.files, [f.rootFile]);
-    assert.match(discovered.warnings.join(" "), /Skipped 4/);
+    const discovered = await f.archive.discoverPage(null, 64);
+    assert.deepEqual([...new Set(discovered.files)].sort(), [f.rootFile, large, invalidUtf8, invalidJson, notHeader].sort(),
+        "directory discovery retains invalid files for explicit capture outcomes");
 });
 
 test("snapshot retries changing descriptors at most three times and honors cancellation", async (t) => {
@@ -362,12 +373,12 @@ test("snapshot retries changing descriptors at most three times and honors cance
         if (calls % 2 === 0) stats.ctimeNs += 1n;
         return stats;
     });
-    await assert.rejects(f.archive.snapshot(f.rootFile), /all three snapshot attempts/);
+    await assert.rejects(f.archive.captureSource(f.rootFile, []), /all three snapshot attempts/);
     assert.equal(calls, 6);
     t.mock.restoreAll();
     const controller = new AbortController();
     controller.abort(new Error("DO_NOT_DUMP_SECRET"));
-    for (const operation of [() => f.archive.discover("all", controller.signal), () => f.archive.snapshot(f.rootFile, controller.signal)]) {
+    for (const operation of [() => f.archive.discoverPage(null, 64, controller.signal), () => f.archive.captureSource(f.rootFile, [], controller.signal)]) {
         await assert.rejects(operation(), (error: Error) => {
             assert.equal(error.name, "AbortError");
             assert.doesNotMatch(error.message, /DO_NOT_DUMP_SECRET/);
@@ -388,7 +399,7 @@ test("a changed snapshot retries successfully and an abort during bounded reads 
         if (++calls === 2) stats.mtimeNs += 1n;
         return stats;
     });
-    assert.deepEqual((await f.archive.snapshot(f.rootFile)).body, readFileSync(f.rootFile));
+    assert.deepEqual((await f.archive.captureSource(f.rootFile, [])).body, readFileSync(f.rootFile));
     assert.equal(calls, 4);
     t.mock.restoreAll();
     const controller = new AbortController();
@@ -403,7 +414,7 @@ test("a changed snapshot retries successfully and an abort during bounded reads 
         controller.abort();
         return originalRead.apply(this, args);
     });
-    await assert.rejects(f.archive.snapshot(f.rootFile, controller.signal), {name: "AbortError"});
+    await assert.rejects(f.archive.captureSource(f.rootFile, [], controller.signal), {name: "AbortError"});
     assert.equal(closed, 1);
 });
 
@@ -423,7 +434,7 @@ test("symlinks and FIFOs are rejected without following or blocking", async (t) 
                 }
                 throw error;
             }
-            await assert.rejects(f.archive.snapshot(file), /regular.*file/);
+            await assert.rejects(f.archive.captureSource(file, []), /regular.*file/);
         });
     }
 });
@@ -438,15 +449,13 @@ test("bound identities survive resumes, reject conflicts, and do not leak across
     const unrelated = f.save(OTHER, [entry("custom", {customType: "some-other-extension", data: {kind: "main"}})]);
     const conflicting = f.save("subagent-conflicting", [boundChild("subagent-conflicting", ROOT, ROOT),
         boundChild("subagent-conflicting", OTHER, OTHER)]);
-    const cycle = f.save("subagent-bound-cycle-a", [boundChild("subagent-bound-cycle-a", "subagent-bound-cycle-b", ROOT)]);
-    f.save("subagent-bound-cycle-b", [boundChild("subagent-bound-cycle-b", "subagent-bound-cycle-a", ROOT)]);
-    await f.archive.discover("all");
-    for (const file of [copied, unrelated, conflicting, cycle]) {
-        const snapshot = await f.archive.snapshot(file);
+    const catalog = await observeSources(f.archive, [childFile, copied, unrelated, conflicting]);
+    for (const file of [copied, unrelated, conflicting]) {
+        const snapshot = await f.archive.captureSource(file, catalog);
         assert.equal(snapshot.metadata.kind, undefined);
         assert.equal(snapshot.metadata.root_session_id, undefined);
     }
-    assert.equal((await f.archive.snapshot(conflicting)).warnings.length, 1);
+    assert.equal((await f.archive.captureSource(conflicting, catalog)).warnings.length, 1);
     const resumed = SessionManager.open(childFile);
     assert.equal(getSessionRootId(resumed), ROOT);
     const notCalled = await createNativeExtensionApi();
@@ -463,7 +472,7 @@ test("bound identities survive resumes, reject conflicts, and do not leak across
     recordMainSessionIdentity(pi, forkManager);
     assert.deepEqual(records, [{version: 1, sessionId: FORK, kind: SessionKind.Main, rootSessionId: FORK}]);
     const forkArchive = new ArchiveSessions(captureArchiveSourceScope(forkManager));
-    const snapshot = await forkArchive.snapshot(copied);
+    const snapshot = await forkArchive.captureSource(copied, []);
     assert.equal(snapshot.metadata.kind, SessionKind.Main);
     assert.equal(snapshot.metadata.root_session_id, FORK);
     recordMainSessionIdentity(notCalled, forkManager);
@@ -835,6 +844,12 @@ test("worker import graph excludes the foreground capture factory and Pi SDK run
         await import("./src/server/ArchiveWorker.ts");
     `], {stdio: "pipe"});
 });
+
+async function observeSources(sessions: ArchiveSessions, files: string[]): Promise<ArchiveSourceEvidence[]> {
+    const evidence: ArchiveSourceEvidence[] = [];
+    for (const file of files) evidence.push((await sessions.captureSource(file, evidence)).evidence);
+    return evidence;
+}
 
 function fixture(t: TestContext) {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-archive-sessions-"));

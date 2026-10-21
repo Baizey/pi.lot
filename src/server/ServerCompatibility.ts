@@ -1,6 +1,6 @@
 import {decodeVersionResponse} from "./ServerResponses.js";
 
-export const SERVER_VERSION_REQUIREMENT = "0.2.*";
+export const SERVER_VERSION_REQUIREMENT = "0.3.*";
 
 /** Exact pins retain literal equality; trailing wildcards match stable releases. */
 export function matchesServerVersion(version: string, requirement: string): boolean {

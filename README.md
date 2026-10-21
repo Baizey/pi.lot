@@ -75,7 +75,7 @@ Requests and redirects are HTTP-policy checked. A policy denial stops fallback. 
 
 ### Server archive
 
-`/server login` configures pi.server **0.2.x** and enables automatic background archival of the outgoing current session family on graceful quit, reload, new/resume, and fork. Departure queues a small durable source descriptor after local teardown; it does not scan transcripts, wait for HTTP, or drain uploads. `/server logout` pauses retained work without revoking the token or deleting history.
+`/server login` configures [pi.server **0.3.x**](https://github.com/Baizey/pi.server/releases/tag/v0.3.0) and enables automatic background archival of the outgoing current session family on graceful quit, reload, new/resume, and fork. Departure queues a small durable source descriptor after local teardown; it does not scan transcripts, wait for HTTP, or drain uploads. `/server logout` pauses retained work without revoking the token or deleting history.
 
 **Uploads send complete session JSONL, potentially including credentials, reasoning, tool output, and file contents, outside agent policy approval.** They are not limited to the visible branch. `/server` displays the saved API key; do not share its output.
 

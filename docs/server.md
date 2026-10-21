@@ -1,6 +1,6 @@
 # pi.server session archive
 
-pi.lot archives native Pi session JSONL to pi.server **0.2.x** and provides root-only tools to browse archived history. Publication runs in an independent background worker. Complete files are sent, not just the selected branch or tool previews. **They can contain prompts, reasoning, credentials, tool results, and file contents, and upload is outside agent policy approval.**
+pi.lot archives native Pi session JSONL to [pi.server **0.3.x**](https://github.com/Baizey/pi.server/releases/tag/v0.3.0) and provides root-only tools to browse archived history. Publication runs in an independent background worker. Complete files are sent, not just the selected branch or tool previews. **They can contain prompts, reasoning, credentials, tool results, and file contents, and upload is outside agent policy approval.**
 
 ## Connection and credentials
 
@@ -12,7 +12,7 @@ pi.lot archives native Pi session JSONL to pi.server **0.2.x** and provides root
 
 - `/server login` asks for an HTTP(S) origin and API key in separate dialogs. It atomically saves them, with an internal connection generation, in `~/.pilot/server.json` (plaintext, mode 0600). Canceling either dialog preserves the existing configuration. Login does not validate the key or server version; it wakes retained background work, which may contact the server.
 - Use an origin without a path, embedded credentials, query, or fragment. Prefer HTTPS: HTTP sends the key unencrypted. Requests reject redirects and retain normal certificate verification.
-- `/server` displays the saved URL and **API key**, then checks `GET /v1/version`. Do not share its output. Supported versions are stable `0.2.x`, not prereleases. Background publication validates the archive binding and capabilities, not this status check.
+- `/server` displays the saved URL and **API key**, then checks `GET /v1/version`. Do not share its output. Supported versions are stable `0.3.x`, not prereleases. Background publication validates the archive binding and capabilities, not this status check.
 - `/server logout` removes local authorization and wakes the worker to revalidate it. It does not revoke the token, delete sessions, or clear queued work, the journal, or downloads. Already-dispatched requests cannot be recalled.
 
 **Any saved server configuration enables automatic archival**, including configuration saved before this feature existed. Review the destination before leaving credentials configured. Do not pass credentials as command arguments.
@@ -85,7 +85,7 @@ Ordinary equal/append-only history converges automatically. Comparisons use veri
 - If one body is a proper byte prefix, prefer the longer body; never truncate complete remote history.
 - For divergence, prefer greater byte length, then lexicographically greater lowercase SHA-256. This is a deterministic rule, **not a claim that the preferred version is objectively correct**.
 
-Full divergence/metadata preservation requires the additive **`preserved_variants_v1`** server capability, available without changing stable `0.2.x` canonical APIs. Preserve the nonselected version before completing local work or replacing canonical. Destructive replacement first preserves the exact compared remote revision, commits its receipt/dependency locally, then uses conditional publication; a concurrent change requires fresh comparison.
+Full divergence/metadata preservation requires the additive **`preserved_variants_v1`** server capability, introduced in `0.3.x` without changing the `0.2.x` canonical APIs. Preserve the nonselected version before completing local work or replacing canonical. Destructive replacement first preserves the exact compared remote revision, commits its receipt/dependency locally, then uses conditional publication; a concurrent change requires fresh comparison.
 
 Equal-body metadata differences preserve the incoming metadata while keeping first-accepted canonical metadata. Ordinary descriptive metadata follows a longer append. A shorter version's explicit kind/root assertion is preserved if the longer version contradicts **or omits** it; no classification is silently unioned.
 

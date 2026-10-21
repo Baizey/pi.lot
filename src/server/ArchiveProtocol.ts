@@ -1,6 +1,7 @@
 import {SessionKind} from "../sessions/SessionIdentity.js";
 
-// pi.server v0.2 archive wire types, including preserved_variants_v1. Sequences never pass through a JS number.
+// pi.server v0.2 canonical wire types with the v0.3 preserved_variants_v1 extension.
+// Sequences never pass through a JS number.
 export type Binding = {server_id: string; namespace_id: string; history_generation: string};
 export type Revision = {binding: Binding; seq: string};
 export type Condition = {kind: "absent"} | {kind: "exact_base_revision"; revision: Revision};

@@ -300,41 +300,124 @@ test("thrown native execution closes approval scope and disposes timeout", async
     assert.equal(signal.aborted, false);
 });
 
-test("main and child codemode share Pi's two-worker limit and reject excess scripts before tool execution", {timeout: 15_000}, async () => {
-    const released = deferred<void>();
-    let entered = 0;
-    const hold: ToolDefinition = {
-        name: "mcp__fixture__hold", label: "hold", description: "Keep a worker occupied", exposure: "codemode",
-        parameters: {type: "object", properties: {}},
-        async execute() {
-            entered++;
-            await released.promise;
-            return {content: [{type: "text", text: "released"}], details: undefined};
-        },
-    };
-    const sessions: Awaited<ReturnType<typeof sessionFixture>>[] = [];
-    const running: Promise<AgentToolResult<unknown>>[] = [];
-    try {
-        for (const child of [false, true, false]) sessions.push(await sessionFixture(child, [hold]));
+test("main and child codemode share the default two workers and admit queued scripts in arrival order", {timeout: 15_000}, async (t) => {
+    const fixture = await workerQueueFixture(t, [false, true, true, false]);
+    for (const index of [0, 1]) {
+        const pending = fixture.start(index);
+        await waitUntil(() => fixture.entered.length === index + 1, pending, `worker ${index + 1}`);
+    }
+    const third = fixture.start(2);
+    const fourth = fixture.start(3);
+    await nativeTurn();
+    assert.deepEqual(fixture.entered, [0, 1], "queued scripts must not execute tools before admission");
+
+    fixture.release(0);
+    await waitUntil(() => fixture.entered.length === 3, third, "first queued script");
+    assert.deepEqual(fixture.entered, [0, 1, 2]);
+    fixture.release(2);
+    await waitUntil(() => fixture.entered.length === 4, fourth, "second queued script");
+    assert.deepEqual(fixture.entered, [0, 1, 2, 3]);
+    fixture.release(1);
+    fixture.release(3);
+    for (const result of await Promise.all(fixture.running)) {
+        assert.equal(result.isError, undefined, resultText(result));
+        assert.match(resultText(result), /released/);
+    }
+});
+
+for (const child of [false, true]) {
+    test(`queued ${child ? "child" : "main"} codemode keeps only its remaining budget after admission`, {timeout: 15_000}, async (t) => {
+        const tick = clock(t);
+        const fixture = await workerQueueFixture(t, [false, true, child]);
         for (const index of [0, 1]) {
-            const pending = sessions[index]!.run("return await tools.mcp__fixture__hold({});");
-            running.push(pending);
-            await waitUntil(() => entered === index + 1, pending, `worker ${index + 1} fixture call`);
+            const pending = fixture.start(index);
+            await waitUntil(() => fixture.entered.length === index + 1, pending, `occupied worker ${index + 1}`);
         }
-        const result = await sessions[2]!.run('// @options: {"timeout_ms":1000}\nreturn await tools.mcp__fixture__hold({});');
+        const pending = fixture.start(2, {timeoutMs: 100});
+        let settled = false;
+        void pending.then(() => { settled = true; });
+        await nativeTurn();
+        tick(40);
+        fixture.release(0);
+        await waitUntil(() => fixture.entered.length === 3, pending, "queued script admission");
+        tick(59);
+        await nativeTurn();
+        assert.equal(settled, false, "admitted work keeps the unspent part of its budget");
+        tick(1);
+        const result = await pending;
         assert.equal(result.isError, true, resultText(result));
-        assert.match(resultText(result), /Codemode worker limit reached/);
-        assert.equal(entered, 2, "an excess script cannot execute any nested tool");
-        assert.deepEqual((result.details as CodemodeToolDetails).calls, []);
-        released.resolve();
-        for (const result of await Promise.all(running)) {
-            assert.equal(result.isError, undefined, resultText(result));
-            assert.match(resultText(result), /released/);
+        assert.match(resultText(result), /Script timed out: Execution timed out after 100 ms/);
+        assert.equal((result.details as CodemodeToolDetails).calls[0]?.status, "cancelled");
+        assert.deepEqual(fixture.entered, [0, 1, 2]);
+    });
+
+    test(`queued ${child ? "child" : "main"} codemode deadlines and cancellation remove scripts without running them`, {timeout: 15_000}, async (t) => {
+        const fixture = await workerQueueFixture(t, [false, true, child, child, child]);
+        for (const index of [0, 1]) {
+            const pending = fixture.start(index);
+            await waitUntil(() => fixture.entered.length === index + 1, pending, `occupied worker ${index + 1}`);
         }
-    } finally {
-        released.resolve();
-        await Promise.allSettled(running);
-        for (const session of sessions.reverse()) session.close();
+        const expired = await fixture.start(2, {timeoutMs: 100});
+        assert.equal(expired.isError, true, resultText(expired));
+        assert.match(resultText(expired), /Script timed out: Execution timed out after 100 ms/);
+        assert.match(resultText(expired), /The script did not start\./);
+        assert.deepEqual((expired.details as CodemodeToolDetails).calls, []);
+
+        const controller = new AbortController();
+        const cancelled = fixture.start(3, {timeoutMs: 5000, signal: controller.signal});
+        await nativeTurn();
+        controller.abort(new Error("Parent stopped the queued script"));
+        const result = await cancelled;
+        assert.equal(result.isError, true, resultText(result));
+        assert.match(resultText(result), /Script aborted: Parent stopped the queued script/);
+        assert.doesNotMatch(resultText(result), /Script timed out:/);
+        assert.deepEqual((result.details as CodemodeToolDetails).calls, []);
+        assert.deepEqual(fixture.entered, [0, 1]);
+
+        const next = fixture.start(4);
+        fixture.release(0);
+        await waitUntil(() => fixture.entered.length === 3, next, "script after expired and cancelled waiters");
+        assert.deepEqual(fixture.entered, [0, 1, 4], "removed waiters must never execute after capacity returns");
+        fixture.release(1);
+        fixture.release(4);
+        assert.equal((await next).isError, undefined);
+    });
+}
+
+test("worker admission still has a 60-second bound when no execution timeout is configured", {timeout: 15_000}, async (t) => {
+    const tick = clock(t);
+    const fixture = await workerQueueFixture(t, [false, true, true, false]);
+    for (const index of [0, 1]) {
+        const pending = fixture.start(index);
+        await waitUntil(() => fixture.entered.length === index + 1, pending, `occupied worker ${index + 1}`);
+    }
+    const queued = fixture.start(2);
+    await nativeTurn();
+    tick(60_000);
+    const result = await queued;
+    assert.equal(result.isError, true, resultText(result));
+    assert.match(resultText(result), /No codemode worker became free within 60 seconds/);
+    assert.match(resultText(result), /The script did not start\./);
+    assert.deepEqual((result.details as CodemodeToolDetails).calls, []);
+    const next = fixture.start(3);
+    fixture.release(0);
+    await waitUntil(() => fixture.entered.length === 3, next, "script after admission timeout");
+    assert.deepEqual(fixture.entered, [0, 1, 3]);
+    fixture.release(1);
+    fixture.release(3);
+    assert.equal((await next).isError, undefined);
+});
+
+test("PI_CODEMODE_MAX_WORKERS raises shared main and child codemode capacity", {timeout: 15_000}, async (t) => {
+    const fixture = await workerQueueFixture(t, [false, true, true], 3);
+    for (const index of [0, 1, 2]) {
+        const pending = fixture.start(index);
+        await waitUntil(() => fixture.entered.length === index + 1, pending, `configured worker ${index + 1}`);
+    }
+    assert.deepEqual(fixture.entered, [0, 1, 2], "the third worker must run before any existing worker exits");
+    for (const index of [0, 1, 2]) fixture.release(index);
+    for (const result of await Promise.all(fixture.running)) {
+        assert.equal(result.isError, undefined, resultText(result));
     }
 });
 
@@ -763,6 +846,49 @@ function deferred<T>(): {promise: Promise<T>; resolve: (value: T) => void} {
     let resolve!: (value: T) => void;
     const promise = new Promise<T>((accept) => { resolve = accept; });
     return {promise, resolve};
+}
+
+async function workerQueueFixture(t: TestContext, children: boolean[], maxWorkers?: number) {
+    const previous = process.env.PI_CODEMODE_MAX_WORKERS;
+    if (maxWorkers === undefined) delete process.env.PI_CODEMODE_MAX_WORKERS;
+    else process.env.PI_CODEMODE_MAX_WORKERS = String(maxWorkers);
+    const sessions: Awaited<ReturnType<typeof sessionFixture>>[] = [];
+    const released = children.map(() => deferred<void>());
+    const entered: number[] = [];
+    const running: Promise<AgentToolResult<unknown>>[] = [];
+    t.after(async () => {
+        try {
+            for (const release of released) release.resolve();
+            await Promise.allSettled(running);
+            for (const session of sessions.reverse()) session.close();
+        } finally {
+            if (previous === undefined) delete process.env.PI_CODEMODE_MAX_WORKERS;
+            else process.env.PI_CODEMODE_MAX_WORKERS = previous;
+        }
+    });
+    for (const [index, child] of children.entries()) {
+        const hold: ToolDefinition = {
+            name: "mcp__fixture__hold", label: "hold", description: "Keep a worker occupied", exposure: "codemode",
+            parameters: {type: "object", properties: {}},
+            async execute() {
+                entered.push(index);
+                await released[index]!.promise;
+                return {content: [{type: "text", text: "released"}], details: undefined};
+            },
+        };
+        sessions.push(await sessionFixture(child, [hold]));
+    }
+    return {
+        entered,
+        running,
+        start(index: number, {timeoutMs, signal}: {timeoutMs?: number; signal?: AbortSignal} = {}) {
+            const options = timeoutMs === undefined ? "" : `// @options: {"timeout_ms":${timeoutMs}}\n`;
+            const pending = sessions[index]!.run(`${options}return await tools.mcp__fixture__hold({});`, signal);
+            running.push(pending);
+            return pending;
+        },
+        release(index: number) { released[index]!.resolve(); },
+    };
 }
 
 async function sessionFixture(child: boolean, tools: ToolDefinition[] = [], sessionId?: string) {

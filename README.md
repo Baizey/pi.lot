@@ -1,6 +1,6 @@
 # pi.lot
 
-Policy-controlled tools, subagents, MCP, web search, and session archival for [Pi](https://pi.dev) on **Linux x86-64**, targeting Pi **1.3.0**.
+Policy-controlled tools, subagents, MCP, web search, and session archival for [Pi](https://pi.dev) on **Linux x86-64**, targeting Pi **1.4.0**.
 
 pi.lot replaces Pi's filesystem and Bash tools with policy-aware versions. It supports absolute paths and work across repositories; the working directory is not a security boundary.
 
@@ -26,7 +26,7 @@ The extension supplies absolute paths to these references in the root agent's sy
 First install the [host prerequisites](docs/installation.md#requirements). Native helpers require a Rust build toolchain and system libraries, not just npm dependencies.
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0
 pi                              # Use /login to authenticate a model provider
 ```
 
@@ -93,7 +93,9 @@ Pilot wraps Pi's native codemode tool. Calls use **JSON `{purpose, code}`**, not
 
 `purpose` must be nonempty, one line, and at most 160 characters. [Pi's codemode reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the JavaScript body and script APIs. Probe unknown tools with `'name' in tools`, not `typeof tools.name`.
 
-Codemode is inactive by default; see [installation](docs/installation.md#install-the-package) to enable it. Finite script timeouts pause for originating policy approval waits, but independent transport deadlines still apply; see [policy](docs/policy.md#finite-codemode-timeouts). Root `models.classify()` and `models.generateImages()` calls are potentially billable and outside filesystem/network policy. Child codemode exposes no model globals; see [security](docs/security.md#codemode-model-calls).
+Codemode is inactive by default; see [installation](docs/installation.md#install-the-package) to enable it. Finite script timeouts pause for originating policy approval waits, but independent transport deadlines still apply; see [policy](docs/policy.md#finite-codemode-timeouts). Root `models.classify()` and `models.generateImages()` calls are potentially billable and outside filesystem/network policy. Pi 1.4 classifier image inputs pass through the native model API unchanged. Child codemode exposes no model globals; see [security](docs/security.md#codemode-model-calls).
+
+Root and child scripts share Pi's worker pool: two workers by default, configurable with `PI_CODEMODE_MAX_WORKERS`. Excess scripts queue in arrival order for up to 60 seconds; queue time consumes any finite script budget. See [worker limits and timeout accounting](docs/policy.md#finite-codemode-timeouts).
 
 ## Tool display
 

@@ -29,7 +29,7 @@ export function withApprovalAwareCodemodeTimeout(execute: NativeCodemodeExecute)
                 const controller = new AbortController();
                 const executionSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
                 // The public native execute API has no VM-start/finalization hooks: this budget
-                // includes initialization, and may fire after the VM has already finalized.
+                // includes worker admission/initialization, and may fire after the VM finalized.
                 const timer = scope.setTimeout(() => {
                     if (!executionSignal.aborted) controller.abort(timeout);
                 }, options.timeoutMs);
@@ -50,10 +50,13 @@ export function withApprovalAwareCodemodeTimeout(execute: NativeCodemodeExecute)
                     // never text printed by the script or an error followed by a native postscript.
                     if (diagnostic?.type !== "text") return result;
                     const calls = result.details?.calls ?? [];
-                    const summary = calls.length === 0 ? "No tool calls were made."
-                        : `Tool calls made before the failure (they are not undone): ${calls.map((call) => `${call.name} (${call.status})`).join(", ")}`;
+                    // Pi 1.4 can also abort while queued, before any worker or script starts.
+                    const summaries = calls.length === 0
+                        ? ["No tool calls were made.", "The script did not start."]
+                        : [`Tool calls made before the failure (they are not undone): ${calls.map((call) => `${call.name} (${call.status})`).join(", ")}`];
+                    const summary = summaries.find((text) => diagnostic.text.endsWith(`${aborted}${text}`));
+                    if (summary === undefined) return result;
                     const suffix = `${aborted}${summary}`;
-                    if (!diagnostic.text.endsWith(suffix)) return result;
                     const offset = diagnostic.text.length - suffix.length;
                     if (offset > 0 && diagnostic.text[offset - 1] !== "\n") return result;
                     return {

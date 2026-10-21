@@ -56,7 +56,7 @@ A child cannot request these mechanisms later, and cannot grant a nested child a
 
 Indirect MCP tools are discoverable through codemode/tool search; use `describeNamespace()` for server instructions. Child codemode exposes no model globals. In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
 
-Root and child codemode share a limit of two live workers; a parent script waiting for a child still occupies a slot, and cancellation releases it only when the worker exits. Further scripts fail immediately at capacity. This is not a two-subagent limit. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
+Root and child codemode share Pi 1.4's process-wide worker pool: two live workers by default, configurable with `PI_CODEMODE_MAX_WORKERS`. Further scripts queue in arrival order for up to 60 seconds; queue time consumes any finite execution budget. Cancellation removes a queued request without running it, but a running worker keeps its slot until it exits. A parent script waiting for a child still occupies a slot, so queuing does not eliminate stalls when its child also needs a worker. This is not a two-subagent limit. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
 
 MCP effects are opaque and **outside filesystem/network mediation**; policy-area grants do not restrict them. See [MCP security boundary](security.md#mcp).
 

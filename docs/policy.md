@@ -151,9 +151,13 @@ This is execution-budget accounting, not suspension of the whole process. Other 
 
 A finite codemode `timeout_ms` is an approval-aware execution budget; output limits still apply. Omitting `timeout_ms` means no execution timeout.
 
-The budget includes initialization. Expiry requests worker interruption and cancels nested tools, but cancellation is cooperative: a worker or host operation may outlive the tool response, and completed effects are not undone.
+The budget includes time queued for a worker and initialization; admission does not reset the remaining budget. Queueing itself is not a policy approval wait. Expiry requests worker interruption and cancels nested tools, but cancellation is cooperative: a worker or host operation may outlive the tool response, and completed effects are not undone.
 
-Pi 1.3 permits at most two live codemode workers across all sessions in one Pi process, shared by root and child sessions. A cancelled worker keeps its slot until it exits. At capacity, another script fails immediately without starting; retry only after an existing worker exits. A parent script waiting on a child still occupies a worker, so delegation from scripts can exhaust this shared capacity. This is a worker limit, not a limit on the number of retained subagents.
+Pi 1.4 defaults to two live codemode workers across all sessions in one Pi process, shared by root and child sessions. `PI_CODEMODE_MAX_WORKERS` accepts a positive integer to change the limit. A cancelled worker keeps its slot until it actually exits. At capacity, new scripts queue in arrival order instead of failing immediately.
+
+Worker admission has an independent 60-second wait limit, including when `timeout_ms` is omitted or its execution budget is paused for an originating policy approval. A shorter finite execution budget or explicit cancellation can end the wait sooner. Expired or cancelled waiters do not start their scripts or nested tools.
+
+A parent script waiting on a child still occupies a worker, so queuing does not eliminate dependency stalls when all workers are waiting on children that also need codemode. Prefer issuing subagent spawn/status tools outside a long-lived script when possible, or configure enough workers for the intended concurrent scripts. This is a worker limit, not a limit on the number of retained subagents.
 
 ## Audit logs
 

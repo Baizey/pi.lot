@@ -4,9 +4,9 @@ pi.lot (npm package name `pilot`) is a local Pi extension for **Linux x86-64**, 
 
 ## Requirements
 
-This checkout targets Pi `1.3.0` and requires:
+This checkout targets Pi `1.4.0` and requires:
 
-- Node.js **22.19 or newer** and npm (Pi 1.3.0's Node requirement);
+- Node.js **22.19 or newer** and npm (Pi 1.4.0's Node requirement);
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
@@ -72,7 +72,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:
@@ -123,6 +123,14 @@ The checked-in `.pi/settings.json` already loads the repository root and disable
 Pilot provides wrappers around Pi's built-in MCP and codemode implementations. Add `"-builtin:mcp"` and `"-builtin:codemode"` to the `extensions` list in Pi user settings (`~/.pi/agent/settings.json`, or the configured agent directory), preserving all other settings and list entries. These suppress Pi's separate automatic instances and their override warnings, **not MCP or codemode functionality**: Pilot still runs the built-in implementations. Without these entries, Pi omits the duplicate built-in instances because Pilot registers `/mcp` and `codemode`, and emits override warnings.
 
 Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools, or `pi --tools +codemode` for one invocation. MCP activates it when server exposure requires scripts. Pilot calls use JSON `{purpose, code}`; [Pi's codemode documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the `code` body, not this wrapper. Review the [model-call policy boundary](security.md#codemode-model-calls).
+
+Pi 1.4 queues codemode calls when its process-wide worker pool is full. The default is two workers across the root and all in-process children. To allow more concurrent scripts, set the environment variable when starting Pi, for example:
+
+```bash
+PI_CODEMODE_MAX_WORKERS=4 pi
+```
+
+Higher limits can increase resource use and are not a subagent-count setting. A queued script waits at most 60 seconds even without `timeout_ms`; finite Pilot execution budgets also include queue time. Scripts waiting for children still hold their own workers. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
 
 `pi install` writes the package declaration to Pi settings. The checkout's npm install/build hooks do not rewrite your Pi configuration; add the loader exclusions yourself, preserving unrelated entries.
 

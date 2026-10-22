@@ -107,6 +107,8 @@ Root and child scripts share Pi's worker pool: two workers by default, configura
 
 Display choices are **Conversation**, **Compact**, **Preview**, and **Full**.
 
+Preview keeps the newest lines of codemode scripts, Bash commands, and written file contents; active tools in Conversation use the same argument previews. Visible thinking runs show their last 12 rendered rows, with an earlier-lines notice when needed; native thinking collapse controls still apply. Compact and Full layouts, including Full's safety limits, are unchanged. Ranked search and paged archive previews keep their leading results.
+
 Conversation shows truncated previews of active tool arguments, partial text output, and running nested calls. It also keeps compact headers for the five most recently finished top-level tool calls, hiding older finished calls, all finished output, tool-result images, thoughts, and internal summaries. A finished codemode script counts as one call; its nested details disappear. Live calls are ranked by completion order and stay in their original transcript positions; restored history without live completion information falls back to transcript order.
 
 While the agent is working without active tool or visible assistant content, an animated **Working…** placeholder appears inline at the end of the conversation, in the same scrollable area as tool rows—not in the editor dock. The next tool or visible assistant output replaces it, and it disappears when the run ends. Conversation text/images, notifications, and approvals remain visible. Full still respects display safety limits.

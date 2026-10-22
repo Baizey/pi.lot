@@ -24,6 +24,8 @@ export type ToolArgumentPresentation<TArgs extends object> = {
     consumedBy?: Extract<keyof TArgs, string>;
     color?: ThemeColor;
     direction?: ToolTextDirection;
+    /** Override direction only in Preview, preserving Full-view safety boundaries. */
+    previewDirection?: ToolTextDirection;
     previewLines?: number;
     /** Wrap content before applying preview and full-view row limits. */
     wrap?: boolean;

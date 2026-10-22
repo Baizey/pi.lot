@@ -497,6 +497,56 @@ test("truncated presentation keeps argument heads and output tails", () => {
     assert.deepEqual(result.slice(-5), ["line 4", "line 5", "line 6", "line 7", "line 8"]);
 });
 
+test("tail argument previews leave compact display and Full head safety limits unchanged", () => {
+    const renderer = new ToolPresentationRenderer<{content: string}>({
+        toolName: "preview-direction",
+        arguments: [{
+            key: "content", layout: ToolArgumentLayout.BLOCK,
+            direction: ToolTextDirection.HEAD, previewDirection: ToolTextDirection.TAIL,
+            previewLines: 3, maxFullLines: 4,
+        }],
+    });
+    const args = {content: numberedLines(10)};
+    assert.deepEqual(renderer.renderCall(args, plainTheme, ToolDisplayMode.TRUNCATED).render(120), [
+        "  preview-direction", "... (7 earlier lines)", "line 8", "line 9", "line 10",
+    ]);
+    assert.deepEqual(renderer.renderCall(args, plainTheme, ToolDisplayMode.FULL).render(120), [
+        "  preview-direction", "line 1", "line 2", "line 3", "... (7 lines omitted from display)",
+    ]);
+    assert.deepEqual(renderer.renderCall(args, plainTheme, ToolDisplayMode.MINIMAL).render(120), ["  preview-direction"]);
+    assert.deepEqual(renderer.renderCall(args, plainTheme, ToolDisplayMode.HIDDEN, {isPartial: true}).render(120),
+        renderer.renderCall(args, plainTheme, ToolDisplayMode.TRUNCATED).render(120));
+});
+
+test("tail argument previews apply character and wrapped-row limits at the preview boundary only", () => {
+    const renderer = new ToolPresentationRenderer<{content: string}>({
+        toolName: "characters",
+        arguments: [{
+            key: "content", layout: ToolArgumentLayout.BLOCK,
+            previewDirection: ToolTextDirection.TAIL, maxCharacters: 5,
+        }],
+    });
+    assert.deepEqual(renderer.renderCall({content: "abcdefghij"}, plainTheme, ToolDisplayMode.TRUNCATED).render(120),
+        ["  characters", "[display truncated]", "fghij"]);
+    assert.deepEqual(renderer.renderCall({content: "abcdefghij"}, plainTheme, ToolDisplayMode.FULL).render(120),
+        ["  characters", "abcde", "[display truncated]"]);
+    const wrapped = new ToolPresentationRenderer<{content: string}>({
+        toolName: "wrapped",
+        arguments: [{key: "content", layout: ToolArgumentLayout.BLOCK,
+            previewDirection: ToolTextDirection.TAIL, previewLines: 3, wrap: true}],
+    });
+    const content = `START${"x".repeat(500)}END`;
+    for (const width of [8, 40, 80]) {
+        const preview = wrapped.renderCall({content}, plainTheme, ToolDisplayMode.TRUNCATED, {outputPad: 1}).render(width);
+        assert.ok(preview.length <= 5, "header, fold notice, and three visual content rows");
+        assert.ok(preview.at(-1)!.includes("END"));
+        assert.equal(preview.some((line) => line.includes("START")), false);
+        assert.ok(preview.every((line) => displayWidth(line) <= width));
+        const full = wrapped.renderCall({content}, plainTheme, ToolDisplayMode.FULL).render(width);
+        assert.equal(full.slice(1).join(""), content);
+    }
+});
+
 test("known arguments retain declared order, unknown arguments sort, and blocks render last", () => {
     type Args = {block: string; known: string};
     const presentation = {

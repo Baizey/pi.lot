@@ -244,7 +244,8 @@ export class ToolPresentationRenderer<TArgs extends object> {
         const text = this.formattedValue(argument, args, true);
         const rows = selectTextRows(text, {
             mode,
-            direction: argument.presentation?.direction ?? ToolTextDirection.HEAD,
+            direction: (mode === ToolDisplayMode.TRUNCATED ? argument.presentation?.previewDirection : undefined)
+                ?? argument.presentation?.direction ?? ToolTextDirection.HEAD,
             previewLines: argument.presentation?.previewLines ?? DEFAULT_ARGUMENT_PREVIEW_LINES,
             maxCharacters: argument.presentation?.maxCharacters ?? DEFAULT_MAX_BYTES,
             maxFullLines: argument.presentation?.maxFullLines ?? DEFAULT_MAX_ARGUMENT_LINES,

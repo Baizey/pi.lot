@@ -24,6 +24,7 @@ const WRITE_PRESENTATION = {
             key: "content",
             layout: ToolArgumentLayout.BLOCK,
             direction: ToolTextDirection.HEAD,
+            previewDirection: ToolTextDirection.TAIL,
         },
     ],
 } satisfies ToolPresentationSpec<WriteToolInput>;

@@ -837,7 +837,8 @@ test("Pilot's expanded state switches Bash between minimal and truncated while r
         toolRenderContext(args, displayState, {expanded: true}),
     ).render(120);
     assert.equal(truncatedCall.length, 10);
-    assert.equal(truncatedCall.at(-1), "... (2 more lines)");
+    assert.equal(truncatedCall[1], "... (2 earlier lines)");
+    assert.deepEqual(truncatedCall.slice(2), args.command.split("\n").slice(-8));
     assert.deepEqual(
         bashTool.renderResult(
             output,

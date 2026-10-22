@@ -8,7 +8,7 @@ import {
     type MessageUpdateEvent,
     type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import {Image, type Component, type TUI} from "@earendil-works/pi-tui";
+import {Image, MouseRegion, type Component, type TUI} from "@earendil-works/pi-tui";
 import {ThemeColor} from "./Color.js";
 import {renderLineFactory} from "./terminalText.js";
 import {ToolCallSpinner} from "./tool/ToolCallSpinner.js";
@@ -18,6 +18,7 @@ import {ToolDisplayRows} from "./tool/ToolDisplayRows.js";
 import {ToolPresentationRenderer} from "./tool/ToolPresentationRenderer.js";
 
 const RECENT_FINISHED_TOOL_LIMIT = 5;
+const THINKING_PREVIEW_LINES = 12;
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
 type Decoration = {
@@ -236,7 +237,7 @@ export class TranscriptDisplayRuntime {
         try {
             const hidden = this.isHidden();
             const seen = new Set<Component>();
-            const visit = (component: Component, toolHidden?: () => boolean, source = false): void => {
+            const visit = (component: Component, toolHidden?: () => boolean, source = false, assistantContent = false): void => {
                 if (seen.has(component)) return;
                 seen.add(component);
                 const kind = nativeComponentKind(component);
@@ -260,6 +261,12 @@ export class TranscriptDisplayRuntime {
                     if (!decoration && source && Array.isArray((component as Component & {children?: Component[]}).children)) {
                         decoration = this.decorateSource(component);
                     }
+                    // In Pi 1.4, the public MouseRegions under assistant content wrap thinking runs.
+                    // Clip their rendered Markdown, not raw text or any private child component.
+                    if (!decoration && assistantContent && (component instanceof MouseRegion || (
+                        component.constructor.name === MouseRegion.name
+                        && "handleMouse" in component && typeof component.handleMouse === "function"
+                    ))) decoration = this.decorateThinking(component);
                     // Native result images are drawn independently of tool renderers. Hide
                     // those too, without hiding conversation images or changing image settings.
                     if (!decoration && toolHidden && (component instanceof Image || (
@@ -272,7 +279,9 @@ export class TranscriptDisplayRuntime {
                 // Container's children are public. MouseRegion/other private interiors are not traversed.
                 const children = (component as Component & {children?: Component[]}).children;
                 if (Array.isArray(children)) {
-                    for (const child of children) visit(child, decoration?.toolHidden ?? toolHidden);
+                    for (const child of children) {
+                        visit(child, decoration?.toolHidden ?? toolHidden, false, assistantContent || kind === "assistant");
+                    }
                 }
             };
             for (const child of this.tui?.children ?? []) visit(child, undefined, true);
@@ -311,11 +320,21 @@ export class TranscriptDisplayRuntime {
 
     private decorateAssistant(component: AssistantMessageComponent): Decoration {
         const update = component.updateContent;
+        const render = component.render;
         let source: AssistantMessage | undefined;
         let projection: AssistantMessage | undefined;
         let streaming = false;
         let hidden = this.isHidden();
         let active = true;
+        let thinkingScanNeeded = false;
+        const decoratedRender: Component["render"] = (width) => {
+            // Public setters and mouse callbacks can rebuild runs before a source-container frame.
+            if (active && thinkingScanNeeded) {
+                thinkingScanNeeded = false;
+                this.scan();
+            }
+            return render.call(component, width);
+        };
         const decoratedUpdate: AssistantMessageComponent["updateContent"] = (message, isStreaming) => {
             // Native invalidate, setters, and mouse callbacks pass the last UI message back.
             // Recognize that exact object, not content equality, to retain the real source.
@@ -325,7 +344,9 @@ export class TranscriptDisplayRuntime {
             hidden = active && this.isHidden();
             projection = hidden ? this.projectThoughts(original) : undefined;
             update.call(component, projection ?? original, streaming);
+            thinkingScanNeeded = true;
         };
+        component.render = decoratedRender;
         component.updateContent = decoratedUpdate;
         // The exported API has no last-message getter. invalidate calls our updateContent.
         component.invalidate();
@@ -338,13 +359,40 @@ export class TranscriptDisplayRuntime {
                 if (hidden !== nextHidden && source && component.updateContent === decoratedUpdate) {
                     decoratedUpdate(source, streaming);
                 }
+                // The enclosing scan visits the newly rebuilt thinking runs next.
+                thinkingScanNeeded = false;
             },
             restore: () => {
                 active = false;
+                if (component.render === decoratedRender) component.render = render;
                 if (component.updateContent === decoratedUpdate) {
                     if (source) update.call(component, source, streaming);
                     component.updateContent = update;
                 }
+            },
+        };
+    }
+
+    private decorateThinking(component: Component): Decoration {
+        const render = component.render;
+        let active = true;
+        const decorated: Component["render"] = (width) => {
+            const lines = render.call(component, width);
+            if (!active || !this.context || this.modes.resolve(this.context.ui.getToolsExpanded()) !== ToolDisplayMode.TRUNCATED
+                || lines.length <= THINKING_PREVIEW_LINES) return lines;
+            const omitted = lines.length - THINKING_PREVIEW_LINES;
+            const theme = this.context.ui.theme;
+            const notice = renderLineFactory(() => [theme.fg(
+                ThemeColor.muted, `... (${omitted} earlier ${omitted === 1 ? "line" : "lines"})`,
+            )]);
+            return [...notice.render(width), ...lines.slice(-THINKING_PREVIEW_LINES)];
+        };
+        component.render = decorated;
+        return {
+            refresh: () => {},
+            restore: () => {
+                active = false;
+                if (component.render === decorated) component.render = render;
             },
         };
     }

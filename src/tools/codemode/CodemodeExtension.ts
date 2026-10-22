@@ -31,7 +31,7 @@ export class CodemodeExtension {
         toolName: "codemode",
         arguments: [
             {key: "purpose", placement: ToolArgumentPlacement.TITLE_PRIMARY, color: ThemeColor.text},
-            {key: "code", layout: ToolArgumentLayout.BLOCK, wrap: true},
+            {key: "code", layout: ToolArgumentLayout.BLOCK, previewDirection: ToolTextDirection.TAIL, wrap: true},
         ],
         result: {direction: ToolTextDirection.TAIL, wrap: true},
     });

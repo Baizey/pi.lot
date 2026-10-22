@@ -42,6 +42,7 @@ const BASH_PRESENTATION = {
             key: "command",
             layout: ToolArgumentLayout.BLOCK,
             direction: ToolTextDirection.HEAD,
+            previewDirection: ToolTextDirection.TAIL,
             color: ThemeColor.text,
         },
     ],

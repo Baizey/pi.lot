@@ -154,8 +154,8 @@ test("codemode keeps all nested calls in every view with bounded script and outp
 
     component.setExpanded(true);
     const expanded = component.render(120).map(stripAnsi);
-    assert.ok(expanded.includes(script[0]!));
-    assert.equal(expanded.includes(script.at(-1)!), false);
+    assert.equal(expanded.includes(script[0]!), false);
+    assert.ok(expanded.includes(script.at(-1)!));
     assert.ok(expanded.includes(output.at(-1)!));
     assert.equal(expanded.includes(output[0]!), false);
     for (const call of calls) assert.ok(expanded.some((line) => line.includes(`  ${call.name} `)));
@@ -433,8 +433,8 @@ test("codemode wraps long scripts and output before applying preview limits", ()
     const context = renderContext({});
     const preview = tool.renderCall!({code: source}, plainTheme, context).render(40);
     assert.ok(preview.length <= 10, "header, eight visual script rows, and fold notice");
-    assert.ok(preview.some((line) => line.includes("START")));
-    assert.equal(preview.some((line) => line.includes("END")), false);
+    assert.equal(preview.some((line) => line.includes("START")), false);
+    assert.ok(preview.some((line) => line.includes("END")));
     assert.ok(preview.every((line) => displayWidth(line) <= 40));
     const result = {content: [{type: "text" as const, text: source}], details: {calls: []}};
     const output = tool.renderResult!(result, {expanded: true, isPartial: false}, plainTheme, context).render(40);

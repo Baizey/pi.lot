@@ -13,13 +13,13 @@ import {
     type ToolRendererResolver,
     type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import {Container, getCapabilities, Image, setCapabilities, Text, TuiAltScreen, TuiMainScreen, type Terminal, type TUI} from "@earendil-works/pi-tui";
+import {Container, getCapabilities, Image, MouseRegion, setCapabilities, Text, TuiAltScreen, TuiMainScreen, type Terminal, type TUI} from "@earendil-works/pi-tui";
 import {createChatViewport} from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
 import {ReadTool} from "../src/tools/builtin/ReadTool.js";
 import {TranscriptDisplayRuntime} from "../src/tui/TranscriptDisplayRuntime.js";
 import {ToolDisplayMode} from "../src/tui/tool/ToolDisplayMode.js";
 import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
-import {displayWidth} from "../src/tui/terminalText.js";
+import {displayWidth, truncateToWidth} from "../src/tui/terminalText.js";
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jp9sAAAAASUVORK5CYII=";
@@ -81,6 +81,214 @@ test("hidden suppresses streaming thoughts as well as completed thoughts without
     assert.match(plain(component.render(80)), /Here is the answer/);
     assert.deepEqual(pending, original);
     assert.equal(grown.content[0]!.type, "thinking");
+});
+
+test("Preview follows the last twelve thinking rows without truncating assistant text or changing sources", (t) => {
+    for (const expanded of [false, true]) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        harness.expanded = expanded;
+        harness.rows.modes.setViews(
+            expanded ? ToolDisplayMode.FULL : ToolDisplayMode.TRUNCATED,
+            expanded ? ToolDisplayMode.TRUNCATED : ToolDisplayMode.FULL,
+        );
+        const lines = (prefix: string, count: number) => Array.from({length: count}, (_, index) => `${prefix} ${index + 1}`).join("  \n");
+        const source = assistant([
+            {type: "thinking", thinking: lines("thought", 30), thinkingSignature: "signed"},
+            {type: "text", text: lines("answer", 40)},
+            {type: "thinking", thinking: lines("later thought", 24)},
+        ], "pending");
+        const original = structuredClone(source);
+        const component = new AssistantMessageComponent(source);
+        harness.root.addChild(component);
+        const view = () => plain(harness.root.render(100)).split("\n").map((line) => line.trim());
+        assert.ok(view().includes("... (18 earlier lines)"));
+        assert.ok(view().includes("... (12 earlier lines)"));
+        assert.equal(view().includes("thought 1"), false);
+        assert.equal(view().includes("later thought 1"), false);
+        for (let index = 19; index <= 30; index++) assert.ok(view().includes(`thought ${index}`));
+        for (let index = 13; index <= 24; index++) assert.ok(view().includes(`later thought ${index}`));
+        assert.ok(view().includes("answer 1"));
+        assert.ok(view().includes("answer 40"));
+        const grown = assistant([
+            {type: "thinking", thinking: lines("thought", 45), thinkingSignature: "signed"},
+            {type: "text", text: lines("answer", 40)},
+        ], "pending");
+        const originalGrown = structuredClone(grown);
+        component.updateContent(grown, true);
+        assert.match(plain(component.render(100)), /33 earlier lines/, "a direct render discovers freshly rebuilt thinking runs");
+        component.invalidate();
+        component.setOutputPad(2);
+        assert.match(plain(component.render(100)), /33 earlier lines/, "public setters preserve the Preview window immediately");
+        assert.ok(view().includes("... (33 earlier lines)"));
+        assert.equal(view().includes("thought 30"), false);
+        assert.ok(view().includes("thought 45"));
+        component.updateContent({...grown, stopReason: "stop"}, false);
+        assert.equal(view().includes("thought 1"), false, "completed thinking retains the same Preview window");
+        harness.expanded = !expanded;
+        assert.ok(view().includes("thought 1"), "Full restores complete thinking");
+        harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.MINIMAL);
+        assert.ok(view().includes("thought 1"), "Compact retains native thinking behavior");
+        harness.rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.HIDDEN);
+        assert.equal(view().some((line) => line.includes("thought")), false);
+        assert.ok(view().includes("answer 1"));
+        assert.deepEqual(source, original);
+        assert.deepEqual(grown, originalGrown);
+    }
+});
+
+test("Preview clips rendered thinking tails after Markdown wrapping and restores unbounded rendering on cleanup", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    for (const thinking of [
+        `START ${"middle ".repeat(300)}END`,
+        `\`\`\`text\n${Array.from({length: 35}, (_, index) => `code ${index + 1}`).join("\n")}\n\`\`\``,
+    ]) {
+        const source = assistant([{type: "thinking", thinking}]);
+        const component = new AssistantMessageComponent(source, false, undefined, undefined, 2);
+        const baseline = new AssistantMessageComponent(source, false, undefined, undefined, 2);
+        harness.root.addChild(component);
+        for (const width of [12, 40, 80]) {
+            const full = baseline.render(width).map(stripVTControlCharacters);
+            const preview = harness.root.render(width).map(stripVTControlCharacters);
+            assert.deepEqual(preview.slice(-12), full.slice(-12), "Markdown is rendered before selecting its visual tail");
+            assert.equal(preview.length, 14, "leading gap, fold notice, and twelve rendered thinking rows");
+            assert.equal(preview[1], truncateToWidth(`... (${full.length - 13} earlier lines)`, width));
+            assert.ok(harness.root.render(width).every((line) => displayWidth(line) <= width));
+        }
+        harness.root.removeChild(component);
+        harness.root.render(80);
+        assert.deepEqual(component.render(80), baseline.render(80), "detached thinking regions recover native rendering");
+    }
+});
+
+test("Preview respects native thinking labels and mouse visibility toggles", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    const source = assistant([{type: "thinking", thinking: Array.from({length: 30}, (_, index) => `thought ${index + 1}`).join("  \n")}]);
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    const view = () => plain(harness.root.render(80));
+    const click = () => {
+        const height = harness.root.render(80).length;
+        const result = component.handleMouse({
+            type: "click", button: "left", x: 2, y: 1, screenX: 2, screenY: 1,
+            width: 80, height, shift: false, alt: false, ctrl: false,
+        });
+        assert.equal(result?.handled, true);
+    };
+    assert.match(view(), /18 earlier lines/);
+    click();
+    assert.match(plain(component.render(80)), /Thinking\.\.\./);
+    assert.match(view(), /Thinking\.\.\./);
+    assert.doesNotMatch(view(), /thought|earlier lines/);
+    click();
+    assert.match(plain(component.render(80)), /18 earlier lines/, "mouse expansion is bounded before the next frame");
+    assert.match(view(), /18 earlier lines/);
+    component.setHideThinkingBlock(true);
+    component.setHiddenThinkingLabel("Custom thinking label");
+    assert.match(view(), /Custom thinking label/);
+    assert.doesNotMatch(view(), /earlier lines/);
+    harness.expanded = true;
+    assert.match(view(), /Custom thinking label/, "switching view slots does not override native visibility");
+    component.setHideThinkingBlock(false);
+    assert.match(view(), /thought 1/);
+    harness.expanded = false;
+    assert.doesNotMatch(view(), /thought 1(?:\s|$)/);
+    assert.match(view(), /thought 30/);
+});
+
+test("thinking previews preserve short runs, singular omission counts, and native adjacent-block grouping", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    const lines = (prefix: string, count: number) => Array.from({length: count}, (_, index) => `${prefix} ${index + 1}`).join("  \n");
+    for (const count of [12, 13]) {
+        const component = new AssistantMessageComponent(assistant([{type: "thinking", thinking: lines("thought", count)}]));
+        harness.root.addChild(component);
+        const view = plain(harness.root.render(80));
+        assert.equal(view.includes("earlier line"), count > 12);
+        if (count === 13) assert.match(view, /\.\.\. \(1 earlier line\)/);
+        else assert.match(view, /thought 1(?:\s|$)/);
+        harness.root.removeChild(component);
+        harness.root.render(80);
+    }
+    const component = new AssistantMessageComponent(assistant([
+        {type: "thinking", thinking: lines("first block", 20)},
+        {type: "thinking", thinking: lines("second block", 20)},
+    ]));
+    harness.root.addChild(component);
+    const view = plain(harness.root.render(80));
+    assert.equal((view.match(/earlier lines/g) ?? []).length, 1, "adjacent thinking blocks share a single native run window");
+    assert.doesNotMatch(view, /first block/);
+    assert.match(view, /second block 20/);
+    assert.equal(harness.root.render(80).length, 14);
+});
+
+test("thinking cleanup preserves later render wrappers and restores native unbounded rows", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    const source = assistant([{type: "thinking", thinking: Array.from({length: 30}, (_, index) => `thought ${index + 1}`).join("  \n")}]);
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    harness.root.render(80);
+    const content = component.children.find((child) => child instanceof Container);
+    assert.ok(content);
+    const region = content.children.find((child) => child instanceof MouseRegion);
+    assert.ok(region);
+    const render = component.render;
+    const regionRender = region.render;
+    const laterRender: typeof render = (width) => [...render.call(component, width), "Later assistant decoration"];
+    const laterRegionRender: typeof regionRender = (width) => [...regionRender.call(region, width), "Later thinking decoration"];
+    component.render = laterRender;
+    region.render = laterRegionRender;
+    assert.match(plain(harness.root.render(80)), /18 earlier lines/);
+    harness.runtime.stopSession();
+    assert.equal(component.render, laterRender);
+    assert.equal(region.render, laterRegionRender);
+    assert.match(plain(component.render(80)), /thought 1(?:\s|$)/);
+    assert.match(plain(component.render(80)), /Later assistant decoration/);
+    assert.match(plain(region.render(80)), /thought 1(?:\s|$)/);
+    assert.match(plain(region.render(80)), /Later thinking decoration/);
+    assert.doesNotMatch(plain(component.render(80)), /earlier lines/);
+    assert.doesNotMatch(plain(region.render(80)), /earlier lines/);
+});
+
+test("Preview does not clip unrelated mouse regions outside assistant content", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    const region = new MouseRegion(new Text(Array.from({length: 30}, (_, index) => `notification ${index}`).join("\n"), 0, 0), () => undefined);
+    harness.root.addChild(region);
+    const view = plain(harness.root.render(80));
+    assert.match(view, /notification 0/);
+    assert.match(view, /notification 29/);
+    assert.doesNotMatch(view, /earlier lines/);
+    assert.equal(harness.root.render(80).length, 30);
+});
+
+test("fullscreen clips newly streamed thinking tails before layout frames draw them", (t) => {
+    t.mock.timers.enable({apis: ["setInterval", "setTimeout"]});
+    const root = new TuiAltScreen(new TestTui().terminal, false, undefined, {mouse: false});
+    const harness = createHarness(root);
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    const source = (count: number) => assistant([{type: "thinking", thinking: Array.from({length: count}, (_, index) => `fullscreen thought ${index + 1}`).join("  \n")}], "pending");
+    const component = new AssistantMessageComponent(source(30));
+    harness.root.addChild(component);
+    root.start();
+    t.after(() => { root.stop({preserveScreen: true}); harness.close(); });
+    root.renderNow();
+    assert.match(plain(root.getScreenLines()), /18 earlier lines/);
+    assert.doesNotMatch(plain(root.getScreenLines()), /fullscreen thought 1(?:\s|$)/);
+    component.updateContent(source(45), true);
+    root.requestRender();
+    root.renderNow();
+    assert.match(plain(root.getScreenLines()), /33 earlier lines/);
+    assert.match(plain(root.getScreenLines()), /fullscreen thought 45/);
+    assert.doesNotMatch(plain(root.getScreenLines()), /fullscreen thought 30(?:\s|$)/);
 });
 
 test("the working placeholder is rendered inline with tool rows, not in the editor dock", (t) => {

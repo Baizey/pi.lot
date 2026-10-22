@@ -96,14 +96,14 @@ export class EditTool {
         const renderCall: NonNullable<EditPresentationDefinition["renderCall"]> = (args, theme, context) => {
             this.displayRows.observe("edit", args, context);
             const selected = this.displayRows.resolveMode(context.expanded, context.state);
-            const mode = context.isPartial && selected === ToolDisplayMode.MINIMAL
+            const mode = context.isPartial && (selected === ToolDisplayMode.MINIMAL || selected === ToolDisplayMode.HIDDEN)
                 ? ToolDisplayMode.TRUNCATED : selected;
             const call = presentation.renderCall(args, theme, mode, {
                 isPartial: context.isPartial,
                 outputPad: context.outputPad,
                 indicator: () => context.state.pilotCallSpinner?.frame(),
             });
-            if (!context.isPartial || mode === ToolDisplayMode.HIDDEN) return call;
+            if (!context.isPartial) return call;
 
             // Preview only supplied replacement text: reading the target here would
             // precede the execution path's policy approval.
@@ -119,7 +119,7 @@ export class EditTool {
         const renderResult: NonNullable<EditPresentationDefinition["renderResult"]> = (result, options, theme, context) => {
             if (!options.isPartial) this.displayRows.complete(context.state);
             const selected = this.displayRows.resolveMode(options.expanded, context.state);
-            const mode = options.isPartial && selected === ToolDisplayMode.MINIMAL
+            const mode = options.isPartial && (selected === ToolDisplayMode.MINIMAL || selected === ToolDisplayMode.HIDDEN)
                 ? ToolDisplayMode.TRUNCATED : selected;
             const diff = !context.isError && typeof result.details?.diff === "string"
                 ? result.details.diff

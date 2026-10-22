@@ -79,7 +79,7 @@ export class ToolDisplayRows {
             renderResult: (result, options, theme, context) => {
                 if (!options.isPartial) this.complete(context.state);
                 return presentation.renderResult(result, theme, {
-                    isError: context.isError, outputPad: context.outputPad,
+                    isPartial: options.isPartial, isError: context.isError, outputPad: context.outputPad,
                 }, this.resolveMode(options.expanded, context.state));
             },
         };

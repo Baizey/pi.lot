@@ -187,7 +187,7 @@ export class CodemodeExtension {
                 if (mode === ToolDisplayMode.HIDDEN && call.status !== "running") return [];
                 return this.callLines(
                     call, argumentsByCall?.get(index) ?? call.args, theme,
-                    mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.MINIMAL : mode, indicator, callWidth,
+                    mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.TRUNCATED : mode, indicator, callWidth,
                 ).flatMap((line) => Number.isFinite(callWidth)
                     ? wrapTextWithAnsi(sanitizeTerminalLine(line), callWidth)
                     : [sanitizeTerminalLine(line)])

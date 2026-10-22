@@ -329,10 +329,10 @@ test("Conversation tool text and images follow native per-row mouse toggles on e
                 clickToolHeader(row);
                 const toggled = harness.root.render(80);
                 assert.equal(harness.expanded, globalExpanded, "a row click must not change the global slot");
-                assert.equal(plain(toggled).includes("row-local output"), globallyHidden);
+                assert.match(plain(before), /row-local output/, "hidden active rows retain truncated partial text");
+                assert.match(plain(toggled), /row-local output/);
                 assert.equal(toggled.some((line) => line.includes("\x1b_G")), globallyHidden,
-                    "images must follow the same mode as the row's text");
-                if (!globallyHidden) assert.equal(toggled.length, 2, "a hidden active row retains only its header");
+                    "tool images remain suppressed in the hidden slot, including during execution");
                 row.updateResult(result);
                 const completed = harness.root.render(80);
                 if (globallyHidden) {

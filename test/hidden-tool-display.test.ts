@@ -26,7 +26,7 @@ import {displayWidth} from "../src/tui/terminalText.js";
 
 initTheme("dark");
 
-test("hidden tool views retain compact active headers but no partial output or completed rows", (t) => {
+test("hidden tool views use truncated active previews and partial output but leave no completed rows", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const rows = new ToolDisplayRows();
     rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
@@ -50,7 +50,13 @@ test("hidden tool views retain compact active headers but no partial output or c
         for (const isError of [false, true]) {
             const component = nativeTool(name, name + isError, args, renderers, () => redraws++);
             const view = () => component.render(80).map(stripVTControlCharacters).filter(Boolean);
-            assert.equal(view().length, 1, `${name} only shows its active header`);
+            const preview = () => {
+                rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+                const lines = view();
+                rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
+                return lines;
+            };
+            assert.deepEqual(view(), preview(), `${name} uses its truncated call layout while active`);
             assert.ok(view()[0]!.includes(name));
             component.setArgsComplete();
             component.markExecutionStarted();
@@ -59,8 +65,10 @@ test("hidden tool views retain compact active headers but no partial output or c
                 details: {fullOutputPath: "/tmp/private-output"},
                 isError: false,
             }, true);
-            assert.equal(view().length, 1);
-            assert.doesNotMatch(view().join("\n"), /private|Full output/);
+            assert.deepEqual(view(), preview().filter((line) => !line.startsWith("Full output:")),
+                `${name} uses its truncated partial-result layout without extra metadata`);
+            assert.ok(view().includes("private partial output"));
+            assert.doesNotMatch(view().join("\n"), /Full output/);
             for (const width of [1, 8, 30]) {
                 assert.ok(component.render(width).every((line) => displayWidth(line) <= width));
             }
@@ -88,6 +96,71 @@ test("hidden headers follow streamed arguments and disappear independently as co
     assert.match(second.render(80).map(stripVTControlCharacters).join("\n"), /second\.ts/);
     second.updateResult({content: [], isError: true});
     assert.deepEqual(second.render(80), []);
+});
+
+test("hidden previews bound streamed arguments and output on either slot despite row-local full overrides", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    for (const expanded of [false, true]) {
+        const rows = new ToolDisplayRows();
+        rows.modes.setViews(
+            expanded ? ToolDisplayMode.FULL : ToolDisplayMode.HIDDEN,
+            expanded ? ToolDisplayMode.HIDDEN : ToolDisplayMode.FULL,
+        );
+        t.after(() => rows.clear());
+        const write = new WriteTool({} as ExtensionAPI, () => assert.fail(), rows).toolDefinition();
+        const content = (count: number) => Array.from({length: count}, (_, index) => `content ${index + 1}`).join("\n");
+        const component = nativeTool("write", "streamed", {path: "active.ts", content: content(20)}, write);
+        component.setExpanded(expanded);
+        const view = () => component.render(80).map(stripVTControlCharacters).filter(Boolean);
+        assert.deepEqual(view().slice(1, 9), content(8).split("\n"));
+        assert.equal(view().at(-1), "... (12 more lines)");
+        component.updateArgs({path: "updated.ts", content: content(25)});
+        assert.match(view()[0]!, /updated\.ts/);
+        assert.equal(view().at(-1), "... (17 more lines)");
+        rows.toggle("streamed");
+        assert.equal(view().includes("content 9"), false, "full overrides must not bypass hidden preview limits");
+        component.setArgsComplete();
+        component.markExecutionStarted();
+        const output = Array.from({length: 20}, (_, index) => `output ${index + 1}`).join("\n");
+        const result = {content: [{type: "text", text: output}], isError: false};
+        component.updateResult(result, true);
+        assert.deepEqual(view().slice(-6), ["... (15 earlier lines)", ...output.split("\n").slice(-5)]);
+        component.setExpanded(!expanded);
+        assert.ok(view().includes("content 25"));
+        assert.ok(view().includes("output 1"));
+        component.setExpanded(expanded);
+        assert.equal(view().includes("content 9"), false);
+        assert.equal(view().includes("output 1"), false);
+        component.updateResult(result);
+        assert.deepEqual(component.render(80), []);
+        component.setExpanded(!expanded);
+        assert.ok(view().includes("output 1"), "completion preserves output outside the hidden view");
+    }
+});
+
+test("hidden edit previews retain truncated replacement and partial-result tails until completion", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const rows = new ToolDisplayRows();
+    rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
+    t.after(() => rows.clear());
+    const edit = new EditTool({} as ExtensionAPI, () => assert.fail(), rows).toolDefinition();
+    const component = nativeTool("edit", "replacement", {path: "active.ts"}, edit);
+    const view = () => component.render(80).map(stripVTControlCharacters).filter(Boolean);
+    for (const count of [30, 45]) {
+        const lines = Array.from({length: count}, (_, index) => `replacement ${index + 1}`);
+        component.updateArgs({path: "active.ts", edits: [{oldText: "before", newText: lines.join("\n")}]});
+        assert.deepEqual(view().slice(-12), lines.slice(-12).map((line) => `+${line}`));
+        assert.equal(view().includes("+replacement 1"), false);
+        assert.ok(view().includes(`... (${count - 11} earlier lines)`));
+    }
+    component.setArgsComplete();
+    component.markExecutionStarted();
+    const lines = Array.from({length: 30}, (_, index) => `+applied ${index + 1}`);
+    component.updateResult({content: [], details: {diff: lines.join("\n")}, isError: false}, true);
+    assert.deepEqual(view().slice(-12), lines.slice(-12));
+    assert.ok(view().includes("... (18 earlier lines)"));
+    component.updateResult({content: [], details: {diff: lines.join("\n")}, isError: false});
+    assert.deepEqual(component.render(80), []);
 });
 
 test("changing the view pair redraws existing rows and hiding does not discard full output", (t) => {
@@ -123,12 +196,15 @@ test("hidden codemode shows only currently running nested calls and removes fini
         appendEntry() {},
     } as unknown as ExtensionAPI;
     new ReadTool(pi, () => assert.fail(), rows).toolDefinition();
+    new BashTool(pi, () => assert.fail(), rows).toolDefinition();
     new CodemodeExtension(pi, rows).register();
-    const component = nativeTool("codemode", "script", {purpose: "Inspect active work", code: "private script"}, definition);
+    const numberedLines = (prefix: string) => Array.from({length: 12}, (_, index) => `${prefix} ${index + 1}`).join("\n");
+    const component = nativeTool("codemode", "script", {purpose: "Inspect active work", code: numberedLines("script")}, definition);
     component.markExecutionStarted();
     const calls: CodemodeToolDetails["calls"] = [
         {id: "script/1", name: "read", args: '{"path":"finished.ts"}', status: "ok", durationMs: 25},
         {id: "script/2", name: "read", args: '{"path":"active.ts"}', status: "running"},
+        {id: "script/3", name: "bash", args: JSON.stringify({purpose: "Nested work", command: numberedLines("command")}), status: "running"},
     ];
     const original = structuredClone(calls);
     component.updateResult({
@@ -139,9 +215,13 @@ test("hidden codemode shows only currently running nested calls and removes fini
     const view = () => component.render(80).map(stripVTControlCharacters).join("\n");
     assert.match(view(), /codemode \| Inspect active work/);
     assert.match(view(), /read \| active\.ts/);
-    assert.doesNotMatch(view(), /finished\.ts|private|Elapsed|Model calls/);
+    assert.match(view(), /script 1\nscript 2/);
+    assert.match(view(), /bash \| Nested work/);
+    assert.match(view(), /command 1\n\s+command 2/);
+    assert.equal((view().match(/4 more lines/g) ?? []).length, 2, "script and nested arguments both use preview limits");
+    assert.doesNotMatch(view(), /script 9|command 9|finished\.ts|private|Elapsed|Model calls/);
     component.updateResult({content: [], details: {calls: calls.map((call) => ({...call, status: "ok"}))}, isError: false}, true);
-    assert.doesNotMatch(view(), /active\.ts|finished\.ts/);
+    assert.doesNotMatch(view(), /active\.ts|finished\.ts|Nested work|command 1/);
     component.updateResult({content: [{type: "text", text: "failed or cancelled script"}], details: {calls}, isError: true});
     assert.deepEqual(component.render(80), []);
     assert.deepEqual(calls, original, "display filtering must not mutate nested-call history");

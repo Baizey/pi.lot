@@ -33,6 +33,7 @@ export type ToolCallRenderOptions = {
 };
 
 export type ToolResultRenderOptions = {
+    isPartial?: boolean;
     isError?: boolean;
     outputPad?: number;
 };
@@ -75,7 +76,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
         return renderLineFactory((width) => {
             if (mode === ToolDisplayMode.HIDDEN && !options.isPartial) return [];
             return this.renderCallLines(
-                args, theme, mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.MINIMAL : mode,
+                args, theme, mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.TRUNCATED : mode,
                 width, options.indicator?.(),
             );
         }, options.outputPad);
@@ -99,7 +100,8 @@ export class ToolPresentationRenderer<TArgs extends object> {
         options: ToolResultRenderOptions,
         mode: ToolDisplayMode,
     ): TextComponent {
-        return renderLineFactory((width) => this.toolResultLines(result, theme, options, mode, width), options.outputPad);
+        const resultMode = mode === ToolDisplayMode.HIDDEN && options.isPartial ? ToolDisplayMode.TRUNCATED : mode;
+        return renderLineFactory((width) => this.toolResultLines(result, theme, options, resultMode, width), options.outputPad);
     }
 
     private toolCallLines(

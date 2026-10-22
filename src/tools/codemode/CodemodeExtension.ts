@@ -42,6 +42,9 @@ export class CodemodeExtension {
     ) {}
 
     register(): void {
+        this.displayRows.registerCallPresentation("codemode", (args, theme, mode, width, indicator) => (
+            this.presentation.renderCallLines(args, theme, mode, width, indicator)
+        ));
         // The generic registerTool API cannot express this decorator's built-in-only boundary.
         const registerTool = ((definition: NativeCodemodeDefinition) => {
             const execute = withApprovalAwareCodemodeTimeout(definition.execute);

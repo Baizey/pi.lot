@@ -14,6 +14,10 @@ import {renderLineFactory} from "./terminalText.js";
 import {ToolCallSpinner} from "./tool/ToolCallSpinner.js";
 import {ToolDisplayMode} from "./tool/ToolDisplayMode.js";
 import {ToolDisplayModes} from "./tool/ToolDisplayModes.js";
+import {ToolDisplayRows} from "./tool/ToolDisplayRows.js";
+import {ToolPresentationRenderer} from "./tool/ToolPresentationRenderer.js";
+
+const RECENT_FINISHED_TOOL_LIMIT = 5;
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
 type Decoration = {
@@ -21,8 +25,10 @@ type Decoration = {
     restore(): void;
     toolHidden?(): boolean;
     contentActive?(): boolean;
+    toolStatus?: ToolProbe;
 };
-type ToolProbe = {partial?: boolean; expanded?: boolean};
+type ToolProbe = {partial?: boolean; expanded?: boolean; toolCallId?: string; compact?: boolean};
+type ToolCompletion = {sequence: number; live: boolean};
 
 /** UI-only projection of native rows; never changes the session transcript. */
 export class TranscriptDisplayRuntime {
@@ -37,9 +43,15 @@ export class TranscriptDisplayRuntime {
     private working = false;
     private workingSpinner: ToolCallSpinner | undefined;
     private readonly activeToolCalls = new Set<string>();
+    private readonly completedToolCalls = new Map<string, ToolCompletion>();
+    private nextCompletionSequence = 0;
+    private readonly modes: ToolDisplayModes;
+    private readonly recentFinishedToolCalls = new Set<string>();
     private readonly workingPlaceholder = renderLineFactory(() => this.renderWorkingPlaceholder(), 1);
 
-    constructor(private readonly pi: ExtensionAPI, private readonly modes: ToolDisplayModes) {}
+    constructor(private readonly pi: ExtensionAPI, private readonly displayRows: ToolDisplayRows) {
+        this.modes = displayRows.modes;
+    }
 
     /** Register before other resolvers so next() includes MCP/resumed tool renderers. */
     register(): void {
@@ -53,20 +65,47 @@ export class TranscriptDisplayRuntime {
             if (!event.parentToolCallId) this.setToolActive(event.toolCallId, true);
         });
         this.pi.on("tool_execution_end", (event) => {
-            if (!event.parentToolCallId) this.setToolActive(event.toolCallId, false);
+            if (!event.parentToolCallId) {
+                this.finishToolCall(event.toolCallId, true);
+                this.setToolActive(event.toolCallId, false);
+            }
         });
-        this.pi.registerToolRenderer((_name, next) => {
+        this.pi.registerToolRenderer((name, next) => {
             const renderers = next();
             if (!renderers) return undefined;
             const observed: ToolRenderers = {...renderers};
             const call = renderers.renderCall;
             const result = renderers.renderResult;
+            const fallback = new ToolPresentationRenderer<Record<string, unknown>>({toolName: name, arguments: []});
             if (call) observed.renderCall = (args, theme, context) => {
-                if (this.probe) Object.assign(this.probe, {partial: context.isPartial, expanded: context.expanded});
+                if (this.probe) Object.assign(this.probe, {
+                    partial: context.isPartial, expanded: context.expanded, toolCallId: context.toolCallId, compact: !!result,
+                });
+                const compact = !context.isPartial && this.modes.resolve(context.expanded) === ToolDisplayMode.HIDDEN;
+                if (compact && !this.displayRows.callPresentation(name)) {
+                    // Foreign call renderers need a safe header too; keep their active layout unchanged.
+                    try {
+                        call(args, theme, context);
+                    } catch {
+                        // A failing foreign renderer must not bypass the compact projection.
+                    }
+                    return fallback.renderCall(undefined, theme, ToolDisplayMode.MINIMAL, {outputPad: context.outputPad});
+                }
                 return call(args, theme, context);
             };
             if (result) observed.renderResult = (value, options, theme, context) => {
-                if (this.probe) Object.assign(this.probe, {partial: context.isPartial, expanded: context.expanded});
+                if (this.probe) Object.assign(this.probe, {
+                    partial: context.isPartial, expanded: context.expanded, toolCallId: context.toolCallId, compact: !!call,
+                });
+                if (!options.isPartial && this.modes.resolve(options.expanded) === ToolDisplayMode.HIDDEN) {
+                    try {
+                        // Allow renderer cleanup, but never fall back to completed output on a render failure.
+                        result(value, options, theme, context);
+                    } catch {
+                        // The finished-result projection remains empty even if native fallback would show text.
+                    }
+                    return renderLineFactory(() => []);
+                }
                 return result(value, options, theme, context);
             };
             return observed;
@@ -104,6 +143,8 @@ export class TranscriptDisplayRuntime {
         this.setWorking(false);
         const tui = this.tui;
         this.detach();
+        this.completedToolCalls.clear();
+        this.nextCompletionSequence = 0;
         this.context = undefined;
         tui?.invalidate();
         tui?.requestRender();
@@ -119,9 +160,12 @@ export class TranscriptDisplayRuntime {
     private observeToolCalls(message: MessageUpdateEvent["message"]): void {
         if (message.role !== "assistant") return;
         // Pi finishes assistant streaming before executing that message's tools.
-        // Track only current calls: unavailable historical renderers cannot be probed.
+        // Aborted/error messages instead finalize their streamed rows without execution events.
+        const finished = message.stopReason === "aborted" || message.stopReason === "error";
         for (const block of message.content) {
-            if (block.type === "toolCall") this.setToolActive(block.id, true);
+            if (block.type !== "toolCall") continue;
+            if (finished) this.finishToolCall(block.id, true);
+            this.setToolActive(block.id, !finished);
         }
     }
 
@@ -131,6 +175,33 @@ export class TranscriptDisplayRuntime {
         if (active) this.activeToolCalls.add(toolCallId);
         else this.activeToolCalls.delete(toolCallId);
         this.tui?.requestRender();
+    }
+
+    private finishToolCall(toolCallId: string, live: boolean): void {
+        if (!this.context?.hasUI || this.context.mode !== "tui") return;
+        const previous = this.completedToolCalls.get(toolCallId);
+        if (previous && (previous.live || !live)) return;
+        // Live completions outrank history even when old rows are first discovered later.
+        // Discovery order is only a fallback within history; redraws never promote a row.
+        this.completedToolCalls.set(toolCallId, {sequence: this.nextCompletionSequence++, live});
+        this.tui?.requestRender();
+    }
+
+    private refreshRecentFinishedTools(): void {
+        const finished: string[] = [];
+        for (const decoration of this.decorations.values()) {
+            const status = decoration.toolStatus;
+            if (status?.partial === false && status.toolCallId !== undefined) finished.push(status.toolCallId);
+        }
+        finished.sort((left, right) => {
+            const a = this.completedToolCalls.get(left)!;
+            const b = this.completedToolCalls.get(right)!;
+            return Number(b.live) - Number(a.live) || b.sequence - a.sequence;
+        });
+        this.recentFinishedToolCalls.clear();
+        for (const toolCallId of finished.slice(0, RECENT_FINISHED_TOOL_LIMIT)) {
+            this.recentFinishedToolCalls.add(toolCallId);
+        }
     }
 
     private renderWorkingPlaceholder(): string[] {
@@ -155,6 +226,7 @@ export class TranscriptDisplayRuntime {
         this.stopWorkingSpinner();
         for (const decoration of this.decorations.values()) decoration.restore();
         this.decorations.clear();
+        this.recentFinishedToolCalls.clear();
         this.tui = undefined;
     }
 
@@ -209,6 +281,7 @@ export class TranscriptDisplayRuntime {
                 decoration.restore();
                 this.decorations.delete(component);
             }
+            this.refreshRecentFinishedTools();
         } finally {
             this.scanning = false;
         }
@@ -290,15 +363,25 @@ export class TranscriptDisplayRuntime {
         let hidden = toolHidden();
         const decoratedRender: ToolExecutionComponent["render"] = (width) => {
             const hidden = active && toolHidden();
-            if (hidden && status.partial === false) return [];
+            if (hidden && status.partial === false && (!status.compact || status.toolCallId === undefined
+                || !this.recentFinishedToolCalls.has(status.toolCallId))) return [];
             const lines = render.call(component, width);
             // Removing partial-result images must not leave their trailing spacer rows.
             if (hidden) while (lines.at(-1) === "") lines.pop();
             return lines;
         };
         const decoratedUpdate: ToolExecutionComponent["updateResult"] = (result, partial = false) => {
+            const wasFinished = status.partial === false;
             status.partial = partial;
-            update.call(component, result, partial);
+            const previousProbe = this.probe;
+            this.probe = status;
+            try {
+                update.call(component, result, partial);
+            } finally {
+                this.probe = previousProbe;
+            }
+            if (!partial && !wasFinished && status.toolCallId !== undefined) this.finishToolCall(status.toolCallId, true);
+            this.refreshRecentFinishedTools();
         };
         const decoratedExpand: ToolExecutionComponent["setExpanded"] = (expanded) => {
             status.expanded = expanded;
@@ -308,7 +391,7 @@ export class TranscriptDisplayRuntime {
         component.updateResult = decoratedUpdate;
         component.setExpanded = decoratedExpand;
         // Probe only the synchronous public renderer context emitted by this invalidate.
-        // No tool identifiers, private status, or historic event inventories are needed.
+        // Capture the public call ID to join this row to session completion order.
         const previousProbe = this.probe;
         this.probe = status;
         try {
@@ -316,8 +399,10 @@ export class TranscriptDisplayRuntime {
         } finally {
             this.probe = previousProbe;
         }
+        if (status.partial === false && status.toolCallId !== undefined) this.finishToolCall(status.toolCallId, false);
         return {
             toolHidden,
+            toolStatus: status,
             // Streamed argument headers take over even before execution starts.
             contentActive: () => status.partial === true,
             refresh: () => {

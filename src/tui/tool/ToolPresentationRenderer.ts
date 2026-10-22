@@ -73,13 +73,12 @@ export class ToolPresentationRenderer<TArgs extends object> {
         mode: ToolDisplayMode,
         options: ToolCallRenderOptions = {},
     ): TextComponent {
-        return renderLineFactory((width) => {
-            if (mode === ToolDisplayMode.HIDDEN && !options.isPartial) return [];
-            return this.renderCallLines(
-                args, theme, mode === ToolDisplayMode.HIDDEN ? ToolDisplayMode.TRUNCATED : mode,
-                width, options.indicator?.(),
-            );
-        }, options.outputPad);
+        const callMode = mode === ToolDisplayMode.HIDDEN
+            ? (options.isPartial ? ToolDisplayMode.TRUNCATED : ToolDisplayMode.MINIMAL)
+            : mode;
+        return renderLineFactory((width) => this.renderCallLines(
+            args, theme, callMode, width, options.indicator?.(),
+        ), options.outputPad);
     }
 
     /** Logical lines before width clipping, with no row registration or spinner lifecycle effects. */

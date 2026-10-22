@@ -26,7 +26,7 @@ import {displayWidth} from "../src/tui/terminalText.js";
 
 initTheme("dark");
 
-test("hidden tool views use truncated active previews and partial output but leave no completed rows", (t) => {
+test("hidden tool views use truncated active previews and compact finished headers without output", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const rows = new ToolDisplayRows();
     rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
@@ -73,7 +73,8 @@ test("hidden tool views use truncated active previews and partial output but lea
                 assert.ok(component.render(width).every((line) => displayWidth(line) <= width));
             }
             component.updateResult({content: [{type: "text", text: "completed or cancelled"}], isError});
-            assert.deepEqual(component.render(80), [], `${name} leaves no completed rows or spacers`);
+            assert.equal(view().length, 1, `${name} retains only its compact finished header`);
+            assert.ok(view()[0]!.includes(name));
         }
     }
     const afterCompletion = redraws;
@@ -81,7 +82,7 @@ test("hidden tool views use truncated active previews and partial output but lea
     assert.equal(redraws, afterCompletion, "hidden completion must stop active animation timers");
 });
 
-test("hidden headers follow streamed arguments and disappear independently as concurrent calls finish", (t) => {
+test("hidden headers follow streamed arguments and compact independently as concurrent calls finish", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const rows = new ToolDisplayRows();
     rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
@@ -92,10 +93,10 @@ test("hidden headers follow streamed arguments and disappear independently as co
     first.updateArgs({path: "first.ts", offset: 5, limit: 3});
     assert.match(first.render(80).map(stripVTControlCharacters).join("\n"), /first\.ts:5-7/);
     first.updateResult({content: [], isError: false});
-    assert.deepEqual(first.render(80), []);
+    assert.deepEqual(first.render(80).map(stripVTControlCharacters).filter(Boolean), ["  read | first.ts:5-7"]);
     assert.match(second.render(80).map(stripVTControlCharacters).join("\n"), /second\.ts/);
     second.updateResult({content: [], isError: true});
-    assert.deepEqual(second.render(80), []);
+    assert.deepEqual(second.render(80).map(stripVTControlCharacters).filter(Boolean), ["  read | second.ts"]);
 });
 
 test("hidden previews bound streamed arguments and output on either slot despite row-local full overrides", (t) => {
@@ -132,7 +133,7 @@ test("hidden previews bound streamed arguments and output on either slot despite
         assert.equal(view().includes("content 9"), false);
         assert.equal(view().includes("output 1"), false);
         component.updateResult(result);
-        assert.deepEqual(component.render(80), []);
+        assert.deepEqual(view(), ["  write | updated.ts"]);
         component.setExpanded(!expanded);
         assert.ok(view().includes("output 1"), "completion preserves output outside the hidden view");
     }
@@ -160,7 +161,7 @@ test("hidden edit previews retain truncated replacement and partial-result tails
     assert.deepEqual(view().slice(-12), lines.slice(-12));
     assert.ok(view().includes("... (18 earlier lines)"));
     component.updateResult({content: [], details: {diff: lines.join("\n")}, isError: false});
-    assert.deepEqual(component.render(80), []);
+    assert.deepEqual(view(), ["  edit | active.ts (1 replacement)"]);
 });
 
 test("changing the view pair redraws existing rows and hiding does not discard full output", (t) => {
@@ -174,11 +175,12 @@ test("changing the view pair redraws existing rows and hiding does not discard f
     rows.toggle("restored");
     assert.match(component.render(80).map(stripVTControlCharacters).join("\n"), /line 1\nline 2/);
     rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
-    assert.deepEqual(component.render(80), [], "hidden also suppresses previous row-local full overrides");
+    assert.deepEqual(component.render(80).map(stripVTControlCharacters).filter(Boolean), ["  read | history.ts"],
+        "hidden compact headers also suppress previous row-local full overrides");
     component.setExpanded(true);
     assert.match(component.render(80).map(stripVTControlCharacters).join("\n"), /line 20/);
     component.setExpanded(false);
-    assert.deepEqual(component.render(80), []);
+    assert.deepEqual(component.render(80).map(stripVTControlCharacters).filter(Boolean), ["  read | history.ts"]);
     rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.TRUNCATED);
     assert.match(component.render(80).map(stripVTControlCharacters).join("\n"), /line 1\nline 2/);
 });
@@ -223,7 +225,8 @@ test("hidden codemode shows only currently running nested calls and removes fini
     component.updateResult({content: [], details: {calls: calls.map((call) => ({...call, status: "ok"}))}, isError: false}, true);
     assert.doesNotMatch(view(), /active\.ts|finished\.ts|Nested work|command 1/);
     component.updateResult({content: [{type: "text", text: "failed or cancelled script"}], details: {calls}, isError: true});
-    assert.deepEqual(component.render(80), []);
+    assert.deepEqual(view().split("\n").filter(Boolean), ["  codemode | Inspect active work"],
+        "a finished codemode call retains only its compact parent header");
     assert.deepEqual(calls, original, "display filtering must not mutate nested-call history");
 });
 

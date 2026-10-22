@@ -220,7 +220,8 @@ test("display loads saved modes per session and shares hot-swapped preferences w
     await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
     try {
         assert.equal(loads, 1);
-        assert.deepEqual(renderCall(false), []);
+        assert.deepEqual(renderCall(false), ["  read | fixture.txt"]);
+        assert.deepEqual(renderResult(false), []);
         assert.deepEqual(renderResult(true), ["", "fixture output"]);
         await display.handler("full compact", ctx);
         assert.deepEqual(renderResult(false), ["", "fixture output"]);
@@ -229,7 +230,8 @@ test("display loads saved modes per session and shares hot-swapped preferences w
         await harness.sessionShutdown()({type: "session_shutdown", reason: "new"}, ctx);
         await harness.sessionStart()({type: "session_start", reason: "new"}, ctx);
         assert.equal(loads, 2);
-        assert.deepEqual(renderCall(false), [], "unsaved changes must not leak into the next session");
+        assert.deepEqual(renderCall(false), ["  read | fixture.txt"]);
+        assert.deepEqual(renderResult(false), [], "unsaved changes must not leak into the next session");
         await display.handler("compact conversation", ctx);
         await display.handler("save", ctx);
         assert.equal(saves, 1);
@@ -237,7 +239,8 @@ test("display loads saved modes per session and shares hot-swapped preferences w
         await harness.sessionStart()({type: "session_start", reason: "new"}, ctx);
         assert.equal(loads, 3);
         assert.deepEqual(renderCall(false), ["  read | fixture.txt"]);
-        assert.deepEqual(renderCall(true), [], "saved Alternate mode must load too");
+        assert.deepEqual(renderCall(true), ["  read | fixture.txt"]);
+        assert.deepEqual(renderResult(true), [], "saved Alternate mode must load too");
     } finally {
         await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     }

@@ -79,7 +79,7 @@ export class PilotExtension {
         if (options.toolDisplayViews) {
             this.displayRows.modes.setViews(options.toolDisplayViews.normal, options.toolDisplayViews.alternate);
         }
-        this.transcriptDisplayRuntime = new TranscriptDisplayRuntime(pi, this.displayRows.modes);
+        this.transcriptDisplayRuntime = new TranscriptDisplayRuntime(pi, this.displayRows);
         this.thinkingLevelUiRuntime = new ThinkingLevelUiRuntime((tui) => this.transcriptDisplayRuntime.attach(tui));
         const runtimeProvider = () => this.requireSessionRuntime();
         this.builtinTools = [

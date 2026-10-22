@@ -119,7 +119,9 @@ test("display hot-swaps live rows on either active side without changing Pi's to
             await command.handler("full full", ctx);
             assert.match(component.render(80).join("\n"), /result details/);
             await command.handler(expanded ? "full conversation" : "conversation full", ctx);
-            assert.deepEqual(component.render(80), []);
+            const hidden = component.render(80).join("\n");
+            assert.match(hidden, /fixture.*Test/);
+            assert.doesNotMatch(hidden, /script body|result details/);
             await command.handler(expanded ? "conversation compact" : "compact conversation", ctx);
             const lines = component.render(80).join("\n");
             assert.match(lines, /fixture.*Test/);

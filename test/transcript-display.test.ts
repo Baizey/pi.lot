@@ -11,6 +11,7 @@ import {
     type ExtensionContext,
     type Theme,
     type ToolRendererResolver,
+    type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import {Container, getCapabilities, Image, setCapabilities, Text, TuiAltScreen, TuiMainScreen, type Terminal, type TUI} from "@earendil-works/pi-tui";
 import {createChatViewport} from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
@@ -271,6 +272,198 @@ test("transcript display does not add a working placeholder outside a terminal U
     }
 });
 
+test("hidden retains five finished compact rows on either slot without counting active calls", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    for (const expanded of [false, true]) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        harness.expanded = expanded;
+        harness.rows.modes.setViews(
+            expanded ? ToolDisplayMode.FULL : ToolDisplayMode.HIDDEN,
+            expanded ? ToolDisplayMode.HIDDEN : ToolDisplayMode.FULL,
+        );
+        const calls = Array.from({length: 9}, (_, index) => {
+            const row = harness.read(`call-${index}`);
+            row.setExpanded(expanded);
+            harness.root.addChild(row);
+            return row;
+        });
+        harness.startWork();
+        harness.root.render(80);
+        for (let index = 0; index < 7; index++) {
+            calls[index]!.updateResult({content: [{type: "text", text: `finished output ${index}`}], isError: index % 2 === 0});
+        }
+        calls[7]!.updateResult({content: [{type: "text", text: "active partial output"}], isError: false}, true);
+        const view = () => plain(harness.root.render(80));
+        assert.deepEqual(view().match(/read \| call-\d/g), [2, 3, 4, 5, 6, 7, 8].map((index) => `read | call-${index}`));
+        assert.match(view(), /active partial output/);
+        assert.doesNotMatch(view(), /finished output|Working…/);
+        assert.deepEqual(calls[0]!.render(80), [], "evicted calls leave no spacer rows");
+        for (const index of [7, 8]) calls[index]!.updateResult({content: [], isError: true});
+        assert.deepEqual(view().match(/read \| call-\d/g), [4, 5, 6, 7, 8].map((index) => `read | call-${index}`));
+        assert.match(view(), /Working…/, "retained finished calls do not suppress live progress");
+        harness.endWork();
+        harness.startWork();
+        assert.deepEqual(view().match(/read \| call-\d/g), [4, 5, 6, 7, 8].map((index) => `read | call-${index}`));
+        assert.match(view(), /Working…/, "the rolling window survives agent turns");
+    }
+});
+
+test("hidden ranks live completions before rendering and keeps ranks through redraws, toggles, and rebuilds", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.FULL, ToolDisplayMode.TRUNCATED);
+    harness.startWork();
+    const calls = Array.from({length: 8}, (_, index) => {
+        const row = harness.read(`ordered-${index}`);
+        harness.root.addChild(row);
+        return row;
+    });
+    for (let index = 7; index >= 0; index--) harness.endTool(`ordered-${index}`);
+    // Pi can publish parallel results in invocation order, not completion order.
+    for (const row of calls) row.updateResult({content: [{type: "text", text: "preserved full output"}], isError: false});
+    harness.endWork();
+    const view = () => plain(harness.root.render(80));
+    const retained = () => view().match(/read \| ordered-\d/g);
+    const expected = [0, 1, 2, 3, 4].map((index) => `read | ordered-${index}`);
+    harness.rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
+    assert.deepEqual(retained(), expected, "completion tracking is independent of the selected view");
+    harness.startTool("nested", "ordered-0");
+    harness.endTool("nested", "ordered-0");
+    calls[7]!.updateResult({content: [], isError: true});
+    harness.root.invalidate();
+    assert.deepEqual(retained(), expected, "repeated final updates and nested completions do not promote old rows");
+    harness.rows.toggle("ordered-0");
+    assert.doesNotMatch(view(), /preserved full output/, "row-local full overrides cannot bypass hidden compactness");
+    calls[7]!.setExpanded(true);
+    assert.match(view(), /read \| ordered-7/);
+    calls[7]!.setExpanded(false);
+    assert.deepEqual(retained(), expected, "a native row toggle does not change the window");
+    harness.rows.modes.setViews(ToolDisplayMode.FULL, ToolDisplayMode.TRUNCATED);
+    assert.equal(retained()?.length, 8);
+    harness.rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
+    assert.deepEqual(retained(), expected);
+    harness.root.clear();
+    harness.rows.clear();
+    for (let index = 0; index < 8; index++) {
+        const row = harness.read(`ordered-${index}`);
+        row.updateResult({content: [], isError: false});
+        harness.root.addChild(row);
+    }
+    assert.deepEqual(retained(), expected, "same-session rebuilt rows retain their known completion order");
+});
+
+test("hidden bootstraps restored history, ignores detached rows, and resets completion ranks between sessions", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const nativeRoot = new TestTui();
+    const harness = createHarness(nativeRoot);
+    t.after(() => harness.close());
+    const calls = Array.from({length: 8}, (_, index) => {
+        const row = harness.read(`history-${index}`);
+        row.updateResult({content: [{type: "text", text: "historical output"}], isError: false});
+        harness.root.addChild(row);
+        return row;
+    });
+    const retained = () => plain(harness.root.render(80)).match(/read \| history-\d/g);
+    assert.deepEqual(retained(), [3, 4, 5, 6, 7].map((index) => `read | history-${index}`));
+    calls[0]!.updateResult({content: [], isError: true});
+    assert.deepEqual(retained(), [3, 4, 5, 6, 7].map((index) => `read | history-${index}`),
+        "repeated historical results do not become new live completions");
+    harness.root.removeChild(calls[7]!);
+    assert.deepEqual(retained(), [2, 3, 4, 5, 6].map((index) => `read | history-${index}`));
+    harness.runtime.stopSession();
+    harness.root.clear();
+    harness.rows.clear();
+    harness.runtime.startSession(harness.context);
+    harness.runtime.attach(nativeRoot);
+    harness.startWork();
+    for (let index = 7; index >= 0; index--) harness.endTool(`history-${index}`);
+    for (let index = 0; index < 8; index++) {
+        const row = harness.read(`history-${index}`);
+        row.updateResult({content: [], isError: false});
+        harness.root.addChild(row);
+    }
+    assert.deepEqual(retained(), [0, 1, 2, 3, 4].map((index) => `read | history-${index}`));
+});
+
+test("late-discovered history cannot evict a more recent live completion", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const harness = createHarness();
+    t.after(() => harness.close());
+    for (let index = 0; index < 6; index++) {
+        const row = harness.read(`old-${index}`);
+        row.updateResult({content: [], isError: false});
+        harness.root.addChild(row);
+    }
+    harness.startWork();
+    const newest = harness.read("live-newest");
+    harness.root.addChild(newest);
+    harness.endTool("live-newest");
+    newest.updateResult({content: [], isError: false});
+    const view = plain(harness.root.render(80));
+    assert.match(view, /read \| live-newest/);
+    assert.deepEqual(view.match(/read \| old-\d/g), [2, 3, 4, 5].map((index) => `read | old-${index}`));
+});
+
+test("streamed calls finalized by abort or error before their first frame still count as recent live finishes", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    for (const stopReason of ["aborted", "error"] as const) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        harness.startWork();
+        for (let index = 0; index < 5; index++) {
+            const row = harness.read(`prior-${index}`);
+            harness.endTool(`prior-${index}`);
+            row.updateResult({content: [], isError: false});
+            harness.root.addChild(row);
+        }
+        harness.root.render(80);
+        const row = harness.read("synthetic-finish");
+        const block: AssistantMessage["content"][number] = {
+            type: "toolCall", id: "synthetic-finish", name: "read", arguments: {path: "synthetic-finish"},
+        };
+        harness.updateMessage(assistant([block], "pending"));
+        harness.root.addChild(row);
+        harness.endMessage(assistant([block], stopReason));
+        row.updateResult({content: [{type: "text", text: "synthetic error details"}], isError: true});
+        harness.endWork();
+        const view = plain(harness.root.render(80));
+        assert.match(view, /read \| synthetic-finish/);
+        assert.doesNotMatch(view, /prior-0|synthetic error details/);
+        assert.deepEqual(view.match(/read \| prior-\d/g), [1, 2, 3, 4].map((index) => `read | prior-${index}`));
+    }
+});
+
+test("hidden never exposes finished output from foreign, incomplete, or unavailable renderers", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const call: ToolRenderers["renderCall"] = () => new Text("external argument body", 0, 0);
+    const result: ToolRenderers["renderResult"] = () => new Text("external result body", 0, 0);
+    const fixtures: Array<ToolRenderers | undefined> = [
+        undefined,
+        {renderResult: result},
+        {renderCall: call},
+        {renderShell: "self", renderCall: call, renderResult: result},
+        {renderShell: "self", renderCall: call, renderResult() { throw new Error("render failure"); }},
+    ];
+    for (const renderers of fixtures) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        const row = harness.tool("external", "foreign", renderers);
+        harness.root.addChild(row);
+        harness.root.render(80);
+        if (renderers?.renderCall) assert.match(plain(row.render(80)), /external argument body/);
+        row.updateResult({content: [{type: "text", text: "finished private output"}], isError: false});
+        const view = plain(harness.root.render(80));
+        assert.doesNotMatch(view, /external argument body|external result body|finished private output/);
+        if (renderers?.renderCall && renderers.renderResult) {
+            assert.equal(view.trim(), "external", "foreign tools with complete renderers retain a generic compact header");
+        } else {
+            assert.deepEqual(row.render(80), [], "incomplete or unidentified finished rows remain suppressed");
+        }
+    }
+});
+
 test("hidden suppresses completed native images and partial image output without changing conversation images or tool results", (t) => {
     t.mock.timers.enable({apis: ["setInterval"]});
     const capabilities = getCapabilities();
@@ -283,7 +476,8 @@ test("hidden suppresses completed native images and partial image output without
     const completed = harness.read("completed-image");
     completed.updateResult(result);
     harness.root.addChild(completed);
-    assert.deepEqual(harness.root.render(80), [], "historical image rows are classified through the public render context");
+    assert.equal(plain(harness.root.render(80)).trim(), "read | completed-image",
+        "historical image rows retain only their compact header");
     harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.FULL);
     assert.ok(completed.render(80).some((line) => line.includes("\x1b_G")), "leaving hidden restores the native image");
     harness.rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
@@ -294,7 +488,8 @@ test("hidden suppresses completed native images and partial image output without
     assert.equal(harness.root.render(80).some((line) => line.includes("\x1b_G")), false);
     assert.equal(active.render(80).length, 2, "partial image spacers leave only the normal leading gap and active header");
     active.updateResult(result);
-    assert.deepEqual(harness.root.render(80), []);
+    assert.equal(harness.root.render(80).some((line) => line.includes("\x1b_G")), false);
+    assert.match(plain(harness.root.render(80)), /read \| active-image/);
     const conversationImage = new Image(png, "image/png", {fallbackColor: (text) => text});
     harness.root.addChild(conversationImage);
     assert.ok(harness.root.render(80).some((line) => line.includes("\x1b_G")), "images outside tool rows stay visible");
@@ -339,7 +534,12 @@ test("Conversation tool text and images follow native per-row mouse toggles on e
                     assert.match(plain(completed), /row-local output/);
                     assert.ok(completed.some((line) => line.includes("\x1b_G")));
                 } else {
-                    assert.deepEqual(completed, []);
+                    assert.equal(plain(completed).trim(), "read | mouse-toggle");
+                    assert.equal(completed.some((line) => line.includes("\x1b_G")), false);
+                    clickToolHeader(row);
+                    assert.match(plain(harness.root.render(80)), /row-local output/,
+                        "retained compact headers preserve native mouse expansion");
+                    assert.ok(harness.root.render(80).some((line) => line.includes("\x1b_G")));
                 }
             } finally {
                 harness.close();
@@ -359,7 +559,7 @@ test("view hot-swaps retain existing row-local slots and restore native expansio
     assert.match(plain(harness.root.render(80)), /locally expanded output/,
         "initial classification must probe the row, not assume the global slot");
     harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.HIDDEN);
-    assert.deepEqual(harness.root.render(80), []);
+    assert.equal(plain(harness.root.render(80)).trim(), "read | already-expanded");
     assert.equal(harness.expanded, false);
     harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.FULL);
     assert.match(plain(harness.root.render(80)), /locally expanded output/);
@@ -395,8 +595,22 @@ test("fullscreen discovers new rows before drawing layout frames that bypass the
     active.updateResult({content: [{type: "text", text: "completed private output"}], isError: true});
     root.requestRender();
     root.renderNow();
-    assert.doesNotMatch(plain(root.getScreenLines()), /fullscreen-active|completed private output/);
+    assert.match(plain(root.getScreenLines()), /read \| fullscreen-active/);
+    assert.doesNotMatch(plain(root.getScreenLines()), /completed private output/);
     assert.match(plain(root.getScreenLines()), /Working…/);
+    for (let index = 0; index < 6; index++) {
+        const row = harness.read(`fullscreen-finished-${index}`);
+        harness.endTool(`fullscreen-finished-${index}`);
+        row.updateResult({content: [], isError: false});
+        harness.root.addChild(row);
+    }
+    root.requestRender();
+    root.renderNow();
+    const finished = plain(root.getScreenLines());
+    assert.doesNotMatch(finished, /fullscreen-active|fullscreen-finished-0/);
+    assert.deepEqual(finished.match(/read \| fullscreen-finished-\d/g),
+        [1, 2, 3, 4, 5].map((index) => `read | fullscreen-finished-${index}`));
+    assert.match(finished, /Working…/);
     harness.expanded = true;
     active.setExpanded(true);
     root.requestRender();
@@ -546,11 +760,14 @@ function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"]
         theme, getToolsExpanded: () => expanded, notify() {},
         setWidget() { assert.fail("the working placeholder must not install an editor widget"); },
     }} as unknown as ExtensionContext;
-    const runtime = new TranscriptDisplayRuntime(pi, rows.modes);
+    const runtime = new TranscriptDisplayRuntime(pi, rows);
     runtime.register();
     runtime.startSession(context);
     runtime.attach(root);
     const read = new ReadTool(pi, () => assert.fail("rendering must not execute tools"), rows).toolDefinition();
+    const tool = (name: string, id: string, renderers: ToolRenderers | undefined) => (
+        new ToolExecutionComponent(name, id, {path: id}, {outputPad: 0}, resolver(name, () => renderers), root, process.cwd())
+    );
     return {
         root: transcript,
         dock,
@@ -567,12 +784,8 @@ function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"]
         },
         get expanded() { return expanded; },
         set expanded(value: boolean) { expanded = value; },
-        read(id: string) {
-            const renderers = resolver("read", () => read);
-            assert.ok(renderers);
-            return new ToolExecutionComponent("read", id, {path: id}, {outputPad: 0}, renderers,
-                root, process.cwd());
-        },
+        tool,
+        read(id: string) { return tool("read", id, read); },
         close() { runtime.stopSession(); rows.clear(); },
     };
 }

@@ -228,13 +228,9 @@ test("tool headers animate Pi's spinner and keep its blank slot after success or
                 ...options, isPartial: false, isError,
             });
             const lines = completed.render(120);
-            if (mode === ToolDisplayMode.HIDDEN) {
-                assert.deepEqual(lines, []);
-            } else {
-                const header = lines[0]!;
-                assert.equal(header, "  bash | Check lifecycle");
-                assert.equal(header.indexOf("bash"), runningTitleColumn, "completion must not shift the title");
-            }
+            const header = lines[0]!;
+            assert.equal(header, "  bash | Check lifecycle");
+            assert.equal(header.indexOf("bash"), runningTitleColumn, "completion must not shift the title");
         }
         assert.deepEqual(call.render(120), ["  bash | Check lifecycle"]);
         assert.equal(state.pilotCallSpinner, null);
@@ -447,7 +443,7 @@ test("minimal presentation shows title arguments and hides successful or failed 
     );
 });
 
-test("display modes skip hidden rows and only expanded modes format body arguments", () => {
+test("hidden finished calls are compact and only expanded modes format body arguments", () => {
     type Args = {block: string; path: string; range: string; note: string};
     const formatted: string[] = [];
     const format = (key: string, value: unknown): string => {
@@ -468,15 +464,11 @@ test("display modes skip hidden rows and only expanded modes format body argumen
     for (const mode of Object.values(ToolDisplayMode)) {
         formatted.length = 0;
         const lines = renderer.renderCall(args, plainTheme, mode, {isError: true}).render(120);
-        if (mode === ToolDisplayMode.HIDDEN) {
-            assert.deepEqual(lines, []);
-            assert.deepEqual(formatted, []);
-            continue;
-        }
-        assert.deepEqual(lines, mode === ToolDisplayMode.MINIMAL
+        const compact = mode === ToolDisplayMode.MINIMAL || mode === ToolDisplayMode.HIDDEN;
+        assert.deepEqual(lines, compact
             ? ["  mixed | file.txt:2"]
             : ["  mixed | file.txt:2", "note: first", "block:", "line 1", "line 2"]);
-        assert.deepEqual(formatted, mode === ToolDisplayMode.MINIMAL
+        assert.deepEqual(formatted, compact
             ? ["path", "range"]
             : ["path", "range", "note", "block"]);
     }

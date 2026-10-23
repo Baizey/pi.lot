@@ -6,9 +6,11 @@ import {
     BranchSummaryMessageComponent,
     CompactionSummaryMessageComponent,
     initTheme,
+    SessionManager,
     ToolExecutionComponent,
     type ExtensionAPI,
     type ExtensionContext,
+    type MessageUpdateEvent,
     type Theme,
     type ToolRendererResolver,
     type ToolRenderers,
@@ -25,7 +27,463 @@ type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jp9sAAAAASUVORK5CYII=";
 initTheme("dark");
 
-test("hidden removes completed thoughts without blank rows, preserves conversation and native thinking preferences", (t) => {
+test("Conversation previews active thinking and retains its compact completion on either slot", (t) => {
+    for (const expanded of [false, true]) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        harness.expanded = expanded;
+        harness.rows.modes.setViews(expanded ? ToolDisplayMode.FULL : ToolDisplayMode.HIDDEN,
+            expanded ? ToolDisplayMode.HIDDEN : ToolDisplayMode.FULL);
+        const content = Array.from({length: 30}, (_, index) => `live thought ${index + 1}`).join("  \n");
+        const source = assistant([{type: "thinking", thinking: content, thinkingSignature: "signed"}], "pending");
+        const original = structuredClone(source);
+        const component = new AssistantMessageComponent(source);
+        harness.root.addChild(component);
+        const view = () => plain(harness.root.render(80));
+        assert.match(view(), /18 earlier lines/);
+        assert.match(view(), /live thought 30/);
+        assert.doesNotMatch(view(), /live thought 1(?:\s|$)/);
+        const completed = {...source, stopReason: "stop" as const};
+        component.updateContent(completed, false);
+        assert.match(view(), /Thinking/);
+        assert.doesNotMatch(view(), /live thought|earlier lines/);
+        harness.expanded = !expanded;
+        assert.match(view(), /live thought 1(?:\s|$)/, "Full still restores the complete native thinking content");
+        harness.expanded = expanded;
+        assert.match(view(), /Thinking/);
+        assert.deepEqual(source, original);
+    }
+});
+
+test("thinking and top-level tools share one five-item completion window", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const thoughts: AssistantMessageComponent[] = [];
+    const calls: ToolExecutionComponent[] = [];
+    for (let index = 0; index < 4; index++) {
+        const source = {...assistant([{type: "thinking", thinking: `private thought ${index}`}], "pending"), timestamp: index};
+        const thought = new AssistantMessageComponent(source);
+        const call = harness.read(`shared-${index}`);
+        harness.root.addChild(thought);
+        harness.root.addChild(call);
+        harness.root.render(80);
+        thought.updateContent({...source, stopReason: "toolUse"}, false);
+        call.updateResult({content: [{type: "text", text: "hidden result"}], isError: false});
+        thoughts.push(thought);
+        calls.push(call);
+    }
+    const view = plain(harness.root.render(80));
+    assert.equal((view.match(/Thinking/g) ?? []).length, 2);
+    assert.deepEqual(view.match(/read \| shared-\d/g), [1, 2, 3].map((index) => `read | shared-${index}`));
+    assert.deepEqual(thoughts[0]!.render(80), []);
+    assert.deepEqual(thoughts[1]!.render(80), []);
+    assert.deepEqual(calls[0]!.render(80), []);
+    assert.doesNotMatch(view, /private thought|hidden result/);
+    harness.root.invalidate();
+    assert.equal((plain(harness.root.render(80)).match(/Thinking/g) ?? []).length, 2, "redraws cannot promote older thoughts");
+});
+
+test("empty provider thinking shows an active label and completes before subsequent text and tools", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const source = assistant([{type: "thinking", thinking: "", thinkingSignature: "opaque"}], "pending");
+    const original = structuredClone(source);
+    harness.updateMessage(source, {type: "thinking_start", contentIndex: 0, partial: source});
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    assert.match(plain(harness.root.render(80)), /Thinking\.\.\./);
+    harness.updateMessage(source, {type: "thinking_end", contentIndex: 0, content: "", partial: source});
+    assert.match(plain(harness.root.render(80)), /Thinking/);
+    assert.doesNotMatch(plain(harness.root.render(80)), /Thinking\.\.\./, "thinking_end finalizes without waiting for message_end");
+    for (let index = 0; index < 5; index++) {
+        const call = harness.read(`after-thinking-${index}`);
+        harness.root.addChild(call);
+        harness.endTool(`after-thinking-${index}`);
+        call.updateResult({content: [], isError: false});
+    }
+    const response = {...source, content: [...source.content, {type: "text" as const, text: "The answer."}], stopReason: "stop" as const};
+    harness.endMessage(response);
+    component.updateContent(response, false);
+    const view = plain(harness.root.render(80));
+    assert.match(view, /The answer/);
+    assert.doesNotMatch(view, /Thinking/, "message_end cannot promote a previously finished thinking run");
+    assert.deepEqual(source, original);
+});
+
+test("active thinking does not consume the shared completed window", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const calls = Array.from({length: 5}, (_, index) => {
+        const call = harness.read(`before-thinking-${index}`);
+        harness.root.addChild(call);
+        harness.endTool(`before-thinking-${index}`);
+        call.updateResult({content: [], isError: false});
+        return call;
+    });
+    const source = assistant([{type: "thinking", thinking: "active reasoning"}], "pending");
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    const view = () => plain(harness.root.render(80));
+    assert.equal(view().match(/read \| before-thinking-/g)?.length, 5);
+    assert.match(view(), /active reasoning/);
+    component.updateContent({...source, stopReason: "stop"}, false);
+    assert.equal(view().match(/read \| before-thinking-/g)?.length, 4);
+    assert.match(view(), /Thinking/);
+    assert.doesNotMatch(view(), /active reasoning/);
+    assert.deepEqual(calls[0]!.render(80), []);
+});
+
+test("thinking completion order is observed before the first frame and is not promoted by message_end", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const source = assistant([{type: "thinking", thinking: "never expose completed reasoning"}], "pending");
+    harness.startMessage(source);
+    harness.updateMessage(source, {type: "thinking_end", contentIndex: 0, content: "", partial: source});
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    for (let index = 0; index < 5; index++) {
+        const call = harness.read(`newer-${index}`);
+        harness.root.addChild(call);
+        harness.endTool(`newer-${index}`);
+        call.updateResult({content: [], isError: false});
+    }
+    const final = {...source, stopReason: "stop" as const};
+    harness.endMessage(final);
+    component.updateContent(final, false);
+    assert.doesNotMatch(plain(harness.root.render(80)), /Thinking|completed reasoning/);
+    assert.deepEqual(component.render(80), []);
+    harness.root.invalidate();
+    assert.deepEqual(component.render(80), []);
+});
+
+test("adjacent provider thinking blocks resume one run while text-separated runs finish independently", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const first = assistant([{type: "thinking", thinking: "", thinkingSignature: "first"}], "pending");
+    harness.startMessage(first);
+    harness.updateMessage(first, {type: "thinking_start", contentIndex: 0, partial: first});
+    const component = new AssistantMessageComponent(first);
+    harness.root.addChild(component);
+    const view = () => plain(harness.root.render(80));
+    assert.match(view(), /Thinking\.\.\./);
+    harness.updateMessage(first, {type: "thinking_end", contentIndex: 0, content: "", partial: first});
+    assert.equal(view().match(/Thinking/g)?.length, 1);
+    const adjacent = {...first, content: [...first.content,
+        {type: "thinking" as const, thinking: "continued thinking"}]};
+    harness.updateMessage(adjacent, {type: "thinking_start", contentIndex: 1, partial: adjacent});
+    component.updateContent(adjacent, true);
+    assert.match(view(), /continued thinking/);
+    assert.doesNotMatch(view(), /Thinking/, "resuming a native run removes its former compact completion");
+    harness.updateMessage(adjacent, {type: "thinking_end", contentIndex: 1, content: "", partial: adjacent});
+    assert.equal(view().match(/Thinking/g)?.length, 1, "two adjacent provider blocks still occupy one window entry");
+    const separated = {...adjacent, content: [...adjacent.content, {type: "text" as const, text: "Public explanation."},
+        {type: "thinking" as const, thinking: "later thinking"}]};
+    harness.updateMessage(separated, {type: "thinking_start", contentIndex: 3, partial: separated});
+    component.updateContent(separated, true);
+    assert.equal(view().match(/Thinking/g)?.length, 1);
+    assert.match(view(), /later thinking/);
+    assert.match(view(), /Public explanation/);
+    harness.updateMessage(separated, {type: "thinking_end", contentIndex: 3, content: "", partial: separated});
+    assert.equal(view().match(/Thinking/g)?.length, 2);
+    assert.doesNotMatch(view(), /continued thinking|later thinking/);
+});
+
+test("thinking identities survive entry persistence and cloned rebuilds even with identical messages and timestamps", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const sources = Array.from({length: 7}, () => assistant([{type: "thinking", thinking: "identical historical reasoning"}]));
+    for (const source of sources) harness.sessionManager.appendMessage(source);
+    let components = sources.map((source) => new AssistantMessageComponent(source));
+    for (const component of components) harness.root.addChild(component);
+    const assertWindow = () => {
+        const view = plain(harness.root.render(80));
+        assert.equal(view.match(/Thinking/g)?.length, 5);
+        for (const component of components.slice(0, -5)) assert.deepEqual(component.render(80), []);
+        for (const component of components.slice(-5)) assert.equal(plain(component.render(80)).trim(), "Thinking");
+        assert.doesNotMatch(view, /historical reasoning/);
+    };
+    assertWindow();
+    const live = assistant([{type: "thinking", thinking: "identical historical reasoning"}], "pending");
+    harness.startMessage(live);
+    harness.updateMessage(live, {type: "thinking_start", contentIndex: 0, partial: live});
+    const component = new AssistantMessageComponent(live);
+    components.push(component);
+    harness.root.addChild(component);
+    harness.root.render(80);
+    const final = {...live, stopReason: "stop" as const};
+    harness.endMessage(final);
+    component.updateContent(final, false);
+    const entryId = harness.sessionManager.appendMessage(final);
+    harness.endTurn(final, entryId);
+    sources.push(final);
+    assertWindow();
+    for (const views of [[ToolDisplayMode.FULL, ToolDisplayMode.TRUNCATED], [ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL]] as const) {
+        harness.rows.modes.setViews(views[0], views[1]);
+        harness.root.render(80);
+    }
+    harness.root.clear();
+    components = sources.map((source) => new AssistantMessageComponent(structuredClone(source)));
+    for (const rebuilt of components) harness.root.addChild(rebuilt);
+    assertWindow();
+    harness.root.invalidate();
+    assertWindow();
+});
+
+test("signature-only runs do not shift native thinking collapse preferences and completed headers ignore clicks", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const source = assistant([
+        {type: "thinking", thinking: "", thinkingSignature: "opaque"},
+        {type: "text", text: "Between thoughts."},
+        {type: "thinking", thinking: Array.from({length: 30}, (_, index) => `visible thought ${index + 1}`).join("  \n")},
+    ], "pending");
+    const component = new AssistantMessageComponent(source, true, undefined, "Custom label");
+    harness.root.addChild(component);
+    const view = () => plain(harness.root.render(80));
+    assert.match(view(), /Thinking\s+Between thoughts\.\s+Custom label/);
+    const click = (y: number) => component.handleMouse({
+        type: "click", button: "left", x: 2, y, screenX: 2, screenY: y,
+        width: 80, height: harness.root.render(80).length, shift: false, alt: false, ctrl: false,
+    });
+    assert.equal(click(4)?.handled, true);
+    assert.match(view(), /18 earlier lines/);
+    harness.expanded = true;
+    assert.match(view(), /visible thought 1(?:\s|$)/, "native visible-run indices do not include the signature-only run");
+    component.setHideThinkingBlock(true);
+    harness.expanded = false;
+    assert.match(view(), /Custom label/);
+    component.updateContent({...source, stopReason: "stop"}, false);
+    view();
+    assert.equal(click(1)?.handled, undefined, "a compact completion cannot toggle invisible native content");
+    harness.expanded = true;
+    assert.match(view(), /Custom label/);
+    assert.doesNotMatch(view(), /visible thought/);
+});
+
+test("thinking eviction preserves native abort, error, and length-stop rows without orphan gaps", (t) => {
+    for (const stopReason of ["aborted", "error", "length"] as const) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        const source = assistant([{type: "thinking", thinking: "private unfinished reasoning"}], "pending");
+        harness.startMessage(source);
+        const final = {...source, stopReason};
+        harness.endMessage(final);
+        const component = new AssistantMessageComponent(final);
+        harness.root.addChild(component);
+        const view = () => plain(harness.root.render(80));
+        assert.match(view(), /Thinking/);
+        const error = stopReason === "aborted" ? /Operation aborted/ : stopReason === "error" ? /Unknown error/ : /Response was truncated/;
+        assert.match(view(), error);
+        assert.doesNotMatch(view(), /private unfinished reasoning/);
+        for (let index = 0; index < 5; index++) {
+            const call = harness.read(`${stopReason}-${index}`);
+            harness.root.addChild(call);
+            harness.endTool(`${stopReason}-${index}`);
+            call.updateResult({content: [], isError: false});
+        }
+        assert.match(view(), error);
+        assert.doesNotMatch(view(), /Thinking|private unfinished reasoning/);
+        assert.equal(component.render(80).length, 2, "only the native leading gap and error row remain");
+    }
+});
+
+test("fullscreen Conversation previews thinking and evicts its compact completion from the shared window", (t) => {
+    t.mock.timers.enable({apis: ["setInterval", "setTimeout"]});
+    const root = new TuiAltScreen(new TestTui().terminal, false, undefined, {mouse: false});
+    const harness = createHarness(root);
+    const source = assistant([{type: "thinking", thinking: Array.from({length: 30}, (_, index) => `screen thought ${index + 1}`).join("  \n")}], "pending");
+    harness.startMessage(source);
+    harness.updateMessage(source, {type: "thinking_start", contentIndex: 0, partial: source});
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    root.start();
+    t.after(() => { root.stop({preserveScreen: true}); harness.close(); });
+    root.renderNow();
+    assert.match(plain(root.getScreenLines()), /18 earlier lines/);
+    assert.match(plain(root.getScreenLines()), /screen thought 30/);
+    const final = {...source, content: [...source.content, {type: "text" as const, text: "Public final answer."}], stopReason: "stop" as const};
+    harness.endMessage(final);
+    component.updateContent(final, false);
+    root.requestRender();
+    root.renderNow();
+    assert.match(plain(root.getScreenLines()), /Thinking/);
+    assert.doesNotMatch(plain(root.getScreenLines()), /screen thought/);
+    for (let index = 0; index < 5; index++) {
+        const call = harness.read(`screen-newer-${index}`);
+        harness.root.addChild(call);
+        harness.endTool(`screen-newer-${index}`);
+        call.updateResult({content: [], isError: false});
+    }
+    root.requestRender();
+    root.renderNow();
+    assert.doesNotMatch(plain(root.getScreenLines()), /Thinking/);
+    assert.match(plain(root.getScreenLines()), /Public final answer/);
+});
+
+test("the first native slot switch from Conversation to Preview already bounds thinking", (t) => {
+    for (const expanded of [false, true]) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        harness.expanded = expanded;
+        harness.rows.modes.setViews(expanded ? ToolDisplayMode.TRUNCATED : ToolDisplayMode.HIDDEN,
+            expanded ? ToolDisplayMode.HIDDEN : ToolDisplayMode.TRUNCATED);
+        const source = assistant([{type: "thinking", thinking: Array.from({length: 30}, (_, index) => `slot thought ${index + 1}`).join("  \n")}], "pending");
+        const component = new AssistantMessageComponent(source);
+        harness.root.addChild(component);
+        harness.root.render(80);
+        harness.root.render(80);
+        harness.expanded = !expanded;
+        const first = plain(harness.root.render(80));
+        assert.match(first, /18 earlier lines/);
+        assert.match(first, /slot thought 30/);
+        assert.doesNotMatch(first, /slot thought 1(?:\s|$)/);
+        assert.equal(harness.root.render(80).length, 14);
+    }
+});
+
+test("stale native invalidation cannot replace event-owned thinking completions", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const source = assistant([{type: "thinking", thinking: "first private thought"},
+        {type: "text", text: "Visible response."}], "pending");
+    harness.startMessage(source);
+    harness.updateMessage(source, {type: "thinking_end", contentIndex: 0, content: "", partial: source});
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    harness.root.render(80);
+    for (let index = 0; index < 5; index++) {
+        const call = harness.read(`before-final-thinking-${index}`);
+        harness.root.addChild(call);
+        harness.endTool(`before-final-thinking-${index}`);
+        call.updateResult({content: [], isError: false});
+    }
+    const final = {...source, content: [...source.content, {type: "thinking" as const, thinking: "last private thought"}], stopReason: "stop" as const};
+    harness.endMessage(final);
+    component.invalidate(); // Native UI has not received final yet.
+    component.updateContent(final, false);
+    const view = () => plain(harness.root.render(80));
+    assert.equal(view().match(/Thinking/g)?.length, 1);
+    assert.deepEqual(view().match(/read \| before-final-thinking-\d/g),
+        [1, 2, 3, 4].map((index) => `read | before-final-thinking-${index}`));
+    assert.doesNotMatch(view(), /first private thought|last private thought/);
+    harness.root.invalidate();
+    assert.equal(view().match(/Thinking/g)?.length, 1);
+});
+
+test("delayed events from older output slots cannot complete a later active thinking run", (t) => {
+    for (const kind of ["text", "tool", "thinking"] as const) {
+        const harness = createHarness();
+        t.after(() => harness.close());
+        const tool = {type: "toolCall" as const, id: "earlier-slot", name: "read", arguments: {path: "earlier"}};
+        const prefix: AssistantMessage["content"] = kind === "thinking"
+            ? [{type: "thinking", thinking: "earlier private thought"}, {type: "text", text: "Earlier public text."}]
+            : kind === "tool" ? [tool] : [{type: "text", text: "Earlier public text."}];
+        const index = prefix.length;
+        const source = assistant([...prefix, {type: "thinking", thinking: Array.from({length: 30}, (_, line) => `current thought ${line + 1}`).join("  \n")}], "pending");
+        harness.startMessage(source);
+        if (kind === "thinking") {
+            harness.updateMessage(source, {type: "thinking_start", contentIndex: 0, partial: source});
+            harness.updateMessage(source, {type: "text_start", contentIndex: 1, partial: source});
+        } else if (kind === "tool") harness.updateMessage(source, {type: "toolcall_start", contentIndex: 0, partial: source});
+        else harness.updateMessage(source, {type: "text_start", contentIndex: 0, partial: source});
+        harness.updateMessage(source, {type: "thinking_start", contentIndex: index, partial: source});
+        const component = new AssistantMessageComponent(source);
+        harness.root.addChild(component);
+        const view = () => plain(harness.root.render(80));
+        assert.match(view(), /18 earlier lines/);
+        if (kind === "thinking") harness.updateMessage(source, {type: "thinking_end", contentIndex: 0, content: "", partial: source});
+        else if (kind === "tool") harness.updateMessage(source, {type: "toolcall_end", contentIndex: 0, toolCall: tool, partial: source});
+        else harness.updateMessage(source, {type: "text_end", contentIndex: 0, content: "Earlier public text.", partial: source});
+        assert.match(view(), /18 earlier lines/);
+        assert.match(view(), /current thought 30/);
+        harness.updateMessage(source, {type: "thinking_delta", contentIndex: index, delta: "", partial: source});
+        assert.match(view(), /current thought 30/);
+        harness.updateMessage(source, {type: "thinking_end", contentIndex: index, content: "", partial: source});
+        assert.doesNotMatch(view(), /current thought|earlier lines/);
+    }
+});
+
+test("thinking events cannot suppress progress before native content reaches the transcript", (t) => {
+    t.mock.timers.enable({apis: ["setInterval"]});
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.startWork();
+    const initial = assistant([], "pending");
+    harness.startMessage(initial);
+    const component = new AssistantMessageComponent(initial);
+    harness.root.addChild(component);
+    const view = () => plain(harness.root.render(80));
+    assert.match(view(), /Working…/);
+    const source = {...initial, content: [{type: "thinking" as const, thinking: "", thinkingSignature: "opaque"}]};
+    harness.updateMessage(source, {type: "thinking_start", contentIndex: 0, partial: source});
+    assert.match(view(), /Working…/, "later extension handlers can delay native delivery");
+    component.updateContent(source, true);
+    assert.match(view(), /Thinking\.\.\./);
+    assert.doesNotMatch(view(), /Working…/);
+});
+
+test("newly revealed older history cannot displace newer historical thinking or tools", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    const thoughts: AssistantMessageComponent[] = [];
+    for (let index = 0; index < 3; index++) {
+        const thought = new AssistantMessageComponent({...assistant([{type: "thinking", thinking: `historical ${index}`}]), timestamp: index});
+        const call = harness.read(`historical-shared-${index}`);
+        call.updateResult({content: [], isError: false});
+        harness.root.addChild(thought);
+        harness.root.addChild(call);
+        thoughts.push(thought);
+    }
+    const view = () => plain(harness.root.render(80));
+    assert.equal(view().match(/Thinking/g)?.length, 2);
+    const oldest = new AssistantMessageComponent({...assistant([{type: "thinking", thinking: "newly revealed oldest"}]), timestamp: -1});
+    harness.root.children.unshift(oldest);
+    const oldTool = harness.read("oldest-tool");
+    oldTool.updateResult({content: [], isError: false});
+    harness.root.children.unshift(oldTool);
+    assert.equal(view().match(/Thinking/g)?.length, 2);
+    assert.deepEqual(oldest.render(80), []);
+    assert.deepEqual(oldTool.render(80), []);
+    assert.deepEqual(thoughts[0]!.render(80), []);
+    assert.deepEqual(view().match(/read \| historical-shared-\d/g), [0, 1, 2].map((index) => `read | historical-shared-${index}`));
+});
+
+test("thinking lifecycle follows event cursors even when a shared partial already contains later blocks", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    for (let index = 0; index < 4; index++) {
+        const call = harness.read(`queued-prior-${index}`);
+        harness.root.addChild(call);
+        harness.endTool(`queued-prior-${index}`);
+        call.updateResult({content: [], isError: false});
+    }
+    const source = assistant([
+        {type: "thinking", thinking: Array.from({length: 30}, (_, index) => `queued thought ${index + 1}`).join("  \n")},
+        {type: "text", text: "Later explanation."},
+        {type: "thinking", thinking: "", thinkingSignature: "future"},
+    ], "pending");
+    harness.startMessage(source);
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    const view = () => plain(harness.root.render(80));
+    assert.doesNotMatch(view(), /Thinking|queued thought/);
+    harness.updateMessage(source, {type: "thinking_start", contentIndex: 0, partial: source});
+    assert.match(view(), /18 earlier lines/);
+    assert.match(view(), /queued thought 30/);
+    assert.doesNotMatch(view(), /Thinking\.\.\./, "the later thinking group has not started yet");
+    harness.updateMessage(source, {type: "thinking_end", contentIndex: 0, content: "", partial: source});
+    assert.equal(view().match(/Thinking/g)?.length, 1);
+    assert.equal(view().match(/read \| queued-prior-/g)?.length, 4);
+    harness.updateMessage(source, {type: "thinking_start", contentIndex: 2, partial: source});
+    assert.match(view(), /Thinking\.\.\./);
+    assert.equal(view().match(/read \| queued-prior-/g)?.length, 4, "the active run does not consume the window");
+    harness.updateMessage(source, {type: "thinking_end", contentIndex: 2, content: "", partial: source});
+    assert.equal(view().match(/Thinking/g)?.length, 2);
+    assert.equal(view().match(/read \| queued-prior-/g)?.length, 3);
+    assert.doesNotMatch(view(), /Thinking\.\.\.|queued thought/);
+});
+
+test("Conversation keeps completed thinking compact while preserving conversation and native preferences", (t) => {
     const harness = createHarness();
     t.after(() => harness.close());
     for (const collapsed of [false, true]) {
@@ -33,15 +491,15 @@ test("hidden removes completed thoughts without blank rows, preserves conversati
         const original = structuredClone(source);
         const component = new AssistantMessageComponent(source, collapsed);
         harness.root.addChild(component);
-        assert.deepEqual(harness.root.render(80), []);
+        assert.equal(plain(harness.root.render(80)).trim(), "Thinking");
         component.invalidate();
         component.setOutputPad(2);
-        assert.deepEqual(component.render(80), []);
+        assert.equal(plain(component.render(80)).trim(), "Thinking");
         assert.deepEqual(source, original);
         harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.FULL);
         assert.match(plain(component.render(80)), collapsed ? /Thinking\.\.\./ : /private completed thought/);
         harness.rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
-        assert.deepEqual(component.render(80), []);
+        assert.equal(plain(component.render(80)).trim(), "Thinking");
         harness.root.removeChild(component);
         harness.root.render(80);
     }
@@ -51,28 +509,29 @@ test("hidden removes completed thoughts without blank rows, preserves conversati
     ]);
     const component = new AssistantMessageComponent(source);
     harness.root.addChild(component);
-    assert.equal(plain(harness.root.render(80)).trim(), "The conversational answer.");
+    assert.match(plain(harness.root.render(80)), /Thinking\s+The conversational answer\./);
     assert.doesNotMatch(plain(component.render(80)), /private mixed thought/);
     assert.equal(source.content.length, 2);
 });
 
-test("hidden suppresses streaming thoughts as well as completed thoughts without changing the source", (t) => {
+test("Conversation collapses earlier thinking when speaking starts without changing native preferences or sources", (t) => {
     const harness = createHarness();
     t.after(() => harness.close());
     const pending = assistant([{type: "thinking", thinking: "long private streaming thought"}], "pending");
     const original = structuredClone(pending);
     const component = new AssistantMessageComponent(pending, true);
     harness.root.addChild(component);
-    assert.deepEqual(harness.root.render(80), [], "hidden thoughts do not create transcript rows on their own");
+    assert.match(plain(harness.root.render(80)), /Thinking\.\.\./, "active thinking respects native collapse preferences");
     const grown = assistant([{type: "thinking", thinking: "new private streaming thought"}], "pending");
     component.updateContent(grown, true);
-    assert.deepEqual(component.render(80), []);
+    assert.match(plain(component.render(80)), /Thinking\.\.\./);
     const response = assistant([
         {type: "thinking", thinking: "completed private reasoning"},
         {type: "text", text: "Here is the answer."},
     ], "pending");
     component.updateContent(response, true);
-    assert.equal(plain(component.render(80)).trim(), "Here is the answer.", "earlier thoughts disappear once speaking begins");
+    assert.match(plain(component.render(80)), /Thinking\s+Here is the answer\./);
+    assert.doesNotMatch(plain(component.render(80)), /completed private reasoning|Thinking\.\.\./);
     component.updateContent({...response, stopReason: "stop"}, false);
     component.invalidate();
     harness.rows.modes.setViews(ToolDisplayMode.MINIMAL, ToolDisplayMode.FULL);
@@ -328,8 +787,8 @@ test("Conversation shows an animated working placeholder until tool headers or a
     const original = structuredClone(source);
     const thought = new AssistantMessageComponent(source);
     harness.root.addChild(thought);
-    assert.equal(view().match(/Working…/g)?.length, 1);
-    assert.doesNotMatch(view(), /Thinking|private reasoning/);
+    assert.doesNotMatch(view(), /Working…/);
+    assert.match(view(), /private reasoning/, "active thinking replaces generic progress");
     assert.deepEqual(source, original);
 
     const first = harness.read("streaming-arguments");
@@ -343,7 +802,9 @@ test("Conversation shows an animated working placeholder until tool headers or a
     second.updateResult({content: [{type: "text", text: "partial output"}], isError: false}, true);
     assert.doesNotMatch(view(), /Working…/);
     second.updateResult({content: [], isError: true});
-    assert.match(view(), /Working…/, "failed or cancelled tools also give way to the next model request");
+    thought.updateContent({...source, stopReason: "stop"}, false);
+    assert.match(view(), /Thinking/);
+    assert.match(view(), /Working…/, "compact thinking and finished tools do not suppress the next model request");
 
     thought.updateContent(assistant([{type: "text", text: "The final answer."}], "pending"), true);
     assert.match(view(), /The final answer/);
@@ -374,8 +835,8 @@ test("only visible live assistant content replaces the inline working placeholde
     response.updateContent(assistant([{type: "text", text: "  \n "}], "pending"), true);
     assert.match(view(), /Working…/, "empty or whitespace-only streaming content is not visible output");
     response.updateContent(assistant([{type: "thinking", thinking: "hidden live thinking"}], "pending"), true);
-    assert.match(view(), /Working…/);
-    assert.doesNotMatch(view(), /hidden live thinking/);
+    assert.doesNotMatch(view(), /Working…/);
+    assert.match(view(), /hidden live thinking/, "active thinking is visible progress");
     response.updateContent(assistant([{type: "text", text: "Visible live answer"}], "pending"), true);
     assert.match(view(), /Visible live answer/);
     assert.doesNotMatch(view(), /Working…/);
@@ -884,7 +1345,7 @@ test("transcript projection survives a stable TUI facade replacing its renderer 
     const harness = createHarness(facade);
     t.after(() => harness.close());
     harness.root.addChild(new AssistantMessageComponent(assistant([{type: "thinking", thinking: "retained thought"}])));
-    assert.deepEqual(current.render(80), []);
+    assert.equal(plain(current.render(80)).trim(), "Thinking");
     harness.startWork();
     assert.match(plain(current.render(80)), /Working…/);
     const sources = [...current.children];
@@ -964,7 +1425,8 @@ function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"]
         on(event: string, handler: (event: unknown) => void) { events.set(event, handler); },
     } as unknown as ExtensionAPI;
     const theme = {fg: (_color: string, text: string) => text, bold: (text: string) => text} as unknown as Theme;
-    const context = {hasUI: true, mode, ui: {
+    const sessionManager = SessionManager.inMemory();
+    const context = {hasUI: true, mode, sessionManager, ui: {
         theme, getToolsExpanded: () => expanded, notify() {},
         setWidget() { assert.fail("the working placeholder must not install an editor widget"); },
     }} as unknown as ExtensionContext;
@@ -979,10 +1441,17 @@ function createHarness(root: TUI = new TestTui(), mode: ExtensionContext["mode"]
     return {
         root: transcript,
         dock,
-        rows, runtime, context,
+        rows, runtime, context, sessionManager,
+        startMessage(message: AssistantMessage) { events.get("message_start")?.({type: "message_start", message}); },
+        endTurn(message: AssistantMessage, messageEntryId: string) {
+            events.get("turn_end")?.({type: "turn_end", turnIndex: 0, message, messageEntryId,
+                toolResults: [], toolResultEntryIds: []});
+        },
         startWork() { events.get("agent_start")?.({type: "agent_start"}); },
         endWork() { events.get("agent_end")?.({type: "agent_end", messages: []}); },
-        updateMessage(message: AssistantMessage) { events.get("message_update")?.({type: "message_update", message}); },
+        updateMessage(message: AssistantMessage, assistantMessageEvent?: MessageUpdateEvent["assistantMessageEvent"]) {
+            events.get("message_update")?.({type: "message_update", message, assistantMessageEvent});
+        },
         endMessage(message: AssistantMessage) { events.get("message_end")?.({type: "message_end", message}); },
         startTool(toolCallId: string, parentToolCallId?: string) {
             events.get("tool_execution_start")?.({type: "tool_execution_start", toolCallId, parentToolCallId});

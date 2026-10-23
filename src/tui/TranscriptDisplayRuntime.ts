@@ -9,6 +9,7 @@ import {
     type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import {Image, MouseRegion, type Component, type TUI} from "@earendil-works/pi-tui";
+import {AssistantThinkingRows, type ThinkingRun} from "./AssistantThinkingRows.js";
 import {ThemeColor} from "./Color.js";
 import {renderLineFactory} from "./terminalText.js";
 import {ToolCallSpinner} from "./tool/ToolCallSpinner.js";
@@ -17,7 +18,7 @@ import {ToolDisplayModes} from "./tool/ToolDisplayModes.js";
 import {ToolDisplayRows} from "./tool/ToolDisplayRows.js";
 import {ToolPresentationRenderer} from "./tool/ToolPresentationRenderer.js";
 
-const RECENT_FINISHED_TOOL_LIMIT = 5;
+const RECENT_FINISHED_LIMIT = 5;
 const THINKING_PREVIEW_LINES = 12;
 
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
@@ -27,9 +28,21 @@ type Decoration = {
     toolHidden?(): boolean;
     contentActive?(): boolean;
     toolStatus?: ToolProbe;
+    thinkingRuns?(): readonly ThinkingRun[];
+    project?(): void;
 };
 type ToolProbe = {partial?: boolean; expanded?: boolean; toolCallId?: string; compact?: boolean};
-type ToolCompletion = {sequence: number; live: boolean};
+type CompletionKey = string | ThinkingRun;
+type Completion = {sequence: number; live: boolean};
+type ThinkingMessage = {
+    source: AssistantMessage;
+    runs: ThinkingRun[];
+    streaming: boolean;
+    observed: boolean;
+    closedBlocks: Set<number>;
+    cursor?: number;
+    activeBlock?: number;
+};
 
 /** UI-only projection of native rows; never changes the session transcript. */
 export class TranscriptDisplayRuntime {
@@ -44,10 +57,17 @@ export class TranscriptDisplayRuntime {
     private working = false;
     private workingSpinner: ToolCallSpinner | undefined;
     private readonly activeToolCalls = new Set<string>();
-    private readonly completedToolCalls = new Map<string, ToolCompletion>();
+    private readonly completions = new Map<CompletionKey, Completion>();
     private nextCompletionSequence = 0;
     private readonly modes: ToolDisplayModes;
-    private readonly recentFinishedToolCalls = new Set<string>();
+    private readonly recentFinished = new Set<CompletionKey>();
+    private readonly transcriptOrder = new Map<CompletionKey, number>();
+    private thinkingSources = new WeakMap<AssistantMessage, ThinkingMessage>();
+    private readonly thinkingEntries = new Map<string, ThinkingMessage>();
+    private readonly thinkingMessages = new Map<number, ThinkingMessage[]>();
+    private readonly claimedThinkingMessages = new Set<ThinkingMessage>();
+    private streamingThinkingMessage: ThinkingMessage | undefined;
+    private thinkingLeaf: string | null | undefined;
     private readonly workingPlaceholder = renderLineFactory(() => this.renderWorkingPlaceholder(), 1);
 
     constructor(private readonly pi: ExtensionAPI, private readonly displayRows: ToolDisplayRows) {
@@ -60,14 +80,27 @@ export class TranscriptDisplayRuntime {
         this.registered = true;
         this.pi.on("agent_start", () => this.setWorking(true));
         this.pi.on("agent_end", () => this.setWorking(false));
-        this.pi.on("message_update", (event) => this.observeToolCalls(event.message));
-        this.pi.on("message_end", (event) => this.observeToolCalls(event.message));
+        this.pi.on("message_start", (event) => this.observeThinking(event.message, true, undefined, true));
+        this.pi.on("message_update", (event) => {
+            this.observeThinking(event.message, true, event.assistantMessageEvent);
+            this.observeToolCalls(event.message);
+        });
+        this.pi.on("message_end", (event) => {
+            this.observeThinking(event.message, false);
+            this.observeToolCalls(event.message);
+        });
+        this.pi.on("turn_end", (event) => {
+            if (event.message.role === "assistant") {
+                const message = this.thinkingSources.get(event.message);
+                if (message) this.thinkingEntries.set(event.messageEntryId, message);
+            }
+        });
         this.pi.on("tool_execution_start", (event) => {
             if (!event.parentToolCallId) this.setToolActive(event.toolCallId, true);
         });
         this.pi.on("tool_execution_end", (event) => {
             if (!event.parentToolCallId) {
-                this.finishToolCall(event.toolCallId, true);
+                this.finishCompletion(event.toolCallId, true);
                 this.setToolActive(event.toolCallId, false);
             }
         });
@@ -144,7 +177,14 @@ export class TranscriptDisplayRuntime {
         this.setWorking(false);
         const tui = this.tui;
         this.detach();
-        this.completedToolCalls.clear();
+        this.completions.clear();
+        this.transcriptOrder.clear();
+        this.thinkingSources = new WeakMap();
+        this.thinkingEntries.clear();
+        this.thinkingMessages.clear();
+        this.claimedThinkingMessages.clear();
+        this.streamingThinkingMessage = undefined;
+        this.thinkingLeaf = undefined;
         this.nextCompletionSequence = 0;
         this.context = undefined;
         tui?.invalidate();
@@ -154,7 +194,22 @@ export class TranscriptDisplayRuntime {
     private setWorking(working: boolean): void {
         this.activeToolCalls.clear();
         this.working = working;
-        if (!working) this.stopWorkingSpinner();
+        if (!working) {
+            this.stopWorkingSpinner();
+            for (const messages of this.thinkingMessages.values()) {
+                for (const message of messages) {
+                    for (const run of message.runs) {
+                        if (!run.active) continue;
+                        run.active = false;
+                        message.closedBlocks.add(run.end - 1);
+                        this.finishCompletion(run, true);
+                    }
+                    message.streaming = false;
+                }
+            }
+            this.streamingThinkingMessage = undefined;
+            this.refreshRecentFinishedItems();
+        }
         this.tui?.requestRender();
     }
 
@@ -165,7 +220,7 @@ export class TranscriptDisplayRuntime {
         const finished = message.stopReason === "aborted" || message.stopReason === "error";
         for (const block of message.content) {
             if (block.type !== "toolCall") continue;
-            if (finished) this.finishToolCall(block.id, true);
+            if (finished) this.finishCompletion(block.id, true);
             this.setToolActive(block.id, !finished);
         }
     }
@@ -178,31 +233,140 @@ export class TranscriptDisplayRuntime {
         this.tui?.requestRender();
     }
 
-    private finishToolCall(toolCallId: string, live: boolean): void {
-        if (!this.context?.hasUI || this.context.mode !== "tui") return;
-        const previous = this.completedToolCalls.get(toolCallId);
-        if (previous && (previous.live || !live)) return;
-        // Live completions outrank history even when old rows are first discovered later.
-        // Discovery order is only a fallback within history; redraws never promote a row.
-        this.completedToolCalls.set(toolCallId, {sequence: this.nextCompletionSequence++, live});
+    private observeThinking(
+        source: MessageUpdateEvent["message"], streaming: boolean,
+        event?: MessageUpdateEvent["assistantMessageEvent"], start = false,
+    ): void {
+        if (source.role !== "assistant" || !this.context?.hasUI || this.context.mode !== "tui") return;
+        const message = this.getThinkingMessage(source, start ? undefined : this.streamingThinkingMessage, start);
+        message.observed = true;
+        message.streaming = streaming;
+        if (start) {
+            message.cursor = -1;
+            message.activeBlock = undefined;
+        } else if (event && "contentIndex" in event) {
+            const previousCursor = message.cursor ?? -1;
+            message.cursor = Math.max(previousCursor, event.contentIndex);
+            if (event.type === "thinking_start") message.closedBlocks.delete(event.contentIndex);
+            if (event.type === "thinking_start" || event.type === "thinking_delta") {
+                if (event.contentIndex >= previousCursor && !message.closedBlocks.has(event.contentIndex)) {
+                    message.activeBlock = event.contentIndex;
+                }
+            } else if (event.type === "thinking_end") {
+                message.closedBlocks.add(event.contentIndex);
+                if (message.activeBlock === event.contentIndex) message.activeBlock = undefined;
+            } else if (message.activeBlock !== undefined && event.contentIndex > message.activeBlock
+                && event.contentIndex >= previousCursor) {
+                // Responses slots can finish independently: an older text/tool event
+                // must not complete a later thinking block that is still streaming.
+                message.activeBlock = undefined;
+            }
+        }
+        this.syncThinking(message, source, streaming, true);
+        this.streamingThinkingMessage = streaming ? message : undefined;
         this.tui?.requestRender();
     }
 
-    private refreshRecentFinishedTools(): void {
-        const finished: string[] = [];
+    private getThinkingMessage(source: AssistantMessage, previous?: ThinkingMessage, fresh = false): ThinkingMessage {
+        let message = this.thinkingSources.get(source) ?? (fresh ? undefined : previous);
+        const candidates = this.thinkingMessages.get(source.timestamp) ?? [];
+        if (!message && !fresh && candidates.length) {
+            const content = JSON.stringify(source.content);
+            // Timestamps only narrow the search. Source aliases, entry IDs, content, and
+            // transcript occurrence keep distinct messages with equal timestamps separate.
+            message = candidates.find((candidate) => !this.claimedThinkingMessages.has(candidate)
+                && candidate.source.provider === source.provider && candidate.source.model === source.model
+                && candidate.source.responseId === source.responseId
+                && JSON.stringify(candidate.source.content) === content);
+        }
+        if (!message) {
+            message = {source, runs: [], streaming: false, observed: false, closedBlocks: new Set()};
+            candidates.push(message);
+            this.thinkingMessages.set(source.timestamp, candidates);
+        }
+        this.thinkingSources.set(source, message);
+        return message;
+    }
+
+    private reconcileThinkingEntries(): void {
+        const manager = this.context!.sessionManager;
+        const leaf = manager.getLeafId();
+        if (this.thinkingLeaf === leaf) return;
+        this.thinkingLeaf = leaf;
+        for (const entry of manager.getBranch()) {
+            if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+            const message = this.thinkingEntries.get(entry.id) ?? this.thinkingSources.get(entry.message)
+                ?? this.getThinkingMessage(entry.message, undefined, true);
+            this.thinkingEntries.set(entry.id, message);
+            this.thinkingSources.set(entry.message, message);
+        }
+    }
+
+    private thinkingRuns(message: ThinkingMessage, source: AssistantMessage): ThinkingRun[] {
+        const runs: ThinkingRun[] = [];
+        for (let index = 0; index < source.content.length;) {
+            if (source.content[index]?.type !== "thinking") { index++; continue; }
+            const start = index;
+            while (source.content[index]?.type === "thinking") index++;
+            let run = message.runs.find((candidate) => candidate.start === start);
+            if (!run) {
+                run = {start, end: index, active: false, started: false};
+                message.runs.push(run);
+            }
+            run.end = Math.max(run.end, index);
+            runs.push(run);
+        }
+        return runs;
+    }
+
+    private syncThinking(message: ThinkingMessage, source: AssistantMessage, streaming: boolean, live: boolean): void {
+        // Native invalidation may still hold an older snapshot while extension handlers
+        // already observed the next event. Only events may advance an observed record.
+        if (message.observed && !live) return;
+        message.source = source;
+        if (!message.observed) message.streaming = streaming;
+        for (const run of this.thinkingRuns(message, source)) {
+            run.started ||= !message.streaming || message.cursor === undefined || run.start <= message.cursor;
+            const active = run.started && message.streaming && (message.cursor === undefined
+                ? run.end === source.content.length && !message.closedBlocks.has(run.end - 1)
+                : message.activeBlock !== undefined && run.start <= message.activeBlock && message.activeBlock < run.end);
+            if (active && !run.active) this.completions.delete(run);
+            if (run.started && !active) this.finishCompletion(run, live || run.active);
+            run.active = active;
+        }
+        if (!message.streaming) {
+            for (const run of message.runs) {
+                if (!run.active) continue;
+                run.active = false;
+                this.finishCompletion(run, live);
+            }
+        }
+    }
+
+    private finishCompletion(key: CompletionKey, live: boolean): void {
+        if (!this.context?.hasUI || this.context.mode !== "tui") return;
+        const previous = this.completions.get(key);
+        if (previous && (previous.live || !live)) return;
+        // Live completions outrank history; redraws never promote a finished item.
+        this.completions.set(key, {sequence: this.nextCompletionSequence++, live});
+        this.tui?.requestRender();
+    }
+
+    private refreshRecentFinishedItems(): void {
+        const finished = new Set<CompletionKey>();
         for (const decoration of this.decorations.values()) {
             const status = decoration.toolStatus;
-            if (status?.partial === false && status.toolCallId !== undefined) finished.push(status.toolCallId);
+            if (status?.partial === false && status.toolCallId !== undefined) finished.add(status.toolCallId);
+            for (const run of decoration.thinkingRuns?.() ?? []) if (run.started && !run.active) finished.add(run);
         }
-        finished.sort((left, right) => {
-            const a = this.completedToolCalls.get(left)!;
-            const b = this.completedToolCalls.get(right)!;
-            return Number(b.live) - Number(a.live) || b.sequence - a.sequence;
+        const ordered = [...finished].sort((left, right) => {
+            const a = this.completions.get(left)!;
+            const b = this.completions.get(right)!;
+            return Number(b.live) - Number(a.live) || (a.live ? b.sequence - a.sequence
+                : (this.transcriptOrder.get(right) ?? -1) - (this.transcriptOrder.get(left) ?? -1));
         });
-        this.recentFinishedToolCalls.clear();
-        for (const toolCallId of finished.slice(0, RECENT_FINISHED_TOOL_LIMIT)) {
-            this.recentFinishedToolCalls.add(toolCallId);
-        }
+        this.recentFinished.clear();
+        for (const key of ordered.slice(0, RECENT_FINISHED_LIMIT)) this.recentFinished.add(key);
     }
 
     private renderWorkingPlaceholder(): string[] {
@@ -227,7 +391,7 @@ export class TranscriptDisplayRuntime {
         this.stopWorkingSpinner();
         for (const decoration of this.decorations.values()) decoration.restore();
         this.decorations.clear();
-        this.recentFinishedToolCalls.clear();
+        this.recentFinished.clear();
         this.tui = undefined;
     }
 
@@ -236,6 +400,9 @@ export class TranscriptDisplayRuntime {
         this.scanning = true;
         try {
             const hidden = this.isHidden();
+            this.claimedThinkingMessages.clear();
+            this.transcriptOrder.clear();
+            this.reconcileThinkingEntries();
             const seen = new Set<Component>();
             const visit = (component: Component, toolHidden?: () => boolean, source = false, assistantContent = false): void => {
                 if (seen.has(component)) return;
@@ -276,6 +443,9 @@ export class TranscriptDisplayRuntime {
                     if (decoration) this.decorations.set(component, decoration);
                 }
                 decoration?.refresh(hidden);
+                const status = decoration?.toolStatus;
+                if (status?.toolCallId !== undefined) this.transcriptOrder.set(status.toolCallId, this.transcriptOrder.size);
+                for (const run of decoration?.thinkingRuns?.() ?? []) this.transcriptOrder.set(run, this.transcriptOrder.size);
                 // Container's children are public. MouseRegion/other private interiors are not traversed.
                 const children = (component as Component & {children?: Component[]}).children;
                 if (Array.isArray(children)) {
@@ -290,7 +460,8 @@ export class TranscriptDisplayRuntime {
                 decoration.restore();
                 this.decorations.delete(component);
             }
-            this.refreshRecentFinishedTools();
+            this.refreshRecentFinishedItems();
+            for (const decoration of this.decorations.values()) decoration.project?.();
         } finally {
             this.scanning = false;
         }
@@ -321,56 +492,81 @@ export class TranscriptDisplayRuntime {
     private decorateAssistant(component: AssistantMessageComponent): Decoration {
         const update = component.updateContent;
         const render = component.render;
-        let source: AssistantMessage | undefined;
-        let projection: AssistantMessage | undefined;
+        let message: ThinkingMessage | undefined;
+        let rows: AssistantThinkingRows | undefined;
+        let displayedRuns: ThinkingRun[] = [];
+        let displayedText = false;
         let streaming = false;
-        let hidden = this.isHidden();
         let active = true;
         let thinkingScanNeeded = false;
         const decoratedRender: Component["render"] = (width) => {
-            // Public setters and mouse callbacks can rebuild runs before a source-container frame.
-            if (active && thinkingScanNeeded) {
-                thinkingScanNeeded = false;
-                this.scan();
+            if (active) {
+                // Setters and mouse callbacks can rebuild runs before a source-container frame.
+                if (thinkingScanNeeded) { thinkingScanNeeded = false; this.scan(); }
+                rows?.project(this.isHidden());
             }
             return render.call(component, width);
         };
-        const decoratedUpdate: AssistantMessageComponent["updateContent"] = (message, isStreaming) => {
-            // Native invalidate, setters, and mouse callbacks pass the last UI message back.
-            // Recognize that exact object, not content equality, to retain the real source.
-            const original = message === projection && source ? source : message;
-            streaming = isStreaming ?? (source ? streaming : original.stopReason === "pending");
-            source = original;
-            hidden = active && this.isHidden();
-            projection = hidden ? this.projectThoughts(original) : undefined;
-            update.call(component, projection ?? original, streaming);
+        const decoratedUpdate: AssistantMessageComponent["updateContent"] = (source, isStreaming) => {
+            streaming = isStreaming ?? (message ? streaming : source.stopReason === "pending");
+            if (active) {
+                message = this.getThinkingMessage(source, message);
+                this.syncThinking(message, source, streaming, false);
+            }
+            rows?.restore();
+            update.call(component, source, streaming);
+            displayedText = source.content.some((block) => block.type === "text" && !!block.text.trim());
+            if (active && message) {
+                displayedRuns = this.thinkingRuns(message, source);
+                for (const run of displayedRuns) {
+                    if (!message.streaming && !run.started) {
+                        run.started = true;
+                        this.finishCompletion(run, false);
+                    }
+                }
+            }
+            if (active && displayedRuns.length) {
+                rows = new AssistantThinkingRows(component, source, displayedRuns,
+                    (partial, width) => this.renderThinkingLabel(partial, width),
+                    (lines, width) => this.renderThinkingTail(lines, width),
+                    (run) => this.recentFinished.has(run));
+            } else rows = undefined;
             thinkingScanNeeded = true;
         };
         component.render = decoratedRender;
         component.updateContent = decoratedUpdate;
-        // The exported API has no last-message getter. invalidate calls our updateContent.
         component.invalidate();
         return {
-            contentActive: () => streaming && !!(projection ?? source)?.content.some((block) => (
-                (block.type === "text" && block.text.trim())
-                || (block.type === "thinking" && block.thinking.trim())
-            )),
-            refresh: (nextHidden) => {
-                if (hidden !== nextHidden && source && component.updateContent === decoratedUpdate) {
-                    decoratedUpdate(source, streaming);
-                }
-                // The enclosing scan visits the newly rebuilt thinking runs next.
+            thinkingRuns: () => displayedRuns,
+            contentActive: () => !!message?.streaming && (displayedText || displayedRuns.some((run) => run.active)),
+            refresh: () => {
+                // Traverse native regions before the final Conversation projection so
+                // the first Ctrl+O Preview frame already has tail decorators installed.
+                rows?.project(false);
+                if (message) this.claimedThinkingMessages.add(message);
                 thinkingScanNeeded = false;
             },
+            project: () => rows?.project(this.isHidden()),
             restore: () => {
                 active = false;
+                rows?.restore();
                 if (component.render === decoratedRender) component.render = render;
-                if (component.updateContent === decoratedUpdate) {
-                    if (source) update.call(component, source, streaming);
-                    component.updateContent = update;
-                }
+                if (component.updateContent === decoratedUpdate) component.updateContent = update;
             },
         };
+    }
+
+    private renderThinkingLabel(active: boolean, width: number): string[] {
+        const label = active ? "Thinking..." : "Thinking";
+        return renderLineFactory(() => [this.context?.ui.theme.fg(ThemeColor.thinkingText, label) ?? label], 1).render(width);
+    }
+
+    private renderThinkingTail(lines: string[], width: number): string[] {
+        if (lines.length <= THINKING_PREVIEW_LINES) return lines;
+        const omitted = lines.length - THINKING_PREVIEW_LINES;
+        const label = `... (${omitted} earlier ${omitted === 1 ? "line" : "lines"})`;
+        const notice = renderLineFactory(() => [this.context?.ui.theme.fg(ThemeColor.muted, label) ?? label]);
+        return [...notice.render(width), ...lines.slice(-THINKING_PREVIEW_LINES)];
     }
 
     private decorateThinking(component: Component): Decoration {
@@ -380,12 +576,7 @@ export class TranscriptDisplayRuntime {
             const lines = render.call(component, width);
             if (!active || !this.context || this.modes.resolve(this.context.ui.getToolsExpanded()) !== ToolDisplayMode.TRUNCATED
                 || lines.length <= THINKING_PREVIEW_LINES) return lines;
-            const omitted = lines.length - THINKING_PREVIEW_LINES;
-            const theme = this.context.ui.theme;
-            const notice = renderLineFactory(() => [theme.fg(
-                ThemeColor.muted, `... (${omitted} earlier ${omitted === 1 ? "line" : "lines"})`,
-            )]);
-            return [...notice.render(width), ...lines.slice(-THINKING_PREVIEW_LINES)];
+            return this.renderThinkingTail(lines, width);
         };
         component.render = decorated;
         return {
@@ -412,7 +603,7 @@ export class TranscriptDisplayRuntime {
         const decoratedRender: ToolExecutionComponent["render"] = (width) => {
             const hidden = active && toolHidden();
             if (hidden && status.partial === false && (!status.compact || status.toolCallId === undefined
-                || !this.recentFinishedToolCalls.has(status.toolCallId))) return [];
+                || !this.recentFinished.has(status.toolCallId))) return [];
             const lines = render.call(component, width);
             // Removing partial-result images must not leave their trailing spacer rows.
             if (hidden) while (lines.at(-1) === "") lines.pop();
@@ -428,8 +619,8 @@ export class TranscriptDisplayRuntime {
             } finally {
                 this.probe = previousProbe;
             }
-            if (!partial && !wasFinished && status.toolCallId !== undefined) this.finishToolCall(status.toolCallId, true);
-            this.refreshRecentFinishedTools();
+            if (!partial && !wasFinished && status.toolCallId !== undefined) this.finishCompletion(status.toolCallId, true);
+            this.refreshRecentFinishedItems();
         };
         const decoratedExpand: ToolExecutionComponent["setExpanded"] = (expanded) => {
             status.expanded = expanded;
@@ -447,7 +638,7 @@ export class TranscriptDisplayRuntime {
         } finally {
             this.probe = previousProbe;
         }
-        if (status.partial === false && status.toolCallId !== undefined) this.finishToolCall(status.toolCallId, false);
+        if (status.partial === false && status.toolCallId !== undefined) this.finishCompletion(status.toolCallId, false);
         return {
             toolHidden,
             toolStatus: status,
@@ -481,10 +672,6 @@ export class TranscriptDisplayRuntime {
                 if (component.render === decorated) component.render = render;
             },
         };
-    }
-
-    private projectThoughts(message: AssistantMessage): AssistantMessage {
-        return {...message, content: message.content.filter((block) => block.type !== "thinking")};
     }
 
     private isHidden(): boolean {

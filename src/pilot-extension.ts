@@ -14,6 +14,7 @@ import {ServerSessionLifecycle} from "./server/ServerSessionLifecycle.js";
 import {recordMainSessionIdentity} from "./sessions/SessionIdentity.js";
 import {McpExtension, type McpExtensionInterface} from "./mcp/McpExtension.js";
 import {SubagentRuntime} from "./subagents/SubagentRuntime.js";
+import {SubagentCompaction} from "./subagents/SubagentCompaction.js";
 import type {SubagentToolProviders} from "./subagents/SubagentToolCatalog.js";
 import type {SubagentModelPerformanceRanker} from "./subagents/SubagentModelResolver.js";
 import type {SubagentDefaultsStore} from "./subagents/SubagentDefaults.js";
@@ -141,6 +142,7 @@ export class PilotExtension {
         for (const tool of this.subagentTools) tool.register();
 
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
+        new SubagentCompaction(this.pi, () => this.subagentRuntime.coordinator()).register();
         this.pi.on("before_agent_start", (event, ctx) => {
             if (event.messageType === "user") {
                 this.sessionRuntime?.policyRuntime.updatePolicyPrincipalContext(

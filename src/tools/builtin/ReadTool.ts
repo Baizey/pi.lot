@@ -1,5 +1,8 @@
+import {constants} from "node:fs";
+import {access, readFile} from "node:fs/promises";
 import {
     createReadToolDefinition,
+    detectSupportedImageMimeTypeFromFile,
     formatReadLineRange,
     type ExtensionAPI,
     type ReadToolInput,
@@ -11,7 +14,6 @@ import {ThemeColor} from "../../tui/Color";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types";
 import type {PilotSessionRuntimeInterface} from "../../runtime/PilotSessionRuntime";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
-import {resolveBuiltinToolPath} from "./resolveBuiltinToolPath.js";
 
 const READ_PRESENTATION = {
     toolName: "read",
@@ -57,23 +59,40 @@ export class ReadTool {
         const definition = createReadToolDefinition(process.cwd());
         const renderers = this.displayRows.bind(READ_PRESENTATION);
         const execute: typeof definition.execute = async (toolCallId, params, signal, onUpdate, ctx) => {
-            const resolvedPath = resolveBuiltinToolPath(params.path, ctx.cwd);
-            const result = await this.runtimeProvider().policyRuntime.once(
-                ctx.sessionManager.getSessionId(),
-                resolvedPath,
-                PolicyAccessType.FS_READ,
-                signal,
-                {
-                    toolCallId,
-                    toolName: "read",
-                    command: `read ${resolvedPath}`,
-                    purpose: "Read file contents",
+            const read = createReadToolDefinition(ctx.cwd, {
+                operations: {
+                    // Pi selects fallback spellings before calling access. Authorize that
+                    // exact pathname before either MIME sniffing or the full content read.
+                    access: async (absolutePath) => {
+                        const result = await this.runtimeProvider().policyRuntime.once(
+                            ctx.sessionManager.getSessionId(),
+                            absolutePath,
+                            PolicyAccessType.FS_READ,
+                            signal,
+                            {
+                                toolCallId,
+                                toolName: "read",
+                                command: `read ${absolutePath}`,
+                                purpose: "Read file contents",
+                            },
+                        );
+                        if (result.matchedStatus === PolicyResponse.DENIED) {
+                            throw new Error(result.toDenyMessage());
+                        }
+                        signal?.throwIfAborted();
+                        await access(absolutePath, constants.R_OK);
+                    },
+                    detectImageMimeType: (absolutePath) => {
+                        signal?.throwIfAborted();
+                        return detectSupportedImageMimeTypeFromFile(absolutePath);
+                    },
+                    readFile: (absolutePath) => {
+                        signal?.throwIfAborted();
+                        return readFile(absolutePath);
+                    },
                 },
-            );
-            if (result.matchedStatus === PolicyResponse.DENIED) {
-                throw new Error(result.toDenyMessage());
-            }
-            return definition.execute(toolCallId, params, signal, onUpdate, ctx);
+            });
+            return read.execute(toolCallId, params, signal, onUpdate, ctx);
         };
         this.definition = {
             ...definition,

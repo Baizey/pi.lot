@@ -655,6 +655,9 @@ test("the production extension adds routed documentation without forcing or repl
     const systemPrompt = sections.pilot_docs;
     assert.ok(systemPrompt);
     assert.equal(systemPrompt.match(/pi\.lot documentation/g)?.length, 1);
+    assert.match(systemPrompt, /relevant pi\.lot features or archive-tool use/);
+    assert.match(systemPrompt, /saved configuration sync\/recovery: read docs\/server\.md/);
+    assert.match(systemPrompt, /before using archive_list\/archive_fetch/);
 
     const packageRoot = fileURLToPath(new URL("../", import.meta.url));
     const documentationDirectory = path.join(packageRoot, "docs");

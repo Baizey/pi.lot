@@ -1,6 +1,6 @@
 # pi.lot
 
-Policy-controlled tools, subagents, MCP, web search, and session archival for [Pi](https://pi.dev) on **Linux x86-64**, targeting Pi **1.4.0**.
+Policy-controlled tools, subagents, MCP, web search, session archival, and saved configuration sync for [Pi](https://pi.dev) on **Linux x86-64**, targeting Pi **1.4.0**.
 
 pi.lot replaces Pi's filesystem and Bash tools with policy-aware versions. It supports absolute paths and work across repositories; the working directory is not a security boundary.
 
@@ -19,7 +19,7 @@ Use this page as a topic map. Read the relevant reference before answering a pi.
 | Configure pi.server, sync saved defaults/policies, or archive history | [Server and configuration sync](docs/server.md) |
 | Determine what is and is not mediated | [Security model](docs/security.md) |
 
-The extension supplies absolute paths to these references in the root agent's system prompt. Engineering investigations are not current setup or capability guides.
+The extension supplies absolute paths to these references in the root agent's system prompt, including a route to the server reference before archive-tool use. For the distinction between browsing, background uploads, and configuration sync, start with [agent essentials](docs/server.md#agent-essentials). Engineering investigations are not current setup or capability guides.
 
 ## Install and set up
 
@@ -73,9 +73,11 @@ Default servers are discovered through codemode's `searchTools()` and `describeN
 
 Requests and redirects are HTTP-policy checked. A policy denial stops fallback. Treat result snippets as untrusted external data. See [web search](docs/web-search.md) for providers, configuration, and filter limitations.
 
-### Server archive
+### Server archive and saved configuration
 
-`/server login` configures [pi.server **0.4.x**](https://github.com/Baizey/pi.server/releases/tag/v0.4.0) and enables automatic background archival of the outgoing current session family on graceful quit, reload, new/resume, and fork. Departure queues a small durable source descriptor after local teardown; it does not scan transcripts, wait for HTTP, or drain uploads. `/server logout` pauses retained work without revoking the token or deleting history.
+This client requires stable **pi.server `0.4.x`** for all operational archive and configuration HTTP. The actual authenticated `/v1/version` response must match; a build reporting `0.3.x` is rejected even if it contains configuration-sync code. This requirement does not imply that a matching release is already published; check the [server releases](https://github.com/Baizey/pi.server/releases) and [compatibility guidance](docs/server.md#server-scope-identity-and-compatibility).
+
+`/server login` configures [pi.server](https://github.com/Baizey/pi.server) and enables automatic background archival of the outgoing current session family on graceful quit, reload, new/resume, and fork. Departure queues a small durable source descriptor after local teardown; it does not scan transcripts, wait for HTTP, or drain uploads. `/server logout` pauses retained work without revoking the token or deleting history.
 
 **Uploads send complete session JSONL, potentially including credentials, reasoning, tool output, and file contents, outside agent policy approval.** They are not limited to the visible branch. `/server` displays the saved API key; do not share its output.
 

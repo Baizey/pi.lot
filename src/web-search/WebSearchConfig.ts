@@ -45,7 +45,7 @@ export function loadWebSearchConfig(file = defaultWebSearchConfigFile()): WebSea
     }
 
     try {
-        return parseConfig(JSON.parse(contents));
+        return parseWebSearchConfig(JSON.parse(contents));
     } catch (error) {
         throw new Error(`Invalid web-search configuration in ${file}.`, {cause: error});
     }
@@ -63,7 +63,7 @@ export function defaultWebSearchConfig(): WebSearchConfig {
     };
 }
 
-function parseConfig(value: unknown): WebSearchConfig {
+export function parseWebSearchConfig(value: unknown): WebSearchConfig {
     const root = record(value, "configuration root");
     exactKeys(
         root,

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import {mkdtempSync, readFileSync, rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import path from "node:path";
 import test, {type TestContext} from "node:test";
 import {ModelRuntime} from "@earendil-works/pi-coding-agent";
 import {
@@ -7,6 +10,11 @@ import {
     type SubagentModel,
     type SubagentModelPerformanceRanker,
 } from "../src/subagents/SubagentModelResolver.js";
+import {
+    initialSubagentDefaults,
+    SubagentDefaultsJsonStore,
+    SubagentDefaultsRuntime,
+} from "../src/subagents/SubagentDefaults.js";
 import {
     SubagentReasoningAmount,
     SubagentReasoningSkill,
@@ -154,10 +162,11 @@ test("an exact skill default bypasses auto ranking and clamps amount after model
         model("configured", 1, {provider: "other"}),
         model("low-only", 2, {provider: "provider", thinkingLevelMap: {high: null}}),
     ];
-    const resolver = new SubagentModelResolver(
-        await runtime(t, models),
-        new FixedPerformanceRanker({"automatic-winner": 100, configured: 1, "low-only": 2}),
-    );
+    const ranker = new FixedPerformanceRanker({"automatic-winner": 100, configured: 1, "low-only": 2});
+    const rank = t.mock.method(ranker, "rank", async () => {
+        throw new Error("exact pins must bypass auto ranking");
+    });
+    const resolver = new SubagentModelResolver(await runtime(t, models), ranker);
 
     const configured = await resolver.resolve(
         SubagentReasoningSkill.MAX,
@@ -166,10 +175,6 @@ test("an exact skill default bypasses auto ranking and clamps amount after model
     );
     assert.equal(configured.model.id, "configured");
     assert.equal(configured.performanceSource, "configured-exact-model");
-    await assert.rejects(
-        resolver.resolve(SubagentReasoningSkill.LOW, SubagentReasoningAmount.LOW, "missing/model"),
-        /not authenticated or available/,
-    );
     const clamped = await resolver.resolve(
         SubagentReasoningSkill.HIGH,
         SubagentReasoningAmount.HIGH,
@@ -177,6 +182,112 @@ test("an exact skill default bypasses auto ranking and clamps amount after model
     );
     assert.equal(clamped.model.id, "low-only");
     assert.equal(clamped.thinkingLevel, "medium");
+    assert.equal(clamped.performanceSource, "configured-exact-model");
+    assert.equal(rank.mock.callCount(), 0);
+});
+
+test("missing pins use the existing auto frontier for every requested skill with visible fallback metadata", async (t) => {
+    const models = [model("economy", 1), model("small", 2), model("balanced", 3), model("strong", 4), model("maximum", 5)];
+    let availabilityReads = 0;
+    const resolver = new SubagentModelResolver(
+        await runtime(t, () => {
+            availabilityReads++;
+            return models;
+        }),
+        new FixedPerformanceRanker({economy: 1, small: 2, balanced: 3, strong: 4, maximum: 5}),
+    );
+
+    for (const skill of Object.values(SubagentReasoningSkill)) {
+        const automatic = await resolver.resolve(skill, SubagentReasoningAmount.MID);
+        const readsBeforeFallback = availabilityReads;
+        const fallback = await resolver.resolve(skill, SubagentReasoningAmount.MID, "missing/pinned");
+        assert.equal(availabilityReads, readsBeforeFallback + 1);
+        assert.equal(fallback.model, automatic.model);
+        assert.equal(fallback.thinkingLevel, automatic.thinkingLevel);
+        assert.equal(fallback.estimatedCost, automatic.estimatedCost);
+        assert.equal(fallback.performanceScore, automatic.performanceScore);
+        assert.equal(
+            fallback.performanceSource,
+            "test-performance (auto fallback from missing/pinned: not authenticated or available)",
+        );
+    }
+});
+
+test("a catalogued but unauthenticated pin falls back without probing providers", async (t) => {
+    const pinned = model("pinned", 1, {provider: "unauthenticated"});
+    const authenticated = model("authenticated", 2);
+    const modelRuntime = await runtime(t, [authenticated]);
+    t.mock.method(modelRuntime, "getModel", () => pinned);
+    const auth = t.mock.method(modelRuntime, "getAuth", async () => {
+        throw new Error("resolution must not request provider credentials");
+    });
+    const refresh = t.mock.method(modelRuntime, "refresh", async () => {
+        throw new Error("resolution must not refresh provider catalogues");
+    });
+    const resolver = new SubagentModelResolver(modelRuntime);
+
+    const fallback = await resolver.resolve(
+        SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH, "unauthenticated/pinned",
+    );
+    assert.equal(fallback.model, authenticated);
+    assert.equal(
+        fallback.performanceSource,
+        "catalogue-cost-capability (auto fallback from unauthenticated/pinned: not authenticated or available)",
+    );
+    assert.equal(auth.mock.callCount(), 0);
+    assert.equal(refresh.mock.callCount(), 0);
+});
+
+test("pins no longer eligible for normal reasoning fall back and clamp the selected model's amount", async (t) => {
+    for (const pinned of [
+        model("non-reasoning", 10, {reasoning: false}),
+        model("extended-only", 10, {thinkingLevelMap: {low: null, medium: null, high: null, max: "max"}}),
+    ]) {
+        const eligible = model("medium-only", 1, {thinkingLevelMap: {low: null, high: null}});
+        const ranker = new FixedPerformanceRanker({"medium-only": 1});
+        const rank = t.mock.method(ranker, "rank");
+        const resolver = new SubagentModelResolver(await runtime(t, [pinned, eligible]), ranker);
+        const fallback = await resolver.resolve(
+            SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH, `provider/${pinned.id}`,
+        );
+
+        assert.equal(fallback.model, eligible);
+        assert.equal(fallback.thinkingLevel, "medium");
+        assert.deepEqual(rank.mock.calls[0]!.arguments[0], [eligible]);
+        assert.equal(
+            fallback.performanceSource,
+            `test-performance (auto fallback from provider/${pinned.id}: does not support normal reasoning amounts)`,
+        );
+    }
+});
+
+test("fallback preserves the saved preference and uses the exact pin again when availability recovers", async (t) => {
+    const directory = mkdtempSync(path.join(tmpdir(), "pilot-model-preference-"));
+    t.after(() => rmSync(directory, {recursive: true, force: true}));
+    const store = new SubagentDefaultsJsonStore("subagent-defaults", directory);
+    store.save({...initialSubagentDefaults, max: "provider/pinned"});
+    const saved = readFileSync(store.file, "utf8");
+    const defaults = new SubagentDefaultsRuntime(store);
+    const pinned = model("pinned", 1);
+    const alternative = model("alternative", 2);
+    let available = [alternative];
+    const resolver = new SubagentModelResolver(await runtime(t, () => available));
+
+    const fallback = await resolver.resolve(
+        SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH, defaults.values.max,
+    );
+    assert.equal(fallback.model, alternative);
+    assert.equal(defaults.values.max, "provider/pinned");
+    assert.equal(readFileSync(store.file, "utf8"), saved);
+    assert.equal(store.load().max, "provider/pinned");
+
+    available = [alternative, pinned];
+    const recovered = await resolver.resolve(
+        SubagentReasoningSkill.MAX, SubagentReasoningAmount.HIGH, defaults.values.max,
+    );
+    assert.equal(recovered.model, pinned);
+    assert.equal(recovered.performanceSource, "configured-exact-model");
+    assert.equal(readFileSync(store.file, "utf8"), saved);
 });
 
 test("reasoning amount does not affect model selection and unsupported amounts clamp normally", async (t) => {
@@ -230,9 +341,99 @@ test("resolution fails clearly when no authenticated model supports normal reaso
         model("extended-only", 1, {thinkingLevelMap: {low: null, medium: null, high: null, max: "max"}}),
     ]));
 
+    for (const preference of ["auto", "missing/model", "provider/non-reasoning", "provider/extended-only"]) {
+        await assert.rejects(
+            resolver.resolve(SubagentReasoningSkill.HIGH, SubagentReasoningAmount.HIGH, preference),
+            (error: Error) => {
+                assert.match(error.message, /No authenticated model supports normal subagent reasoning amounts/);
+                if (preference !== "auto") assert.match(error.message, new RegExp(`cannot fall back from configured model ${preference}`));
+                return true;
+            },
+        );
+    }
+    const empty = new SubagentModelResolver(await runtime(t, []));
     await assert.rejects(
-        resolver.resolve(SubagentReasoningSkill.HIGH, SubagentReasoningAmount.HIGH),
-        /No authenticated model supports normal subagent reasoning amounts/,
+        empty.resolve(SubagentReasoningSkill.MIN, SubagentReasoningAmount.LOW, "missing/model"),
+        /No authenticated model supports normal subagent reasoning amounts; cannot fall back/,
+    );
+});
+
+test("registry errors and registry aborts propagate unchanged instead of becoming fallback", async (t) => {
+    const modelRuntime = await runtime(t, [model("available", 1)]);
+    const ranker = new FixedPerformanceRanker({available: 1});
+    const rank = t.mock.method(ranker, "rank");
+    const resolver = new SubagentModelResolver(modelRuntime, ranker);
+    for (const failure of [new Error("registry failed"), new DOMException("cancelled", "AbortError")]) {
+        t.mock.method(modelRuntime, "getAvailable", async () => { throw failure; });
+        await assert.rejects(
+            resolver.resolve(SubagentReasoningSkill.MID, SubagentReasoningAmount.MID, "missing/model"),
+            (error) => error === failure,
+        );
+    }
+    assert.equal(rank.mock.callCount(), 0);
+});
+
+test("pre-aborted resolution never reads availability or ranks a fallback", async (t) => {
+    const modelRuntime = await runtime(t, [model("available", 1)]);
+    const available = t.mock.method(modelRuntime, "getAvailable");
+    const resolver = new SubagentModelResolver(modelRuntime);
+    await assert.rejects(
+        resolver.resolve(
+            SubagentReasoningSkill.MID, SubagentReasoningAmount.MID, "missing/model", AbortSignal.abort(),
+        ),
+        {name: "AbortError"},
+    );
+    assert.equal(available.mock.callCount(), 0);
+});
+
+test("abort after availability prevents exact selection and fallback ranking", async (t) => {
+    for (const preference of ["provider/available", "missing/model"]) {
+        const controller = new AbortController();
+        const modelRuntime = await runtime(t, [model("available", 1)]);
+        const ranker = new FixedPerformanceRanker({available: 1});
+        const rank = t.mock.method(ranker, "rank");
+        t.mock.method(modelRuntime, "getAvailable", async (...[_provider, options]: Parameters<ModelRuntime["getAvailable"]>) => {
+            assert.equal(options?.signal, controller.signal);
+            controller.abort();
+            return [model("available", 1)];
+        });
+        const resolver = new SubagentModelResolver(modelRuntime, ranker);
+        await assert.rejects(
+            resolver.resolve(SubagentReasoningSkill.MID, SubagentReasoningAmount.MID, preference, controller.signal),
+            {name: "AbortError"},
+        );
+        assert.equal(rank.mock.callCount(), 0);
+    }
+});
+
+test("abort during fallback ranking prevents returning a selected model", async (t) => {
+    const controller = new AbortController();
+    const ranker = new FixedPerformanceRanker({available: 1});
+    t.mock.method(ranker, "rank", async (models: readonly SubagentModel[], signal?: AbortSignal) => {
+        assert.equal(signal, controller.signal);
+        controller.abort();
+        return models.map((model) => ({model, score: 1}));
+    });
+    const resolver = new SubagentModelResolver(await runtime(t, [model("available", 1)]), ranker);
+    await assert.rejects(
+        resolver.resolve(SubagentReasoningSkill.MID, SubagentReasoningAmount.MID, "missing/model", controller.signal),
+        {name: "AbortError"},
+    );
+});
+
+test("fallback ranking errors and invalid ranking evidence are not swallowed", async (t) => {
+    const ranker = new FixedPerformanceRanker({available: 1});
+    const resolver = new SubagentModelResolver(await runtime(t, [model("available", 1)]), ranker);
+    const failure = new Error("ranker failed");
+    t.mock.method(ranker, "rank", async () => { throw failure; });
+    await assert.rejects(
+        resolver.resolve(SubagentReasoningSkill.MID, SubagentReasoningAmount.MID, "missing/model"),
+        (error) => error === failure,
+    );
+    t.mock.method(ranker, "rank", async () => []);
+    await assert.rejects(
+        resolver.resolve(SubagentReasoningSkill.MID, SubagentReasoningAmount.MID, "missing/model"),
+        /ranker did not score every candidate model/,
     );
 });
 

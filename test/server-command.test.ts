@@ -13,6 +13,7 @@ import {ArchiveBackground, type ArchiveEnqueueResult} from "../src/server/Archiv
 import {ArchiveRuntime} from "../src/server/ArchiveRuntime.js";
 import {ArchiveInbox} from "../src/server/ArchiveInbox.js";
 import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
+import type {ConfigSyncResult} from "../src/server/config-sync/ConfigSyncService.js";
 
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-command-test-key"};
 const SERVER_VERSION = "1.2.3";
@@ -66,6 +67,59 @@ function harness(
     return {directory, store, runtime, background, initialize, wake, enqueue, server, instance, command, prompts, notifications, checks, ctx,
         persisted() { ctx.sessionManager = SessionManager.create(directory, path.join(directory, "sessions")); }};
 }
+
+test("configuration sync commands use their foreground service, offer explicit opt-in, and redact failures", async (t) => {
+    const h = harness(t);
+    const result: ConfigSyncResult = {kind: "complete", items: [{key: "web-search", status: "unchanged"}]};
+    const sync = t.mock.method(h.server.configuration, "synchronize", async () => result);
+    const enable = t.mock.method(h.server.configuration, "enableAutomatic", async () => result);
+    const disable = t.mock.method(h.server.configuration, "disableAutomatic", () => {});
+    const recover = t.mock.method(h.server.configuration, "recover", async () => result);
+    await h.command.handler("sync", h.ctx);
+    assert.equal(sync.mock.callCount(), 1);
+    assert.match(h.notifications.at(-1)!.message, /web-search: unchanged/);
+    await h.command.handler(" SYNC ON ", h.ctx);
+    assert.equal(enable.mock.callCount(), 1);
+    assert.match(h.notifications.at(-1)!.message, /includes saved web-search credentials/);
+    await h.command.handler("sync off", h.ctx);
+    assert.equal(disable.mock.callCount(), 1);
+    assert.match(h.notifications.at(-1)!.message, /disabled on this computer/);
+    await h.command.handler("sync recover display-defaults server", h.ctx);
+    assert.equal(recover.mock.callCount(), 1);
+    assert.equal(recover.mock.calls[0]!.arguments[0], "display-defaults");
+    assert.equal(recover.mock.calls[0]!.arguments[1], "server");
+    assert.equal(h.checks.length, 0);
+    assert.equal(h.enqueue.mock.callCount(), 0);
+    assert.deepEqual(await h.command.getArgumentCompletions!("sync "), [
+        {value: "sync on", label: "sync on"}, {value: "sync off", label: "sync off"}, {value: "sync recover", label: "sync recover"},
+    ]);
+    assert.deepEqual(await h.command.getArgumentCompletions!("sync recover d"), [
+        {value: "sync recover display-defaults local", label: "sync recover display-defaults local"},
+        {value: "sync recover display-defaults server", label: "sync recover display-defaults server"},
+    ]);
+    t.mock.method(h.server.configuration, "synchronize", async () => { throw new Error(CONFIG.apiKey); });
+    await h.command.handler("sync", h.ctx);
+    assert.equal(h.notifications.at(-1)!.type, "error");
+    assert.equal(JSON.stringify(h.notifications).includes(CONFIG.apiKey), false);
+});
+
+test("logout cancels an outstanding configuration sync and suppresses its late result", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    let finish!: (result: ConfigSyncResult) => void;
+    let signal: AbortSignal | undefined;
+    t.mock.method(h.server.configuration, "synchronize", (requestSignal?: AbortSignal) => {
+        signal = requestSignal;
+        return new Promise<ConfigSyncResult>((resolve) => { finish = resolve; });
+    });
+    const pending = h.command.handler("sync", h.ctx);
+    await h.command.handler("logout", h.ctx);
+    assert.equal(signal!.aborted, true);
+    const count = h.notifications.length;
+    finish({kind: "complete", items: [{key: "display-defaults", status: "applied", outcome: "server_won"}]});
+    await pending;
+    assert.equal(h.notifications.length, count);
+});
 
 test("bare server with no config makes no request, queue, or startup probe", async (t) => {
     const h = harness(t);
@@ -377,16 +431,17 @@ test("superseded login cannot save credentials after logout or publish a stale w
 test("manual scopes are offered and unsupported credential arguments are not reflected", async (t) => {
     const h = harness(t);
     assert.deepEqual(await h.command.getArgumentCompletions!(""), [
-        {value: "login", label: "login"}, {value: "logout", label: "logout"}, {value: "upload", label: "upload"},
+        {value: "login", label: "login"}, {value: "logout", label: "logout"}, {value: "upload", label: "upload"}, {value: "sync", label: "sync"},
     ]);
     assert.deepEqual(await h.command.getArgumentCompletions!("upload "), [
         {value: "upload current", label: "upload current"}, {value: "upload all", label: "upload all"},
     ]);
     assert.deepEqual(await h.command.getArgumentCompletions!("upload a"), [{value: "upload all", label: "upload all"}]);
     assert.equal(await h.command.getArgumentCompletions!("update"), null);
-    for (const input of ["update", `login ${CONFIG.apiKey}`, "logout extra", "upload elsewhere", "upload all extra"]) {
+    for (const input of ["update", `login ${CONFIG.apiKey}`, "logout extra", "upload elsewhere", "upload all extra",
+        "sync recover global-policies server", "sync recover web-search unknown", `sync recover display-defaults local ${CONFIG.apiKey}`]) {
         await h.command.handler(input, h.ctx);
-        assert.deepEqual(h.notifications.at(-1), {message: "Usage: /server [login|logout|upload [current|all]]", type: "error"});
+        assert.deepEqual(h.notifications.at(-1), {message: "Usage: /server [login|logout|upload [current|all]|sync [on|off|recover <json-key> <local|server>]]", type: "error"});
     }
     assert.deepEqual(readdirSync(h.directory), []);
     assert.throws(() => h.instance.register(), /already registered/);

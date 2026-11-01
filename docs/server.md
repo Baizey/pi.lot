@@ -1,4 +1,4 @@
-# pi.server session archive
+# pi.server archive and configuration sync
 
 pi.lot archives native Pi session JSONL to [pi.server **0.3.x**](https://github.com/Baizey/pi.server/releases/tag/v0.3.0) and provides root-only tools to browse archived history. Publication runs in an independent background worker. Complete files are sent, not just the selected branch or tool previews. **They can contain prompts, reasoning, credentials, tool results, and file contents, and upload is outside agent policy approval.**
 
@@ -18,6 +18,55 @@ pi.lot archives native Pi session JSONL to [pi.server **0.3.x**](https://github.
 **Any saved server configuration enables automatic archival**, including configuration saved before this feature existed. Review the destination before leaving credentials configured. Do not pass credentials as command arguments.
 
 A new `/server` command or session shutdown cancels the previous foreground command request and suppresses stale notifications. This does **not** cancel committed background work or undo remote effects.
+
+## Saved configuration sync
+
+```text
+/server sync       # One foreground pass
+/server sync on    # One pass, then opt in to checks at session startup
+/server sync off   # Disable automatic configuration checks on this computer
+```
+
+Requires the additive **`config_sync_v1`** capability, not just a `0.3.x` version string. Login and pre-existing connections **do not enable configuration sync**. `sync on` approves the currently authenticated origin and complete server/namespace/history-generation binding. A changed binding pauses automatic sync until explicitly approved again. Logout removes request authorization but retains sync state and the previous opt-in; a later login must verify the approved destination.
+
+**This sends saved web-search credentials and can change authorization on other devices.** Trust the server and everyone who can write its namespace. HTTPS protects transit; configuration is not end-to-end encrypted. Manual sync and explicitly enabled startup checks are trusted host-management operations, outside agent policy approval. Already-dispatched requests cannot be recalled.
+
+Exactly five independently revisioned items synchronize:
+
+| Item | Local source |
+| --- | --- |
+| Display defaults | `~/.pilot/display-defaults.json` |
+| Preferred subagent models | `~/.pilot/subagent-defaults.json` |
+| Policy-area defaults | `~/.pilot/policy-defaults.json` |
+| Web-search configuration, including keys | `~/.pilot/web-search.json` |
+| `GLOBAL` policy rules | Logical rows in `~/.pilot/pilot.sqlite`, not the database file |
+
+Connection credentials/generation (`server.json`), credential IPC, native Pi settings, instructions, prompts, skills, themes, extensions, packages, session overrides, `LOCAL`/session/once-only grants, and archive state are **not** synchronized. Missing JSON files or an empty GLOBAL bundle represent unset/reset state. Files must be valid, bounded, regular non-symlink JSON sources; imports use private atomic replacement.
+
+Each item freezes its content, hash, base, timestamp, and change identity **before** the cheap optimistic check. When needed, one exchange submits that same snapshot and receives authoritative current state. Retries after uncertain responses/restart reuse the exact persisted request. Content/revisions, not clocks, determine winners; identical content creates no revision. An initially unbound client accepts existing server state. Known stale ordinary changes lose to current server state. GLOBAL rules merge changes relative to the accepted base, preserving unrelated additions/deletions; conflicting edits to the same rule retain current server state.
+
+A newer local save during HTTP is not overwritten: application is deferred and that edit remains for the next pass. LOCAL primary-key collisions remain local, never get overwritten by imported GLOBAL rules, and do not export false GLOBAL deletions. Removing a local mask can reveal the cached GLOBAL rule even when the optimistic check needs no exchange.
+
+Imported saved defaults and GLOBAL rules apply in **new/reloaded sessions**; the current session and existing child capability snapshots are not silently reset. Web search reads its saved configuration on use. Unavailable, unauthenticated, or reasoning-ineligible preferred subagent pins use the existing skill-appropriate `auto` selector locally, with visible fallback metadata. The preferred pin remains saved/synced unchanged, and is used exactly again when eligible. No eligible model fails clearly; cancellation and registry failures are not hidden.
+
+Automatic checks run at session startup without blocking session use. There is **no periodic polling, save watcher, departure HTTP, or detached configuration worker**. Use `/server sync` after saved changes and before switching computers when immediate propagation matters. Shutdown cancels session-owned configuration HTTP and retains pending work; it does not wait for configuration transfer.
+
+### Configuration durability and recovery
+
+Private `config_sync_*` tables in `~/.pilot/pilot.sqlite` hold origin/binding-scoped canonical bases, actual materialized GLOBAL snapshots, frozen pending exchanges, opt-ins, and recovery candidates. GLOBAL imports and their synchronization acknowledgements share one SQLite transaction. Before JSON replacement/deletion, a durable application checkpoint records the received state, approved local write-back snapshot, and actual canonical target. An interrupted attempt retries the original unchanged request. If the local file already equals the latest winner, it can be acknowledged without replacement; if it still equals the approved snapshot, guarded reapplication is safe. Otherwise it reports `needs_recovery` and retains the file, pending identity, and checkpoint without acknowledging a new base or automatically re-uploading a possible old import. `~/.pilot/config-sync.enabled` is only an opt-in lookup hint; the database stores the approved bindings. `config-sync.lock` serializes passes across local processes.
+
+For **interrupted JSON application only**, choose explicitly:
+
+```text
+/server sync recover display-defaults local
+/server sync recover web-search server
+```
+
+Use any of the four JSON item keys, not `global-policies` (whose import/acknowledgement is transactional). `local` freezes the selected local file before checking, reconciles the original pending identity, then durably creates and sends a **new** operation based on current server state. Normal concurrent-conflict rules still apply; this is not a forced remote overwrite. `server` privately preserves the selected local snapshot and accepts current server state only if that selected file has not changed in flight. Another local save is never substituted into the selected upload or silently overwritten. Repeated interruption retains its checkpoint and may require another explicit choice.
+
+These choices are exceptional recovery, not a dialog or extra negotiation for ordinary configuration conflicts. Losing or partially merged candidates remain private in `config_sync_recovery.snapshot`; there is no general conflict-list/restore UI yet. These records **can contain web-search secrets**. Back up rather than delete the database; it also holds local policy rules. Use a trusted host SQLite tool outside the mediated Bash filesystem for recovery, and do not share dumps. Configuration payloads and credentials are not included in synchronization diagnostics.
+
+Content is limited to **256 KiB per item**, with a separate **520 KiB wire-envelope cap**. The journal has a **64 MiB logical content budget**, at most **1,024 destination/item rows**, **10,000 recovery candidates**, and **1,024 automatic-origin opt-ins**. Capacity failure retains existing work; it never silently evicts unresolved evidence. These are not physical SQLite/WAL, disk, or RSS limits. Server history/receipt quotas also fail explicitly. Archive limits and journals remain separate.
 
 ## Automatic departure handoff
 

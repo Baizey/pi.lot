@@ -3,9 +3,12 @@ import {ServerConfigError} from "../server/ServerConfig.js";
 import {ServerService} from "../server/ServerService.js";
 import {captureArchiveSourceScope} from "../server/ArchiveSourceScopeCapture.js";
 import {SERVER_VERSION_REQUIREMENT} from "../server/ServerCompatibility.js";
+import {configSyncStatus} from "../server/config-sync/ConfigSyncStatus.js";
+import {CONFIG_KEYS} from "../server/config-sync/ConfigSyncProtocol.js";
+import type {ConfigSyncResult} from "../server/config-sync/ConfigSyncService.js";
 
-const ACTIONS = ["login", "logout", "upload"] as const;
-const USAGE = "Usage: /server [login|logout|upload [current|all]]";
+const ACTIONS = ["login", "logout", "upload", "sync"] as const;
+const USAGE = "Usage: /server [login|logout|upload [current|all]|sync [on|off|recover <json-key> <local|server>]]";
 
 export class ServerCommand {
     private registered = false;
@@ -19,7 +22,7 @@ export class ServerCommand {
         this.registered = true;
 
         this.pi.registerCommand("server", {
-            description: "Manage pi.server credentials, check status, or queue session archives for background upload",
+            description: "Manage pi.server credentials, session archives, and saved pi.lot configuration sync",
             getArgumentCompletions: (prefix) => this.completions(prefix),
             handler: async (input, ctx) => {
                 this.cancelStatusCheck();
@@ -27,6 +30,15 @@ export class ServerCommand {
                 if (!controller) return;
                 this.pendingCheck = controller;
                 try {
+                    const parts = input.trim().toLowerCase().split(/\s+/u);
+                    const key = CONFIG_KEYS.find((candidate) => candidate === parts[2]);
+                    const direction = parts[3];
+                    if (parts.length === 4 && parts[0] === "sync" && parts[1] === "recover"
+                        && key && key !== "global-policies" && (direction === "local" || direction === "server")) {
+                        const result = await this.server.configuration.recover(key, direction, controller.signal);
+                        this.notifySync(ctx, result, controller);
+                        return;
+                    }
                     switch (input.trim().toLowerCase()) {
                         case "":
                             await this.showStatus(ctx, controller);
@@ -45,6 +57,14 @@ export class ServerCommand {
                             return;
                         case "upload all":
                             await this.upload(ctx, "all", controller);
+                            return;
+                        case "sync":
+                        case "sync on":
+                            await this.sync(ctx, input.trim().toLowerCase() === "sync on", controller);
+                            return;
+                        case "sync off":
+                            this.server.configuration.disableAutomatic();
+                            ctx.ui.notify("Automatic configuration sync is disabled on this computer. Saved configuration, retained sync work, and session archival are unchanged.", "info");
                             return;
                         default:
                             ctx.ui.notify(USAGE, "error");
@@ -109,6 +129,20 @@ export class ServerCommand {
             : `Server archive work (${scope}) queued for background upload.`, result.warning !== undefined ? "warning" : "info");
     }
 
+    private async sync(ctx: ExtensionCommandContext, enableAutomatic: boolean, controller: AbortController): Promise<void> {
+        const result = await (enableAutomatic ? this.server.configuration.enableAutomatic(controller.signal)
+            : this.server.configuration.synchronize(controller.signal));
+        this.notifySync(ctx, result, controller, enableAutomatic);
+    }
+
+    private notifySync(ctx: ExtensionCommandContext, result: ConfigSyncResult, controller: AbortController, enableAutomatic = false): void {
+        if (this.pendingCheck !== controller || controller.signal.aborted) return;
+        const status = configSyncStatus(result);
+        const enabled = enableAutomatic && result.kind === "complete"
+            ? "\n\nAutomatic checks are enabled for this server binding at session startup. This includes saved web-search credentials. Use /server sync off to disable them." : "";
+        ctx.ui.notify(status.message + enabled, status.severity);
+    }
+
     private cancelStatusCheck(): void {
         this.pendingCheck?.abort();
         this.pendingCheck = undefined;
@@ -143,6 +177,15 @@ export class ServerCommand {
         const prefix = input.trimStart().toLowerCase();
         if (prefix.startsWith("upload ")) {
             return ["upload current", "upload all"].filter((action) => action.startsWith(prefix))
+                .map((action) => ({value: action, label: action}));
+        }
+        if (prefix.startsWith("sync recover ")) {
+            return CONFIG_KEYS.filter((key) => key !== "global-policies")
+                .flatMap((key) => ["local", "server"].map((direction) => `sync recover ${key} ${direction}`))
+                .filter((action) => action.startsWith(prefix)).map((action) => ({value: action, label: action}));
+        }
+        if (prefix.startsWith("sync ")) {
+            return ["sync on", "sync off", "sync recover"].filter((action) => action.startsWith(prefix))
                 .map((action) => ({value: action, label: action}));
         }
         if (/\s/.test(prefix)) return [];

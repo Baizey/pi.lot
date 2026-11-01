@@ -13,11 +13,15 @@ export class SqliteDatabase {
     readonly file: string;
     readonly isReadonly: boolean;
 
+    static open(filepath: string, isReadonly = false): SqliteDatabase {
+        return new SqliteDatabase(filepath, isReadonly);
+    }
+
     static test(
         isReadonly: boolean,
         filepath: string,
     ) {
-        return new SqliteDatabase(filepath, isReadonly);
+        return SqliteDatabase.open(filepath, isReadonly);
     }
 
     static readwrite(name: string) {
@@ -46,6 +50,10 @@ export class SqliteDatabase {
             this.db.close();
             throw error;
         }
+    }
+
+    get inTransaction(): boolean {
+        return this.db.inTransaction;
     }
 
     exec(sql: string) {

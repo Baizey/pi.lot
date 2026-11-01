@@ -21,7 +21,7 @@ export class DisplayDefaultsJsonStore implements DisplayDefaultsStore {
     constructor(filename = "display-defaults", directory = path.join(os.homedir(), ".pilot")) {
         this.file = path.join(directory, `${filename}.json`);
         this.defaultsFile = new JsonDefaultsFile(
-            this.file, "display defaults", parseDefaults, () => ({...initialDisplayDefaults}),
+            this.file, "display defaults", parseDisplayDefaults, () => ({...initialDisplayDefaults}),
         );
     }
 
@@ -61,7 +61,7 @@ export class DisplayDefaultsRuntime {
     }
 }
 
-function parseDefaults(value: unknown): ToolDisplayViews {
+export function parseDisplayDefaults(value: unknown): ToolDisplayViews {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error("defaults must be an object");
     }

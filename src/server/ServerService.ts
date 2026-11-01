@@ -2,6 +2,7 @@ import {ServerConfigStore, type ServerConfig} from "./ServerConfig.js";
 import {checkServerVersion} from "./ServerConnection.js";
 import {SessionArchive, type SessionArchiveOptions} from "./SessionArchive.js";
 import {ArchiveBackground} from "./ArchiveBackground.js";
+import {ConfigSyncService} from "./config-sync/ConfigSyncService.js";
 
 /** Foreground request admission and read access; committed archive work has independent ownership. */
 export class ServerService {
@@ -12,6 +13,7 @@ export class ServerService {
         readonly store = new ServerConfigStore(),
         readonly checkConnection = checkServerVersion,
         readonly background = new ArchiveBackground(store),
+        readonly configuration = new ConfigSyncService(store),
     ) {
     }
 

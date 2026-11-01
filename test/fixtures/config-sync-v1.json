@@ -1,0 +1,1470 @@
+{
+    "fixture_version": 1,
+    "protocol": "config_sync_v1",
+    "notes": [
+        "All credentials and domains are inert test values.",
+        "Checks/exchanges are independent cases, not a sequential live-server transcript.",
+        "Policy arbitration is a fixed golden scenario; consumers must use their production implementation, not a fixture-specific model.",
+        "Invalid cases require semantic validation after serde, not merely JSON deserialization.",
+        "Ordinary settings remain opaque JSON on the server; per-key client-schema rejection is deliberately excluded from the shared invalid corpus."
+    ],
+    "binding_response": {
+        "binding": {
+            "server_id": "interop-server",
+            "namespace_id": "interop-namespace",
+            "history_generation": "interop-generation"
+        },
+        "head": "9223372036854775807",
+        "capabilities": [
+            "config_sync_v1"
+        ]
+    },
+    "null_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "documents": [
+        {
+            "id": "display",
+            "key": "display-defaults",
+            "value": {
+                "normal": "minimal",
+                "alternate": "truncated"
+            },
+            "canonical": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+            "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+            "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+        },
+        {
+            "id": "subagents",
+            "key": "subagent-defaults",
+            "value": {
+                "min": "auto",
+                "low": "auto",
+                "mid": "example/model-mid",
+                "high": "example/model-high",
+                "max": "auto"
+            },
+            "canonical": "{\"high\":\"example/model-high\",\"low\":\"auto\",\"max\":\"auto\",\"mid\":\"example/model-mid\",\"min\":\"auto\"}",
+            "content": "{\"high\":\"example/model-high\",\"low\":\"auto\",\"max\":\"auto\",\"mid\":\"example/model-mid\",\"min\":\"auto\"}",
+            "sha256": "28f79ed76d494e51e3388a7636d5d0bf737c1c889e53b04c5b3ca4d6ae410521"
+        },
+        {
+            "id": "policy-defaults",
+            "key": "policy-defaults",
+            "value": {
+                "fs_read": "allow",
+                "fs_write": "ask_user",
+                "web_read": "allow",
+                "web_write": "ask_llm",
+                "web_tcp": "deny",
+                "web_dns": "allow",
+                "web_udp": "deny",
+                "web_ssh": "ask_user",
+                "web_websocket": "ask_llm",
+                "web_grpc": "deny",
+                "web_smtp": "deny"
+            },
+            "canonical": "{\"fs_read\":\"allow\",\"fs_write\":\"ask_user\",\"web_dns\":\"allow\",\"web_grpc\":\"deny\",\"web_read\":\"allow\",\"web_smtp\":\"deny\",\"web_ssh\":\"ask_user\",\"web_tcp\":\"deny\",\"web_udp\":\"deny\",\"web_websocket\":\"ask_llm\",\"web_write\":\"ask_llm\"}",
+            "content": "{\"fs_read\":\"allow\",\"fs_write\":\"ask_user\",\"web_dns\":\"allow\",\"web_grpc\":\"deny\",\"web_read\":\"allow\",\"web_smtp\":\"deny\",\"web_ssh\":\"ask_user\",\"web_tcp\":\"deny\",\"web_udp\":\"deny\",\"web_websocket\":\"ask_llm\",\"web_write\":\"ask_llm\"}",
+            "sha256": "4b6e3f2fc54474019e4fba234e925fc8d1cd0162960d0bae8fe18ccf9a6de5ba"
+        },
+        {
+            "id": "web-search",
+            "key": "web-search",
+            "value": {
+                "version": 1,
+                "providers": [
+                    "searxng",
+                    "brave"
+                ],
+                "requestTimeoutMs": 30000,
+                "maxResponseBytes": 2097152,
+                "searxng": {
+                    "baseUrl": "https://search.example.test"
+                },
+                "brave": {
+                    "apiKey": "fixture-only-not-a-credential"
+                }
+            },
+            "canonical": "{\"brave\":{\"apiKey\":\"fixture-only-not-a-credential\"},\"maxResponseBytes\":2097152,\"providers\":[\"searxng\",\"brave\"],\"requestTimeoutMs\":30000,\"searxng\":{\"baseUrl\":\"https://search.example.test\"},\"version\":1}",
+            "content": "{\"brave\":{\"apiKey\":\"fixture-only-not-a-credential\"},\"maxResponseBytes\":2097152,\"providers\":[\"searxng\",\"brave\"],\"requestTimeoutMs\":30000,\"searxng\":{\"baseUrl\":\"https://search.example.test\"},\"version\":1}",
+            "sha256": "40819423d47c19f279534b4dfe2634510b4c8a52ae13dfda1e64c2ecb3628dde"
+        },
+        {
+            "id": "policies-base",
+            "key": "global-policies",
+            "value": {
+                "rules": [
+                    {
+                        "accessType": "GET",
+                        "pattern": "a.example.test:443",
+                        "reason": "remove on client",
+                        "status": "ALLOWED"
+                    },
+                    {
+                        "accessType": "GET",
+                        "pattern": "b.example.test:443",
+                        "reason": "retained café 😀",
+                        "status": "DENIED"
+                    }
+                ]
+            },
+            "canonical": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"}]}",
+            "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"}]}",
+            "sha256": "ccbb77ebe400ad640a86577803b2068d6280ee693f290a06ba45482ad47098b7"
+        },
+        {
+            "id": "policies-current",
+            "key": "global-policies",
+            "value": {
+                "rules": [
+                    {
+                        "accessType": "GET",
+                        "pattern": "a.example.test:443",
+                        "reason": "remove on client",
+                        "status": "ALLOWED"
+                    },
+                    {
+                        "accessType": "GET",
+                        "pattern": "b.example.test:443",
+                        "reason": "retained café 😀",
+                        "status": "DENIED"
+                    },
+                    {
+                        "accessType": "GET",
+                        "pattern": "c.example.test:443",
+                        "reason": "server addition",
+                        "status": "ALLOWED"
+                    }
+                ]
+            },
+            "canonical": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"GET\",\"pattern\":\"c.example.test:443\",\"reason\":\"server addition\",\"status\":\"ALLOWED\"}]}",
+            "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"GET\",\"pattern\":\"c.example.test:443\",\"reason\":\"server addition\",\"status\":\"ALLOWED\"}]}",
+            "sha256": "0fee71036baab2ac30881fae8239201dd5c762a8fc14664d1ca22f4e4d035f5c"
+        },
+        {
+            "id": "policies-client",
+            "key": "global-policies",
+            "value": {
+                "rules": [
+                    {
+                        "accessType": "GET",
+                        "pattern": "b.example.test:443",
+                        "reason": "retained café 😀",
+                        "status": "DENIED"
+                    },
+                    {
+                        "accessType": "POST",
+                        "pattern": "d.example.test:443",
+                        "reason": "client addition",
+                        "status": "DENIED"
+                    }
+                ]
+            },
+            "canonical": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"POST\",\"pattern\":\"d.example.test:443\",\"reason\":\"client addition\",\"status\":\"DENIED\"}]}",
+            "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"POST\",\"pattern\":\"d.example.test:443\",\"reason\":\"client addition\",\"status\":\"DENIED\"}]}",
+            "sha256": "45d1c45c763f8faea8ff738f21f3d7151ab12d95ab6b21d46857a884b1ff4561"
+        },
+        {
+            "id": "policies-merged",
+            "key": "global-policies",
+            "value": {
+                "rules": [
+                    {
+                        "accessType": "GET",
+                        "pattern": "b.example.test:443",
+                        "reason": "retained café 😀",
+                        "status": "DENIED"
+                    },
+                    {
+                        "accessType": "GET",
+                        "pattern": "c.example.test:443",
+                        "reason": "server addition",
+                        "status": "ALLOWED"
+                    },
+                    {
+                        "accessType": "POST",
+                        "pattern": "d.example.test:443",
+                        "reason": "client addition",
+                        "status": "DENIED"
+                    }
+                ]
+            },
+            "canonical": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"GET\",\"pattern\":\"c.example.test:443\",\"reason\":\"server addition\",\"status\":\"ALLOWED\"},{\"accessType\":\"POST\",\"pattern\":\"d.example.test:443\",\"reason\":\"client addition\",\"status\":\"DENIED\"}]}",
+            "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"GET\",\"pattern\":\"c.example.test:443\",\"reason\":\"server addition\",\"status\":\"ALLOWED\"},{\"accessType\":\"POST\",\"pattern\":\"d.example.test:443\",\"reason\":\"client addition\",\"status\":\"DENIED\"}]}",
+            "sha256": "209e4f58e566ae3279a6e602ea70b21c6a18b4a7a609a8a238ecf213530492db"
+        },
+        {
+            "id": "display-formatted",
+            "key": "display-defaults",
+            "value": {
+                "normal": "minimal",
+                "alternate": "truncated"
+            },
+            "canonical": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+            "content": "{\n  \"normal\": \"minimal\",\n  \"alternate\": \"truncated\"\n}\n",
+            "sha256": "37adbf3534f06534591946a7105e87b181e5b79579826a264c92c322d86650c9"
+        }
+    ],
+    "canonical_vectors": [
+        {
+            "id": "integer-looking-keys",
+            "value": {
+                "1": {
+                    "3": false,
+                    "20": true
+                },
+                "2": "two",
+                "10": "ten"
+            },
+            "canonical": "{\"1\":{\"20\":true,\"3\":false},\"10\":\"ten\",\"2\":\"two\"}",
+            "sha256": "9ef081b8f5940ac43864b6f345ec5d6eb6cbb96d5dff90b598b735153b46deaa"
+        },
+        {
+            "id": "utf8-not-utf16-order",
+            "value": {
+                "𐀀": "astral",
+                "": "bmp",
+                "z": {
+                    "z": false,
+                    "a": null
+                },
+                "a": [
+                    {
+                        "z": 2,
+                        "a": 1
+                    },
+                    "é😀",
+                    true,
+                    -1
+                ]
+            },
+            "canonical": "{\"a\":[{\"a\":1,\"z\":2},\"é😀\",true,-1],\"z\":{\"a\":null,\"z\":false},\"\":\"bmp\",\"𐀀\":\"astral\"}",
+            "sha256": "f2e8d046cd54c4f875734986d7d869fe801709f9877737e5135cc105cfba34d9"
+        },
+        {
+            "id": "escaping-and-safe-integers",
+            "value": {
+                "text": "quote \" slash \\ tab\t line\n",
+                "positive": 9007199254740991,
+                "negative": -9007199254740991
+            },
+            "canonical": "{\"negative\":-9007199254740991,\"positive\":9007199254740991,\"text\":\"quote \\\" slash \\\\ tab\\t line\\n\"}",
+            "sha256": "02f3627b35183bc2ca05742e8643a56fdfcba555c52358837872142deaad4250"
+        }
+    ],
+    "checks": [
+        {
+            "id": "check-display-defaults",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "known_revision": null,
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "sync_needed": true
+            }
+        },
+        {
+            "id": "check-subagent-defaults",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "subagent-defaults",
+                "known_revision": "9223372036854775807",
+                "sha256": "28f79ed76d494e51e3388a7636d5d0bf737c1c889e53b04c5b3ca4d6ae410521"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "subagent-defaults",
+                "sync_needed": false
+            }
+        },
+        {
+            "id": "check-policy-defaults",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "policy-defaults",
+                "known_revision": "1",
+                "sha256": "4b6e3f2fc54474019e4fba234e925fc8d1cd0162960d0bae8fe18ccf9a6de5ba"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "policy-defaults",
+                "sync_needed": true
+            }
+        },
+        {
+            "id": "check-web-search",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "web-search",
+                "known_revision": "1",
+                "sha256": "40819423d47c19f279534b4dfe2634510b4c8a52ae13dfda1e64c2ecb3628dde"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "web-search",
+                "sync_needed": true
+            }
+        },
+        {
+            "id": "check-global-policies",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "known_revision": "1",
+                "sha256": "ccbb77ebe400ad640a86577803b2068d6280ee693f290a06ba45482ad47098b7"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "sync_needed": true
+            }
+        },
+        {
+            "id": "check-reset",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "known_revision": "2",
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "sync_needed": false
+            }
+        },
+        {
+            "id": "check-absent-revision-zero",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "known_revision": "0",
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "sync_needed": false
+            }
+        }
+    ],
+    "exchanges": [
+        {
+            "id": "initialize-display-defaults",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "initialize-subagent-defaults",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "subagent-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000002",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"high\":\"example/model-high\",\"low\":\"auto\",\"max\":\"auto\",\"mid\":\"example/model-mid\",\"min\":\"auto\"}",
+                "sha256": "28f79ed76d494e51e3388a7636d5d0bf737c1c889e53b04c5b3ca4d6ae410521"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "subagent-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"high\":\"example/model-high\",\"low\":\"auto\",\"max\":\"auto\",\"mid\":\"example/model-mid\",\"min\":\"auto\"}",
+                "sha256": "28f79ed76d494e51e3388a7636d5d0bf737c1c889e53b04c5b3ca4d6ae410521",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "initialize-policy-defaults",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "policy-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000003",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"fs_read\":\"allow\",\"fs_write\":\"ask_user\",\"web_dns\":\"allow\",\"web_grpc\":\"deny\",\"web_read\":\"allow\",\"web_smtp\":\"deny\",\"web_ssh\":\"ask_user\",\"web_tcp\":\"deny\",\"web_udp\":\"deny\",\"web_websocket\":\"ask_llm\",\"web_write\":\"ask_llm\"}",
+                "sha256": "4b6e3f2fc54474019e4fba234e925fc8d1cd0162960d0bae8fe18ccf9a6de5ba"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "policy-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"fs_read\":\"allow\",\"fs_write\":\"ask_user\",\"web_dns\":\"allow\",\"web_grpc\":\"deny\",\"web_read\":\"allow\",\"web_smtp\":\"deny\",\"web_ssh\":\"ask_user\",\"web_tcp\":\"deny\",\"web_udp\":\"deny\",\"web_websocket\":\"ask_llm\",\"web_write\":\"ask_llm\"}",
+                "sha256": "4b6e3f2fc54474019e4fba234e925fc8d1cd0162960d0bae8fe18ccf9a6de5ba",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "initialize-web-search",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "web-search",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000004",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"brave\":{\"apiKey\":\"fixture-only-not-a-credential\"},\"maxResponseBytes\":2097152,\"providers\":[\"searxng\",\"brave\"],\"requestTimeoutMs\":30000,\"searxng\":{\"baseUrl\":\"https://search.example.test\"},\"version\":1}",
+                "sha256": "40819423d47c19f279534b4dfe2634510b4c8a52ae13dfda1e64c2ecb3628dde"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "web-search",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"brave\":{\"apiKey\":\"fixture-only-not-a-credential\"},\"maxResponseBytes\":2097152,\"providers\":[\"searxng\",\"brave\"],\"requestTimeoutMs\":30000,\"searxng\":{\"baseUrl\":\"https://search.example.test\"},\"version\":1}",
+                "sha256": "40819423d47c19f279534b4dfe2634510b4c8a52ae13dfda1e64c2ecb3628dde",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "initialize-global-policies",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000005",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"}]}",
+                "sha256": "ccbb77ebe400ad640a86577803b2068d6280ee693f290a06ba45482ad47098b7"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"}]}",
+                "sha256": "ccbb77ebe400ad640a86577803b2068d6280ee693f290a06ba45482ad47098b7",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "absent-null",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "web-search",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000006",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "web-search",
+                "revision": "0",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "updated_at": null,
+                "outcome": "unchanged"
+            }
+        },
+        {
+            "id": "explicit-reset",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": "1",
+                "change_id": "00000000-0000-4000-8000-000000000007",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "2",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "explicit-policy-reset",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "base_revision": "3",
+                "change_id": "00000000-0000-4000-8000-000000000008",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "revision": "4",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "stale-server-reset-wins",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": "1",
+                "change_id": "00000000-0000-4000-8000-000000000009",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "2",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "server_won"
+            }
+        },
+        {
+            "id": "unchanged-policy",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "base_revision": "1",
+                "change_id": "00000000-0000-4000-8000-000000000010",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"}]}",
+                "sha256": "ccbb77ebe400ad640a86577803b2068d6280ee693f290a06ba45482ad47098b7"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"}]}",
+                "sha256": "ccbb77ebe400ad640a86577803b2068d6280ee693f290a06ba45482ad47098b7",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "unchanged"
+            }
+        },
+        {
+            "id": "stale-policy-add-delete-merge",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "base_revision": "1",
+                "change_id": "00000000-0000-4000-8000-000000000011",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"POST\",\"pattern\":\"d.example.test:443\",\"reason\":\"client addition\",\"status\":\"DENIED\"}]}",
+                "sha256": "45d1c45c763f8faea8ff738f21f3d7151ab12d95ab6b21d46857a884b1ff4561"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "revision": "3",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"GET\",\"pattern\":\"c.example.test:443\",\"reason\":\"server addition\",\"status\":\"ALLOWED\"},{\"accessType\":\"POST\",\"pattern\":\"d.example.test:443\",\"reason\":\"client addition\",\"status\":\"DENIED\"}]}",
+                "sha256": "209e4f58e566ae3279a6e602ea70b21c6a18b4a7a609a8a238ecf213530492db",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "merged"
+            }
+        },
+        {
+            "id": "lossless-revision",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "policy-defaults",
+                "base_revision": "9007199254740993",
+                "change_id": "00000000-0000-4000-8000-000000000012",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"fs_read\":\"allow\",\"fs_write\":\"ask_user\",\"web_dns\":\"allow\",\"web_grpc\":\"deny\",\"web_read\":\"allow\",\"web_smtp\":\"deny\",\"web_ssh\":\"ask_user\",\"web_tcp\":\"deny\",\"web_udp\":\"deny\",\"web_websocket\":\"ask_llm\",\"web_write\":\"ask_llm\"}",
+                "sha256": "4b6e3f2fc54474019e4fba234e925fc8d1cd0162960d0bae8fe18ccf9a6de5ba"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "policy-defaults",
+                "revision": "9007199254740994",
+                "schema_version": 1,
+                "content": "{\"fs_read\":\"allow\",\"fs_write\":\"ask_user\",\"web_dns\":\"allow\",\"web_grpc\":\"deny\",\"web_read\":\"allow\",\"web_smtp\":\"deny\",\"web_ssh\":\"ask_user\",\"web_tcp\":\"deny\",\"web_udp\":\"deny\",\"web_websocket\":\"ask_llm\",\"web_write\":\"ask_llm\"}",
+                "sha256": "4b6e3f2fc54474019e4fba234e925fc8d1cd0162960d0bae8fe18ccf9a6de5ba",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "unchanged"
+            }
+        },
+        {
+            "id": "opaque-ordinary-formatting",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": "0",
+                "change_id": "00000000-0000-4000-8000-000000000013",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\n  \"normal\": \"minimal\",\n  \"alternate\": \"truncated\"\n}\n",
+                "sha256": "37adbf3534f06534591946a7105e87b181e5b79579826a264c92c322d86650c9"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\n  \"normal\": \"minimal\",\n  \"alternate\": \"truncated\"\n}\n",
+                "sha256": "37adbf3534f06534591946a7105e87b181e5b79579826a264c92c322d86650c9",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        }
+    ],
+    "policy_scenarios": [
+        {
+            "id": "preserve-concurrent-addition-and-apply-client-add-delete",
+            "base": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"}]}",
+                "sha256": "ccbb77ebe400ad640a86577803b2068d6280ee693f290a06ba45482ad47098b7",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            },
+            "current": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "global-policies",
+                "revision": "2",
+                "schema_version": 1,
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"GET\",\"pattern\":\"c.example.test:443\",\"reason\":\"server addition\",\"status\":\"ALLOWED\"}]}",
+                "sha256": "0fee71036baab2ac30881fae8239201dd5c762a8fc14664d1ca22f4e4d035f5c",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            },
+            "exchange_id": "stale-policy-add-delete-merge",
+            "retained_patterns": [
+                "b.example.test:443",
+                "c.example.test:443"
+            ],
+            "added_patterns": [
+                "d.example.test:443"
+            ],
+            "removed_patterns": [
+                "a.example.test:443"
+            ]
+        }
+    ],
+    "invalid": [
+        {
+            "id": "check-extra-field",
+            "target": "check",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "known_revision": null,
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "extra": true
+            }
+        },
+        {
+            "id": "check-negative-revision",
+            "target": "check",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "known_revision": "-1",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "check-uppercase-digest",
+            "target": "check",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "known_revision": null,
+                "sha256": "105AD215F56436FEE640F7C410762145FE2F5262642B30FC5F116500A8C9EC3A"
+            }
+        },
+        {
+            "id": "check-result-non-boolean",
+            "target": "check_result",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "sync_needed": "true"
+            }
+        },
+        {
+            "id": "exchange-missing-fields",
+            "target": "exchange",
+            "value": {}
+        },
+        {
+            "id": "exchange-unknown-key",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "server.json",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-extra-field",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "extra": true
+            }
+        },
+        {
+            "id": "exchange-binding-extension",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation",
+                    "extra": true
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-binding-control",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "bad\n",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-schema-version",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 2,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-leading-zero-revision",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": "01",
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-revision-overflow",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": "9223372036854775808",
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-numeric-revision",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": 1,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-uppercase-uuid",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "ABCDEFAB-CDEF-4ABC-8ABC-ABCDEFABCDEF",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-newline-uuid",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001\n",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-invalid-timestamp",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-02-30T00:00:00.000Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-object-content",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": {
+                    "normal": "minimal",
+                    "alternate": "truncated"
+                },
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "exchange-malformed-json",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{",
+                "sha256": "021fb596db81e6d02bf3d2586ee3981fe519f275c0ac9ca76bbcf2ebb4097d96"
+            }
+        },
+        {
+            "id": "exchange-wrong-digest",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        },
+        {
+            "id": "exchange-null-wrong-digest",
+            "target": "exchange",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            }
+        },
+        {
+            "id": "state-extra-field",
+            "target": "state",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won",
+                "extra": true
+            }
+        },
+        {
+            "id": "state-zero-with-content",
+            "target": "state",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "0",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "updated_at": null,
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "state-zero-with-timestamp",
+            "target": "state",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "0",
+                "schema_version": 1,
+                "content": null,
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "state-positive-without-timestamp",
+            "target": "state",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "updated_at": null,
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "state-invalid-outcome",
+            "target": "state",
+            "value": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "retry"
+            }
+        },
+        {
+            "id": "policy-duplicate-identity",
+            "target": "content",
+            "value": {
+                "key": "global-policies",
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"},{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"}]}"
+            }
+        },
+        {
+            "id": "policy-lifetime-forbidden",
+            "target": "content",
+            "value": {
+                "key": "global-policies",
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"lifetime\":\"GLOBAL\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"}]}"
+            }
+        },
+        {
+            "id": "policy-unknown-access-type",
+            "target": "content",
+            "value": {
+                "key": "global-policies",
+                "content": "{\"rules\":[{\"accessType\":\"EXEC\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"}]}"
+            }
+        },
+        {
+            "id": "policy-unknown-status",
+            "target": "content",
+            "value": {
+                "key": "global-policies",
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ASK\"}]}"
+            }
+        },
+        {
+            "id": "policy-unsorted-rules",
+            "target": "content",
+            "value": {
+                "key": "global-policies",
+                "content": "{\"rules\":[{\"accessType\":\"GET\",\"pattern\":\"b.example.test:443\",\"reason\":\"retained café 😀\",\"status\":\"DENIED\"},{\"accessType\":\"GET\",\"pattern\":\"a.example.test:443\",\"reason\":\"remove on client\",\"status\":\"ALLOWED\"}]}"
+            }
+        },
+        {
+            "id": "policy-noncanonical-json",
+            "target": "content",
+            "value": {
+                "key": "global-policies",
+                "content": "{\n  \"rules\": [\n    {\n      \"accessType\": \"GET\",\n      \"pattern\": \"a.example.test:443\",\n      \"reason\": \"remove on client\",\n      \"status\": \"ALLOWED\"\n    }\n  ]\n}"
+            }
+        },
+        {
+            "id": "policy-empty-bundle-must-be-null",
+            "target": "content",
+            "value": {
+                "key": "global-policies",
+                "content": "{\"rules\":[]}"
+            }
+        },
+        {
+            "id": "canonical-noninteger",
+            "target": "canonical",
+            "value": {
+                "fraction": 0.5
+            }
+        },
+        {
+            "id": "canonical-unsafe-integer",
+            "target": "canonical",
+            "value": {
+                "integer": 9007199254740992
+            }
+        }
+    ],
+    "mismatched_responses": [
+        {
+            "id": "check-other-key",
+            "method": "check",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "known_revision": null,
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "web-search",
+                "sync_needed": true
+            }
+        },
+        {
+            "id": "check-other-generation",
+            "method": "check",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "known_revision": null,
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "other"
+                },
+                "key": "display-defaults",
+                "sync_needed": true
+            }
+        },
+        {
+            "id": "sync-other-namespace",
+            "method": "sync",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": null,
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "other",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "1",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        },
+        {
+            "id": "sync-backwards-revision",
+            "method": "sync",
+            "request": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "base_revision": "9007199254740993",
+                "change_id": "00000000-0000-4000-8000-000000000001",
+                "modified_at": "2025-04-05T06:07:08.009Z",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a"
+            },
+            "response": {
+                "binding": {
+                    "server_id": "interop-server",
+                    "namespace_id": "interop-namespace",
+                    "history_generation": "interop-generation"
+                },
+                "key": "display-defaults",
+                "revision": "9007199254740992",
+                "schema_version": 1,
+                "content": "{\"alternate\":\"truncated\",\"normal\":\"minimal\"}",
+                "sha256": "105ad215f56436fee640f7c410762145fe2f5262642b30fc5f116500a8c9ec3a",
+                "updated_at": "2025-04-05T06:07:08.009Z",
+                "outcome": "client_won"
+            }
+        }
+    ]
+}

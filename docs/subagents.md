@@ -89,7 +89,7 @@ Skill chooses from Pi's authenticated reasoning models; amount maps to `low`, `m
 
 Changes affect the current session until `save`; `reset` reloads `~/.pilot/subagent-defaults.json`, or restores all skills to `auto` if no file exists. A spawn snapshots its skill's mapping; later default changes do not mutate accepted jobs or retained conversations.
 
-An exact model must be authenticated, available, and support a normal reasoning amount when used; otherwise the job fails without substituting another model. Unsupported requested amounts clamp to a supported `low`, `medium`, or `high` thinking level without changing models. Inspect status for the resolved model and thinking level.
+An eligible preferred model is used exactly, without automatic ranking. If its pin is missing, unauthenticated, or no longer supports normal reasoning, selection falls back locally to the existing `auto` selector for the requested skill. Status visibly names the preferred pin and fallback reason. **The saved/active preference is not changed**, so configuration sync never uploads a temporary substitute; the exact pin returns when eligible again. No eligible local model fails clearly. Registry failures and cancellation propagate rather than trigger fallback; selection does not probe providers. Unsupported requested amounts clamp to a supported `low`, `medium`, or `high` thinking level after model selection. See [configuration sync](server.md#saved-configuration-sync).
 
 ## Policy requests from children
 

@@ -95,24 +95,27 @@ export class SubagentModelResolver {
         const available = await this.modelRuntime.getAvailable(undefined, {signal});
         if (signal?.aborted) throw abortError();
         const eligible = available.filter(supportsSubagentReasoning);
+        let fallbackReason: string | undefined;
         if (modelPreference !== AUTO_SUBAGENT_MODEL) {
             const model = availableModel(modelPreference, available);
-            if (!model) {
-                throw new Error(`Configured subagent model is not authenticated or available: ${modelPreference}`);
+            if (model && supportsSubagentReasoning(model)) {
+                return {
+                    model,
+                    thinkingLevel: clampSubagentThinkingLevel(model, requestedThinkingLevel),
+                    estimatedCost: effectiveModelCost(model),
+                    performanceScore: 0,
+                    performanceSource: "configured-exact-model",
+                };
             }
-            if (!supportsSubagentReasoning(model)) {
-                throw new Error(`Configured subagent model does not support normal reasoning amounts: ${modelPreference}`);
-            }
-            return {
-                model,
-                thinkingLevel: clampSubagentThinkingLevel(model, requestedThinkingLevel),
-                estimatedCost: effectiveModelCost(model),
-                performanceScore: 0,
-                performanceSource: "configured-exact-model",
-            };
+            fallbackReason = model
+                ? "does not support normal reasoning amounts"
+                : "not authenticated or available";
         }
         if (eligible.length === 0) {
-            throw new Error("No authenticated model supports normal subagent reasoning amounts");
+            const fallback = fallbackReason
+                ? `; cannot fall back from configured model ${modelPreference}: ${fallbackReason}`
+                : "";
+            throw new Error(`No authenticated model supports normal subagent reasoning amounts${fallback}`);
         }
 
         const ranked = await this.performanceRanker.rank(eligible, signal);
@@ -124,7 +127,9 @@ export class SubagentModelResolver {
             thinkingLevel: clampSubagentThinkingLevel(selected.model, requestedThinkingLevel),
             estimatedCost: selected.cost,
             performanceScore: selected.score,
-            performanceSource: this.performanceRanker.source,
+            performanceSource: fallbackReason
+                ? `${this.performanceRanker.source} (auto fallback from ${modelPreference}: ${fallbackReason})`
+                : this.performanceRanker.source,
         };
     }
 

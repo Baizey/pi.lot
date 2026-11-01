@@ -32,7 +32,7 @@ export class SubagentDefaultsJsonStore implements SubagentDefaultsStore {
         this.defaultsFile = new JsonDefaultsFile(
             this.file,
             "subagent defaults",
-            parseDefaults,
+            parseSubagentDefaults,
             () => ({...initialSubagentDefaults}),
         );
     }
@@ -66,7 +66,7 @@ export class SubagentDefaultsRuntime {
     }
 }
 
-function parseDefaults(value: unknown): SubagentDefaultValues {
+export function parseSubagentDefaults(value: unknown): SubagentDefaultValues {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error("defaults must be an object");
     }

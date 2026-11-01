@@ -45,7 +45,7 @@ The policy model defines SSH-, WebSocket-, gRPC-, and SMTP-specific areas, but t
 
 Root-only `archive_list` and `archive_fetch` check each actual URL and method within one tool-call policy scope before starting the HTTP timeout. GET uses `web_read`; POST list/download use **`web_write`** despite their read-only archive semantics. The API key remains host-side authentication, not policy context. Cache writes are trusted-extension bookkeeping; inspecting cached files with `read` still requires filesystem-read policy. These tools cannot upload or import/resume sessions.
 
-`/server` status, login, logout, and `upload [current|all]` are user host-management commands, outside agent policy approval. Saved server configuration also enables automatic current-family upload on graceful session shutdown; `/server logout` disables future automatic uploads. There is no startup or periodic upload. See [Server archive](server.md) for upload contents and recovery.
+`/server` status, login, logout, `upload [current|all]`, and `sync [on|off]` are user host-management commands, outside agent policy approval. Saved server configuration enables automatic current-family archival on graceful session shutdown; `/server logout` removes future request authorization. Archival has no startup backfill or periodic upload. Configuration sync is separate: one manual pass, or explicitly enabled nonblocking startup checks, sends only the five approved saved items (including web-search keys). Imported defaults and GLOBAL rules apply after reload, not by resetting live grants. See [Server archive and configuration sync](server.md) for scope and recovery.
 
 ## Policy areas and built-in defaults
 
@@ -116,7 +116,7 @@ Lifetimes are:
 - **This session** — the active root Pi session; and
 - **Always on this computer** — persisted locally.
 
-Network prompts also expose **Always synchronized**, but this is local persistence only: `GLOBAL` uses the same database as `LOCAL`, with no synchronization.
+Network prompts also expose **Always synchronized** (`GLOBAL`). These decisions persist in the same local database and are eligible for [explicitly configured pi.server synchronization](server.md#saved-configuration-sync). Without a capable configured server and a manual sync or device opt-in, they remain local. Only GLOBAL rules synchronize; LOCAL, session, and once-only grants do not. Imported rules never overwrite a non-GLOBAL collision.
 
 More-specific path and network scopes take precedence over broader scopes. Persisted rules live in `~/.pilot/pilot.sqlite`.
 

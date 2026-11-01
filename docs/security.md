@@ -45,6 +45,12 @@ Use `/server logout` to pause retained work and prevent subsequent requests; alr
 
 The worker automatically reconciles exact equality/prefix evidence and, with `preserved_variants_v1`, divergent or metadata-bearing versions. A longer body wins; divergent equal-length bodies use lowercase SHA-256 ordering. This is deterministic selection, not a judgment of truth. For divergence or required metadata retention, preserve the nonselected version under its original native ID before replacement; conditional publication and durable preservation dependencies protect concurrent updates. Unsupported preservation remains local on older servers. No transcript rewriting, classification union, remote-native resume, or conflict-ID aliases are used. Do not delete `~/.pilot/server-archive/archive.sqlite` to bypass a conflict: it holds recovery evidence. See [Server archive](server.md).
 
+### Saved configuration sync
+
+Configuration synchronization is **not enabled by login**. `/server sync` explicitly transfers the five approved saved items; `/server sync on` additionally opts this computer into nonblocking startup checks for the verified server/namespace/history-generation binding. This includes **web-search API keys**, policy defaults, and GLOBAL rules capable of widening authorization after reload. Trust the server and namespace writers. There is no end-to-end encryption; use HTTPS. Already-dispatched effects cannot be recalled. `/server sync off` revokes automatic checks, while manual sync and archival remain separate.
+
+Connection credentials, IPC paths, native Pi settings/resources, and local/session/once-only grants are excluded. Pending requests and losing candidates remain in private `config_sync_*` tables in `~/.pilot/pilot.sqlite` and may contain secrets; do not share database dumps or delete it as conflict recovery. No synchronization payloads are included in diagnostics. See [exact scope and durability](server.md#saved-configuration-sync).
+
 ### Host credential IPC
 
 Imported SSH-agent, Secret Service, and other configured IPC protocols can ask an existing host service to act with its normal authority. Effects performed by that service are outside the worker's direct filesystem/network gate. Read-only socket mounts do not restrict protocol operations.

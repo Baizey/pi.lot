@@ -13,6 +13,7 @@ import {ArchiveRuntime} from "../src/server/ArchiveRuntime.js";
 import {ArchiveInbox} from "../src/server/ArchiveInbox.js";
 import {ArchiveSessions} from "../src/server/ArchiveSessions.js";
 import {recordMainSessionIdentity} from "../src/sessions/SessionIdentity.js";
+import type {ConfigSyncResult} from "../src/server/config-sync/ConfigSyncService.js";
 
 type Handler = (event: never, ctx: ExtensionContext) => void | Promise<void>;
 const CONFIG = {url: "https://sessions.example.com", apiKey: "private-lifecycle-test-key"};
@@ -59,6 +60,46 @@ function harness(t: TestContext, awaitLocalShutdown: () => Promise<void> = async
         shutdown: () => stops[1]!(undefined as never, ctx),
     };
 }
+
+test("opt-in startup configuration work does not block startup or departure and suppresses late results", async (t) => {
+    const h = harness(t);
+    h.store.save(CONFIG);
+    let finish!: (result: ConfigSyncResult) => void;
+    let signal: AbortSignal | undefined;
+    const sync = t.mock.method(h.server.configuration, "synchronizeAutomatic", (requestSignal?: AbortSignal) => {
+        signal = requestSignal;
+        return new Promise<ConfigSyncResult>((resolve) => { finish = resolve; });
+    });
+    await h.start();
+    assert.equal(sync.mock.callCount(), 1);
+    assert.equal(signal!.aborted, false);
+    await h.shutdown();
+    assert.equal(signal!.aborted, true);
+    assert.equal(h.inbox.ids().length, 1);
+    finish({kind: "complete", items: [{key: "display-defaults", status: "applied", outcome: "server_won"}]});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(h.notifications, []);
+    assert.equal(sync.mock.callCount(), 1, "departure never performs configuration HTTP");
+});
+
+test("startup configuration checks stay quiet when unchanged and report only fixed safe failures", async (t) => {
+    for (const changed of [false, true]) {
+        const h = harness(t);
+        t.mock.method(h.server.configuration, "synchronizeAutomatic", async (): Promise<ConfigSyncResult> => ({kind: "complete",
+            items: [{key: "display-defaults", status: changed ? "applied" : "unchanged", outcome: changed ? "server_won" : "unchanged"}]}));
+        await h.start();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(h.notifications.length, changed ? 1 : 0);
+        if (changed) assert.match(h.notifications[0]!.message, /new\/reloaded sessions/);
+    }
+    const h = harness(t);
+    t.mock.method(h.server.configuration, "synchronizeAutomatic", async () => { throw new Error(CONFIG.apiKey); });
+    await h.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(h.notifications.length, 1);
+    assert.match(h.notifications[0]!.message, /retry with \/server sync/);
+    assert.equal(JSON.stringify(h.notifications).includes(CONFIG.apiKey), false);
+});
 
 test("startup caches identity then wakes retained work without scheduling history; departure queues once quietly", async (t) => {
     const h = harness(t);

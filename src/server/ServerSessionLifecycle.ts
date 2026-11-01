@@ -2,6 +2,7 @@ import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-age
 import {ServerService} from "./ServerService.js";
 import type {ArchiveSourceScope} from "./ArchiveSourceScope.js";
 import {captureArchiveSourceScope} from "./ArchiveSourceScopeCapture.js";
+import {configSyncStatus} from "./config-sync/ConfigSyncStatus.js";
 
 /** Cache after identity registration; register departure after hooks that close local writers. */
 export class ServerSessionLifecycle {
@@ -48,11 +49,26 @@ export class ServerSessionLifecycle {
             } catch {
                 ctx.ui.notify("Background archive startup failed. Queued work is retained; session use can continue.", "warning");
             }
+            this.startConfigurationSync(ctx);
         });
         this.pi.on("session_shutdown", (_event, ctx) => {
             // Capture this departure's plain data before any await or subsequent startup.
             return this.shutdownEnqueue ??= this.enqueueOnShutdown(ctx, this.source);
         });
+    }
+
+    private startConfigurationSync(ctx: ExtensionContext): void {
+        const controller = this.server.beginRequest();
+        if (!controller) return;
+        // Explicitly enabled startup checks must not delay session use or departure.
+        void this.server.configuration.synchronizeAutomatic(controller.signal).then((result) => {
+            if (controller.signal.aborted || !result || result.kind === "busy"
+                || (result.kind === "complete" && result.items.every((item) => item.status === "unchanged"))) return;
+            const status = configSyncStatus(result);
+            ctx.ui.notify(status.message, status.severity);
+        }).catch(() => {
+            if (!controller.signal.aborted) ctx.ui.notify("Automatic configuration sync failed. Pending work is retained; retry with /server sync.", "warning");
+        }).finally(() => this.server.finishRequest(controller));
     }
 
     private async enqueueOnShutdown(ctx: ExtensionContext, source: ArchiveSourceScope | undefined): Promise<void> {

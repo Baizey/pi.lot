@@ -48,6 +48,6 @@
     "@earendil-works/pi-codemode": "1.4.0",
     "better-sqlite3": "13.0.3",
     "jiti": "2.7.0",
-    "node-forge": "1.4.0"
+    "node-forge": "1.4.1"
   }
 }

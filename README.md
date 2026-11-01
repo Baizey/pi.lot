@@ -85,13 +85,15 @@ Equal/prefix history reconciles automatically; preservation-capable servers reta
 
 ## Codemode
 
-Pilot wraps Pi's native codemode tool. Calls use **JSON `{purpose, code}`**, not Pi's raw-source input grammar:
+In root sessions, Pilot wraps Pi's native codemode tool. Calls use **JSON `{purpose, code}`**, not Pi's raw-source input grammar:
 
 ```json
 {"purpose":"Read the project overview","code":"return await tools.read({path: 'README.md'});"}
 ```
 
-`purpose` must be nonempty, one line, and at most 160 characters. [Pi's codemode reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the JavaScript body and script APIs. Probe unknown tools with `'name' in tools`, not `typeof tools.name`.
+Child sessions retain Pi's native codemode input: raw JavaScript when supported by the model transport, or `{code}` for function-tool fallback. They do not require `purpose`. See [child MCP capabilities](docs/subagents.md#hard-mechanism-capabilities).
+
+For root calls, `purpose` must be nonempty, one line, and at most 160 characters. [Pi's codemode reference](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the JavaScript body and script APIs. Probe unknown tools with `'name' in tools`, not `typeof tools.name`.
 
 Codemode is inactive by default; see [installation](docs/installation.md#install-the-package) to enable it. Finite script timeouts pause for originating policy approval waits, but independent transport deadlines still apply; see [policy](docs/policy.md#finite-codemode-timeouts). Root `models.classify()` and `models.generateImages()` calls are potentially billable and outside filesystem/network policy. Pi 1.4 classifier image inputs pass through the native model API unchanged. Child codemode exposes no model globals; see [security](docs/security.md#codemode-model-calls).
 

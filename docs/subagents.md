@@ -64,7 +64,7 @@ Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always ava
 
 A child cannot request these mechanisms later, and cannot grant a nested child a mechanism it lacks. An `mcp` grant is not a per-tool allowlist: a new nested session takes its own snapshot from the root's then-current catalog. Aggregate MCP resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) remain root-only.
 
-Indirect MCP tools are discoverable through codemode/tool search; use `describeNamespace()` for server instructions. Child codemode exposes no model globals. In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
+Indirect MCP tools are discoverable through codemode/tool search; use `describeNamespace()` for server instructions. Child codemode retains Pi's native input convention: raw JavaScript when supported by the model transport, or `{code}` for function-tool fallback. Unlike the root wrapper, it does not require `purpose`. It exposes no model globals. In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
 
 Root and child codemode share Pi 1.4's process-wide worker pool: two live workers by default, configurable with `PI_CODEMODE_MAX_WORKERS`. Further scripts queue in arrival order for up to 60 seconds; queue time consumes any finite execution budget. Cancellation removes a queued request without running it, but a running worker keeps its slot until it exits. A parent script waiting for a child still occupies a slot, so queuing does not eliminate stalls when its child also needs a worker. This is not a two-subagent limit. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
 

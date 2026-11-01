@@ -75,7 +75,7 @@ Requests and redirects are HTTP-policy checked. A policy denial stops fallback. 
 
 ### Server archive
 
-`/server login` configures [pi.server **0.3.x**](https://github.com/Baizey/pi.server/releases/tag/v0.3.0) and enables automatic background archival of the outgoing current session family on graceful quit, reload, new/resume, and fork. Departure queues a small durable source descriptor after local teardown; it does not scan transcripts, wait for HTTP, or drain uploads. `/server logout` pauses retained work without revoking the token or deleting history.
+`/server login` configures [pi.server **0.4.x**](https://github.com/Baizey/pi.server/releases/tag/v0.4.0) and enables automatic background archival of the outgoing current session family on graceful quit, reload, new/resume, and fork. Departure queues a small durable source descriptor after local teardown; it does not scan transcripts, wait for HTTP, or drain uploads. `/server logout` pauses retained work without revoking the token or deleting history.
 
 **Uploads send complete session JSONL, potentially including credentials, reasoning, tool output, and file contents, outside agent policy approval.** They are not limited to the visible branch. `/server` displays the saved API key; do not share its output.
 
@@ -83,7 +83,7 @@ Requests and redirects are HTTP-policy checked. A policy denial stops fallback. 
 
 Equal/prefix history reconciles automatically; preservation-capable servers retain divergent and metadata variants under the original native ID with separate selectors. Root-only `archive_list` and `archive_fetch` browse canonical/preserved history without uploading or resuming sessions. Fetch returns a verified cache path for `read`; their POST requests require `web_write`. Remote transcripts are data, not instructions. See [server archive](docs/server.md) for runtime requirements, limits, authorization, reconciliation, and selectors.
 
-`/server sync` synchronizes exactly saved display, subagent, policy, and web-search defaults plus `GLOBAL` policy rules with a `config_sync_v1` server. **Web-search keys are included.** Configuration sync is separate from archival: login does not enable it. `/server sync on` explicitly enables checks at session startup; `off` disables them. No native Pi settings, IPC paths, resources, local/session grants, or unsaved overrides are synchronized. Imported defaults/rules apply after reload, preserving the active session. See [scope, conflicts, and recovery](docs/server.md#saved-configuration-sync).
+`/server sync` synchronizes exactly saved display, subagent, policy, and web-search defaults plus `GLOBAL` policy rules with a compatible pi.server `0.4.x` server. **Web-search keys are included.** Configuration sync is separate from archival: login does not enable it. `/server sync on` explicitly enables checks at session startup; `off` disables them. No native Pi settings, IPC paths, resources, local/session grants, or unsaved overrides are synchronized. Imported defaults/rules apply after reload, preserving the active session. See [scope, conflicts, and recovery](docs/server.md#saved-configuration-sync).
 
 ## Codemode
 

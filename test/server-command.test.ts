@@ -170,7 +170,7 @@ test("configured HTTP origins are accepted locally and login atomically replaces
 
 test("status retains incompatible and failure presentation without changing stored config", async (t) => {
     for (const entry of [
-        {status: {kind: "incompatible", version: "9.8.7"}, message: `Incompatible: server 9.8.7; required ${SERVER_VERSION_REQUIREMENT}.`, type: "warning"},
+        {status: {kind: "incompatible", version: "9.8.7"}, message: `Incompatible: server 9.8.7; required ${SERVER_VERSION_REQUIREMENT}.`, type: "error"},
         {status: {kind: "failure", message: "Authentication rejected (HTTP 401)."}, message: "Authentication rejected (HTTP 401).", type: "error"},
         {status: {kind: "failure", message: "Server connection failed."}, message: "Server connection failed.", type: "error"},
     ] satisfies Array<{status: ServerStatus; message: string; type: string}>) {

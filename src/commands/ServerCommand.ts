@@ -101,7 +101,7 @@ export class ServerCommand {
                 break;
             case "incompatible":
                 message = `Incompatible: server ${status.version}; required ${SERVER_VERSION_REQUIREMENT}.`;
-                severity = "warning";
+                severity = "error";
                 break;
             case "failure":
                 message = status.message;

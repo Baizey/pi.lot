@@ -8,7 +8,7 @@ import {ConfigSyncClient, ConfigSyncClientError} from "./ConfigSyncClient.js";
 import {ConfigSyncAdapters} from "./ConfigSyncAdapters.js";
 import {ConfigSyncJournal, type PendingConfigSync} from "./ConfigSyncJournal.js";
 import {
-    CONFIG_KEYS, CONFIG_SYNC_CAPABILITY, canonicalConfigContent, configHash, decodeConfigExchange,
+    CONFIG_KEYS, canonicalConfigContent, configHash, decodeConfigExchange,
     type ConfigKey, type ConfigOutcome, type ConfigSnapshot,
 } from "./ConfigSyncProtocol.js";
 
@@ -20,7 +20,7 @@ export type ConfigSyncItemResult = {
 };
 export type ConfigSyncResult =
     | {kind: "complete"; items: ConfigSyncItemResult[]}
-    | {kind: "unconfigured" | "busy" | "unsupported" | "binding_changed"};
+    | {kind: "unconfigured" | "busy" | "binding_changed"};
 type SyncMode = {kind: "manual" | "enable"} | {kind: "automatic"; binding: Binding}
     | {kind: "recover"; key: ConfigKey; direction: "local" | "server"};
 type ConfigSyncPass = {
@@ -90,9 +90,10 @@ export class ConfigSyncService {
                 await this.options.beforeRequest?.(method, route, requestSignal);
                 assertConnection();
             }});
+            await client.assertCompatible(signal);
+            assertConnection();
             const authority = await client.binding(signal);
             assertConnection();
-            if (!authority.capabilities?.includes(CONFIG_SYNC_CAPABILITY)) return {kind: "unsupported"};
             if (mode.kind === "automatic" && !sameArchiveBinding(authority.binding, mode.binding)) return {kind: "binding_changed"};
             if (mode.kind === "enable") journal.setAutomatic(connection.config.url, authority.binding);
             const destination = JSON.stringify([connection.config.url, authority.binding]);

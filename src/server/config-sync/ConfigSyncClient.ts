@@ -1,4 +1,6 @@
 import type {ServerConfig} from "../ServerConfig.js";
+import {matchesServerVersion, SERVER_VERSION_REQUIREMENT} from "../ServerCompatibility.js";
+import {decodeVersionResponse} from "../ServerResponses.js";
 import {
     decodeArchiveBinding, decodeArchiveBindingResponse, decodeArchiveSequence, sameArchiveBinding,
     type BindingResponse,
@@ -29,6 +31,15 @@ export class ConfigSyncClient {
     constructor(config: ServerConfig, options: ConfigSyncClientOptions = {}) {
         try { this.transport = new ServerHttpTransport(config, options, "configuration synchronization"); }
         catch (error) { throw safeError(error); }
+    }
+
+    /** The caller guards each sync pass before binding or local state mutation. */
+    async assertCompatible(signal?: AbortSignal): Promise<void> {
+        const response = await this.exchange("GET", "/v1/version", {}, 4096, decodeVersionResponse, signal);
+        if (!response || !matchesServerVersion(response.version, SERVER_VERSION_REQUIREMENT)) {
+            throw new ConfigSyncClientError(new ServerHttpError(
+                `Configuration synchronization requires pi.server ${SERVER_VERSION_REQUIREMENT}.`, undefined, {kind: "configuration"}));
+        }
     }
 
     async binding(signal?: AbortSignal): Promise<BindingResponse> {

@@ -31,6 +31,8 @@ const NEW_DISPLAY = {normal: "minimal", alternate: "truncated"};
 class Authority {
     binding = {...BINDING};
     capabilities = ["config_sync_v1"];
+    version = "0.4.0";
+    versions = 0;
     bindings = 0;
     readonly checks: ConfigCheck[] = [];
     readonly exchanges: ConfigExchange[] = [];
@@ -40,6 +42,13 @@ class Authority {
     afterExchange: ((request: ConfigExchange) => void | Promise<void>) | undefined;
 
     install(t: TestContext): void {
+        t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+            assert.equal(new URL(input instanceof Request ? input.url : input).pathname, "/v1/version");
+            assert.equal(init?.method, "GET");
+            assert.equal(init?.body, undefined);
+            this.versions++;
+            return Response.json({version: this.version});
+        });
         t.mock.method(ConfigSyncClient.prototype, "binding", async () => {
             this.bindings++;
             return {binding: {...this.binding}, head: "0", capabilities: [...this.capabilities]};
@@ -331,15 +340,47 @@ test("deleting a saved file submits an explicit reset, without resetting other k
     assert.equal(h.authority.exchanges.at(-1)!.change_id, reset.change_id);
 });
 
-test("unsupported capability sends no content and does not enable automatic synchronization", async (t) => {
+for (const mode of ["manual", "enable", "recover"] as const) {
+    test(`${mode} rejects pi.server 0.3 before binding, capture, or sync state changes even when capability is advertised`, async (t) => {
+        const h = fixture(t);
+        h.authority.version = "0.3.99";
+        fs.writeFileSync(path.join(h.directory, "display-defaults.json"), "invalid-sensitive-source");
+        const result = mode === "manual" ? h.service.synchronize() : mode === "enable"
+            ? h.service.enableAutomatic() : h.service.recover("display-defaults", "local");
+        await assert.rejects(result, {name: "ConfigSyncClientError", kind: "configuration",
+            message: "Configuration synchronization requires pi.server 0.4.*."});
+        assert.equal(h.authority.versions, 1);
+        assert.equal(h.authority.bindings, 0);
+        assert.equal(h.authority.checks.length, 0);
+        assert.equal(h.authority.exchanges.length, 0);
+        assert.equal(fs.existsSync(path.join(h.directory, "pilot.sqlite")), false);
+        assert.equal(fs.existsSync(path.join(h.directory, "config-sync.enabled")), false);
+        assert.equal(h.read("display-defaults"), "invalid-sensitive-source");
+    });
+}
+
+test("pi.server 0.4 compatibility, not optional capability metadata, authorizes the configuration pass", async (t) => {
     const h = fixture(t);
     h.save("display-defaults", DISPLAY);
     h.authority.capabilities = [];
-    assert.deepEqual(await h.service.enableAutomatic(), {kind: "unsupported"});
-    assert.equal(h.authority.checks.length, 0);
-    assert.equal(h.authority.exchanges.length, 0);
-    assert.equal(fs.existsSync(path.join(h.directory, "pilot.sqlite")), false);
-    assert.equal(fs.existsSync(path.join(h.directory, "config-sync.enabled")), false);
+    const result = assertComplete(await h.service.synchronize());
+    assert.equal(result.length, 5);
+    assert.equal(h.authority.versions, 1, "one preflight per pass, not per item");
+    assert.equal(h.authority.exchanges.length, 5);
+});
+
+test("an opted-in startup pass rejects a downgraded server and preserves local consent and state", async (t) => {
+    const h = fixture(t);
+    await h.service.enableAutomatic();
+    const before = h.entry("display-defaults");
+    const bindings = h.authority.bindings;
+    const exchanges = h.authority.exchanges.length;
+    h.authority.version = "0.3.0";
+    await assert.rejects(h.service.synchronizeAutomatic(), /requires pi\.server 0\.4\.\*/);
+    assert.equal(h.authority.bindings, bindings);
+    assert.equal(h.authority.exchanges.length, exchanges);
+    assert.deepEqual(h.entry("display-defaults"), before);
+    assert.equal(fs.existsSync(path.join(h.directory, "config-sync.enabled")), true);
 });
 
 test("automatic startup checks require per-device opt-in and the exact approved binding", async (t) => {

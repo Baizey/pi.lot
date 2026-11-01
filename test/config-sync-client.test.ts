@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, {type TestContext} from "node:test";
+import {createServer, type RequestListener} from "node:http";
 import type {ArchiveClientOptions} from "../src/server/ArchiveClient.js";
 import {ArchiveProtocolError, type Binding} from "../src/server/ArchiveProtocol.js";
 import {ServerHttpError} from "../src/server/ServerHttpTransport.js";
@@ -55,10 +56,148 @@ function source(chunks: Uint8Array[] = [], options: {stall?: boolean; cancelNeve
     reads: () => reads, cancellations: () => cancellations};
 }
 
+async function mockHttp(t: TestContext, handler: RequestListener) {
+    const server = createServer((request, reply) => {
+        reply.setHeader("Connection", "close");
+        handler(request, reply);
+    });
+    await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+    });
+    t.after(() => new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close((error) => error ? reject(error) : resolve());
+    }));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    return {...CONFIG, url: `http://127.0.0.1:${address.port}`};
+}
+
 function reverse(value: unknown): unknown {
     if (!value || typeof value !== "object" || Array.isArray(value)) return value;
     return Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reverse(item)]));
 }
+
+test("compatibility uses authenticated bodyless HTTP and requires stable 0.4 regardless of advertised capabilities", async (t) => {
+    let response: unknown = {version: "0.3.99", capabilities: [CONFIG_SYNC_CAPABILITY]};
+    const requests: {method?: string; path?: string; headers: Record<string, string | string[] | undefined>; body: string}[] = [];
+    const config = await mockHttp(t, (request, reply) => {
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+            requests.push({method: request.method, path: request.url, headers: request.headers, body: Buffer.concat(chunks).toString()});
+            reply.writeHead(200, {"Content-Type": "application/json"});
+            reply.end(JSON.stringify(request.url === "/v1/binding"
+                ? {binding: BINDING, head: "0", capabilities: [CONFIG_SYNC_CAPABILITY]} : response));
+        });
+    });
+    const approvals: string[] = [];
+    const caller = new AbortController();
+    const sync = new ConfigSyncClient(config, {beforeRequest: async (method, path, signal) => {
+        assert.equal(signal, caller.signal);
+        approvals.push(`${method} ${path}`);
+    }});
+    assert.deepEqual((await sync.binding(caller.signal)).capabilities, [CONFIG_SYNC_CAPABILITY]);
+    for (const version of ["0.3.0", "0.3.99+config-sync", "0.5.0", "1.0.0", "0.4.0-rc.1", "0.4.1-rc.1+build.7",
+        "0.4", "0.04.0", "0.4.0\n", CONFIG.apiKey, CONTENT]) {
+        response = {version, capabilities: [CONFIG_SYNC_CAPABILITY], content: CONTENT};
+        const error = await failure(sync.assertCompatible(caller.signal), "configuration");
+        assert.equal(error.message, "Configuration synchronization requires pi.server 0.4.*.");
+        assert.equal(error.retryable, false);
+        assert.equal(error.code, undefined);
+        assert.equal(error.retryAfterMs, undefined);
+        assert.equal(JSON.stringify(error).includes(version), false);
+    }
+    for (const value of [null, [], {}, {version: 4}, {version: "0.4.0+"}]) {
+        response = value;
+        await failure(sync.assertCompatible(caller.signal), "configuration");
+    }
+    for (const version of ["0.4.0", "0.4.99", "0.4.3+build.7", "0.4.3+build-7"]) {
+        response = {version};
+        assert.equal(await sync.assertCompatible(caller.signal), undefined);
+    }
+    assert.equal(requests.length, approvals.length);
+    assert.deepEqual(approvals, requests.map(({method, path}) => `${method} ${path}`));
+    for (const request of requests) {
+        assert.equal(request.method, "GET");
+        assert.equal(request.path, request === requests[0] ? "/v1/binding" : "/v1/version");
+        assert.equal(request.headers["x-apikey"], CONFIG.apiKey);
+        assert.equal(request.headers.accept, "application/json");
+        assert.equal(request.headers["content-type"], undefined);
+        assert.equal(request.headers["content-length"], undefined);
+        assert.equal(request.body, "");
+    }
+});
+
+test("compatibility preserves HTTP authentication failures and authorizes every attempt before fetch", async (t) => {
+    let requests = 0;
+    const config = await mockHttp(t, (_request, reply) => {
+        requests++;
+        reply.writeHead(401, {"Content-Type": "application/json"});
+        reply.end(JSON.stringify({error: {code: "unauthorized", retryable: false, publication_outcome: "unconfirmed",
+            message: `${CONFIG.apiKey} ${CONTENT}`}}));
+    });
+    let allow = true;
+    let approved = 0;
+    const sync = new ConfigSyncClient(config, {beforeRequest: async () => {
+        approved++;
+        if (!allow) throw new Error(`${CONFIG.apiKey} ${CONTENT}`);
+    }});
+    const denied = await failure(sync.assertCompatible(), "server");
+    assert.equal(denied.code, "unauthorized");
+    assert.equal(denied.retryable, false);
+    allow = false;
+    await failure(sync.assertCompatible(), "authorization");
+    await failure(sync.assertCompatible(AbortSignal.abort(`${CONFIG.apiKey} ${CONTENT}`)), "cancelled");
+    assert.equal(approved, 2);
+    assert.equal(requests, 1);
+});
+
+test("compatibility bounds real HTTP version bodies to 4 KiB and rejects malformed JSON without reflecting it", async (t) => {
+    let body = JSON.stringify({version: "0.4.0"});
+    let declared = true;
+    const config = await mockHttp(t, (_request, reply) => {
+        reply.writeHead(200, {"Content-Type": "application/json", ...(declared ? {"Content-Length": Buffer.byteLength(body)} : {})});
+        reply.end(body);
+    });
+    const sync = new ConfigSyncClient(config);
+    body += " ".repeat(4096 - Buffer.byteLength(body));
+    await sync.assertCompatible();
+    body += " ";
+    for (declared of [true, false]) {
+        const error = await failure(sync.assertCompatible(), "protocol");
+        assert.match(error.message, /size limit/);
+    }
+    for (body of [CONFIG.apiKey, `${CONTENT}\nnot-json`]) await failure(sync.assertCompatible(), "protocol");
+});
+
+test("compatibility preserves finite deadlines, caller cancellation, and redacted transport errors", async (t) => {
+    t.mock.timers.enable({apis: ["setTimeout"]});
+    const timeout = new ConfigSyncClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>(() => {})});
+    const pending = timeout.assertCompatible();
+    t.mock.timers.tick(100);
+    assert.equal((await failure(pending, "timeout")).retryable, true);
+    const caller = new AbortController();
+    const cancelled = timeout.assertCompatible(caller.signal);
+    caller.abort(`${CONFIG.apiKey} ${CONTENT}`);
+    assert.equal((await failure(cancelled, "cancelled")).retryable, false);
+    const stream = source([], {stall: true, cancelNeverSettles: true});
+    const reading = client(stream.response, {timeoutMs: 100}).assertCompatible();
+    await Promise.resolve();
+    await Promise.resolve();
+    t.mock.timers.tick(100);
+    await failure(reading, "timeout");
+    assert.equal(stream.cancellations(), 1);
+    assert.equal(stream.body.locked, false);
+    for (const cause of [new Error(`${CONFIG.apiKey} ${CONTENT}`),
+        new ServerHttpError(CONFIG.apiKey, "unauthorized", {kind: "configuration"})]) {
+        const sync = new ConfigSyncClient(CONFIG, {fetch: async () => { throw cause; }});
+        const error = await failure(sync.assertCompatible(), "transport");
+        assert.equal(error.retryable, true);
+        assert.equal(error.code, undefined);
+    }
+});
 
 test("binding, check and sync use exact authenticated endpoints and normalized JSON wire data", async () => {
     const paths: string[] = [];
@@ -352,8 +491,9 @@ test("authorization is rechecked per request, has no HTTP deadline, and may fenc
     assert.equal(fetched, 1);
 });
 
-test("sync wrapper allows its exact response cap while binding/check/error caps stay small", async () => {
+test("sync wrapper allows its exact response cap while version/binding/check/error caps stay small", async () => {
     for (const [cap, response, call] of [
+        [4096, {version: "0.4.0"}, (sync: ConfigSyncClient) => sync.assertCompatible()],
         [MAX_CONFIG_WIRE_BYTES, STATE, (sync: ConfigSyncClient) => sync.sync(REQUEST)],
         [65536, {binding: BINDING, head: "0"}, (sync: ConfigSyncClient) => sync.binding()],
         [65536, {binding: BINDING, key: REQUEST.key, sync_needed: true}, (sync: ConfigSyncClient) => sync.check(CHECK)],

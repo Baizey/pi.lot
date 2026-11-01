@@ -1,6 +1,6 @@
 # pi.server archive and configuration sync
 
-pi.lot archives native Pi session JSONL to [pi.server **0.3.x**](https://github.com/Baizey/pi.server/releases/tag/v0.3.0) and provides root-only tools to browse archived history. Publication runs in an independent background worker. Complete files are sent, not just the selected branch or tool previews. **They can contain prompts, reasoning, credentials, tool results, and file contents, and upload is outside agent policy approval.**
+pi.lot archives native Pi session JSONL to [pi.server **0.4.x**](https://github.com/Baizey/pi.server/releases/tag/v0.4.0) and provides root-only tools to browse archived history. Publication runs in an independent background worker. Complete files are sent, not just the selected branch or tool previews. **They can contain prompts, reasoning, credentials, tool results, and file contents, and upload is outside agent policy approval.**
 
 ## Connection and credentials
 
@@ -12,7 +12,7 @@ pi.lot archives native Pi session JSONL to [pi.server **0.3.x**](https://github.
 
 - `/server login` asks for an HTTP(S) origin and API key in separate dialogs. It atomically saves them, with an internal connection generation, in `~/.pilot/server.json` (plaintext, mode 0600). Canceling either dialog preserves the existing configuration. Login does not validate the key or server version; it wakes retained background work, which may contact the server.
 - Use an origin without a path, embedded credentials, query, or fragment. Prefer HTTPS: HTTP sends the key unencrypted. Requests reject redirects and retain normal certificate verification.
-- `/server` displays the saved URL and **API key**, then checks `GET /v1/version`. Do not share its output. Supported versions are stable `0.3.x`, not prereleases. Background publication validates the archive binding and capabilities, not this status check.
+- `/server` displays the saved URL and **API key**, then checks `GET /v1/version`. Do not share its output. Supported versions are stable `0.4.x`, not prereleases; other release lines are incompatible. Background publication validates the archive binding and capabilities, not this status check.
 - `/server logout` removes local authorization and wakes the worker to revalidate it. It does not revoke the token, delete sessions, or clear queued work, the journal, or downloads. Already-dispatched requests cannot be recalled.
 
 **Any saved server configuration enables automatic archival**, including configuration saved before this feature existed. Review the destination before leaving credentials configured. Do not pass credentials as command arguments.
@@ -27,7 +27,7 @@ A new `/server` command or session shutdown cancels the previous foreground comm
 /server sync off   # Disable automatic configuration checks on this computer
 ```
 
-Requires the additive **`config_sync_v1`** capability, not just a `0.3.x` version string. Login and pre-existing connections **do not enable configuration sync**. `sync on` approves the currently authenticated origin and complete server/namespace/history-generation binding. A changed binding pauses automatic sync until explicitly approved again. Logout removes request authorization but retains sync state and the previous opt-in; a later login must verify the approved destination.
+Requires stable **pi.server `0.4.x`**. Each pass checks the server version before binding, reading configuration sources, changing sync state, or enabling automatic checks. Incompatible versions fail the pass; configuration sync is not an optional older-server capability with a warning. Login and pre-existing connections **do not enable configuration sync**. `sync on` approves the currently authenticated origin and complete server/namespace/history-generation binding. A changed binding pauses automatic sync until explicitly approved again. Logout removes request authorization but retains sync state and the previous opt-in; a later login must verify the approved destination.
 
 **This sends saved web-search credentials and can change authorization on other devices.** Trust the server and everyone who can write its namespace. HTTPS protects transit; configuration is not end-to-end encrypted. Manual sync and explicitly enabled startup checks are trusted host-management operations, outside agent policy approval. Already-dispatched requests cannot be recalled.
 

@@ -5,7 +5,6 @@ export function configSyncStatus(result: ConfigSyncResult): {message: string; se
     switch (result.kind) {
         case "unconfigured": return {message: "Server is not configured. Use /server login first.", severity: "error"};
         case "busy": return {message: "Configuration synchronization is already running on this computer.", severity: "info"};
-        case "unsupported": return {message: "This server does not advertise config_sync_v1. No configuration content was sent.", severity: "warning"};
         case "binding_changed": return {message: "The configuration sync destination binding changed. Automatic sync is paused; use /server sync on to approve this destination.", severity: "warning"};
         case "complete": {
             const lines = result.items.map((item) => `${item.key}: ${item.status}${item.outcome ? ` (${item.outcome})` : ""}${item.phase ? ` during ${item.phase}` : ""}`);

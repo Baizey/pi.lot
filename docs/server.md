@@ -12,8 +12,10 @@ pi.lot archives native Pi session JSONL to [pi.server **0.4.x**](https://github.
 
 - `/server login` asks for an HTTP(S) origin and API key in separate dialogs. It atomically saves them, with an internal connection generation, in `~/.pilot/server.json` (plaintext, mode 0600). Canceling either dialog preserves the existing configuration. Login does not validate the key or server version; it wakes retained background work, which may contact the server.
 - Use an origin without a path, embedded credentials, query, or fragment. Prefer HTTPS: HTTP sends the key unencrypted. Requests reject redirects and retain normal certificate verification.
-- `/server` displays the saved URL and **API key**, then checks `GET /v1/version`. Do not share its output. Supported versions are stable `0.4.x`, not prereleases; other release lines are incompatible. Background publication validates the archive binding and capabilities, not this status check.
+- `/server` displays the saved URL and **API key**, then checks `GET /v1/version`. Do not share its output. Supported versions are stable `0.4.x`, not prereleases; other release lines are incompatible.
 - `/server logout` removes local authorization and wakes the worker to revalidate it. It does not revoke the token, delete sessions, or clear queued work, the journal, or downloads. Already-dispatched requests cannot be recalled.
+
+All operational archive and configuration HTTP goes through one shared connection gate. It authenticates and validates a bounded `GET /v1/version` response before sending any binding, discovery, download, publication, receipt, or configuration request. An incompatible version or failed/unverifiable handshake throws and stops the operation; it is not just a status warning. Successful verification is scoped to the client’s immutable origin/key snapshot, and authorization/cancellation checks still run before every request. Status, login, and logout remain usable to inspect or repair an incompatible connection. Local archive queueing can still retain work without sending it.
 
 **Any saved server configuration enables automatic archival**, including configuration saved before this feature existed. Review the destination before leaving credentials configured. Do not pass credentials as command arguments.
 
@@ -138,7 +140,7 @@ Full divergence/metadata preservation requires the additive **`preserved_variant
 
 Equal-body metadata differences preserve the incoming metadata while keeping first-accepted canonical metadata. Ordinary descriptive metadata follows a longer append. A shorter version's explicit kind/root assertion is preserved if the longer version contradicts **or omits** it; no classification is silently unioned.
 
-Variants keep the **original native `session_id`** and have a separate immutable **`variant_id`**. No invented conflict session IDs, transcript rewriting, or conflict dialogs are used. On older servers, equal/prefix publication proceeds only with coherent metadata evidence; unsupported divergence or metadata preservation stays retained locally instead of forcing an overwrite. Matching list/download revisions establish legacy metadata coherence; raced evidence is retried.
+Variants keep the **original native `session_id`** and have a separate immutable **`variant_id`**. No invented conflict session IDs, transcript rewriting, or conflict dialogs are used. If an otherwise-compatible server omits the preservation capability, equal/prefix publication proceeds only with coherent metadata evidence; unsupported divergence or metadata preservation stays retained locally instead of forcing an overwrite. Matching list/download revisions establish metadata coherence; raced evidence is retried. This never permits an older release line past the shared connection gate.
 
 ## Root-only archive tools
 
@@ -173,7 +175,7 @@ Downloads verify the complete body and return `{snapshot, path}` in the private 
 
 These tools are root-only and absent from child tool catalogs. Each request is checked by the invoking principal before sending:
 
-- `GET /v1/binding` requires `web_read`.
+- The shared `GET /v1/version` handshake and `GET /v1/binding` require `web_read`.
 - `POST /v1/list` and `POST /v1/download` require **`web_write`**, despite their read-only meaning.
 
 They use host HTTP, not Bash's DNS/TCP gate. The key stays in the authentication header, not policy task context or tool arguments/results. Private-cache writes are extension bookkeeping; reading downloaded files still requires filesystem-read policy. Recognized server failures produce local diagnostics, never arbitrary remote error text.

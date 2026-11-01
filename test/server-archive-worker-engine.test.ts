@@ -54,6 +54,8 @@ function queued(f: ReturnType<typeof fixture>, body: string, metadata: ArchiveMe
 }
 
 class Remote {
+    version = "0.4.0";
+    versionChecks = 0;
     binding: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "history"};
     body: Buffer | undefined;
     metadata: ArchiveMetadata | null = {};
@@ -77,6 +79,10 @@ class Remote {
 
     private fetch(url: string, init?: RequestInit): Response {
         const endpoint = new URL(url).pathname;
+        if (endpoint === "/v1/version") {
+            this.versionChecks++;
+            return this.unauthorized ? failure("unauthorized", 401, false) : json({version: this.version});
+        }
         this.calls.push(endpoint);
         if (this.unauthorized) return failure("unauthorized", 401, false);
         if (endpoint === "/v1/binding") return json({binding: this.binding, head: String(this.revision), ...(this.legacy ? {} : {capabilities: ["preserved_variants_v1"]})});
@@ -341,21 +347,37 @@ test("0.2 coherent list metadata permits prefix extension but retains unsupporte
     } finally { engine.close(); f.clean(); }
 });
 
+test("an incompatible server blocks automatic archive work before binding or publication", async () => {
+    const f = fixture(); const remote = new Remote(); remote.version = "0.3.0"; remote.install(); queued(f, "history");
+    const engine = new ArchiveWorkerEngine(f.archive, f.store);
+    try {
+        await cycles(engine, 5);
+        assert.equal(remote.versionChecks, 1);
+        assert.deepEqual(remote.calls, []);
+        assert.deepEqual(remote.requests, []);
+        assert.equal(remote.body, undefined);
+        assert.equal(remote.receipts.size, 0);
+        assert.equal(engine.inspect().eligible, false);
+    } finally { engine.close(); f.clean(); }
+});
+
 test("401 blocks credential generation, logout sends nothing, mismatching namespace stays paused", async () => {
     const f = fixture(); const remote = new Remote(); remote.unauthorized = true; remote.install(); queued(f, "history");
     const engine = new ArchiveWorkerEngine(f.archive, f.store);
     try {
         await cycles(engine, 4);
-        assert.deepEqual(remote.calls, ["/v1/binding"]);
+        assert.deepEqual(remote.calls, []);
+        assert.equal(remote.versionChecks, 1);
         assert.equal(engine.inspect().eligible, false);
         const old = f.connection!;
-        f.connection = undefined; await cycles(engine, 2); assert.equal(remote.calls.length, 1);
+        f.connection = undefined; await cycles(engine, 2); assert.equal(remote.calls.length, 0);
         // Unbound work cannot inherit replacement credentials, even at the same origin.
         remote.unauthorized = false;
         f.connection = {...old, generation: randomUUID()}; await cycles(engine, 2);
-        assert.equal(remote.calls.length, 1);
+        assert.equal(remote.calls.length, 0);
         f.connection = old; // Same blocked generation stays blocked.
-        await cycles(engine, 2); assert.equal(remote.calls.length, 1);
+        await cycles(engine, 2); assert.equal(remote.calls.length, 0);
+        assert.equal(remote.versionChecks, 1);
     } finally { engine.close(); f.clean(); }
 });
 
@@ -625,8 +647,12 @@ test("incremental owned parent paths resolve the same child in both observation 
     for (const rightFirst of [false, true]) {
         const f = fixture();
         const binding: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "history"};
-        mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => new URL(String(url)).pathname === "/v1/binding"
-            ? json({binding, head: "0", capabilities: ["preserved_variants_v1"]}) : failure("overloaded", 503, true));
+        mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => {
+            const endpoint = new URL(String(url)).pathname;
+            if (endpoint === "/v1/version") return json({version: "0.4.0"});
+            return endpoint === "/v1/binding"
+                ? json({binding, head: "0", capabilities: ["preserved_variants_v1"]}) : failure("overloaded", 503, true);
+        });
         const wrong = path.join(f.directory, "wrong-parent.jsonl");
         const right = path.join(f.directory, "right-parent.jsonl");
         const child = path.join(f.directory, "child.jsonl");
@@ -666,8 +692,12 @@ test("incremental owned parent paths resolve the same child in both observation 
 test("a legacy child uses cached active-root evidence after root source loss and worker restart", async () => {
     const f = fixture();
     const binding: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "history"};
-    mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => new URL(String(url)).pathname === "/v1/binding"
-        ? json({binding, head: "0", capabilities: ["preserved_variants_v1"]}) : failure("overloaded", 503, true));
+    mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => {
+        const endpoint = new URL(String(url)).pathname;
+        if (endpoint === "/v1/version") return json({version: "0.4.0"});
+        return endpoint === "/v1/binding"
+            ? json({binding, head: "0", capabilities: ["preserved_variants_v1"]}) : failure("overloaded", 503, true);
+    });
     const childId = "subagent-missing-root-child";
     const child = path.join(f.directory, "legacy-child.jsonl");
     const childBody = Buffer.from([

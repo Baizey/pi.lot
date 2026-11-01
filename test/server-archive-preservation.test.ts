@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {archiveClient} from "./fixtures/CompatibleServer.js";
 import {createHash} from "node:crypto";
 import test from "node:test";
 import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
@@ -37,7 +38,7 @@ function receipt(request: Preservation = UPLOADED): PreservationReceipt {
 }
 
 function client(value: unknown): ArchiveClient {
-    return new ArchiveClient(CONFIG, {fetch: async () => Response.json(value)});
+    return archiveClient(CONFIG, {fetch: async () => Response.json(value)});
 }
 
 function accepted(request: Preservation = UPLOADED): unknown {
@@ -78,7 +79,7 @@ test("publication and uploaded preservation reject wrong body type or length bef
     });
     const authorize = t.mock.fn(async () => {});
     const fetcher = t.mock.fn(async () => { throw new Error("Invalid body must never reach transport"); });
-    const archive = new ArchiveClient(CONFIG, {fetch: fetcher, beforeRequest: authorize});
+    const archive = archiveClient(CONFIG, {fetch: fetcher, beforeRequest: authorize});
     const publication: Publication = {binding: BINDING, session_id: UPLOADED.session_id, operation_id: UPLOADED.operation_id,
         condition: {kind: "absent"}, byte_length: BODY.length, sha256: DIGEST, metadata: UPLOADED.metadata};
     try {
@@ -102,7 +103,7 @@ test("publication and uploaded preservation freeze valid caller bytes before aut
     for (const preservation of [false, true]) {
         const body = new Uint8Array(BODY);
         const authorize = t.mock.fn(async () => { body.fill(0); await Promise.resolve(); });
-        const archive = new ArchiveClient(CONFIG, {beforeRequest: authorize, fetch: async (_url, init) => {
+        const archive = archiveClient(CONFIG, {beforeRequest: authorize, fetch: async (_url, init) => {
             assert.deepEqual(Buffer.from(init!.body as Uint8Array), BODY);
             return Response.json(preservation ? accepted() : {status: "accepted", receipt: {request: publication, revision: {binding: BINDING, seq: "1"}}});
         }});
@@ -206,7 +207,7 @@ test("preservation receipts reject malformed selectors, binding, metadata and pr
 });
 
 test("uploaded preservation sends exact bytes with a canonical control header", async () => {
-    const archive = new ArchiveClient(CONFIG, {fetch: async (url, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (url, init) => {
         assert.equal(String(url), `${CONFIG.url}/v1/preserve`);
         assert.equal(init?.method, "POST");
         assert.equal(init?.redirect, "manual");
@@ -226,7 +227,7 @@ test("uploaded preservation sends exact bytes with a canonical control header", 
 
 test("current preservation and receipt recovery send only their original normalized control request", async () => {
     for (const request of [UPLOADED, CURRENT]) {
-        const archive = new ArchiveClient(CONFIG, {fetch: async (url, init) => {
+        const archive = archiveClient(CONFIG, {fetch: async (url, init) => {
             assert.equal(String(url), `${CONFIG.url}${request.mode === "current" ? "/v1/preserve" : "/v1/preserve-receipt"}`);
             const headers = new Headers(init?.headers);
             assert.equal(headers.get("content-type"), "application/json");
@@ -261,7 +262,7 @@ test("all preservation fingerprint mismatches fail both mutation and receipt rec
 
 test("invalid local preservation and selector inputs never reach authorization or transport", async () => {
     let calls = 0;
-    const archive = new ArchiveClient(CONFIG, {beforeRequest: async () => { calls++; },
+    const archive = archiveClient(CONFIG, {beforeRequest: async () => { calls++; },
         fetch: async () => { calls++; return Response.json(accepted()); }});
     const invalidCurrent = {...CURRENT, sha256: DIGEST};
     for (const [request, body] of [[UPLOADED, undefined], [UPLOADED, Buffer.from("wrong")], [CURRENT, BODY],
@@ -282,18 +283,18 @@ test("snapshot metadata preserves legacy unknown separately from coherent null a
     const coherent = {...legacy, metadata: null, uploaded_at: null};
     assert.deepEqual(decodeArchiveSessionMetadata(coherent), coherent);
     for (const snapshot of [legacy, coherent, {...legacy, metadata: {}, uploaded_at: VARIANT.uploaded_at}]) {
-        const archive = new ArchiveClient(CONFIG, {fetch: async () => downloaded(futureFields(snapshot))});
+        const archive = archiveClient(CONFIG, {fetch: async () => downloaded(futureFields(snapshot))});
         assert.deepEqual((await archive.download(BINDING, UPLOADED.session_id)).snapshot, snapshot);
     }
     for (const snapshot of [{...legacy, metadata: null}, {...legacy, uploaded_at: null},
         {...coherent, uploaded_at: "invalid"}, {...coherent, metadata: []}]) {
-        const archive = new ArchiveClient(CONFIG, {fetch: async () => downloaded(snapshot)});
+        const archive = archiveClient(CONFIG, {fetch: async () => downloaded(snapshot)});
         assert.equal((await failure(archive.download(BINDING, UPLOADED.session_id))).kind, "protocol");
     }
 });
 
 test("variant downloads verify both selectors and never accept canonical fallback", async () => {
-    const archive = new ArchiveClient(CONFIG, {fetch: async (url, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (url, init) => {
         assert.equal(String(url), `${CONFIG.url}/v1/download`);
         assert.deepEqual(JSON.parse(await new Response(init?.body).text()),
             {binding: BINDING, session_id: VARIANT.session_id, variant_id: VARIANT.variant_id});
@@ -303,14 +304,14 @@ test("variant downloads verify both selectors and never accept canonical fallbac
     for (const snapshot of [{...VARIANT, variant_id: undefined}, {...VARIANT, variant_id: null},
         {...VARIANT, variant_id: "different"}, {...VARIANT, session_id: "other", metadata: null},
         {...VARIANT, metadata: undefined, uploaded_at: undefined}, {...VARIANT, sha256: "0".repeat(64)}]) {
-        await failure(new ArchiveClient(CONFIG, {fetch: async () => downloaded(snapshot)})
+        await failure(archiveClient(CONFIG, {fetch: async () => downloaded(snapshot)})
             .download(BINDING, VARIANT.session_id, undefined, VARIANT.variant_id));
     }
     for (const variant_id of [VARIANT.variant_id, null]) {
-        await failure(new ArchiveClient(CONFIG, {fetch: async () => downloaded({...VARIANT, variant_id})})
+        await failure(archiveClient(CONFIG, {fetch: async () => downloaded({...VARIANT, variant_id})})
             .download(BINDING, VARIANT.session_id));
     }
-    const notFound = new ArchiveClient(CONFIG, {fetch: async () => Response.json({error: {
+    const notFound = archiveClient(CONFIG, {fetch: async () => Response.json({error: {
         code: "not_found", retryable: false, publication_outcome: "unconfirmed",
     }}, {status: 404})});
     assert.equal((await failure(notFound.download(BINDING, VARIANT.session_id, undefined, VARIANT.variant_id))).code, "not_found");
@@ -320,7 +321,7 @@ test("opt-in listing uses complete selectors and exact native-ID filtering", asy
     const canonical = {...VARIANT, variant_id: undefined};
     const sessions = [canonical, VARIANT, {...VARIANT, variant_id: "second"}];
     const page = {binding: BINDING, sessions, next_cursor: "next"};
-    const archive = new ArchiveClient(CONFIG, {fetch: async (_url, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (_url, init) => {
         assert.deepEqual(JSON.parse(await new Response(init?.body).text()),
             {binding: BINDING, filters: {session_id: VARIANT.session_id}, limit: 3, include_preserved: true});
         return Response.json(futureFields(page));
@@ -343,7 +344,7 @@ test("opt-in listing uses complete selectors and exact native-ID filtering", asy
 
 test("absent and false preserved opt-in omit the field for legacy canonical servers", async () => {
     for (const include_preserved of [undefined, false]) {
-        const archive = new ArchiveClient(CONFIG, {fetch: async (_url, init) => {
+        const archive = archiveClient(CONFIG, {fetch: async (_url, init) => {
             assert.deepEqual(JSON.parse(await new Response(init?.body).text()), {binding: BINDING, limit: 1});
             return Response.json({binding: BINDING, sessions: [], next_cursor: null});
         }});
@@ -364,7 +365,7 @@ test("maximal binding and selector IDs with large metadata fit header, receipt a
         metadata: request.metadata ?? null};
     const expected = {request: normalized, variant};
     const page = {binding, sessions: [variant], next_cursor: "c".repeat(4096)};
-    const archive = new ArchiveClient(CONFIG, {fetch: async (url, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (url, init) => {
         if (String(url).endsWith("/preserve")) {
             const header = new Headers(init?.headers).get("x-pi-preservation");
             assert.ok(header && header.length <= 65536);
@@ -398,7 +399,7 @@ test("preservation transport provenance and validated retry hints retain mutatio
     const forged = new ArchiveClientError(CONFIG.apiKey, "unauthorized", false, {kind: "server", retryAfterMs: 123});
     for (const fetcher of [() => { throw forged; }, async () => { throw forged; }, async () => new Response(
         new ReadableStream({pull(controller) { controller.error(forged); }}), {headers: {"Content-Type": "application/json"}})]) {
-        const archive = new ArchiveClient(CONFIG, {fetch: fetcher});
+        const archive = archiveClient(CONFIG, {fetch: fetcher});
         const error = await failure(archive.preserve(CURRENT), true);
         assert.equal(error.kind, "transport");
         assert.equal(error.code, undefined);
@@ -406,7 +407,7 @@ test("preservation transport provenance and validated retry hints retain mutatio
         assert.equal(error.retryable, true);
     }
     for (const [code, status, retryable] of [["stale_base", 409, false], ["overloaded", 503, true], ["unauthorized", 401, false]] as const) {
-        const archive = new ArchiveClient(CONFIG, {fetch: async () => Response.json({error: {
+        const archive = archiveClient(CONFIG, {fetch: async () => Response.json({error: {
             code, retryable, publication_outcome: "unconfirmed", message: CONFIG.apiKey,
         }}, {status, headers: {"Retry-After": "7"}})});
         const error = await failure(archive.preserve(CURRENT), true);
@@ -420,18 +421,19 @@ test("preservation transport provenance and validated retry hints retain mutatio
 test("preservation cancellation, authorization and deadlines preserve safe classification", async (t) => {
     t.mock.timers.enable({apis: ["setTimeout"]});
     let calls = 0;
-    const archive = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: async () => { calls++; return new Promise<Response>(() => {}); }});
+    const archive = archiveClient(CONFIG, {timeoutMs: 100, fetch: async () => { calls++; return new Promise<Response>(() => {}); }});
     assert.equal((await failure(archive.preserve(CURRENT, undefined, AbortSignal.abort(CONFIG.apiKey)), true)).kind, "cancelled");
     assert.equal(calls, 0);
     const pending = archive.preserve(UPLOADED, BODY);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(100);
     const timeout = await failure(pending, true);
     assert.equal(timeout.kind, "timeout");
     assert.equal(timeout.retryable, true);
-    const denied = new ArchiveClient(CONFIG, {beforeRequest: async () => { throw new Error(CONFIG.apiKey); }});
+    const denied = archiveClient(CONFIG, {beforeRequest: async () => { throw new Error(CONFIG.apiKey); }});
     assert.equal((await failure(denied.preserve(CURRENT), true)).kind, "authorization");
     const controller = new AbortController();
-    const waiting = new ArchiveClient(CONFIG, {beforeRequest: () => new Promise<void>(() => {})});
+    const waiting = archiveClient(CONFIG, {beforeRequest: () => new Promise<void>(() => {})});
     const cancelled = waiting.preserve(CURRENT, undefined, controller.signal);
     controller.abort(CONFIG.apiKey);
     assert.equal((await failure(cancelled, true)).kind, "cancelled");
@@ -444,12 +446,12 @@ test("preservation response caps cancel oversized streams and reject non-JSON er
             start(controller) { controller.enqueue(new Uint8Array(65537)); },
             cancel() { cancellations++; },
         });
-        const archive = new ArchiveClient(CONFIG, {fetch: async () => new Response(body, {headers: {"Content-Type": "application/json"}})});
+        const archive = archiveClient(CONFIG, {fetch: async () => new Response(body, {headers: {"Content-Type": "application/json"}})});
         await failure(lookup ? archive.preserveReceipt(CURRENT) : archive.preserve(CURRENT), !lookup);
         assert.equal(cancellations, 1);
         assert.equal(body.locked, false);
     }
-    const archive = new ArchiveClient(CONFIG, {fetch: async () => new Response(JSON.stringify({error: {
+    const archive = archiveClient(CONFIG, {fetch: async () => new Response(JSON.stringify({error: {
         code: "overloaded", retryable: true, publication_outcome: "unconfirmed",
     }}), {status: 503, headers: {"Content-Type": "text/plain", "Retry-After": "7"}})});
     const error = await failure(archive.preserve(CURRENT), true);

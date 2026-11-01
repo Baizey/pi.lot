@@ -43,15 +43,16 @@ class Authority {
 
     install(t: TestContext): void {
         t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
-            assert.equal(new URL(input instanceof Request ? input.url : input).pathname, "/v1/version");
+            const path = new URL(input instanceof Request ? input.url : input).pathname;
             assert.equal(init?.method, "GET");
             assert.equal(init?.body, undefined);
-            this.versions++;
-            return Response.json({version: this.version});
-        });
-        t.mock.method(ConfigSyncClient.prototype, "binding", async () => {
+            if (path === "/v1/version") {
+                this.versions++;
+                return Response.json({version: this.version});
+            }
+            assert.equal(path, "/v1/binding");
             this.bindings++;
-            return {binding: {...this.binding}, head: "0", capabilities: [...this.capabilities]};
+            return Response.json({binding: {...this.binding}, head: "0", capabilities: [...this.capabilities]});
         });
         t.mock.method(ConfigSyncClient.prototype, "check", async (request: ConfigCheck) => {
             this.checks.push(structuredClone(request));
@@ -348,7 +349,7 @@ for (const mode of ["manual", "enable", "recover"] as const) {
         const result = mode === "manual" ? h.service.synchronize() : mode === "enable"
             ? h.service.enableAutomatic() : h.service.recover("display-defaults", "local");
         await assert.rejects(result, {name: "ConfigSyncClientError", kind: "configuration",
-            message: "Configuration synchronization requires pi.server 0.4.*."});
+            message: "Incompatible pi.server version; required 0.4.*."});
         assert.equal(h.authority.versions, 1);
         assert.equal(h.authority.bindings, 0);
         assert.equal(h.authority.checks.length, 0);
@@ -376,7 +377,7 @@ test("an opted-in startup pass rejects a downgraded server and preserves local c
     const bindings = h.authority.bindings;
     const exchanges = h.authority.exchanges.length;
     h.authority.version = "0.3.0";
-    await assert.rejects(h.service.synchronizeAutomatic(), /requires pi\.server 0\.4\.\*/);
+    await assert.rejects(h.service.synchronizeAutomatic(), /Incompatible pi\.server version; required 0\.4\.\*/);
     assert.equal(h.authority.bindings, bindings);
     assert.equal(h.authority.exchanges.length, exchanges);
     assert.deepEqual(h.entry("display-defaults"), before);

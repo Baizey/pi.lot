@@ -183,6 +183,19 @@ test("status retains incompatible and failure presentation without changing stor
     }
 });
 
+test("an incompatible connection can still be inspected, replaced and removed", async (t) => {
+    const h = harness(t, ["https://replacement.example.test", "replacement-key"], true,
+        async () => ({kind: "incompatible", version: "0.3.0"}));
+    h.store.save(CONFIG);
+    await h.command.handler("", h.ctx);
+    assert.equal(h.notifications.at(-1)!.type, "error");
+    await h.command.handler("login", h.ctx);
+    assert.equal(h.store.load()!.url, "https://replacement.example.test");
+    await h.command.handler("logout", h.ctx);
+    assert.equal(h.store.load(), undefined);
+    assert.equal(h.checks.length, 1, "connection repair does not require a compatible old connection");
+});
+
 test("cancelled or invalid login never changes previous credentials or starts background work", async (t) => {
     for (const answers of [[undefined], [CONFIG.url, undefined], [CONFIG.url, ""], ["not-a-url", CONFIG.apiKey],
         ["https://user:private-command-test-key@sessions.example.com", CONFIG.apiKey]]) {

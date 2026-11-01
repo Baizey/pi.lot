@@ -96,6 +96,7 @@ async function runFixtureArchiveWorker(directory: string, configDirectory: strin
             const url = new URL(String(input));
             assert.equal(url.origin, settings.origin, "fixture must never contact another destination");
             assert.ok(new Headers(init?.headers).get("x-apikey") === settings.token, "expected fixture authentication");
+            if (url.pathname === "/v1/version") return json({version: "0.4.0"});
             const call: typeof calls[number] = {endpoint: url.pathname, method: init?.method, at: Date.now()};
             calls.push(call);
             write("calls.json", calls);

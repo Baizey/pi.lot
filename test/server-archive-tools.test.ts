@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {archiveClient} from "./fixtures/CompatibleServer.js";
 import {mkdtempSync, readFileSync, rmSync, statSync, readdirSync} from "node:fs";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
@@ -14,7 +15,7 @@ import {PolicyAccessType, PolicyArea, PolicyFallbackResponse} from "../src/polic
 import type {PilotSessionRuntimeInterface} from "../src/runtime/PilotSessionRuntime.js";
 import type {ListPage, SessionMetadata} from "../src/server/ArchiveProtocol.js";
 import {SessionKind} from "../src/sessions/SessionIdentity.js";
-import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
+import {ArchiveClientError} from "../src/server/ArchiveClient.js";
 import {SessionArchive, type ArchiveListInput, type SessionArchiveOptions} from "../src/server/SessionArchive.js";
 import {ServerService} from "../src/server/ServerService.js";
 import {ServerConfigStore, type ServerConfig} from "../src/server/ServerConfig.js";
@@ -64,7 +65,7 @@ function harness(t: TestContext, page: ListPage = PAGE, fetcher?: typeof fetch) 
         factories.push({config, options});
         assert.deepEqual(config, CONFIG);
         if (fetcher) return new SessionArchive(config, {...options,
-            client: new ArchiveClient(config, {fetch: fetcher, beforeRequest: options.beforeRequest})});
+            client: archiveClient(config, {fetch: fetcher, beforeRequest: options.beforeRequest})});
         const beforeRequest = options.beforeRequest;
         assert.ok(beforeRequest);
         const request = async (method: "GET" | "POST", url: string, signal?: AbortSignal) => {
@@ -133,7 +134,7 @@ test("agent tools use the shared server core without losing their independent po
     const server = new ServerService(store);
     const requests: string[] = [];
     const factory = t.mock.method(server, "archive", (config: ServerConfig, options: SessionArchiveOptions = {}) => (
-        new SessionArchive(config, {...options, client: new ArchiveClient(config, {
+        new SessionArchive(config, {...options, client: archiveClient(config, {
             beforeRequest: options.beforeRequest,
             fetch: async (input, init) => {
                 requests.push(String(input));

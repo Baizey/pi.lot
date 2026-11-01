@@ -1,6 +1,7 @@
 import type {ServerConfig} from "./ServerConfig.js";
+import {matchesServerVersion, SERVER_VERSION_REQUIREMENT} from "./ServerCompatibility.js";
 import {
-    decodeRetryAfterMs, decodeServerError, formatServerError, isRetryableServerErrorCode, MAX_RETRY_AFTER_MS,
+    decodeRetryAfterMs, decodeServerError, decodeVersionResponse, formatServerError, isRetryableServerErrorCode, MAX_RETRY_AFTER_MS,
     type ServerErrorCode,
 } from "./ServerResponses.js";
 
@@ -42,6 +43,8 @@ export class ServerHttpTransport {
     private readonly timeoutMs: number;
     private readonly beforeRequest?: ServerHttpOptions["beforeRequest"];
     private readonly title: string;
+    // Verification belongs to this immutable origin/key snapshot, never to another connection.
+    private compatible = false;
 
     constructor(config: ServerConfig, options: ServerHttpOptions, private readonly label: string) {
         this.title = label.charAt(0).toUpperCase() + label.slice(1);
@@ -66,6 +69,42 @@ export class ServerHttpTransport {
     }
 
     async exchange<T>(
+        method: "GET" | "POST", path: string, payload: ServerHttpPayload, accept: string, cap: number,
+        decode: (response: Response, body: Buffer) => T, signal?: AbortSignal,
+    ): Promise<T> {
+        await this.connect(signal);
+        return this.request(method, path, payload, accept, cap, decode, signal);
+    }
+
+    json(bytes: Uint8Array): unknown {
+        try {
+            return JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes));
+        } catch {
+            throw new ServerHttpError(`${this.title} server returned invalid JSON.`);
+        }
+    }
+
+    contentLength(response: Response): number | undefined {
+        const header = response.headers.get("content-length");
+        if (header === null) return undefined;
+        if (!/^(0|[1-9][0-9]{0,15})(?![\s\S])/u.test(header)) throw this.protocolFailure();
+        const length = Number(header);
+        if (!Number.isSafeInteger(length)) throw this.protocolFailure();
+        return length;
+    }
+
+    private async connect(signal?: AbortSignal): Promise<void> {
+        if (this.compatible) return;
+        const version = await this.request("GET", "/v1/version", {}, "application/json", 4096,
+            (_response, body) => decodeVersionResponse(this.json(body)), signal);
+        if (!version || !matchesServerVersion(version.version, SERVER_VERSION_REQUIREMENT)) {
+            throw new ServerHttpError(`Incompatible pi.server version; required ${SERVER_VERSION_REQUIREMENT}.`,
+                undefined, {kind: "configuration"});
+        }
+        this.compatible = true;
+    }
+
+    private async request<T>(
         method: "GET" | "POST", path: string, payload: ServerHttpPayload, accept: string, cap: number,
         decode: (response: Response, body: Buffer) => T, signal?: AbortSignal,
     ): Promise<T> {
@@ -160,23 +199,6 @@ export class ServerHttpTransport {
                 reader.releaseLock();
             }
         }
-    }
-
-    json(bytes: Uint8Array): unknown {
-        try {
-            return JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes));
-        } catch {
-            throw new ServerHttpError(`${this.title} server returned invalid JSON.`);
-        }
-    }
-
-    contentLength(response: Response): number | undefined {
-        const header = response.headers.get("content-length");
-        if (header === null) return undefined;
-        if (!/^(0|[1-9][0-9]{0,15})(?![\s\S])/u.test(header)) throw this.protocolFailure();
-        const length = Number(header);
-        if (!Number.isSafeInteger(length)) throw this.protocolFailure();
-        return length;
     }
 
     private transport<T>(operation: () => Promise<T>): Promise<T> {

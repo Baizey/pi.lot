@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {archiveClient} from "./fixtures/CompatibleServer.js";
 import {createHash} from "node:crypto";
 import test from "node:test";
 import {ArchiveClient, ArchiveClientError} from "../src/server/ArchiveClient.js";
@@ -34,7 +35,7 @@ function accepted(request: Publication = PUBLICATION): Response {
 }
 
 function client(response: Response, timeoutMs = 1000): ArchiveClient {
-    return new ArchiveClient(CONFIG, {fetch: async () => response, timeoutMs});
+    return archiveClient(CONFIG, {fetch: async () => response, timeoutMs});
 }
 
 function stream(chunks: Uint8Array[], options: {status?: number; headers?: HeadersInit; stall?: boolean; cancelNeverSettles?: boolean} = {}) {
@@ -159,7 +160,7 @@ test("filters are strict and exact-base receipt sequences compare using BigInt",
 
 test("binding makes one authenticated GET with redirects refused and ordinary TLS defaults", async () => {
     let calls = 0;
-    const archive = new ArchiveClient(CONFIG, {fetch: async (input, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (input, init) => {
         calls++;
         assert.equal(String(input), `${CONFIG.url}/v1/binding`);
         assert.equal(init?.method, "GET");
@@ -177,7 +178,7 @@ test("binding makes one authenticated GET with redirects refused and ordinary TL
 
 test("list sends normalized control JSON and returns only lightweight metadata", async () => {
     const row = {...SNAPSHOT, metadata: PUBLICATION.metadata, uploaded_at: "2025-01-01T12:00:00Z", blob: CONFIG.apiKey};
-    const archive = new ArchiveClient(CONFIG, {fetch: async (input, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (input, init) => {
         assert.equal(String(input), `${CONFIG.url}/v1/list`);
         const request = JSON.parse(Buffer.from(await new Response(init?.body).arrayBuffer()).toString());
         assert.deepEqual(request, {binding: BINDING, filters: {kind: "main", activity_from: "2025-01-01T10:00:00.000Z"}, cursor: null, limit: 2});
@@ -205,13 +206,13 @@ test("list rejects page binding, row revision binding, duplicate rows, bad schem
         {binding: BINDING, sessions: [], next_cursor: "x".repeat(4097)},
     ]) await failure(client(Response.json(page)).list({binding: BINDING, limit: 1}), /protocol/);
     let calls = 0;
-    const archive = new ArchiveClient(CONFIG, {fetch: async () => { calls++; return Response.json({}); }});
+    const archive = archiveClient(CONFIG, {fetch: async () => { calls++; return Response.json({}); }});
     for (const limit of [0, -1, 0.5, 4294967296]) await assert.rejects(archive.list({binding: BINDING, limit}));
     assert.equal(calls, 0);
 });
 
 test("publish encodes canonical unpadded base64url publication and accepts reordered receipt fields", async () => {
-    const archive = new ArchiveClient(CONFIG, {fetch: async (input, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (input, init) => {
         assert.equal(String(input), `${CONFIG.url}/v1/publish`);
         const headers = new Headers(init?.headers);
         const header = headers.get("x-pi-publication");
@@ -228,7 +229,7 @@ test("publish encodes canonical unpadded base64url publication and accepts reord
 
 test("all publish failures remain uncertain, including local integrity errors and unknown outcomes", async () => {
     let calls = 0;
-    const archive = new ArchiveClient(CONFIG, {fetch: async () => { calls++; return accepted(); }});
+    const archive = archiveClient(CONFIG, {fetch: async () => { calls++; return accepted(); }});
     const error = await failure(archive.publish(PUBLICATION, Buffer.from("wrong")), /protocol/);
     assert.equal(error.publicationUncertain, true);
     assert.equal(error.kind, "protocol");
@@ -260,7 +261,7 @@ test("publication/receipt responses must match the entire immutable fingerprint 
 });
 
 test("receipt lookup posts the original normalized request without bytes and preserves unknown", async () => {
-    const archive = new ArchiveClient(CONFIG, {fetch: async (input, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (input, init) => {
         assert.equal(String(input), `${CONFIG.url}/v1/receipt`);
         assert.deepEqual(JSON.parse(await new Response(init?.body).text()), decodeArchivePublication(PUBLICATION));
         assert.equal(new Headers(init?.headers).has("x-pi-publication"), false);
@@ -270,7 +271,7 @@ test("receipt lookup posts the original normalized request without bytes and pre
 });
 
 test("download verifies one current-version snapshot and returns exact bytes", async () => {
-    const archive = new ArchiveClient(CONFIG, {fetch: async (input, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (input, init) => {
         assert.equal(String(input), `${CONFIG.url}/v1/download`);
         assert.deepEqual(JSON.parse(await new Response(init?.body).text()), {binding: BINDING, session_id: PUBLICATION.session_id});
         assert.equal(new Headers(init?.headers).get("accept"), "application/octet-stream");
@@ -323,7 +324,7 @@ test("malformed JSON, fatal UTF-8, invalid schema, headers and transport failure
     await failure(client(Response.json({binding: BINDING, head: "1"}, {headers: {"Content-Encoding": "gzip"}})).binding(), /protocol/);
     await failure(client(new Response(null)).binding(), /protocol/);
     for (const cause of [new TypeError(CONFIG.apiKey), CONFIG.apiKey]) {
-        const error = await failure(new ArchiveClient(CONFIG, {fetch: async () => { throw cause; }}).binding(), /connection or response failed/);
+        const error = await failure(archiveClient(CONFIG, {fetch: async () => { throw cause; }}).binding(), /connection or response failed/);
         assert.equal(error.kind, "transport");
         assert.equal(error.retryable, true);
         assert.equal(error.retryAfterMs, undefined);
@@ -426,7 +427,7 @@ test("unknown or malformed HTTP errors never grant retries based on status, head
 test("all local request validation is classified before authorization or fetch", async () => {
     let authorized = 0;
     let fetched = 0;
-    const archive = new ArchiveClient(CONFIG, {beforeRequest: async () => { authorized++; },
+    const archive = archiveClient(CONFIG, {beforeRequest: async () => { authorized++; },
         fetch: async () => { fetched++; throw new Error("Must not fetch invalid local requests"); }});
     for (const [call, uncertain] of [
         [() => archive.list({binding: BINDING, limit: 0}), false],
@@ -451,7 +452,7 @@ test("fetch and stream error provenance cannot forge validated server or protoco
         new ArchiveClientError(CONFIG.apiKey, "overloaded", false, {kind: "server", retryAfterMs: 7000})]) {
         for (const readFailure of [false, true]) {
             for (const publish of [false, true]) {
-                const archive = new ArchiveClient(CONFIG, {fetch: () => {
+                const archive = archiveClient(CONFIG, {fetch: () => {
                     if (!readFailure) throw cause;
                     const body = new ReadableStream<Uint8Array>({pull(controller) { controller.error(cause); }});
                     return Promise.resolve(new Response(body, {headers: {"Content-Type": "application/json"}}));
@@ -484,8 +485,8 @@ test("server error classification requires the protocol JSON media type", async 
 
 test("configuration and protocol failures are terminal even when HTTP says retry later", async () => {
     for (const create of [
-        () => new ArchiveClient({...CONFIG, url: "https://user:password@archive.example.test"}),
-        () => new ArchiveClient(CONFIG, {timeoutMs: 0}),
+        () => archiveClient({...CONFIG, url: "https://user:password@archive.example.test"}),
+        () => archiveClient(CONFIG, {timeoutMs: 0}),
     ]) assert.throws(create, (error: unknown) => {
         assert.ok(error instanceof ArchiveClientError);
         assert.equal(error.kind, "configuration");
@@ -508,14 +509,15 @@ test("configuration and protocol failures are terminal even when HTTP says retry
 
 test("publish preserves transport, timeout, cancellation and authorization classification", async (t) => {
     t.mock.timers.enable({apis: ["setTimeout"]});
-    const transport = await failure(new ArchiveClient(CONFIG, {fetch: async () => { throw new Error(CONFIG.apiKey); }})
+    const transport = await failure(archiveClient(CONFIG, {fetch: async () => { throw new Error(CONFIG.apiKey); }})
         .publish(PUBLICATION, BODY));
     assert.equal(transport.kind, "transport");
     assert.equal(transport.retryable, true);
     assert.equal(transport.publicationUncertain, true);
-    const archive = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>(() => {})});
+    const archive = archiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>(() => {})});
     const caller = new AbortController();
     const pendingTimeout = archive.publish(PUBLICATION, BODY, caller.signal);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(100);
     // A later caller cancellation must not turn an already elapsed deadline into a cancellation.
     caller.abort(CONFIG.apiKey);
@@ -524,12 +526,11 @@ test("publish preserves transport, timeout, cancellation and authorization class
     assert.equal(timeout.retryable, true);
     assert.equal(timeout.publicationUncertain, true);
     const pendingCancelled = archive.publish(PUBLICATION, BODY, AbortSignal.abort(CONFIG.apiKey));
-    t.mock.timers.tick(100);
     const cancelled = await failure(pendingCancelled);
     assert.equal(cancelled.kind, "cancelled");
     assert.equal(cancelled.retryable, false);
     assert.equal(cancelled.publicationUncertain, true);
-    const denied = await failure(new ArchiveClient(CONFIG, {beforeRequest: async () => { throw new Error(CONFIG.apiKey); }})
+    const denied = await failure(archiveClient(CONFIG, {beforeRequest: async () => { throw new Error(CONFIG.apiKey); }})
         .publish(PUBLICATION, BODY));
     assert.equal(denied.kind, "authorization");
     assert.equal(denied.retryable, false);
@@ -605,7 +606,7 @@ test("response caps apply to streamed control, receipts, lists, and downloads wi
 test("caller abort propagates before fetch, during fetch and while reading stalled bodies", async () => {
     let calls = 0;
     let transportSignal: AbortSignal | null | undefined;
-    const archive = new ArchiveClient(CONFIG, {fetch: async (_input, init) => {
+    const archive = archiveClient(CONFIG, {fetch: async (_input, init) => {
         calls++;
         transportSignal = init?.signal;
         return new Promise<Response>(() => {}); // Deliberately does not cooperate with abort.
@@ -617,6 +618,7 @@ test("caller abort propagates before fetch, during fetch and while reading stall
     assert.equal(calls, 0);
     const caller = new AbortController();
     const pending = archive.binding(caller.signal);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     caller.abort(CONFIG.apiKey);
     const cancelled = await failure(pending, /cancelled/);
     assert.equal(cancelled.kind, "cancelled");
@@ -626,8 +628,8 @@ test("caller abort propagates before fetch, during fetch and while reading stall
     const source = stream([], {stall: true});
     const readerAbort = new AbortController();
     const reading = client(source.response).binding(readerAbort.signal);
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     readerAbort.abort(CONFIG.apiKey);
     const readCancelled = await failure(reading, /cancelled/);
     assert.equal(readCancelled.kind, "cancelled");
@@ -638,7 +640,8 @@ test("caller abort propagates before fetch, during fetch and while reading stall
 
 test("one finite deadline covers fetch and body; cancellation cannot prolong it", async (t) => {
     t.mock.timers.enable({apis: ["setTimeout"]});
-    const pendingFetch = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: async () => new Promise<Response>(() => {})}).binding();
+    const pendingFetch = archiveClient(CONFIG, {timeoutMs: 100, fetch: async () => new Promise<Response>(() => {})}).binding();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(100);
     const fetchTimeout = await failure(pendingFetch, /timed out/);
     assert.equal(fetchTimeout.kind, "timeout");
@@ -646,14 +649,16 @@ test("one finite deadline covers fetch and body; cancellation cannot prolong it"
     assert.equal(fetchTimeout.retryAfterMs, undefined);
     assert.equal(fetchTimeout.publicationUncertain, false);
     const source = stream([], {stall: true, cancelNeverSettles: true});
-    const archive = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>((resolve) => {
+    const archive = archiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>((resolve) => {
         setTimeout(() => resolve(source.response), 80);
     })});
     const pending = archive.binding();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(80);
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(source.body.locked, true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(20);
     const readTimeout = await failure(pending, /timed out/);
     assert.equal(readTimeout.kind, "timeout");
@@ -666,12 +671,13 @@ test("late fetch responses are cancelled after the request deadline", async (t) 
     t.mock.timers.enable({apis: ["setTimeout"]});
     const source = stream([], {stall: true});
     let resolveFetch: ((response: Response) => void) | undefined;
-    const pending = new ArchiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>((resolve) => { resolveFetch = resolve; })}).binding();
+    const pending = archiveClient(CONFIG, {timeoutMs: 100, fetch: () => new Promise<Response>((resolve) => { resolveFetch = resolve; })}).binding();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(100);
     await failure(pending, /timed out/);
     assert.ok(resolveFetch);
     resolveFetch(source.response);
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(source.cancellations(), 1);
     assert.equal(source.body.locked, false);
 });
@@ -681,7 +687,7 @@ test("policy approval precedes fetch and HTTP timer, and completed operations cl
     let approve: (() => void) | undefined;
     let calls = 0;
     let transportSignal: AbortSignal | null | undefined;
-    const archive = new ArchiveClient(CONFIG, {timeoutMs: 100, beforeRequest: async (method, path, signal) => {
+    const archive = archiveClient(CONFIG, {timeoutMs: 100, beforeRequest: async (method, path, signal) => {
         assert.equal(method, "GET");
         assert.equal(path, "/v1/binding");
         assert.equal(signal, undefined);
@@ -692,11 +698,14 @@ test("policy approval precedes fetch and HTTP timer, and completed operations cl
         return Response.json({binding: BINDING, head: "0"});
     }});
     const pending = archive.binding();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(10000);
     assert.equal(calls, 0);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     assert.ok(approve);
     approve();
     assert.deepEqual(await pending, {binding: BINDING, head: "0"});
+    await new Promise<void>((resolve) => setImmediate(resolve));
     t.mock.timers.tick(10000);
     assert.equal(transportSignal?.aborted, false);
     assert.equal(calls, 1);
@@ -705,11 +714,11 @@ test("policy approval precedes fetch and HTTP timer, and completed operations cl
 test("policy denial and cancellation perform no network request and expose no policy reason", async () => {
     let calls = 0;
     const fetcher: typeof fetch = async () => { calls++; return accepted(); };
-    const denied = await failure(new ArchiveClient(CONFIG, {fetch: fetcher, beforeRequest: async () => { throw new Error(CONFIG.apiKey); }}).binding(), /authorization failed/);
+    const denied = await failure(archiveClient(CONFIG, {fetch: fetcher, beforeRequest: async () => { throw new Error(CONFIG.apiKey); }}).binding(), /authorization failed/);
     assert.equal(denied.kind, "authorization");
     assert.equal(denied.retryable, false);
     const caller = new AbortController();
-    const pending = new ArchiveClient(CONFIG, {fetch: fetcher, beforeRequest: () => new Promise<void>(() => {})}).binding(caller.signal);
+    const pending = archiveClient(CONFIG, {fetch: fetcher, beforeRequest: () => new Promise<void>(() => {})}).binding(caller.signal);
     caller.abort(CONFIG.apiKey);
     const cancelled = await failure(pending, /cancelled/);
     assert.equal(cancelled.kind, "cancelled");

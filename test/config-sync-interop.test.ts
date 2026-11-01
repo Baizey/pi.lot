@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {configClient} from "./fixtures/CompatibleServer.js";
 import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 import test from "node:test";
@@ -36,7 +37,7 @@ const fixture = JSON.parse(fixtureBytes.toString("utf8")) as WireFixture;
 const CONFIG = {url: "https://interop.example.test", apiKey: "fixture-only-transport-key"};
 
 function mockedClient(path: string, response: unknown, sent?: (value: unknown, bytes: Buffer) => void): ConfigSyncClient {
-    return new ConfigSyncClient(CONFIG, {fetch: async (input, init) => {
+    return configClient(CONFIG, {fetch: async (input, init) => {
         assert.equal(String(input), `${CONFIG.url}${path}`);
         assert.equal(init?.method, path === "/v1/binding" ? "GET" : "POST");
         assert.equal(init?.redirect, "manual");
@@ -180,7 +181,7 @@ for (const scenario of fixture.policy_scenarios) {
 for (const invalid of fixture.invalid) {
     test(`malformed ${invalid.id}: actual protocol/client boundaries reject`, async () => {
         let fetched = false;
-        const localClient = new ConfigSyncClient(CONFIG, {fetch: async () => {
+        const localClient = configClient(CONFIG, {fetch: async () => {
             fetched = true;
             assert.fail("Malformed local fixtures must be rejected before HTTP");
         }});

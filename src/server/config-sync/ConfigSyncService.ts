@@ -90,8 +90,6 @@ export class ConfigSyncService {
                 await this.options.beforeRequest?.(method, route, requestSignal);
                 assertConnection();
             }});
-            await client.assertCompatible(signal);
-            assertConnection();
             const authority = await client.binding(signal);
             assertConnection();
             if (mode.kind === "automatic" && !sameArchiveBinding(authority.binding, mode.binding)) return {kind: "binding_changed"};

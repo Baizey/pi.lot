@@ -317,6 +317,7 @@ for (const dispatched of [false, true]) {
         const calls: string[] = [];
         t.mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => {
             const endpoint = new URL(String(url)).pathname;
+            if (endpoint === "/v1/version") return Response.json({version: "0.4.0"});
             calls.push(endpoint);
             assert.equal(endpoint, "/v1/binding", "corrupt publication evidence permits neither mutation nor receipt lookup");
             const body = JSON.stringify({binding, head: "20", capabilities: ["preserved_variants_v1"]});
@@ -804,10 +805,11 @@ for (const status of ["uncertain", "blocked"] as const) {
         const calls: string[] = [];
         t.mock.method(globalThis, "fetch", async (url: URL | RequestInfo, init?: RequestInit) => {
             const target = new URL(String(url));
-            calls.push(target.href);
             assert.equal(target.origin, other.connection.config.url, "B authorization cannot dispatch any request to origin A");
-            assert.equal(target.pathname, "/v1/binding", "the shared native exclusion forbids B publication or comparison");
             assert.equal(new Headers(init?.headers).get("x-apikey"), other.connection.config.apiKey);
+            if (target.pathname === "/v1/version") return Response.json({version: "0.4.0"});
+            calls.push(target.href);
+            assert.equal(target.pathname, "/v1/binding", "the shared native exclusion forbids B publication or comparison");
             const body = JSON.stringify({binding, head: "0", capabilities: []});
             return new Response(body, {headers: {"content-type": "application/json", "content-length": String(Buffer.byteLength(body))}});
         });
@@ -1677,6 +1679,7 @@ for (const kind of ["publish", "uploaded", "current"] as const) {
         };
         t.mock.method(globalThis, "fetch", async (url: URL | RequestInfo, init?: RequestInit) => {
             const endpoint = new URL(String(url)).pathname;
+            if (endpoint === "/v1/version") return respond({version: "0.4.0"});
             calls.push(endpoint);
             if (endpoint === "/v1/binding") return respond({binding, head: "10", capabilities: ["preserved_variants_v1"]});
             const stored = f.query<{state: string; dispatched: number}>("SELECT state,dispatched FROM archive_worker_operations");
@@ -2133,6 +2136,7 @@ test("every engine request path rechecks configuration immediately before transp
             });
             const calls: string[] = [];
             t.mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => {
+                if (new URL(String(url)).pathname === "/v1/version") return Response.json({version: "0.4.0"});
                 calls.push(new URL(String(url)).pathname);
                 assert.equal(new URL(String(url)).pathname, "/v1/binding");
                 const body = JSON.stringify({binding, head: "1", capabilities: ["preserved_variants_v1"]});

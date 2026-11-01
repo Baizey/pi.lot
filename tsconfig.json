@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "experiments/compaction/**/*.ts", "scripts/evaluate-compaction.ts", "scripts/replay-compaction.ts", "scripts/benchmark-compaction.ts", "scripts/explore-compaction.ts"]
 }

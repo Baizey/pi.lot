@@ -1,0 +1,27 @@
+{
+  "purpose": "Exact measured source/test snapshots; experimental reproducibility only, no production registration.",
+  "originalReceipt": "/home/lsm/.cache/compaction-final-amended-20261101/report.json",
+  "originalReceiptRawBytesSha256": "bd10e5f9778ca981b2b7a93d80cb975fc47f562fcb4a4f25ff5766d38298b6cb",
+  "files": {
+    "experiments/compaction/frozen-final-20261101/src/compaction/ConversationCompaction.ts": {
+      "original": "../../pilot/src/compaction/ConversationCompaction.ts",
+      "rawBytesSha256": "2ded946f73d9ec04561e1fad5be91c049784b1ba9fc55acf39a2f3ee1a9d47dd",
+      "receiptJsonStringFingerprint": "e517d1de0c1d09386758c84dc100b8bcad572f60c34bd6d1d0dba74e9efaf9b6"
+    },
+    "experiments/compaction/frozen-final-20261101/src/compaction/ParallelCompaction.ts": {
+      "original": "../../pilot/src/compaction/ParallelCompaction.ts",
+      "rawBytesSha256": "8219e4f4ce675d14d24f0061eb79b1ad37440277cb0263560df61b5df865e47c",
+      "receiptJsonStringFingerprint": "3b7f453c025a1807976c06c59888bd1306ca733fffb90d9d3ae76ac0d24fb53e"
+    },
+    "experiments/compaction/frozen-final-20261101/test/conversation-compaction.test.ts": {
+      "original": "../../pilot/test/conversation-compaction.test.ts",
+      "rawBytesSha256": "a649366421c5b1df8aea7ce0a0bef86d14ead84c6758801cbcac4fcc2f85a680",
+      "receiptJsonStringFingerprint": "ac2d7fe0509dbde6b008ab1a98bb952154b40322d15cd843b3ff825f2f8d9360"
+    },
+    "experiments/compaction/frozen-final-20261101/test/parallel-compaction.test.ts": {
+      "original": "../../pilot/test/parallel-compaction.test.ts",
+      "rawBytesSha256": "ac7bdcef1c2b76b3f69ae79e4b20797ca87ea0d9cf65e865b8dc94143c5fde1f",
+      "receiptJsonStringFingerprint": "449e24e2bccf6e308dc1f1d1f60faaf48884528c252846024d16d56075479e3b"
+    }
+  }
+}

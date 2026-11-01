@@ -10,7 +10,6 @@ type StringSchema = {
     description: string
     minLength?: number
     maxLength: number
-    defaultValue?: string
 }
 type ObjectSchema = {
     type: "object";
@@ -22,13 +21,13 @@ type ArraySchema = {
     type: "array"
     items: Record<string, unknown>
     description: string
-    defaultValue?: unknown[]
+    default?: unknown[]
 }
 type EnumSchema = {
     type: "string"
     enum: string[]
     description: string
-    defaultValue?: string
+    default?: string
 }
 
 export function objectSchema(properties: Record<string, unknown>, required: string[] = []): ObjectSchema {

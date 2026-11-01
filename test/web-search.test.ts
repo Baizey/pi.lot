@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import {mkdtempSync, rmSync} from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type {ExtensionAPI, ExtensionContext, ToolDefinition} from "@earendil-works/pi-coding-agent";
+import {validateToolArguments, type JsonObject} from "@earendil-works/pi-ai";
+import {Compile} from "typebox/compile";
+import type {ToolCallPathPolicyEvaluator} from "../src/policy/PolicyRuntime.js";
 import {BraveSearchProvider} from "../src/web-search/providers/BraveSearchProvider.js";
 import {
     DuckDuckGoSearchProvider,
@@ -18,6 +24,7 @@ import {
 } from "../src/web-search/SearchProvider.js";
 import {
     searchProviders,
+    webSearch,
     WebSearchProviderAttemptStatus,
 } from "../src/web-search/WebSearch.js";
 import {formatWebSearchResults, WebSearchTool} from "../src/tools/web-search/WebSearchTool.js";
@@ -291,6 +298,49 @@ test("the public tool has no provider argument and returns provider-neutral cita
     assert.match(text, /untrusted external content/);
     assert.match(text, /https:\/\/example\.test\/source/);
     assert.doesNotMatch(text, /Brave/i);
+});
+
+test("web-search query avoids llama.cpp's 2000-repetition boundary without lowering the runtime limit", async (t) => {
+    const tool = new WebSearchTool({} as ExtensionAPI, () => assert.fail("schema inspection cannot execute tools"), new ToolDisplayRows())
+        .toolDefinition();
+    const query = tool.parameters.properties.query;
+    assert.equal(Object.hasOwn(query, "maxLength"), false);
+    assert.match(query.description ?? "", /2000/);
+    for (const length of [2_000, 2_001]) {
+        assert.doesNotThrow(() => validateToolArguments(tool, {
+            type: "toolCall", id: "query-bound", name: tool.name, arguments: {query: "x".repeat(length)},
+        }));
+    }
+
+    const home = mkdtempSync(path.join(os.tmpdir(), "pilot-web-search-input-"));
+    t.after(() => rmSync(home, {recursive: true, force: true}));
+    t.mock.method(os, "homedir", () => home);
+    await assert.rejects(webSearch(
+        {query: "x".repeat(2_001)},
+        {} as ToolCallPathPolicyEvaluator,
+        {} as ExtensionContext,
+    ), /query exceeds 2000 characters/);
+});
+
+test("web-search schema declares integer result counts and the twenty-domain limit", () => {
+    const tool = new WebSearchTool({} as ExtensionAPI, () => assert.fail("schema inspection cannot execute tools"), new ToolDisplayRows())
+        .toolDefinition();
+    const validate = (args: JsonObject) => validateToolArguments(tool, {
+        type: "toolCall", id: "search-input", name: tool.name, arguments: args,
+    });
+    assert.deepEqual(validate({query: "docs"}), {query: "docs"});
+    for (const maxResults of [1, 20]) assert.doesNotThrow(() => validate({query: "docs", maxResults}));
+    for (const maxResults of [0, 21]) {
+        assert.throws(() => validate({query: "docs", maxResults}), /maxResults/);
+    }
+    assert.equal(Compile(tool.parameters).Check({query: "docs", maxResults: 1.5}), false);
+    assert.ok(Number.isInteger(validate({query: "docs", maxResults: 1.5}).maxResults),
+        "Pi may coerce inputs, but execution must receive an integer");
+    for (const count of [0, 20]) {
+        assert.doesNotThrow(() => validate({query: "docs", domains: Array(count).fill("example.com")}));
+    }
+    assert.throws(() => validate({query: "docs", domains: Array(21).fill("example.com")}), /domains/);
+    assert.throws(() => validate({query: "docs", domains: ["x".repeat(301)]}), /domains/);
 });
 
 function fakeHttp(

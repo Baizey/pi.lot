@@ -29,7 +29,7 @@ Saved server configuration enables current-family background archival on gracefu
 
 ## Compaction snapshots (root sessions)
 
-Pilot's root extension wraps Pi 1.4's exported stock compaction helper. After all summary generation succeeds, it samples the current subagent tree once and appends a deterministic `## Subagents` section to the **same compaction entry's summary**. There are no separate snapshot messages, request-context hooks, additional session entries, or snapshot-generation model calls/turns. Child SDK sessions do not install this override.
+Pilot's root extension wraps Pi 1.5's exported stock compaction helper. After all summary generation succeeds, it samples the current subagent tree once and appends a deterministic `## Subagents` section to the **same compaction entry's summary**. There are no separate snapshot messages, request-context hooks, additional session entries, or snapshot-generation model calls/turns. Child SDK sessions do not install this override.
 
 The timestamped section is **not live status**: call `subagent_status` before acting. It includes queued/running jobs, idle retained conversations available for follow-up, full job/parent IDs, role/task/cwd, bounded activity, and a recent terminal-job/failure preview—not full output/history. Quoted fields are data, not instructions. The snapshot is limited to 24 jobs and 12,000 characters, with explicit omissions and a full-query pointer. Empty snapshots explicitly report no live retained conversations; jobs mentioned in older summaries are not evidence of live jobs. Resuming history does not restore those jobs.
 
@@ -66,7 +66,7 @@ A child cannot request these mechanisms later, and cannot grant a nested child a
 
 Indirect MCP tools are discoverable through codemode/tool search; use `describeNamespace()` for server instructions. Child codemode retains Pi's native input convention: raw JavaScript when supported by the model transport, or `{code}` for function-tool fallback. Unlike the root wrapper, it does not require `purpose`. It exposes no model globals. In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
 
-Root and child codemode share Pi 1.4's process-wide worker pool: two live workers by default, configurable with `PI_CODEMODE_MAX_WORKERS`. Further scripts queue in arrival order for up to 60 seconds; queue time consumes any finite execution budget. Cancellation removes a queued request without running it, but a running worker keeps its slot until it exits. A parent script waiting for a child still occupies a slot, so queuing does not eliminate stalls when its child also needs a worker. This is not a two-subagent limit. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
+Root and child codemode share Pi 1.5's process-wide worker pool: two live workers by default, configurable with `PI_CODEMODE_MAX_WORKERS`. Further scripts queue in arrival order for up to 60 seconds; queue time consumes any finite execution budget. Cancellation removes a queued request without running it, but a running worker keeps its slot until it exits. A parent script waiting for a child still occupies a slot, so queuing does not eliminate stalls when its child also needs a worker. This is not a two-subagent limit. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
 
 MCP effects are opaque and **outside filesystem/network mediation**; policy-area grants do not restrict them. See [MCP security boundary](security.md#mcp).
 

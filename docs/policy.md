@@ -153,7 +153,7 @@ A finite codemode `timeout_ms` is an approval-aware execution budget; output lim
 
 The budget includes time queued for a worker and initialization; admission does not reset the remaining budget. Queueing itself is not a policy approval wait. Expiry requests worker interruption and cancels nested tools, but cancellation is cooperative: a worker or host operation may outlive the tool response, and completed effects are not undone.
 
-Pi 1.4 defaults to two live codemode workers across all sessions in one Pi process, shared by root and child sessions. `PI_CODEMODE_MAX_WORKERS` accepts a positive integer to change the limit. A cancelled worker keeps its slot until it actually exits. At capacity, new scripts queue in arrival order instead of failing immediately.
+Pi 1.5 defaults to two live codemode workers across all sessions in one Pi process, shared by root and child sessions. `PI_CODEMODE_MAX_WORKERS` accepts a positive integer to change the limit. A cancelled worker keeps its slot until it actually exits. At capacity, new scripts queue in arrival order instead of failing immediately.
 
 Worker admission has an independent 60-second wait limit, including when `timeout_ms` is omitted or its execution budget is paused for an originating policy approval. A shorter finite execution budget or explicit cancellation can end the wait sooner. Expired or cancelled waiters do not start their scripts or nested tools.
 

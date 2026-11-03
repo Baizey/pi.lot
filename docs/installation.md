@@ -4,9 +4,9 @@ pi.lot (npm package name `pilot`) is a local Pi extension for **Linux x86-64**, 
 
 ## Requirements
 
-This checkout targets Pi `1.4.0` and requires:
+This checkout targets Pi `1.5.0` and requires:
 
-- Node.js **22.19 or newer** and npm (Pi 1.4.0's Node requirement);
+- Node.js **22.19 or newer** and npm (Pi 1.5.0's Node requirement);
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
@@ -72,7 +72,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.0
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:
@@ -124,7 +124,7 @@ Pilot provides wrappers around Pi's built-in MCP and codemode implementations. A
 
 Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools, or `pi --tools +codemode` for one invocation. MCP activates it when server exposure requires scripts. Root-session Pilot calls use JSON `{purpose, code}`; child sessions retain Pi's native input convention without `purpose` (see [child MCP capabilities](subagents.md#hard-mechanism-capabilities)). [Pi's codemode documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the `code` body, not this wrapper. Review the [model-call policy boundary](security.md#codemode-model-calls).
 
-Pi 1.4 queues codemode calls when its process-wide worker pool is full. The default is two workers across the root and all in-process children. To allow more concurrent scripts, set the environment variable when starting Pi, for example:
+Pi 1.5 queues codemode calls when its process-wide worker pool is full. The default is two workers across the root and all in-process children. To allow more concurrent scripts, set the environment variable when starting Pi, for example:
 
 ```bash
 PI_CODEMODE_MAX_WORKERS=4 pi

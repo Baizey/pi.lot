@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     initTheme,
+    keyHint,
+    keyText,
     ToolExecutionComponent,
     type ExtensionAPI,
     type Theme,
@@ -1027,7 +1029,7 @@ type DisplayContext = Parameters<ReturnType<ToolDisplayRows["bind"]>["renderCall
 
 function renderContext(state: ToolDisplayState, options: Partial<DisplayContext> = {}): DisplayContext {
     return {
-        args: {}, toolCallId: "call", state, invalidate() {}, lastComponent: undefined,
+        keyText, keyHint, args: {}, toolCallId: "call", state, invalidate() {}, lastComponent: undefined,
         cwd: process.cwd(), executionStarted: false, argsComplete: true,
         isPartial: false, expanded: false, showImages: false, isError: false,
         durationMs: undefined, outputPad: 0,

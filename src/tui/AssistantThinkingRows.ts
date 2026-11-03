@@ -10,7 +10,7 @@ export type ThinkingRun = {
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
 type ContentRow = {component: Component; gap: Spacer; run?: ThinkingRun};
 
-/** Pi 1.4 public-child adapter; native messages and thinking visibility overrides stay untouched. */
+/** Pi 1.5 public-child adapter; native messages and thinking visibility overrides stay untouched. */
 export class AssistantThinkingRows {
     private readonly content: Container;
     private readonly nativeChildren: Component[];
@@ -35,13 +35,12 @@ export class AssistantThinkingRows {
         }
         this.content = content as Container;
         this.nativeChildren = [...this.content.children];
-        const visible = (block: AssistantMessage["content"][number]) => (
-            (block.type === "text" && !!block.text.trim()) || (block.type === "thinking" && !!block.thinking.trim())
-        );
-        let cursor = source.content.some(visible) ? 1 : 0;
-        if (cursor && !isSpacer(this.nativeChildren[0])) throw new Error("Unsupported native assistant leading gap");
+        let cursor = 0;
+        let needsGap = true;
         for (let index = 0; index < source.content.length;) {
             const block = source.content[index]!;
+            const gap = isSpacer(this.nativeChildren[cursor]);
+            const candidate = this.nativeChildren[cursor + (gap ? 1 : 0)];
             if (block.type === "thinking") {
                 const start = index;
                 let nonempty = false;
@@ -50,10 +49,15 @@ export class AssistantThinkingRows {
                     nonempty ||= thinking.type === "thinking" && !!thinking.thinking.trim();
                 }
                 const run = runs.find((candidate) => candidate.start === start)!;
-                const native = nonempty ? this.nativeChildren[cursor++] : undefined;
-                if (nonempty && (!native || !(native instanceof MouseRegion || (
-                    native.constructor.name === MouseRegion.name && typeof native.handleMouse === "function"
-                )))) throw new Error("Unsupported native assistant thinking layout");
+                const native = nonempty && isThinkingRegion(candidate) ? candidate : undefined;
+                // Pi omits hidden runs with an empty label, including their gaps. Do not
+                // consume the following answer/error or replace intentionally hidden content.
+                if (nonempty && !native) continue;
+                if (native) {
+                    if (gap !== needsGap) throw new Error("Unsupported native assistant thinking gap");
+                    cursor += gap ? 2 : 1;
+                    needsGap = true;
+                }
                 const row: Component = {
                     render: (width) => !this.active ? native?.render(width) ?? [] : run.active
                         ? native ? this.renderTail(native.render(width), width) : this.label(true, width)
@@ -63,17 +67,16 @@ export class AssistantThinkingRows {
                     handleMouse: (event) => !this.active || run.active ? native?.handleMouse?.(event) : undefined,
                 };
                 this.rows.push({component: row, gap: new Spacer(1), run});
-                if (nonempty && source.content.slice(index).some(visible)) {
-                    if (!isSpacer(this.nativeChildren[cursor++])) throw new Error("Unsupported native assistant thinking gap");
-                }
             } else {
                 index++;
                 if (block.type !== "text" || !block.text.trim()) continue;
-                const native = this.nativeChildren[cursor++];
-                if (!native || !(native instanceof Markdown || native.constructor.name === Markdown.name)) {
+                if (!candidate || !(candidate instanceof Markdown || candidate.constructor.name === Markdown.name)) {
                     throw new Error("Unsupported native assistant text layout");
                 }
-                this.rows.push({component: native, gap: new Spacer(1)});
+                if (gap !== needsGap) throw new Error("Unsupported native assistant text gap");
+                cursor += gap ? 2 : 1;
+                needsGap = false;
+                this.rows.push({component: candidate, gap: new Spacer(1)});
             }
         }
         // Error, abort, and length-stop rows belong to Pi and must never be classified as thinking.
@@ -102,6 +105,11 @@ export class AssistantThinkingRows {
         this.active = false;
         if (this.content.children === this.installed) this.content.children = this.nativeChildren;
     }
+}
+
+function isThinkingRegion(component: Component | undefined): boolean {
+    return component instanceof MouseRegion || (component?.constructor.name === MouseRegion.name
+        && typeof component.handleMouse === "function");
 }
 
 function isSpacer(component: Component | undefined): boolean {

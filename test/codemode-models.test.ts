@@ -40,7 +40,7 @@ test("Pilot codemode forwards classifier image inputs unchanged and aggregates m
         assert.ok(tool);
         const classifier = session.modelRuntime.getModelOfType("classifier", "typesafe", "jev-latest");
         assert.ok(classifier);
-        assert.ok(classifier.input.includes("image"), "Pi 1.4's Jev catalog advertises image support");
+        assert.ok(classifier.input.includes("image"), "The native Jev catalog advertises image support");
         const context: ClassifierContext = {
             state: {task: "Compare fixture images", labels: ["first", "second"]},
             images: [
@@ -94,8 +94,9 @@ test("Pilot codemode forwards classifier image inputs unchanged and aggregates m
             && part.text === JSON.stringify([classified.answers, classified.answers])));
         assert.deepEqual(result.usage, {
             input: 22, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 28,
-            cost: {input: 0.25, output: 0.5, cacheRead: 0, cacheWrite: 0, total: 0.75},
+            cost: {input: 0.25, output: 0.5, cacheRead: 0, cacheWrite: 0, total: 0.75, totalFromProvider: false},
         });
+        assert.equal(Object.hasOwn(usage.cost, "totalFromProvider"), false, "aggregation must not mutate provider results");
         const calls = (result.details as CodemodeToolDetails).calls;
         assert.equal(calls.length, 2);
         for (const call of calls) {

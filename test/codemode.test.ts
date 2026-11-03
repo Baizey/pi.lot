@@ -8,6 +8,8 @@ import {
     createCodemodeExtension,
     DefaultResourceLoader,
     initTheme,
+    keyHint,
+    keyText,
     SessionManager,
     SettingsManager,
     ToolExecutionComponent,
@@ -468,6 +470,7 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
             assert.deepEqual(loaded.errors, []);
             assert.equal(loaded.extensions.filter((extension) => extension.tools.has("codemode")).length, 1);
             assert.equal((loaded.warnings ?? []).some((warning) => warning.path === "builtin:codemode"), !suppressed);
+            const received: unknown[] = [];
             const {session} = await createAgentSession({
                 cwd: directory, agentDir: directory, settingsManager, resourceLoader: loader,
                 sessionManager: SessionManager.inMemory(directory),
@@ -475,8 +478,11 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                 customTools: [{
                     name: "echo", label: "echo", description: "Fixture echo", exposure: "codemode",
                     promptGuidelines: ["Use only approved fixture requests."],
-                    parameters: {type: "object", properties: {}},
-                    async execute(_id, _params, _signal, _onUpdate, ctx) {
+                    parameters: {type: "object", properties: {
+                        count: {type: "integer", minimum: 1}, tags: {type: "array", items: {type: "string"}},
+                    }},
+                    async execute(_id, params, _signal, _onUpdate, ctx) {
+                        received.push(params);
                         assert.equal(ctx.cwd, directory);
                         return {content: [{type: "text", text: "nested fixture"}], details: undefined};
                     },
@@ -507,6 +513,14 @@ test("real loader replaces only the duplicate builtin and SDK execution preserve
                     assert.equal(first.isError, undefined);
                     assert.match(JSON.stringify(first.content), /nested fixture/);
                     assert.deepEqual(nested, ["echo"]);
+                    const coerced = await run("coercion", 'return await tools.echo({count: "2", tags: "fixture"});');
+                    assert.equal(coerced.isError, undefined);
+                    assert.deepEqual(received.at(-1), {count: 2, tags: ["fixture"]});
+                    const beforeInvalid = received.length;
+                    const invalid = await run("invalid-coercion", 'return await tools.echo({count: "not-a-number"});');
+                    assert.equal(invalid.isError, true);
+                    assert.match(JSON.stringify(invalid.content), /count/);
+                    assert.equal(received.length, beforeInvalid, "invalid nested arguments never reach execution");
                     const second = await run("second", 'return load("fixture");');
                     assert.match(JSON.stringify(second.content), /nested fixture/);
                     assert.ok(session.sessionManager.getBranch().some((entry) => entry.type === "custom"
@@ -653,7 +667,7 @@ function harness(rows: ToolDisplayRows) {
 
 function renderContext(state: object, options: Partial<Parameters<NonNullable<ToolDefinition["renderCall"]>>[2]> = {}) {
     return {
-        args: {}, toolCallId: "script", state, invalidate() {}, lastComponent: undefined,
+        keyText, keyHint, args: {}, toolCallId: "script", state, invalidate() {}, lastComponent: undefined,
         cwd: process.cwd(), executionStarted: false, argsComplete: true,
         isPartial: false, expanded: true, showImages: false, isError: false,
         durationMs: undefined, outputPad: 0,

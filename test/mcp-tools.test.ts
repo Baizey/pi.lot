@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {validateToolArguments} from "@earendil-works/pi-ai";
 import {
     initTheme,
+    keyHint,
+    keyText,
     ToolExecutionComponent,
     type ExtensionToolContext,
     type Theme,
@@ -56,6 +59,29 @@ test("native MCP registry preserves metadata and invokes the native definition w
     const result = await decorated.execute("call", {value: "hello"}, undefined, undefined, context);
     assert.deepEqual(result.content, [{type: "text", text: '/child:{"value":"hello"}'}]);
     assert.deepEqual(result.structuredContent, {content: [{type: "text", text: "raw"}]});
+});
+
+test("MCP plain JSON Schemas coerce inputs before proxy execution without mutating the call", async () => {
+    const registry = new McpToolRegistry(await createNativeExtensionApi());
+    registry.startSession();
+    const native = definition();
+    native.parameters = {type: "object", additionalProperties: false, required: ["count", "tags"], properties: {
+        count: {type: "integer", minimum: 1}, tags: {type: "array", items: {type: "string"}},
+    }};
+    registry.register(native);
+    const proxy = registry.toolDefinitions()[0]!;
+    const input = {count: "2", tags: "fixture"};
+    const args = validateToolArguments(proxy, {type: "toolCall", id: "coerced-mcp", name: proxy.name, arguments: input});
+    assert.deepEqual(args, {count: 2, tags: ["fixture"]});
+    assert.deepEqual(input, {count: "2", tags: "fixture"});
+    const result = await proxy.execute("coerced-mcp", args, undefined, undefined, context);
+    assert.deepEqual(result.content, [{type: "text", text: '/child:{"count":2,"tags":["fixture"]}'}]);
+    assert.throws(() => validateToolArguments(proxy, {
+        type: "toolCall", id: "invalid-mcp", name: proxy.name, arguments: {count: "invalid", tags: "fixture"},
+    }), /count/);
+    assert.throws(() => validateToolArguments(proxy, {
+        type: "toolCall", id: "missing-mcp", name: proxy.name, arguments: {count: 2},
+    }), /tags: missing/);
 });
 
 test("retained MCP proxies honor withdrawal, new definitions, schema changes, and session shutdown", async () => {
@@ -166,7 +192,7 @@ test("MCP long-line previews are bounded by wrapped rows and keep a separate ful
     const text = `START${"x".repeat(1000)}END`;
     const result = {content: [{type: "text" as const, text}], details: {fullOutputPath: "/tmp/full.json"}};
     const context = {
-        args: {}, toolCallId: "long", state: {}, invalidate() {}, lastComponent: undefined,
+        keyText, keyHint, args: {}, toolCallId: "long", state: {}, invalidate() {}, lastComponent: undefined,
         cwd: process.cwd(), executionStarted: true, argsComplete: true,
         isPartial: false, expanded: true, showImages: false, isError: false,
         durationMs: undefined, outputPad: 0,

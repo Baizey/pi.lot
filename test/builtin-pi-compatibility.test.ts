@@ -9,6 +9,8 @@ import {
     createEditToolDefinition,
     createReadToolDefinition,
     createWriteToolDefinition,
+    keyHint,
+    keyText,
     type BashOperations,
     type ExtensionAPI,
     type ExtensionToolContext,
@@ -130,7 +132,7 @@ test("direct and nested read labels preserve Pi's numeric-string, null and malfo
         const expected = [`  read | file.txt${suffix}`];
         for (const mode of [ToolDisplayMode.MINIMAL, ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL]) {
             const context = {
-                args, toolCallId: "read-range", state: {pilotFullDisplay: mode === ToolDisplayMode.FULL},
+                keyText, keyHint, args, toolCallId: "read-range", state: {pilotFullDisplay: mode === ToolDisplayMode.FULL},
                 invalidate() {}, lastComponent: undefined, cwd: process.cwd(), executionStarted: false,
                 argsComplete: true, isPartial: false, expanded: mode === ToolDisplayMode.TRUNCATED,
                 showImages: false, isError: false, durationMs: undefined, outputPad: 0,
@@ -139,6 +141,25 @@ test("direct and nested read labels preserve Pi's numeric-string, null and malfo
             assert.deepEqual(nested(args, plainTheme, mode, 120), expected);
         }
     }
+});
+
+test("Pi-coerced read ranges still cross the policy boundary before reading", async (t) => {
+    const fixture = new BuiltinFixture(t);
+    writeFileSync(path.join(fixture.cwd, "range.txt"), "first\nsecond\nthird");
+    const input = {path: "range.txt", offset: "2", limit: "1"};
+    const args = validateToolArguments(fixture.read, {
+        type: "toolCall", id: "coerced-read", name: "read", arguments: input,
+    });
+    assert.deepEqual(args, {path: "range.txt", offset: 2, limit: 1});
+    assert.deepEqual(input, {path: "range.txt", offset: "2", limit: "1"}, "validation leaves the original call unchanged");
+    const result = await fixture.read.execute("coerced-read", args, undefined, undefined, fixture.context());
+    assert.equal(result.structuredContent, "second\n\n[1 more lines in file. Use offset=3 to continue.]");
+    fixture.denied = true;
+    await assert.rejects(fixture.read.execute("denied-coerced-read", args, undefined, undefined, fixture.context()), /fixture denied/);
+    assert.deepEqual(fixture.authorizations.map(({path: evaluatedPath, access}) => ({path: evaluatedPath, access})), [
+        {path: path.join(fixture.cwd, "range.txt"), access: PolicyAccessType.FS_READ},
+        {path: path.join(fixture.cwd, "range.txt"), access: PolicyAccessType.FS_READ},
+    ]);
 });
 
 test("denied and aborted file calls cannot read or mutate before authorization", async (t) => {
@@ -248,7 +269,7 @@ test("edit renders supplied previews and approved diff details without a policy 
     const fixture = new BuiltinFixture(t);
     const args = {path: "unreadable.txt", edits: [{oldText: "secret old text", newText: "requested new text"}]};
     const context = {
-        args, toolCallId: "render-only", invalidate() {}, lastComponent: undefined,
+        keyText, keyHint, args, toolCallId: "render-only", invalidate() {}, lastComponent: undefined,
         state: {pilotFullDisplay: true}, cwd: fixture.cwd, executionStarted: false,
         argsComplete: false, isPartial: true, expanded: false, showImages: false,
         isError: false, durationMs: undefined, outputPad: 2,

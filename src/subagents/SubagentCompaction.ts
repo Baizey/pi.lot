@@ -133,7 +133,7 @@ function readOwnedDetails(value: unknown): OwnedDetails | undefined {
     }};
 }
 
-// Pi 1.4 compact() appends this deterministic suffix but does not export its formatter.
+// Pi 1.5 compact() appends this deterministic suffix but does not export its formatter.
 // Verify it against the helper result before recording a boundary; never guess where history ends.
 function fileSuffix(files: FileDetails): string {
     const sections: string[] = [];

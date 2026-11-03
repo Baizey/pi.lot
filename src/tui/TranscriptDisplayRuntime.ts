@@ -428,7 +428,7 @@ export class TranscriptDisplayRuntime {
                     if (!decoration && source && Array.isArray((component as Component & {children?: Component[]}).children)) {
                         decoration = this.decorateSource(component);
                     }
-                    // In Pi 1.4, the public MouseRegions under assistant content wrap thinking runs.
+                    // In Pi 1.5, the public MouseRegions under assistant content wrap thinking runs.
                     // Clip their rendered Markdown, not raw text or any private child component.
                     if (!decoration && assistantContent && (component instanceof MouseRegion || (
                         component.constructor.name === MouseRegion.name

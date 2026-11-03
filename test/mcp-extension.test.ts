@@ -4,6 +4,8 @@ import test from "node:test";
 import {
     createCodemodeExtension,
     createToolSearchExtension,
+    keyHint,
+    keyText,
     type ExtensionContext,
     type ExtensionToolContext,
     type LoadedMcpConfig,
@@ -352,7 +354,7 @@ test("resumed MCP calls retain Pilot rendering before discovery without granting
     assert.equal(fixture.tools.has(name), false);
     assert.deepEqual(extension.toolDefinitions(), []);
     const theme = {fg: (_color: string, text: string) => text, bold: (text: string) => text} as unknown as Theme;
-    const context = {args: {value: "fixture"}, toolCallId: "resumed", state: {}, invalidate() {},
+    const context = {keyText, keyHint, args: {value: "fixture"}, toolCallId: "resumed", state: {}, invalidate() {},
         lastComponent: undefined, cwd: process.cwd(), executionStarted: true, argsComplete: true,
         isPartial: false, expanded: true, showImages: false, isError: false, durationMs: undefined, outputPad: 2};
     try {

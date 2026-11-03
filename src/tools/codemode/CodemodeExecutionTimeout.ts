@@ -50,7 +50,7 @@ export function withApprovalAwareCodemodeTimeout(execute: NativeCodemodeExecute)
                     // never text printed by the script or an error followed by a native postscript.
                     if (diagnostic?.type !== "text") return result;
                     const calls = result.details?.calls ?? [];
-                    // Pi 1.4 can also abort while queued, before any worker or script starts.
+                    // Pi 1.5 can also abort while queued, before any worker or script starts.
                     const summaries = calls.length === 0
                         ? ["No tool calls were made.", "The script did not start."]
                         : [`Tool calls made before the failure (they are not undone): ${calls.map((call) => `${call.name} (${call.status})`).join(", ")}`];

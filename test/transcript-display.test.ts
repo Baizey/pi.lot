@@ -659,6 +659,88 @@ test("Preview respects native thinking labels and mouse visibility toggles", (t)
     assert.match(view(), /thought 30/);
 });
 
+test("empty native hidden-thinking labels omit runs and gaps without hiding answers or terminal errors", (t) => {
+    const contents: AssistantMessage["content"][] = [
+        [{type: "thinking", thinking: "private reasoning"}],
+        [{type: "thinking", thinking: "private reasoning"}, {type: "text", text: "Answer"}],
+        [{type: "text", text: "Before"}, {type: "thinking", thinking: "private reasoning"}, {type: "text", text: "After"}],
+        [{type: "thinking", thinking: "first reasoning"}, {type: "text", text: "Between"},
+            {type: "thinking", thinking: "second reasoning"}],
+        [{type: "thinking", thinking: "private reasoning"},
+            {type: "toolCall", id: "hidden-thinking-call", name: "read", arguments: {path: "fixture"}}],
+    ];
+    for (const content of contents) {
+        for (const stopReason of ["pending", "stop", "error", "aborted", "length"] as const) {
+            const harness = createHarness();
+            t.after(() => harness.close());
+            const source = assistant(content, stopReason);
+            const original = structuredClone(source);
+            const component = new AssistantMessageComponent(source, true, undefined, "");
+            const baseline = new AssistantMessageComponent(source, true, undefined, "");
+            harness.root.addChild(component);
+            const expected = plain(baseline.render(80));
+            for (const mode of [ToolDisplayMode.HIDDEN, ToolDisplayMode.MINIMAL, ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL]) {
+                harness.rows.modes.setViews(mode, mode);
+                assert.equal(plain(harness.root.render(80)), expected, `${mode}: ${stopReason}`);
+            }
+            harness.close();
+            assert.equal(plain(component.render(80)), expected, "cleanup preserves the native omission and error rows");
+            assert.deepEqual(source, original);
+        }
+    }
+});
+
+test("empty thinking labels survive native visibility changes and streaming rebuilds", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    const source = assistant([{type: "thinking", thinking: Array.from({length: 30}, (_, index) => `thought ${index + 1}`).join("  \n")},
+        {type: "text", text: "Answer"}], "pending");
+    const component = new AssistantMessageComponent(source);
+    harness.root.addChild(component);
+    const view = () => harness.root.render(80).map((line) => stripVTControlCharacters(line).trim()).join("\n");
+    assert.match(view(), /18 earlier lines/);
+    component.setHiddenThinkingLabel("");
+    component.setHideThinkingBlock(true);
+    assert.equal(view(), "\nAnswer");
+    component.updateContent({...source, content: [...source.content, {type: "text", text: "More answer"}]}, true);
+    assert.equal(view(), "\nAnswer\nMore answer");
+    component.setHiddenThinkingLabel("Custom hidden label");
+    assert.match(view(), /Custom hidden label/);
+    component.setHiddenThinkingLabel("  ");
+    assert.equal(view(), "\nAnswer\nMore answer");
+    component.setHideThinkingBlock(false);
+    assert.match(view(), /18 earlier lines/);
+    assert.match(view(), /thought 30/);
+    harness.expanded = true;
+    assert.match(view(), /thought 1(?:\s|$)/);
+});
+
+test("empty labels preserve per-run mouse visibility without shifting later thinking or text", (t) => {
+    const harness = createHarness();
+    t.after(() => harness.close());
+    harness.rows.modes.setViews(ToolDisplayMode.TRUNCATED, ToolDisplayMode.FULL);
+    const source = assistant([{type: "thinking", thinking: "first private run"}, {type: "text", text: "Between"},
+        {type: "thinking", thinking: "second visible run"}, {type: "text", text: "Answer"}], "pending");
+    const component = new AssistantMessageComponent(source, false, undefined, "");
+    const baseline = new AssistantMessageComponent(source, false, undefined, "");
+    for (const row of [component, baseline]) {
+        const result = row.handleMouse({type: "click", button: "left", x: 2, y: 1, screenX: 2, screenY: 1,
+            width: 80, height: row.render(80).length, shift: false, alt: false, ctrl: false});
+        assert.equal(result?.handled, true);
+    }
+    harness.root.addChild(component);
+    for (const expanded of [false, true]) {
+        harness.expanded = expanded;
+        const view = plain(harness.root.render(80));
+        assert.equal(view, plain(baseline.render(80)));
+        assert.doesNotMatch(view, /first private run/);
+        assert.match(view, /second visible run/);
+    }
+    component.invalidate();
+    assert.equal(plain(harness.root.render(80)), plain(baseline.render(80)));
+});
+
 test("thinking previews preserve short runs, singular omission counts, and native adjacent-block grouping", (t) => {
     const harness = createHarness();
     t.after(() => harness.close());

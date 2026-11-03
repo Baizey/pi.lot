@@ -3,6 +3,7 @@ import {execFileSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import test from "node:test";
 import {createAssistantMessageEventStream, normalizeContext, type AssistantMessage} from "@earendil-works/pi-ai";
+import {VERSION} from "@earendil-works/pi-coding-agent";
 import {
     CompactionEvaluation,
     fingerprint,
@@ -268,7 +269,7 @@ test("CLI smoke report clearly labels synthetic output and validates the install
         "--candidate", "experiments/compaction/IdentityControl.ts"], {cwd: root, encoding: "utf8"});
     const report = JSON.parse(stdout);
     assert.equal(report.mode, "smoke");
-    assert.equal(report.environment.pi, "1.4.0");
+    assert.equal(report.environment.pi, VERSION);
     assert.match(report.note, /SMOKE ONLY/);
     assert.equal(report.trials[0].calls.length, 2);
     assert.equal(report.comparisons[0].conclusion, "smoke-only");

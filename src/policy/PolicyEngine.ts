@@ -56,20 +56,12 @@ export class PolicyEngine {
     }
 
     addPolicies(policies: Policy[]): void {
-        for (const rawPolicy of policies) {
-            const policy = this.standardizePolicy(rawPolicy);
-            const stored = this.policies.find((candidate) => candidate.pattern === policy.pattern);
+        for (const policy of policies) this.mergePolicy(this.standardizePolicy(policy));
+    }
 
-            if (!stored) {
-                this.policies.push(policy);
-                continue;
-            }
-
-            for (const incoming of Object.values(policy.info)) {
-                if (!incoming) continue;
-                stored.info[incoming.accessType] = {...incoming};
-            }
-        }
+    /** Merge already-resolved snapshots without retargeting their stored filesystem scopes. */
+    addStoredPolicies(policies: readonly Policy[]): void {
+        for (const policy of policies) this.mergePolicy(structuredClone(policy));
     }
 
     removePolicies(requests: PolicyDeleteRequest[]): void {
@@ -95,6 +87,18 @@ export class PolicyEngine {
                 ),
             }))
             .filter((policy) => Object.keys(policy.info).length > 0);
+    }
+
+    private mergePolicy(policy: Policy): void {
+        const stored = this.policies.find((candidate) => candidate.pattern === policy.pattern);
+        if (!stored) {
+            this.policies.push(policy);
+            return;
+        }
+        for (const incoming of Object.values(policy.info)) {
+            if (!incoming) continue;
+            stored.info[incoming.accessType] = {...incoming};
+        }
     }
 
     private standardizePolicy(policy: Policy): Policy {

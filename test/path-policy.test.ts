@@ -134,6 +134,27 @@ test("a path and access type identify one policy whose properties can be replace
     });
 });
 
+test("stored policy insertion owns its snapshots and merges access types without duplicates", () => {
+    const target = path.join(os.tmpdir(), "pi-policy-stored-insertion");
+    const read = policy(target, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "stored read");
+    const logic = new PolicyEngine();
+    logic.addStoredPolicies([read]);
+    read.pattern = path.join(os.tmpdir(), "changed-source");
+    read.info[PolicyAccessType.FS_READ]!.reason = "changed source";
+    assert.equal(logic.evaluate(target, PolicyAccessType.FS_READ)?.matchedReason, "stored read");
+
+    logic.addStoredPolicies([
+        policy(target, PolicyAccessType.FS_WRITE, PolicyLifetime.SESSION, PolicyResponse.ALLOWED, "stored write"),
+        policy(target, PolicyAccessType.FS_READ, PolicyLifetime.SESSION, PolicyResponse.DENIED, "replacement read"),
+    ]);
+    assert.equal(logic.allPolicies().length, 1);
+    assert.equal(logic.evaluate(target, PolicyAccessType.FS_READ)?.matchedStatus, PolicyResponse.DENIED);
+    assert.equal(logic.evaluate(target, PolicyAccessType.FS_WRITE)?.matchedReason, "stored write");
+    const snapshot = logic.allPolicies();
+    snapshot[0]!.info[PolicyAccessType.FS_WRITE]!.reason = "changed snapshot";
+    assert.equal(logic.evaluate(target, PolicyAccessType.FS_WRITE)?.matchedReason, "stored write");
+});
+
 test("different access types coexist at one path", () => {
     const target = path.join(os.tmpdir(), "pi-policy-access-types");
     const logic = new PolicyEngine();

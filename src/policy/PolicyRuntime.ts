@@ -249,12 +249,13 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             throw new Error(`An agent is already registered with this identifier: ${agentIdentifier}`);
         }
         const parent = this.requirePrincipal(parentAgentIdentifier);
-        const policies = this.inheritedPolicySnapshot(parent, inheritedAreas);
+        const policies = new PolicyEngine();
+        policies.addStoredPolicies(this.inheritedPolicySnapshot(parent, inheritedAreas));
         const principal: PolicyPrincipal = {
             agentIdentifier,
             parentAgentIdentifier,
             children: new Set(),
-            policies: new PolicyEngine(policies),
+            policies,
             policyRevision: 0,
             context: normalizedPrincipalContext(context),
             contextRevision: 0,
@@ -539,15 +540,11 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
                 `Agent policy approval failed closed: ${errorMessage(error)}`,
             );
         }
-        const policy = policyFromChoice(choice);
-
         if (validatedDecision && this.isActiveAuthorityPath(source)) {
             if (choice.lifetime === PolicyLifetime.SESSION) {
-                for (const principal of source.path.slice(0, -1)) {
-                    this.addPrincipalPolicies(principal, [policy]);
-                }
+                this.installApprovalPolicies(source.path.slice(0, -1), choice);
             } else {
-                oncePolicies.addPolicies([policy]);
+                oncePolicies.addStoredPolicies(this.scopedApprovalPolicies(requester, choice, oncePolicies));
             }
         }
 
@@ -635,7 +632,6 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             );
         }
 
-        const policy = policyFromChoice(choice);
         if (
             validatedDecision
             && this.isActivePrincipalPath(path)
@@ -644,9 +640,9 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             && this.defaultResponses[fallback.area] === PolicyFallbackResponse.ask_llm
         ) {
             if (choice.lifetime === PolicyLifetime.SESSION) {
-                for (const principal of path) this.addPrincipalPolicies(principal, [policy]);
+                this.installApprovalPolicies(path, choice);
             } else {
-                oncePolicies.addPolicies([policy]);
+                oncePolicies.addStoredPolicies(this.scopedApprovalPolicies(requester, choice, oncePolicies));
             }
         }
 
@@ -703,6 +699,12 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         return snapshot.path.every((principal, index) => (
             principal.policyRevision === snapshot.policyRevisions[index]
             && principal.contextRevision === snapshot.contextRevisions[index]
+        ));
+    }
+
+    private isUnchangedContextPath(snapshot: PrincipalPathSnapshot): boolean {
+        return snapshot.path.every((principal, index) => (
+            principal.contextRevision === snapshot.contextRevisions[index]
         ));
     }
 
@@ -786,6 +788,59 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
                 .map((scope) => resolveUri(accessType, scope)),
             sourceScope === UNIVERSAL_NETWORK_POLICY_PATTERN ? undefined : sourceScope,
         );
+    }
+
+    private installApprovalPolicies(principals: readonly PolicyPrincipal[], choice: PolicyChoice): void {
+        // Snapshot every recipient before installing anything: a new ancestor allow
+        // must not hide an exception while computing a descendant's derived grant.
+        const grants = principals.map((principal) => ({
+            principal,
+            policies: this.scopedApprovalPolicies(principal, {
+                ...choice,
+                lifetime: principal.agentIdentifier === this.rootAgentIdentifier
+                    ? choice.lifetime
+                    : PolicyLifetime.SESSION,
+            }),
+        }));
+        for (const {principal, policies} of grants) this.addPrincipalStoredPolicies(principal, policies);
+    }
+
+    /** Preserve narrower ancestry rules with their original layer precedence and allow holes. */
+    private scopedApprovalPolicies(
+        principal: PolicyPrincipal,
+        choice: PolicyChoice,
+        oncePolicies?: PolicyEngine,
+    ): Policy[] {
+        // Only the new choice is resolved; copied scopes already identify stored authority.
+        const policy = policyFromChoice(choice);
+        const policies = [policy];
+        if (choice.status !== PolicyResponse.ALLOWED) return policies;
+
+        const accessType = choice.accessType;
+        const grantedScope = policy.pattern;
+        // Recipient-owned rules remain in place, including their original lifetimes.
+        // ONCE rules also precede ancestors, but must never become session authority.
+        const nearerLayers = [principal.policies.allPolicies()];
+        if (oncePolicies) nearerLayers.push(oncePolicies.allPolicies());
+        for (const ancestor of this.pathToRoot(principal).slice(1)) {
+            const layer = ancestor.policies.allPolicies();
+            for (const policy of layer) {
+                const status = policy.info[accessType];
+                if (!status
+                    || policy.pattern === grantedScope
+                    || !policyScopeCovers(accessType, grantedScope, policy.pattern)
+                    || nearerLayers.some((nearer) => nearer.some((rule) => (
+                        rule.info[accessType] && policyScopeCovers(accessType, rule.pattern, policy.pattern)
+                    )))) continue;
+                policies.push({
+                    pattern: policy.pattern,
+                    info: {[accessType]: {...status, lifetime: choice.lifetime}},
+                });
+            }
+            // Rules in the same layer use specificity, not ancestry precedence.
+            nearerLayers.push(layer);
+        }
+        return policies;
     }
 
     private policyRequestContext(
@@ -1016,8 +1071,13 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
 
         const ancestor = this.resolveAncestorAuthority(requester, uri, accessType);
         if (ancestor.kind === "denied") return ancestor.result;
+        if (ancestor.kind === "authority") {
+            return failedClosedResult(uri, accessType, "Policy authority changed while approval was queued.");
+        }
+        // Unrelated policy revisions must not reject this request; re-resolving the
+        // relevant target and checking context/fallback is the authority check.
         if (
-            !this.isUnchangedPrincipalPath(pathSnapshot)
+            !this.isUnchangedContextPath(pathSnapshot)
             || !this.isUnchangedFallback(fallback)
             || this.defaultResponses[fallback.area] !== PolicyFallbackResponse.ask_user
         ) {
@@ -1061,35 +1121,39 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             );
             return resolvedWhilePending;
         }
-        if (
-            !this.isActivePrincipalPath(path)
-            || !this.isUnchangedPrincipalPath(pathSnapshot)
-        ) {
+        if (!this.isActivePrincipalPath(path)) {
             const result = failedClosedResult(uri, accessType, "User policy approval is no longer active.");
             this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
             return result;
         }
-        const policy = policyFromChoice(choice);
-        const root = this.requirePrincipal(this.rootAgentIdentifier);
-        const persisted = isPersistedLifetime(choice.lifetime);
-
-        if (persisted) {
-            this.database.upsertPolicies([policy]);
-            this.addPrincipalPolicies(root, [policy]);
-        } else if (choice.lifetime === PolicyLifetime.SESSION) {
-            this.addPrincipalPolicies(root, [policy]);
+        const ancestor = this.resolveAncestorAuthority(requester, uri, accessType);
+        if (ancestor.kind === "denied") {
+            this.auditUserApproval(requestContext, uri, accessType, choice, ancestor.result, "SUPERSEDED");
+            return ancestor.result;
+        }
+        if (ancestor.kind === "authority") {
+            const result = failedClosedResult(uri, accessType, "Policy authority changed while approval was pending.");
+            this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
+            return result;
+        }
+        if (!this.isUnchangedContextPath(pathSnapshot)) {
+            const result = failedClosedResult(uri, accessType, "User policy approval is no longer active.");
+            this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
+            return result;
+        }
+        if (isPersistedLifetime(choice.lifetime)) {
+            this.database.upsertPolicies([policyFromChoice(choice)]);
+        }
+        if (choice.lifetime === PolicyLifetime.ONCE) {
+            oncePolicies.addStoredPolicies(this.scopedApprovalPolicies(requester, choice, oncePolicies));
         } else {
-            oncePolicies.addPolicies([policy]);
+            this.installApprovalPolicies(path, choice);
         }
 
-        let effectiveLifetime = choice.lifetime;
-        if (requester.agentIdentifier !== this.rootAgentIdentifier && choice.lifetime !== PolicyLifetime.ONCE) {
-            const derived = sessionPolicy(policy);
-            for (const principal of path.slice(0, -1)) {
-                this.addPrincipalPolicies(principal, [derived]);
-            }
-            effectiveLifetime = PolicyLifetime.SESSION;
-        }
+        const effectiveLifetime = requester.agentIdentifier !== this.rootAgentIdentifier
+            && choice.lifetime !== PolicyLifetime.ONCE
+            ? PolicyLifetime.SESSION
+            : choice.lifetime;
 
         const result = PolicyResult.of({
             resolutionSource: PolicyResolutionSource.NEW_USER_DECISION,
@@ -1114,8 +1178,8 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         return path;
     }
 
-    private addPrincipalPolicies(principal: PolicyPrincipal, policies: Policy[]): void {
-        principal.policies.addPolicies(policies);
+    private addPrincipalStoredPolicies(principal: PolicyPrincipal, policies: Policy[]): void {
+        principal.policies.addStoredPolicies(policies);
         principal.policyRevision++;
         if (filesystemPolicies(policies).length > 0) this.notifyNativeFilesystemPolicyBase(principal);
     }
@@ -1146,8 +1210,9 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
 
     private effectivePolicies(principal: PolicyPrincipal): Policy[] {
         if (principal.agentIdentifier !== this.rootAgentIdentifier) return principal.policies.allPolicies();
-        const effective = new PolicyEngine(this.rootFallbackPolicies.allPolicies());
-        effective.addPolicies(principal.policies.allPolicies());
+        const effective = new PolicyEngine();
+        effective.addStoredPolicies(this.rootFallbackPolicies.allPolicies());
+        effective.addStoredPolicies(principal.policies.allPolicies());
         return effective.allPolicies();
     }
 
@@ -1213,7 +1278,7 @@ function policyFromChoice(choice: {
     reason: string;
 }): Policy {
     return {
-        pattern: choice.uri,
+        pattern: resolveUri(choice.accessType, choice.uri),
         info: {
             [choice.accessType]: PolicyEngine.createStatus(
                 choice.accessType,
@@ -1222,18 +1287,6 @@ function policyFromChoice(choice: {
                 choice.reason,
             ),
         },
-    };
-}
-
-function sessionPolicy(policy: Policy): Policy {
-    return {
-        pattern: policy.pattern,
-        info: Object.fromEntries(
-            Object.entries(policy.info).map(([accessType, status]) => [
-                accessType,
-                status ? {...status, lifetime: PolicyLifetime.SESSION} : status,
-            ]),
-        ),
     };
 }
 

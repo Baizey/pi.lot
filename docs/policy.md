@@ -149,7 +149,7 @@ When a child requests an operation it does not hold:
 - a covering allow held by an ancestor can authorize a bounded policy-review agent; or
 - without ancestor authority, the root fallback selects allow, deny, user review, or model review.
 
-A derived approval cannot exceed the ancestor's scope or lifetime. Session grants are installed only along the requesting ancestry and do not leak to siblings.
+A derived approval cannot exceed the ancestor's scope or lifetime. A broad derived allow preserves each recipient's effective narrower ancestry rules, including more-specific allow exceptions within denied subtrees. Recipient-owned rules remain in place; descendant-only denials are never promoted into ancestor policy. Copied rules cannot outlive the derived grant, and copied filesystem scopes retain their stored resolved pathnames rather than being resolved again during delegation. This also applies when a user approval selects a broader scope than the original target. Session grants are installed only along the requesting ancestry and do not leak to siblings.
 
 ## Approval waits and execution budgets
 
@@ -160,7 +160,7 @@ Approvals have their own independent deadlines:
 - **User approval: 300 seconds per request**, starting when it enters the user approval route. Time queued behind other prompts and every scope, decision, lifetime, and reason step share this single budget. Opening a prompt or moving to another step does not restart it.
 - **Model approval: 300 seconds per review**, including reviewer setup and prompting. Pausing the source does not pause this reviewer watchdog.
 
-Expiry fails the pending operation closed and installs no policy grant. Late replies cannot authorize an expired request. Explicit cancellation and shutdown still work while execution budgets are paused. A queued request rechecks policy before opening its prompt, so a covering decision from earlier queued work can resolve it without asking again.
+Expiry fails the pending operation closed and installs no policy grant. Late replies cannot authorize an expired request. Explicit cancellation and shutdown still work while execution budgets are paused. A queued request rechecks its own target, ancestry, context, and fallback before opening its prompt; an unrelated policy change does not invalidate it, while a newly covering deny or authority fails it closed. A covering decision from earlier queued work can resolve it without asking again.
 
 This is execution-budget accounting, not suspension of the whole process. Other work can continue, and independent transport, application, subprocess, or server deadlines are not extended. In particular, a network request or a program's own timeout can still fail during an approval wait. Background descendants do not automatically pause their ancestors; see [Subagent turn and wait budgets](subagents.md#turn-and-wait-budgets).
 

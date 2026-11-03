@@ -1,11 +1,13 @@
 import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
+import type {SubagentStatusMode} from "../../subagents/types";
 import {
     type SubagentToolDetails,
     subagentToolResult,
 } from "../../subagents/SubagentToolResult";
 import {
     arraySchema,
+    enumSchema,
     numberSchema,
     objectSchema,
     stringSchema,
@@ -15,7 +17,7 @@ import {ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPrese
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {ThemeColor} from "../../tui/Color";
 
-type StatusToolInput = {jobIds?: string[]; waitSeconds?: number};
+type StatusToolInput = {jobIds?: string[]; waitSeconds?: number; mode?: SubagentStatusMode};
 type CoordinatorProvider = () => SubagentCoordinator;
 
 const STATUS_PRESENTATION = {
@@ -26,6 +28,11 @@ const STATUS_PRESENTATION = {
             placement: ToolArgumentPlacement.TITLE_PRIMARY,
             color: ThemeColor.text,
             format: (value) => Array.isArray(value) && value.length > 0 ? value.join(", ") : "all jobs",
+        },
+        {
+            key: "mode",
+            placement: ToolArgumentPlacement.TITLE_SECONDARY,
+            format: (value) => ` (${String(value)})`,
         },
         {
             key: "waitSeconds",
@@ -66,7 +73,7 @@ function createDefinition(
     return {
         name: "subagent_status",
         label: "Subagent status",
-        description: "Inspect subagent conversation jobs and optionally wait for selected active turns to become idle or terminal. Omit jobIds to render the invoking agent's scoped descendant tree.",
+        description: "Inspect subagent conversation jobs and optionally wait until all (default) or the first selected job is idle or terminal. Always returns the full selected snapshot. Omit jobIds to render the invoking agent's scoped descendant tree.",
         ...displayRows.bind(STATUS_PRESENTATION),
         parameters: objectSchema({
             jobIds: arraySchema(
@@ -74,6 +81,7 @@ function createDefinition(
                 "Jobs to inspect; omit for the invoking agent's scoped descendant tree",
             ),
             waitSeconds: numberSchema("Maximum time to wait for selected jobs, excluding their policy approval waits", 0, 3_600, 0),
+            mode: enumSchema(["all", "first"], "Wait for all selected jobs or the first idle/terminal job; already settled jobs count immediately", "all"),
         }),
         async execute(_id, params, signal, onUpdate): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as StatusToolInput;
@@ -83,6 +91,7 @@ function createDefinition(
                 input.waitSeconds ?? 0,
                 signal,
                 onUpdate ? (updates) => onUpdate(subagentToolResult(updates, {tree})) : undefined,
+                input.mode ?? "all",
             );
             return subagentToolResult(jobs, {tree});
         },

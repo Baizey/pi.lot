@@ -7,7 +7,7 @@ pi.lot provides retained child-agent conversations with separate model context, 
 | Tool | Arguments and behaviour |
 | --- | --- |
 | `subagent_spawn` | Required: `task`, `role`, `reasoning_skill`, `reasoning_amount`. Optional: `capabilities` (default `[]`), `cwd`, `timeoutSeconds` (default 86,400; range 1–86,400), `systemPrompt`, `contextPaths`. Returns a job ID without waiting for completion. |
-| `subagent_status` | Optional `jobIds` and `waitSeconds` (default 0; range 0–3,600). Omit IDs or pass `[]` for the invoking agent's descendant tree. Waiting ends when all selected jobs are idle/terminal or the wait budget expires; check their returned states. |
+| `subagent_status` | Optional `jobIds`, `waitSeconds` (default 0; range 0–3,600), and `mode` (`"all"` or `"first"`, default `"all"`). Omit IDs or pass `[]` for the invoking agent's descendant tree. `all` waits until all selected jobs are idle/terminal; `first` returns as soon as any selected job is idle/terminal, including an already settled job. Queued and running jobs are active. Either mode returns on budget expiry or can be cancelled, and returns the full selected snapshot, not just the jobs that settled; check their states. Zero wait or an empty selection returns immediately. |
 | `subagent_message` | Required `jobId`, `task`. Steers a running turn when possible; otherwise queues an ordered follow-up. An idle job starts a new turn in the retained conversation. |
 | `subagent_stop` | Required `jobId`. Stops that job and its descendants, descendants first. |
 
@@ -103,7 +103,7 @@ An explicit denial is terminal. Otherwise, a covering ancestor allow can route t
 
 Separately, every retained conversation has a hard **30-day wall-clock lifetime from accepted spawn**. Initial queueing, running, approval waits, idle time, and all follow-ups count toward this fixed limit; messages and new turns do not reset it. Expiry makes running, queued, and idle jobs `timed_out`, aborts active work, and releases the retained session and policy principal (an ancestor principal remains until its retained descendants are released). Lifetime expiry does not automatically stop descendants: each has its own spawn-time lifetime. There is no configurable lifetime parameter. Explicit stop and root shutdown still cancel jobs before their deadlines.
 
-`subagent_status` pauses its wait budget while a selected active job awaits approval. If a parent is waiting in that call, its turn budget pauses too. Background descendants and unselected siblings do not automatically pause the parent. Cancellation still works during approval waits. Independent model, subprocess, application, and server deadlines are not extended.
+In either mode, `subagent_status` pauses its remaining wait budget while a selected active job awaits approval. If a parent is waiting in that call, its turn budget pauses too. Background descendants and unselected siblings do not automatically pause the parent. Cancellation still works during approval waits. Independent model, subprocess, application, and server deadlines are not extended.
 
 ## Work-tree visibility
 

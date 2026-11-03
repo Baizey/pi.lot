@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {validateToolArguments, type JsonObject} from "@earendil-works/pi-ai";
 import type {ExtensionContext, ExtensionToolContext, Theme, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../src/subagents/SubagentCoordinator.js";
 import {SubagentToolCatalog} from "../src/subagents/SubagentToolCatalog.js";
@@ -13,7 +14,7 @@ import {
     initialSubagentDefaults,
 } from "../src/subagents/SubagentDefaults.js";
 import {AGENT_CAPABILITIES} from "../src/subagents/AgentCapability.js";
-import type {SubagentChildSessionFactory} from "../src/subagents/types.js";
+import type {SubagentChildSessionFactory, SubagentJobSnapshot} from "../src/subagents/types.js";
 import {SubagentMessageTool} from "../src/tools/subagent/SubagentMessageTool";
 import {SubagentSpawnTool} from "../src/tools/subagent/SubagentSpawnTool";
 import {SubagentStatusTool} from "../src/tools/subagent/SubagentStatusTool";
@@ -55,6 +56,10 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.equal(spawnProperties.timeoutSeconds.minimum, 1);
     assert.equal(spawnProperties.timeoutSeconds.maximum, 86_400);
     assert.equal(spawnProperties.timeoutSeconds.default, 86_400);
+    const statusProperties = (registered[1]!.parameters as any).properties;
+    assert.deepEqual(statusProperties.mode.enum, ["all", "first"]);
+    assert.equal(statusProperties.mode.default, "all");
+    assert.equal(statusProperties.waitSeconds.maximum, 3_600);
     assert.deepEqual(
         registered[0]!.prepareArguments?.({task: "legacy", role: "worker", mode: "sync"}),
         {task: "legacy", role: "worker"},
@@ -207,6 +212,47 @@ test("each subagent tool registers independently and delegates only to the coord
     await coordinator.close();
     assert.equal(activePrincipals.size, 0);
     assert.equal(approvalWaitScopes.size, 0);
+});
+
+test("status mode validates its schema, defaults to all, and forwards first without narrowing the result", async (t) => {
+    const pi = await createNativeExtensionApi();
+    const coordinator = new SubagentCoordinator({
+        async create() { throw new Error("No session should be created"); },
+    }, new SubagentToolCatalog({builtins: () => [], mcp: () => [], delegate: () => []}), {
+        registerPolicyPrincipal() {},
+        removePolicyPrincipal() {},
+        setPolicyApprovalWaitScope() {},
+    });
+    t.after(() => coordinator.close());
+    const definition = new SubagentStatusTool(pi, () => coordinator, new ToolDisplayRows()).toolDefinition();
+    const validate = (args: JsonObject) => validateToolArguments(definition, {
+        type: "toolCall", id: "status-mode", name: definition.name, arguments: args,
+    });
+    // Native validation accepts omission without applying schema defaults; execution owns the fallback.
+    assert.equal((validate({}) as {mode?: string}).mode, undefined);
+    for (const mode of ["all", "first"]) assert.equal((validate({mode}) as {mode?: string}).mode, mode);
+    assert.equal((validate({mode: null}) as {mode?: string}).mode, undefined);
+    for (const mode of ["any", "", 42, false]) assert.throws(() => validate({mode}), /mode/);
+    const calls: Parameters<SubagentCoordinator["status"]>[] = [];
+    const jobs: SubagentJobSnapshot[] = [];
+    t.mock.method(coordinator, "status", async (...args: Parameters<SubagentCoordinator["status"]>) => {
+        calls.push(args);
+        args[3]?.(jobs);
+        return jobs;
+    });
+    for (const input of [{}, {mode: "all"}, {jobIds: ["one", "two"], waitSeconds: 5, mode: "first"}]) {
+        const result = await invoke(definition, input);
+        assert.equal((result as {details: {jobs: SubagentJobSnapshot[]}}).details.jobs, jobs);
+    }
+    assert.deepEqual(calls.map((args) => [args[0], args[1], args[4]]), [
+        [undefined, 0, "all"],
+        [undefined, 0, "all"],
+        [["one", "two"], 5, "first"],
+    ]);
+    const args = {jobIds: ["one", "two"], waitSeconds: 5, mode: "first"};
+    assert.deepEqual(definition.renderCall!(args, plainTheme(), renderContext(args)).render(120), [
+        "  subagent_status | one, two (first) (wait 5s)",
+    ]);
 });
 
 function plainTheme(): Theme {

@@ -700,7 +700,7 @@ test("a synchronous RUNNING observer can stop a job without failing it or leakin
     assert.equal(statuses.length, eventCount, "the cancelled turn must leave no live watchdog notifications");
 });
 
-test("explicit stop and status abort remain immediate while approval clocks are paused", async (t) => {
+for (const mode of ["all", "first"] as const) test(`explicit stop and status ${mode} abort remain immediate while approval clocks are paused`, async (t) => {
     const clock = new VirtualClock(t);
     const fixture = new ApprovalFixture(t);
     let decision: PolicyResult | undefined;
@@ -713,11 +713,16 @@ test("explicit stop and status abort remain immediate while approval clocks are 
     const {job} = await coordinator.spawn(childRequest({timeoutSeconds: 1}));
     await flush();
     const controller = new AbortController();
-    const status = coordinator.status([job.id], 5, controller.signal);
+    const parentScope = new ApprovalWaitScope();
+    t.after(() => parentScope.close());
+    const status = parentScope.run(() => coordinator.status([job.id], 5, controller.signal, undefined, mode));
+    assert.equal(parentScope.waiting, true);
     const rejected = assert.rejects(status, {name: "AbortError"});
     await clock.advance(100_000);
     controller.abort();
     await rejected;
+    assert.equal(parentScope.waiting, false, "abort must release the propagated approval wait");
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
     const stopped = observe(coordinator.stop(job.id));
     await flush();
     assert.equal(stopped.settled, true, "explicit cancellation must not wait for an approval watchdog");
@@ -992,7 +997,7 @@ for (const route of ["ask_llm", "ancestor"] as const) {
     });
 }
 
-test("status waitSeconds pauses for selected approval jobs and resumes its remaining budget", async (t) => {
+for (const mode of ["all", "first"] as const) test(`status ${mode} waitSeconds pauses for selected approval jobs and resumes its remaining budget`, async (t) => {
     const clock = new VirtualClock(t);
     const fixture = new ApprovalFixture(t);
     const start = deferred<void>();
@@ -1004,7 +1009,7 @@ test("status waitSeconds pauses for selected approval jobs and resumes its remai
     });
     const {job} = await coordinator.spawn(childRequest({timeoutSeconds: 30}));
     await flush();
-    const pending = observe(coordinator.status([job.id], 5));
+    const pending = observe(coordinator.status([job.id], 5, undefined, undefined, mode));
     await clock.advance(1_000);
     start.resolve();
     await flush();
@@ -1018,7 +1023,7 @@ test("status waitSeconds pauses for selected approval jobs and resumes its remai
     assert.equal((await pending.promise)[0]!.status, SubagentJobStatus.RUNNING);
 });
 
-test("waiting on selected descendants pauses an invoking parent's source clock", async (t) => {
+for (const mode of ["all", "first"] as const) test(`waiting on selected descendants in ${mode} mode pauses an invoking parent's source clock`, async (t) => {
     const clock = new VirtualClock(t);
     const fixture = new ApprovalFixture(t);
     const childFinish = deferred<string>();
@@ -1035,7 +1040,7 @@ test("waiting on selected descendants pauses an invoking parent's source clock",
             parentAgentIdentifier: request.agentIdentifier, role: "child", timeoutSeconds: 30,
         }));
         childId = spawned.job.id;
-        await coordinator.status([childId], 5, signal);
+        await coordinator.status([childId], 5, signal, undefined, mode);
         statusReturned = true;
         return abortable(parentFinish.promise, signal);
     });
@@ -1058,7 +1063,7 @@ test("waiting on selected descendants pauses an invoking parent's source clock",
     assert.equal(coordinator.list([job.id])[0]!.status, SubagentJobStatus.TIMED_OUT);
 });
 
-test("status reconciles a new selected-child approval started synchronously while releasing its parent wait", async (t) => {
+for (const mode of ["all", "first"] as const) test(`status ${mode} reconciles a new selected-child approval started synchronously while releasing its parent wait`, async (t) => {
     const clock = new VirtualClock(t);
     const fixture = new ApprovalFixture(t);
     const childFinish = deferred<string>();
@@ -1097,7 +1102,7 @@ test("status reconciles a new selected-child approval started synchronously whil
             }
         });
         t.after(unsubscribe);
-        await coordinator.status([child.job.id], 5, signal);
+        await coordinator.status([child.job.id], 5, signal, undefined, mode);
         statusReturned = true;
         return abortable(parentFinish.promise, signal);
     });
@@ -1131,7 +1136,7 @@ test("status reconciles a new selected-child approval started synchronously whil
     assert.equal(coordinator.list([job.id])[0]!.status, SubagentJobStatus.TIMED_OUT);
 });
 
-test("status reconciles a selected child wait ended synchronously while acquiring its parent wait", async (t) => {
+for (const mode of ["all", "first"] as const) test(`status ${mode} reconciles a selected child wait ended synchronously while acquiring its parent wait`, async (t) => {
     const clock = new VirtualClock(t);
     const fixture = new ApprovalFixture(t);
     const startStatus = deferred<void>();
@@ -1164,7 +1169,7 @@ test("status reconciles a selected child wait ended synchronously while acquirin
             releaseChildWait();
         });
         t.after(unsubscribe);
-        await coordinator.status([child.job.id], 5, signal);
+        await coordinator.status([child.job.id], 5, signal, undefined, mode);
         statusReturned = true;
         return abortable(parentFinish.promise, signal);
     });
@@ -1191,7 +1196,7 @@ test("status reconciles a selected child wait ended synchronously while acquirin
     assert.equal(coordinator.list([job.id])[0]!.status, SubagentJobStatus.TIMED_OUT);
 });
 
-test("an unrelated sibling's pending approval does not pause selected status waits", async (t) => {
+for (const mode of ["all", "first"] as const) test(`an unrelated sibling's pending approval does not pause selected ${mode} status waits`, async (t) => {
     const clock = new VirtualClock(t);
     const fixture = new ApprovalFixture(t);
     const work = deferred<string>();
@@ -1204,13 +1209,68 @@ test("an unrelated sibling's pending approval does not pause selected status wai
     const selected = await coordinator.spawn(childRequest({role: "selected", timeoutSeconds: 30}));
     const sibling = await coordinator.spawn(childRequest({role: "approval", timeoutSeconds: 1}));
     await flush();
-    const pending = observe(coordinator.status([selected.job.id], 5));
+    const pending = observe(coordinator.status([selected.job.id], 5, undefined, undefined, mode));
     await clock.advance(4_999);
     assert.equal(pending.settled, false);
     await clock.advance(1);
     assert.equal(pending.settled, true, "unselected background approvals must not extend this wait");
     assert.equal((await pending.promise)[0]!.status, SubagentJobStatus.RUNNING);
     assert.equal(coordinator.list([sibling.job.id])[0]!.status, SubagentJobStatus.RUNNING);
+});
+
+test("status first releases the parent approval wait when another selected job settles and detaches its observer", async (t) => {
+    const clock = new VirtualClock(t);
+    const fixture = new ApprovalFixture(t);
+    const finish = deferred<string>();
+    let parentScope: ApprovalWaitScope | undefined;
+    let waitingChild = "";
+    let finishedChild = "";
+    let statusReturned = false;
+    let updates = 0;
+    let coordinator!: SubagentCoordinator;
+    coordinator = fixture.coordinator(t, async (request, _task, signal) => {
+        if (request.role === "approval") {
+            await fixture.runtime.beginToolCall(request.agentIdentifier)(TARGET, PolicyAccessType.FS_WRITE, signal);
+        } else if (request.role === "worker") {
+            return abortable(finish.promise, signal);
+        } else {
+            parentScope = ApprovalWaitScope.current();
+            const approval = await coordinator.spawn(childRequest({
+                parentAgentIdentifier: request.agentIdentifier, role: "approval",
+            }));
+            waitingChild = approval.job.id;
+            const worker = await coordinator.spawn(childRequest({
+                parentAgentIdentifier: request.agentIdentifier, role: "worker", timeoutSeconds: 300,
+            }));
+            finishedChild = worker.job.id;
+            const listenersBefore = getEventListeners(signal, "abort").length;
+            const result = await coordinator.status([waitingChild, finishedChild], 5, signal, () => updates++, "first");
+            statusReturned = true;
+            assert.deepEqual(result.map((job) => job.status), ["running", "idle"]);
+            assert.equal(getEventListeners(signal, "abort").length, listenersBefore);
+        }
+        return abortable(new Promise<string>(() => {}), signal);
+    });
+    const parent = await coordinator.spawn(childRequest({
+        role: "parent", timeoutSeconds: 10, capabilities: [AgentMechanismCapability.delegate],
+    }));
+    await flush();
+    assert.equal(parentScope?.waiting, true);
+    await clock.advance(200_000);
+    assert.equal(statusReturned, false);
+    finish.resolve("first selected result");
+    await flush();
+    assert.equal(statusReturned, true);
+    assert.equal(parentScope?.waiting, false, "the ongoing selected approval must no longer pause the parent");
+    const updatesAfterReturn = updates;
+    await clock.advance(9999);
+    assert.equal(coordinator.list([parent.job.id])[0]!.status, SubagentJobStatus.RUNNING);
+    await clock.advance(1);
+    assert.equal(coordinator.list([parent.job.id])[0]!.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(coordinator.list([waitingChild])[0]!.status, SubagentJobStatus.RUNNING);
+    await fixture.allow();
+    await coordinator.stop(waitingChild);
+    assert.equal(updates, updatesAfterReturn, "later approval changes must not reach the finished status call");
 });
 
 test("a background descendant does not automatically pause its ancestor's turn", async (t) => {

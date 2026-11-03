@@ -16,6 +16,8 @@ export enum SubagentJobStatus {
     TIMED_OUT = "timed_out",
 }
 
+export type SubagentStatusMode = "all" | "first";
+
 export type SubagentRequest = {
     parentAgentIdentifier: string;
     task: string;

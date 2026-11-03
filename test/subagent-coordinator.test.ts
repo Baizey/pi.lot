@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, {type TestContext} from "node:test";
 import {performance} from "node:perf_hooks";
+import {getEventListeners} from "node:events";
 import type {ToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
 import {PolicyArea} from "../src/policy/types.js";
@@ -18,6 +19,7 @@ import {
     type SubagentChildSession,
     type SubagentChildSessionFactory,
     type SubagentRequest,
+    type SubagentStatusMode,
 } from "../src/subagents/types.js";
 
 const bashTool = tool("bash");
@@ -762,6 +764,11 @@ test("delegating agents can manage only their own descendants", async () => {
             if (childRequest.role === "inspector") {
                 return new FakeSession(async () => {
                     assert.throws(() => coordinator.list([siblingJobId]), /outside the invoking agent's descendants/);
+                    await assert.rejects(
+                        coordinator.status([siblingJobId], 2, undefined, undefined, "first"),
+                        /outside the invoking agent's descendants/,
+                    );
+                    assert.deepEqual(await coordinator.status([], 2, undefined, undefined, "first"), []);
                     await assert.rejects(coordinator.stop(parentJobId), /outside the invoking agent's descendants/);
                     return "sibling remained private";
                 });
@@ -865,6 +872,249 @@ class BudgetClock {
 
 async function flushBudgets(): Promise<void> {
     for (let index = 0; index < 40; index++) await Promise.resolve();
+}
+
+for (const mode of [undefined, "all", "first"] as const) {
+    for (const firstIndex of [0, 1]) {
+        test(`status ${mode ?? "default"} with selected job ${firstIndex} finishing first ignores unselected completions`, async (t) => {
+            const clock = new BudgetClock(t);
+            const work = [deferred<string>(), deferred<string>(), deferred<string>()];
+            const coordinator = new SubagentCoordinator({
+                async create(child) {
+                    return new FakeSession((_task, signal) => abortable(work[Number(child.role)]!.promise, signal));
+                },
+            }, tools(), new FakePolicyPrincipals());
+            t.after(() => coordinator.close());
+            const selected = [
+                (await coordinator.spawn(request({role: "0"}))).job.id,
+                (await coordinator.spawn(request({role: "1"}))).job.id,
+            ];
+            await coordinator.spawn(request({role: "2"}));
+            await flushBudgets();
+            const controller = new AbortController();
+            let updates = 0;
+            const pending = observeStatus(coordinator.status(selected, 5, controller.signal, () => updates++, mode));
+            await clock.advance(500);
+            work[2]!.resolve("unselected sibling");
+            await flushBudgets();
+            assert.equal(pending.settled, false, "an unselected idle job cannot satisfy first");
+            await clock.advance(500);
+            work[firstIndex]!.resolve("first answer");
+            await flushBudgets();
+            assert.equal(pending.settled, mode === "first");
+            if (mode === "first") {
+                const result = await pending.promise;
+                assert.deepEqual(result.map((job) => job.id), selected);
+                assert.equal(result[firstIndex]!.status, SubagentJobStatus.IDLE);
+                assert.equal(result[1 - firstIndex]!.status, SubagentJobStatus.RUNNING);
+                assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+            }
+            const updatesAfterFirst = updates;
+            await clock.advance(2000);
+            work[1 - firstIndex]!.resolve("last answer");
+            await flushBudgets();
+            const result = await pending.promise;
+            assert.equal(pending.settled, true);
+            if (mode === "first") assert.equal(updates, updatesAfterFirst, "completion must detach the observer");
+            else assert.equal(result.every((job) => job.status === SubagentJobStatus.IDLE), true);
+            assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+        });
+    }
+}
+
+test("status first latches settlement before an observer can restart the idle job", async (t) => {
+    const work = deferred<string>();
+    const principals = new FakePolicyPrincipals();
+    const coordinator = new SubagentCoordinator({
+        async create() {
+            return new FakeSession((_task, signal) => abortable(work.promise, signal));
+        },
+    }, tools(), principals);
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request());
+    await flushBudgets();
+    let restarted = false;
+    let settled = false;
+    const controller = new AbortController();
+    const pending = coordinator.status([spawned.job.id], 3_600, controller.signal, (jobs) => {
+        if (!restarted && jobs[0]?.status === SubagentJobStatus.IDLE) {
+            restarted = true;
+            void coordinator.message(spawned.job.id, "follow-up after idle");
+        }
+    }, "first").then(() => { settled = true; }, () => {});
+    work.resolve("answer");
+    await flushBudgets();
+    assert.equal(restarted, true);
+    assert.equal(settled, true);
+    controller.abort();
+    await pending;
+});
+
+test("status first settles even when an update observer throws", async (t) => {
+    const work = deferred<string>();
+    const coordinator = new SubagentCoordinator({
+        async create() {
+            return new FakeSession((_task, signal) => abortable(work.promise, signal));
+        },
+    }, tools(), new FakePolicyPrincipals());
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request());
+    await flushBudgets();
+    let settled = false;
+    const controller = new AbortController();
+    const pending = coordinator.status([spawned.job.id], 3_600, controller.signal, () => {
+        throw new Error("presentation failure");
+    }, "first").then(() => { settled = true; }, () => {});
+    work.resolve("answer");
+    await flushBudgets();
+    assert.equal(settled, true);
+    controller.abort();
+    await pending;
+});
+
+for (const terminal of [SubagentJobStatus.CANCELLED, SubagentJobStatus.FAILED, SubagentJobStatus.TIMED_OUT]) {
+    test(`status first wakes for a selected ${terminal} job`, async (t) => {
+        const clock = new BudgetClock(t);
+        const failure = deferred<void>();
+        const coordinator = new SubagentCoordinator({
+            async create(child) {
+                return new FakeSession(async (_task, signal) => {
+                    if (child.role === "settling" && terminal === SubagentJobStatus.FAILED) {
+                        await failure.promise;
+                        throw new Error("selected failure");
+                    }
+                    return abortable(new Promise<string>(() => {}), signal);
+                });
+            },
+        }, tools(), new FakePolicyPrincipals());
+        t.after(() => coordinator.close());
+        const active = await coordinator.spawn(request());
+        const settling = await coordinator.spawn(request({role: "settling", timeoutSeconds: 1}));
+        await flushBudgets();
+        const pending = observeStatus(coordinator.status([active.job.id, settling.job.id], 5, undefined, undefined, "first"));
+        await clock.advance(999);
+        assert.equal(pending.settled, false);
+        if (terminal === SubagentJobStatus.CANCELLED) await coordinator.stop(settling.job.id);
+        else if (terminal === SubagentJobStatus.FAILED) failure.resolve();
+        else await clock.advance(1);
+        await flushBudgets();
+        assert.equal(pending.settled, true);
+        assert.deepEqual((await pending.promise).map((job) => job.status), [SubagentJobStatus.RUNNING, terminal]);
+    });
+}
+
+test("status first treats queued jobs as active, including after an unselected blocker stops", async (t) => {
+    const clock = new BudgetClock(t);
+    const coordinator = new SubagentCoordinator({
+        async create() {
+            return new FakeSession((_task, signal) => abortable(new Promise<string>(() => {}), signal));
+        },
+    }, tools(), new FakePolicyPrincipals(), {maxConcurrency: 1});
+    t.after(() => coordinator.close());
+    const blocker = await coordinator.spawn(request());
+    const first = await coordinator.spawn(request());
+    const second = await coordinator.spawn(request());
+    const pending = observeStatus(coordinator.status([first.job.id, second.job.id], 5, undefined, undefined, "first"));
+    await clock.advance(1000);
+    assert.equal(pending.settled, false);
+    assert.deepEqual(coordinator.list([first.job.id, second.job.id]).map((job) => job.status), ["queued", "queued"]);
+    await coordinator.stop(blocker.job.id);
+    await flushBudgets();
+    assert.equal(coordinator.list([first.job.id])[0]!.status, SubagentJobStatus.RUNNING);
+    assert.equal(pending.settled, false, "queued to running is not settlement and an unselected stop cannot wake first");
+    await coordinator.stop(second.job.id);
+    assert.deepEqual((await pending.promise).map((job) => job.status), ["running", "cancelled"]);
+});
+
+for (const status of [SubagentJobStatus.IDLE, SubagentJobStatus.FAILED, SubagentJobStatus.CANCELLED, SubagentJobStatus.TIMED_OUT]) {
+    test(`status first immediately counts an already ${status} job without waiting on active selections`, async (t) => {
+        const clock = new BudgetClock(t);
+        const coordinator = new SubagentCoordinator({
+            async create(child) {
+                return new FakeSession(async (_task, signal) => {
+                    if (child.role === "settled") {
+                        if (status === SubagentJobStatus.IDLE) return "done";
+                        if (status === SubagentJobStatus.FAILED) throw new Error("failed");
+                    }
+                    return abortable(new Promise<string>(() => {}), signal);
+                });
+            },
+        }, tools(), new FakePolicyPrincipals(), {maxConcurrency: 1});
+        t.after(() => coordinator.close());
+        const settled = await coordinator.spawn(request({role: "settled", timeoutSeconds: 1}));
+        await flushBudgets();
+        if (status === SubagentJobStatus.CANCELLED) await coordinator.stop(settled.job.id);
+        if (status === SubagentJobStatus.TIMED_OUT) await clock.advance(1000);
+        const active = await coordinator.spawn(request());
+        const queued = await coordinator.spawn(request());
+        await flushBudgets();
+        const ids = [active.job.id, settled.job.id, queued.job.id];
+        const controller = new AbortController();
+        controller.abort();
+        // Preserve the existing no-wait/settled fast path, even with a pre-aborted signal.
+        const result = await coordinator.status(ids, 5, controller.signal, undefined, "first");
+        assert.deepEqual(result.map((job) => job.status), ["running", status, "queued"]);
+        assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+        await assert.rejects(coordinator.status([settled.job.id, "unknown"], 5, undefined, undefined, "first"), /Unknown subagent job/);
+        const allController = new AbortController();
+        const all = observeStatus(coordinator.status(ids, 5, allController.signal));
+        const rejection = assert.rejects(all.promise, {name: "AbortError"});
+        await clock.advance(1);
+        assert.equal(all.settled, false, "default all must still wait for the active jobs");
+        allController.abort();
+        await rejection;
+        assert.equal(getEventListeners(allController.signal, "abort").length, 0);
+    });
+}
+
+for (const mode of ["all", "first"] as const) {
+    test(`status ${mode} preserves empty/tree, zero wait, timeout, abort and observer cleanup`, async (t) => {
+        const clock = new BudgetClock(t);
+        const coordinator = new SubagentCoordinator({
+            async create() {
+                return new FakeSession((_task, signal) => abortable(new Promise<string>(() => {}), signal));
+            },
+        }, tools(), new FakePolicyPrincipals());
+        t.after(() => coordinator.close());
+        const aborted = new AbortController();
+        aborted.abort();
+        assert.deepEqual(await coordinator.status(undefined, 5, aborted.signal, undefined, mode), []);
+        assert.deepEqual(await coordinator.status([], 5, aborted.signal, undefined, mode), []);
+        const active = await coordinator.spawn(request());
+        await flushBudgets();
+        assert.equal((await coordinator.status(undefined, 0, aborted.signal, undefined, mode))[0]!.id, active.job.id);
+        assert.equal((await coordinator.status([], undefined, aborted.signal, undefined, mode))[0]!.id, active.job.id);
+        await assert.rejects(coordinator.status([], 5, aborted.signal, undefined, mode), {name: "AbortError"});
+        for (const cancel of [false, true]) {
+            const controller = new AbortController();
+            let updates = 0;
+            const pending = observeStatus(coordinator.status([], 5, controller.signal, () => updates++, mode));
+            const rejection = cancel ? assert.rejects(pending.promise, {name: "AbortError"}) : undefined;
+            await clock.advance(4999);
+            assert.equal(pending.settled, false);
+            if (cancel) { controller.abort(); await rejection; }
+            else {
+                await clock.advance(1);
+                assert.equal(pending.settled, true);
+                assert.equal((await pending.promise)[0]!.status, SubagentJobStatus.RUNNING);
+            }
+            assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+            const before = updates;
+            await coordinator.message(active.job.id, "publish an update after status returns");
+            await clock.advance(1);
+            assert.equal(updates, before, "timeout/abort must detach status observers");
+        }
+        await assert.rejects(
+            coordinator.status([], 0, undefined, undefined, "invalid" as SubagentStatusMode),
+            /Unsupported subagent status mode/,
+        );
+    });
+}
+
+function observeStatus<T>(promise: Promise<T>): {promise: Promise<T>; settled: boolean} {
+    const observed = {promise, settled: false};
+    void promise.then(() => observed.settled = true, () => observed.settled = true);
+    return observed;
 }
 
 for (const seconds of [86_400, 7]) {

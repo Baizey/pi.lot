@@ -22,6 +22,7 @@ import {
     type SubagentJobMonitor,
     type SubagentJobSnapshot,
     type SubagentRequest,
+    type SubagentStatusMode,
 } from "./types.js";
 
 const MAX_JOB_OUTPUT_CHARS = 50_000;
@@ -162,9 +163,14 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         waitSeconds = 0,
         signal?: AbortSignal,
         onUpdate?: (jobs: SubagentJobSnapshot[]) => void,
+        mode: SubagentStatusMode = "all",
     ): Promise<SubagentJobSnapshot[]> {
+        if (mode !== "all" && mode !== "first") throw new Error(`Unsupported subagent status mode: ${mode}`);
         const jobs = this.selectJobs(jobIds);
-        if (waitSeconds <= 0 || jobs.every((job) => !isActive(job.status))) return jobs.map(snapshot);
+        const waitSatisfied = () => mode === "first"
+            ? jobs.some((job) => !isActive(job.status))
+            : jobs.every((job) => !isActive(job.status));
+        if (waitSeconds <= 0 || jobs.length === 0 || waitSatisfied()) return jobs.map(snapshot);
         if (signal?.aborted) throw abortError();
 
         const scope = new ApprovalWaitScope(ApprovalWaitScope.current());
@@ -210,8 +216,15 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             const changed = () => {
                 if (settled) return;
                 updateApprovalWait();
-                onUpdate?.(jobs.map(snapshot));
-                if (jobs.every((job) => !isActive(job.status))) finish();
+                // Latch settlement before arbitrary observers: they may synchronously
+                // restart an idle job or throw, and either must not strand this wait.
+                const satisfied = waitSatisfied();
+                try {
+                    onUpdate?.(jobs.map(snapshot));
+                } catch {
+                    // A presentation callback cannot change or suppress job settlement.
+                }
+                if (satisfied) finish();
             };
             const aborted = () => finish(abortError());
             this.changes.add(changed);

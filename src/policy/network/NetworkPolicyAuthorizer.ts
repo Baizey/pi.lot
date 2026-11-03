@@ -3,6 +3,14 @@ import type {NetworkPolicyEvent, NetworkPolicyScope} from "./NetworkPolicy.js";
 import {NetworkDecision, NetworkOperation} from "./network-queue-protocol.js";
 import type {ToolCallPathPolicyEvaluator} from "../PolicyRuntime.js";
 import {httpMethodAccessType, PolicyAccessType, PolicyResponse} from "../types.js";
+import {NetworkApplicationProtocol, type NetworkProtocolEvent} from "./NetworkProtocol.js";
+
+const PROTOCOL_ACCESS_TYPES = {
+    [NetworkApplicationProtocol.SSH]: PolicyAccessType.SSH_ACCESS,
+    [NetworkApplicationProtocol.SMTP]: PolicyAccessType.SMTP_ACCESS,
+    [NetworkApplicationProtocol.WEBSOCKET]: PolicyAccessType.WEBSOCKET_ACCESS,
+    [NetworkApplicationProtocol.GRPC]: PolicyAccessType.GRPC_ACCESS,
+} satisfies Record<NetworkApplicationProtocol, PolicyAccessType>;
 
 export type NetworkPolicyAuthorizerOptions = {
     policyEvaluator: ToolCallPathPolicyEvaluator;
@@ -33,16 +41,24 @@ export class NetworkPolicyAuthorizer {
         event: HttpRequestEvent,
         signal: AbortSignal,
     ): Promise<boolean> => {
-        const result = await this.options.policyEvaluator(
-            event.url,
-            httpMethodAccessType(event.method),
-            signal,
-        );
-        if (result.matchedStatus === PolicyResponse.ALLOWED) return true;
+        return this.authorize(event.url, httpMethodAccessType(event.method), signal);
+    };
 
+    readonly authorizeProtocol = async (
+        event: NetworkProtocolEvent,
+        signal: AbortSignal,
+    ): Promise<boolean> => {
+        return this.authorize(event.uri, PROTOCOL_ACCESS_TYPES[event.protocol], signal);
+    };
+
+    private async authorize(uri: string, accessType: PolicyAccessType, signal: AbortSignal): Promise<boolean> {
+        if (signal.aborted) return false;
+        const result = await this.options.policyEvaluator(uri, accessType, signal);
+        if (signal.aborted) return false;
+        if (result.matchedStatus === PolicyResponse.ALLOWED) return true;
         this.options.report(result.toDenyMessage());
         return false;
-    };
+    }
 }
 
 function networkScopeUri(scope: NetworkPolicyScope): string {

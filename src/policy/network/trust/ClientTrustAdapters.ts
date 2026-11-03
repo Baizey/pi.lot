@@ -209,7 +209,7 @@ export const CLIENT_TRUST_ADAPTERS = [
         tools: ["gRPC implementations honoring GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"],
         support: ClientTrustSupportLevel.BEST_EFFORT,
         bindings: [combinedPem("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH")],
-        limitations: ["The request-aware gateway does not yet inspect HTTP/2, so CA trust alone does not provide gRPC support."],
+        limitations: ["The client must honor this root-file override; private trust stores, certificate pinning, and client-certificate authentication are not injected."],
     },
     {
         id: "deno",

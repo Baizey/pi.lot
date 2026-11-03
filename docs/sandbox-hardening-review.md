@@ -38,7 +38,7 @@ Descriptor-anchored operations and a model for inode aliases are needed beyond c
 | Broker backpressure | `NativeFuseSessionBroker` awaits START/STOP writes before timeout-protected response waits. Blocked writes need their own bounds and broker failure must reach all active calls. |
 | Metadata visibility | Readlink text, getattr and access probes are not comprehensively read-policy gated. Define metadata/traversal authority before changing symlink behavior. |
 | Cache/coherence | Existing handles/mappings can be stale after host changes; cached data survives revocation. Denied uncached mapping faults may produce `SIGBUS`. |
-| Opaque TCP | Full inspection rejects SSH/SMTP-style opaque traffic even with TCP approval. Inspection-off is the current compatibility mode; selective opaque forwarding needs an agreed enforcement contract. |
+| Protocol channels | Recognized SSH/SMTP channels, WebSocket handshakes, and gRPC requests require distinct policy checks beyond transport admission. Outer-channel approval does not verify tunneled applications or opaque continuations. Inspection off retains opaque compatibility; namespace-local loopback has transport checks only. See [protocol admission](policy.md#application-protocol-admission). |
 
 ## Validation
 

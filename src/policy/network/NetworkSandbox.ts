@@ -23,6 +23,7 @@ import {
 } from "./SyntheticDnsProxy.js";
 import type {SyntheticDnsLease} from "./SyntheticDnsProxy.js";
 import type {HttpRequestAuthorizer} from "./HttpRequestBroker.js";
+import type {NetworkProtocolAuthorizer} from "./NetworkProtocol.js";
 import {TcpGatewayBroker} from "./TcpGatewayBroker.js";
 import type {TcpGatewayApproval} from "./TcpGatewayBroker.js";
 import {TlsCertificateAuthority} from "./TlsCertificateAuthority.js";
@@ -112,6 +113,7 @@ export type NetworkRunOptions = {
   onNetworkError?: (error: unknown) => void;
   onIpcError?: (error: unknown) => void;
   authorizeHttpRequest?: HttpRequestAuthorizer;
+  authorizeProtocol?: NetworkProtocolAuthorizer;
   decide: (event: NetworkPolicyEvent, signal: AbortSignal) => NetworkDecision | Promise<NetworkDecision>;
 };
 
@@ -175,6 +177,7 @@ class NetworkSandboxRunner {
       : undefined;
     this.tcpBroker = new TcpGatewayBroker({
       authorizeHttpRequest: options.authorizeHttpRequest,
+      authorizeProtocol: options.authorizeProtocol,
       certificateAuthority: this.tlsCertificateAuthority,
       additionalUpstreamCa: options.additionalUpstreamCa,
       onError: (error) => this.reportNetworkError(error),

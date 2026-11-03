@@ -5,6 +5,7 @@ import {NetworkAddressFamily, NetworkDecision, NetworkOperation} from "../src/po
 import {NetworkTargetKind} from "../src/policy/network/NetworkPolicy.js";
 import type {NetworkPolicyEvent, NetworkPolicyScope} from "../src/policy/network/NetworkPolicy.js";
 import type {HttpRequestEvent} from "../src/policy/network/HttpRequestBroker.js";
+import {NetworkApplicationProtocol, type NetworkProtocolEvent} from "../src/policy/network/NetworkProtocol.js";
 import type {ToolCallPathPolicyEvaluator} from "../src/policy/PolicyRuntime.js";
 import {httpMethodAccessType, PolicyAccessType, PolicyLifetime, PolicyResolutionSource, PolicyResponse, PolicyResult} from "../src/policy/types.js";
 
@@ -69,6 +70,67 @@ test("network authorizer fails closed and reports unified policy denials", async
     assert.equal(reports.length, 2);
     assert.equal(reports.every((message) => message.startsWith("ACCESS DENIED")), true);
 });
+
+test("application protocols receive distinct policy checks rather than reusing transport authority", async () => {
+    const evaluations: Array<{uri: string; accessType: PolicyAccessType}> = [];
+    const reports: string[] = [];
+    const authorizer = new NetworkPolicyAuthorizer({
+        policyEvaluator: async (uri, accessType) => evaluator(evaluations,
+            accessType === PolicyAccessType.TCP_ACCESS ? PolicyResponse.ALLOWED : PolicyResponse.DENIED)(uri, accessType),
+        report: (message) => reports.push(message),
+    });
+    const signal = new AbortController().signal;
+    assert.equal(await authorizer.decide(tcpEvent(), tcpScope(), signal), NetworkDecision.ALLOW);
+    for (const [protocol, accessType] of [
+        [NetworkApplicationProtocol.SSH, PolicyAccessType.SSH_ACCESS],
+        [NetworkApplicationProtocol.SMTP, PolicyAccessType.SMTP_ACCESS],
+        [NetworkApplicationProtocol.WEBSOCKET, PolicyAccessType.WEBSOCKET_ACCESS],
+        [NetworkApplicationProtocol.GRPC, PolicyAccessType.GRPC_ACCESS],
+    ] as const) {
+        const event = protocolEvent(protocol);
+        assert.equal(await authorizer.authorizeProtocol(event, signal), false);
+        assert.deepEqual(evaluations.at(-1), {uri: event.uri, accessType});
+    }
+    assert.equal(reports.length, 4);
+    assert.ok(reports.every((message) => message.startsWith("ACCESS DENIED")));
+});
+
+test("protocol policy approvals respect explicit allows and cancellation, including a late allow", async () => {
+    const evaluations: Array<{uri: string; accessType: PolicyAccessType}> = [];
+    const authorizer = new NetworkPolicyAuthorizer({
+        policyEvaluator: evaluator(evaluations, PolicyResponse.ALLOWED),
+        report: () => assert.fail("allowed policy must not report a denial"),
+    });
+    const controller = new AbortController();
+    const event = protocolEvent(NetworkApplicationProtocol.SSH);
+    assert.equal(await authorizer.authorizeProtocol(event, controller.signal), true);
+    controller.abort();
+    assert.equal(await authorizer.authorizeProtocol(event, controller.signal), false);
+    assert.equal(evaluations.length, 1, "already-aborted operations do not start policy evaluation");
+    const pending = new AbortController();
+    const late = new NetworkPolicyAuthorizer({
+        policyEvaluator: async (uri, accessType) => {
+            pending.abort();
+            return evaluator([], PolicyResponse.ALLOWED)(uri, accessType);
+        },
+        report: () => assert.fail("cancellation must not manufacture a policy decision"),
+    });
+    assert.equal(await late.authorizeProtocol(event, pending.signal), false);
+});
+
+function protocolEvent(protocol: NetworkApplicationProtocol): NetworkProtocolEvent {
+    const event = httpEvent("POST");
+    return {
+        protocol,
+        uri: protocol === NetworkApplicationProtocol.SSH || protocol === NetworkApplicationProtocol.SMTP
+            ? "[2001:db8::8]:2222"
+            : event.url,
+        family: event.family,
+        source: event.source,
+        destination: event.destination,
+        upstreamAddress: event.upstreamAddress,
+    };
+}
 
 function evaluator(
     evaluations: Array<{uri: string; accessType: PolicyAccessType}>,

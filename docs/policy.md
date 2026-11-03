@@ -31,13 +31,30 @@ Do not concurrently access shared host databases through Bash mounts: backing-fi
 
 ## Network mediation
 
-The Bash worker has a private network namespace. Its command and descendants are checked for DNS resolution and IPv4/IPv6 TCP/UDP flows to hostnames or literal IPs. With full inspection enabled, supported HTTP/1 requests over TCP also receive method and canonical-URL checks, including HTTPS. UDP payloads, including QUIC, receive flow checks, not HTTP method/path inspection.
+The Bash worker has a private network namespace. Its command and descendants are checked for DNS resolution and IPv4/IPv6 TCP/UDP flows to hostnames or literal IPs. With full inspection enabled, supported HTTP/1 and HTTP/2 requests over TCP also receive method and canonical-URL checks, including HTTPS. UDP payloads, including QUIC, receive flow checks, not HTTP method/path inspection.
 
 Within one Bash call, a DNS hostname decision can cover later DNS, TCP, UDP, IPv4/IPv6, and all destination ports. Literal-IP flow decisions start at an exact address and port.
 
 The HTTP gateway observes canonical URLs, including queries, but current policy identity removes the scheme, query string, and fragment. Policy therefore cannot distinguish HTTP from HTTPS or distinguish requests only by query string.
 
-The policy model defines SSH-, WebSocket-, gRPC-, and SMTP-specific areas, but the Bash mediator does not currently emit them. SSH and SMTP are opaque generic TCP. With full inspection enabled, the request-aware gateway rejects opaque non-HTTP protocols even when TCP policy allows them. Such workflows currently require inspection off; importing an SSH-agent socket alone does not enable Git-over-SSH. Request-aware WebSocket upgrades and HTTP/2-based gRPC are not currently supported.
+### Application-protocol admission
+
+The TCP gateway recognizes supported protocol envelopes and evaluates their specific policy areas **in addition to transport admission**. A reused DNS/TCP allow does not satisfy these checks; destination ports alone do not identify a protocol.
+
+| Protocol | Recognition and policy target | Additional check |
+| --- | --- | --- |
+| SSH | A bounded SSH identification line from the client or server, including supported server pre-identification lines; approved hostname/IP plus exact destination port | `web_ssh` |
+| SMTP | A supported client greeting/command or an SMTP/ESMTP-bearing server greeting; approved hostname/IP plus exact destination port | `web_smtp` |
+| WebSocket | A validated HTTP/1 upgrade handshake and canonical HTTP(S) URL | `web_websocket`, plus HTTP GET under full inspection |
+| gRPC | Supported `application/grpc` and gRPC-Web media types; canonical HTTP(S) service/method URL, checked separately for each HTTP/2 stream or HTTP/1 request | `web_grpc`, plus HTTP method policy under full inspection |
+
+SSH/SMTP grants authorize the **outer connection**, not individual remote commands, port forwards, recipients, or subsequent opaque bytes. This permits SSH encryption and SMTP STARTTLS continuations but does not verify the contents of those continuations or detect other protocols tunneled inside an authorized channel. End-to-end STARTTLS certificate verification remains the client's responsibility; implicit TLS intercepted by the gateway uses separately verified upstream TLS. Importing an SSH-agent socket supplies credential IPC, not SSH network authority.
+
+A server-first or initially silent client may require an already-transport-approved upstream connection to inspect a greeting; implicit TLS can also require an upstream TLS handshake. A client-first SSH/SMTP identification is only a claim. After its protocol authorization, the gateway waits for the upstream greeting and requires it to identify the same protocol; contradictory or unconfirmed envelopes fail closed before relay. No client application bytes or server greeting are released until those checks complete. Classification is bounded and preserves fragmented input. Generic `220` replies are ambiguous (FTP also uses them); unsupported or inconclusive greetings fail closed under full inspection rather than being guessed from a port.
+
+Inspected TLS negotiates HTTP/2 or HTTP/1.1, or classifies decrypted application bytes when ALPN is absent. Upstream connections retain the approved IP/port and verify the logical TLS identity; client headers and SNI do not select a new upstream address. WebSocket extensions are not negotiated. HTTP `CONNECT`, HTTP/2 extended WebSockets, and HTTP/1 `h2c` upgrades remain unsupported.
+
+**Inspection off is explicitly a compatibility boundary, not comprehensive application-protocol enforcement.** Recognized plaintext SSH/SMTP and supported plaintext HTTP protocol requests still receive their specific checks, but opaque end-to-end TLS and unrecognized plaintext can retain transport-only forwarding. Encrypted WebSocket/gRPC/SMTP therefore cannot be reliably captured in that mode. An allowed outer channel can also carry other applications. Namespace-local loopback flows receive transport checks but do not traverse the application gateway.
 
 `web_search` is different: it is a trusted extension operation using host-side HTTP. Its requests and redirects receive HTTP method/URL policy checks but do not traverse Bash's DNS/TCP/UDP gate.
 
@@ -58,10 +75,10 @@ Root-only `archive_list` and `archive_fetch` check each actual URL and method wi
 | `web_dns` | DNS | `ask_user` |
 | `web_tcp` | Generic TCP | `ask_user` |
 | `web_udp` | Generic UDP | `ask_user` |
-| `web_ssh` | Reserved SSH-specific policy | `ask_user` |
-| `web_websocket` | Reserved WebSocket-specific policy | `ask_user` |
-| `web_grpc` | Reserved gRPC-specific policy | `ask_user` |
-| `web_smtp` | Reserved SMTP-specific policy | `ask_user` |
+| `web_ssh` | Recognized SSH connections | `ask_user` |
+| `web_websocket` | Supported WebSocket upgrades | `ask_user` |
+| `web_grpc` | Supported gRPC and gRPC-Web requests | `ask_user` |
+| `web_smtp` | Recognized SMTP connections | `ask_user` |
 
 Each area accepts one fallback:
 
@@ -136,7 +153,7 @@ A derived approval cannot exceed the ancestor's scope or lifetime. Session grant
 
 ## Approval waits and execution budgets
 
-User and model approval waits—including ancestor-authority review and `ask_llm`—pause Bash's configured timeout, subagent turn budgets, finite codemode timeouts, and `subagent_status` waits for selected jobs. Each resumes with its previous remainder after its last pending approval; approvals do not reset budgets. Ordinary policy lookups do not pause them.
+User and model approval waits—including ancestor-authority review and `ask_llm`—pause Bash's configured timeout, subagent turn budgets, finite codemode timeouts, and `subagent_status` waits for selected jobs. Each resumes with its previous remainder after its last pending approval; approvals do not reset budgets. Ordinary policy lookups do not pause them. The separate [30-day subagent lifetime](subagents.md#turn-and-wait-budgets) is a hard wall-clock limit and does not pause.
 
 Approvals have their own independent deadlines:
 
@@ -178,7 +195,7 @@ Every session starts with full network inspection enabled. For supported clients
 1. creates a per-run CA and read-only trust artifacts;
 2. terminates client TLS in the trusted gateway;
 3. independently verifies the upstream certificate; and
-4. evaluates each supported HTTP request before opening the upstream connection.
+4. evaluates each supported HTTP request before forwarding its headers/body. An initially silent client may already have caused a pinned transport/greeting probe, as described in [application-protocol admission](#application-protocol-admission).
 
 Show or change the session setting:
 
@@ -188,7 +205,7 @@ Show or change the session setting:
 /network-inspection on
 ```
 
-With inspection off, HTTPS stays end-to-end. DNS and TCP hostname/port policy still applies, but method/path policy is unavailable. Use this compatibility mode for certificate-pinned clients, private trust stores, and unsupported TLS stacks.
+With inspection off, HTTPS stays end-to-end. DNS and TCP hostname/port policy still applies, but encrypted method/path and application-protocol checks are unavailable. Recognized supported plaintext protocols still receive their checks. Use this compatibility mode for certificate-pinned clients, private trust stores, and unsupported TLS stacks only when that reduced visibility is acceptable; see [application-protocol admission](#application-protocol-admission).
 
 ## Host credential IPC
 

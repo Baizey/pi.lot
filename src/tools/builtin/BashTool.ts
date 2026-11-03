@@ -196,6 +196,7 @@ export class BashTool {
                         ));
                     },
                     decide: (event, decisionSignal) => decisions.decide(event, decisionSignal),
+                    authorizeProtocol: networkAuthorizer.authorizeProtocol,
                     authorizeHttpRequest: fullNetworkInspection
                         ? networkAuthorizer.authorizeHttpRequest
                         : undefined,

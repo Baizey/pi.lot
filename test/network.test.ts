@@ -19,6 +19,7 @@ import {
   runNetworkSandboxedCommand,
 } from "../src/policy/network/NetworkSandbox.js";
 import {parseTcpGatewayFlow} from "../src/policy/network/tcp-gateway-protocol.js";
+import {NetworkApplicationProtocol} from "../src/policy/network/NetworkProtocol.js";
 import {TlsCertificateAuthority} from "../src/policy/network/TlsCertificateAuthority.js";
 import {ManagedChildProcess, type ManagedChildProcessOptions} from "../src/runtime/ManagedChildProcess.js";
 import {resolveNativeExecutable} from "../src/runtime/NativeExecutable.js";
@@ -824,7 +825,7 @@ test("the HTTPS gateway uses SNI when an application supplies its own address ma
   }
 });
 
-test("request-aware mode fails closed instead of forwarding an opaque TCP preface", async () => {
+test("request-aware mode fails closed for SSH without protocol authorization", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-opaque-deny-test-"));
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
@@ -866,12 +867,67 @@ test("request-aware mode fails closed instead of forwarding an opaque TCP prefac
     assert.equal(result.exitCode, 0);
     assert.equal(acceptedConnections, 0);
     assert.deepEqual(decisionErrors, []);
-    assert.deepEqual(gatewayErrors, ["request-aware gateway denied an opaque TCP protocol"]);
+    assert.deepEqual(gatewayErrors, ["SSH connection denied by protocol policy"]);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     rmSync(workspace, {recursive: true, force: true});
   }
 });
+
+for (const [protocol, preface] of [
+    [NetworkApplicationProtocol.SSH, "SSH-2.0-client-fixture\r\n"],
+    [NetworkApplicationProtocol.SMTP, "EHLO client.fixture\r\n"],
+] as const) {
+    test(`the native TCP gateway captures and authorizes ${protocol} on a nonstandard port`, async () => {
+        const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-protocol-test-"));
+        let received = "";
+        const server = createServer((socket) => {
+            socket.on("data", (data) => {
+                received += data.toString();
+                if (received.length >= preface.length) socket.end("ACCEPTED");
+            });
+        });
+        await new Promise<void>((resolve, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", resolve);
+        });
+        const address = server.address();
+        assert.ok(address && typeof address === "object");
+        let output = "";
+        const captured: string[] = [];
+        const errors: unknown[] = [];
+        try {
+            const result = await runNetworkSandboxedCommand({
+                command: [process.execPath, "--input-type=module", "--eval", [
+                    "import {createConnection} from 'node:net'",
+                    `const socket = createConnection(${address.port}, '10.0.2.2', () => socket.write(${JSON.stringify(preface)}))`,
+                    "socket.on('data', data => process.stdout.write(data))",
+                    "await new Promise((resolve, reject) => { socket.once('end', resolve); socket.once('error', reject) })",
+                ].join("; ")],
+                cwd: workspace,
+                timeoutSeconds: 15,
+                decide: () => NetworkDecision.ALLOW,
+                authorizeHttpRequest: () => { throw new Error("stream protocols must not become HTTP events"); },
+                authorizeProtocol(event) {
+                    captured.push(event.protocol);
+                    assert.equal(event.uri, `10.0.2.2:${address.port}`);
+                    return event.protocol === protocol;
+                },
+                onStdout: (data) => { output += data.toString(); },
+                onDecisionError: (error) => errors.push(error),
+                onNetworkError: (error) => errors.push(error),
+            });
+            assert.equal(result.exitCode, 0);
+            assert.equal(output, "ACCEPTED");
+            assert.equal(received, preface);
+            assert.deepEqual(captured, [protocol]);
+            assert.deepEqual(errors, []);
+        } finally {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+            rmSync(workspace, {recursive: true, force: true});
+        }
+    });
+}
 
 test("coarse network inspection relays plaintext HTTP bytes without request mediation", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-coarse-http-test-"));

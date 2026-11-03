@@ -1,54 +1,35 @@
+import {createHash} from "node:crypto";
 import {once} from "node:events";
-import {Agent as HttpAgent, request as createHttpRequest} from "node:http";
+import {Agent as HttpAgent, request as createHttpRequest, createServer} from "node:http";
 import type {ClientRequest, IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse} from "node:http";
-import {createServer} from "node:http";
 import {Agent as HttpsAgent, request as createHttpsRequest} from "node:https";
-import {isIP} from "node:net";
 import type {Socket} from "node:net";
-import {checkServerIdentity, rootCertificates} from "node:tls";
+import type {Duplex} from "node:stream";
 import {NetworkAddressFamily} from "./network-queue-protocol.js";
-import type {NetworkEndpoint} from "./network-queue-protocol.js";
+import {NetworkApplicationProtocol} from "./NetworkProtocol.js";
 import type {TcpGatewayApproval} from "./TcpGatewayBroker.js";
+import {
+    authorizeHttpOperation, createHttpRequestEvent, forwardedRawHeaders, grpcProtocols,
+    HTTP_GATEWAY_MAX_HEADER_BYTES, MAX_HTTP_HEADER_COUNT, rawHeaderValues, upstreamTlsOptions,
+} from "./HttpRequestPolicy.js";
+import type {HttpRequestBrokerOptions, HttpRequestEvent} from "./HttpRequestPolicy.js";
 
-export type HttpRequestEvent = {
-    scheme: "http" | "https";
-    method: string;
-    url: string;
-    hostname: string;
-    port: number;
-    path: string;
-    rawTarget: string;
-    family: NetworkAddressFamily;
-    source: NetworkEndpoint;
-    destination: NetworkEndpoint;
-    upstreamAddress: string;
-};
-
-export type HttpRequestAuthorizer = (
-    event: HttpRequestEvent,
-    signal: AbortSignal,
-) => boolean | Promise<boolean>;
-
-export type HttpRequestBrokerOptions = {
-    authorize?: HttpRequestAuthorizer;
-    additionalUpstreamCa?: string;
-    onError?: (error: unknown) => void;
-};
-
-export const HTTP_GATEWAY_MAX_HEADER_BYTES = 64 * 1024;
-const MAX_HTTP_HEADER_COUNT = 2_000;
+export type {HttpRequestAuthorizer, HttpRequestBrokerOptions, HttpRequestEvent} from "./HttpRequestPolicy.js";
+export {HTTP_GATEWAY_MAX_HEADER_BYTES} from "./HttpRequestPolicy.js";
 
 type HttpConnectionContext = {
     approval: TcpGatewayApproval;
     scheme: "http" | "https";
     agent: HttpAgent;
     tail: Promise<void>;
+    pendingRequests: number;
 };
 
 export class HttpRequestBroker {
     private readonly options: HttpRequestBrokerOptions;
     private readonly server: Server;
     private readonly contexts = new WeakMap<Socket, HttpConnectionContext>();
+    private readonly sockets = new Set<Socket>();
     private readonly abortController = new AbortController();
     private stopping = false;
 
@@ -68,7 +49,12 @@ export class HttpRequestBroker {
             socket.destroy();
         });
         this.server.on("connect", (_request, socket) => socket.destroy());
-        this.server.on("upgrade", (_request, socket) => socket.destroy());
+        this.server.on("upgrade", (request, socket, head) => {
+            void this.handleUpgrade(request, socket, head).catch((error) => {
+                this.reportError(error);
+                socket.destroy();
+            });
+        });
     }
 
     accept(socket: Socket, approval: TcpGatewayApproval, scheme: "http" | "https"): void {
@@ -79,8 +65,13 @@ export class HttpRequestBroker {
         const agent = scheme === "http"
             ? new HttpAgent({keepAlive: true, maxSockets: 1, maxFreeSockets: 1})
             : new HttpsAgent({keepAlive: true, maxSockets: 1, maxFreeSockets: 1});
-        this.contexts.set(socket, {approval, scheme, agent, tail: Promise.resolve()});
-        socket.once("close", () => agent.destroy());
+        this.contexts.set(socket, {approval, scheme, agent, tail: Promise.resolve(), pendingRequests: 0});
+        this.sockets.add(socket);
+        socket.once("close", () => {
+            this.sockets.delete(socket);
+            agent.destroy();
+        });
+        socket.on("error", (error) => this.reportError(error));
         this.server.emit("connection", socket);
         socket.resume();
     }
@@ -89,6 +80,7 @@ export class HttpRequestBroker {
         if (this.stopping) return;
         this.stopping = true;
         this.abortController.abort();
+        for (const socket of this.sockets) socket.destroy();
     }
 
     private enqueueRequest(request: IncomingMessage, response: ServerResponse): void {
@@ -97,41 +89,197 @@ export class HttpRequestBroker {
             denyResponse(request, response, 502, "HTTP gateway failure");
             return;
         }
-        const operation = context.tail.then(() => this.handleRequest(request, response));
-        context.tail = operation.catch(() => {});
+        // Install cancellation before queuing: an abandoned pipelined request must
+        // not become a new upstream effect when its predecessor finishes.
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        request.once("aborted", abort);
+        response.once("close", abort);
+        request.socket.once("close", abort);
+        const signal = AbortSignal.any([controller.signal, this.abortController.signal]);
+        context.pendingRequests++;
+        const operation = context.tail.then(() => this.handleRequest(request, response, context, signal));
+        context.tail = operation.catch(() => {}).finally(() => {
+            context.pendingRequests--;
+            request.removeListener("aborted", abort);
+            response.removeListener("close", abort);
+            request.socket.removeListener("close", abort);
+        });
         void operation.catch((error) => {
             this.reportError(error);
             denyResponse(request, response, 502, "HTTP gateway failure");
         });
     }
 
-    private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-        const context = this.contexts.get(request.socket);
-        if (!context) throw new Error("HTTP gateway request has no approved TCP flow");
-        const event = createHttpRequestEvent(request, context.approval, context.scheme);
-
-        let allowed = this.options.authorize === undefined;
-        if (this.options.authorize) {
-            try {
-                allowed = await this.options.authorize(event, this.abortController.signal);
-            } catch (error) {
-                this.reportError(error);
-                allowed = false;
-            }
+    private async handleRequest(
+        request: IncomingMessage,
+        response: ServerResponse,
+        context: HttpConnectionContext,
+        signal: AbortSignal,
+    ): Promise<void> {
+        if (signal.aborted || this.stopping) return;
+        validateRequestHeaders(request);
+        // An Upgrade header without the Connection token may arrive as an ordinary
+        // request; never silently downgrade it into an authorized generic request.
+        if (request.headers.upgrade !== undefined || request.method === "CONNECT"
+            || headerTokens(rawHeaderValues(request.rawHeaders, "connection").join(",").toLowerCase()).includes("upgrade")) {
+            denyResponse(request, response, 400, "Unsupported HTTP upgrade");
+            return;
         }
-        if (allowed !== true || this.stopping) {
+        const event = createHttpRequestEvent(
+            request.method, request.url, request.headers.host, context.approval, context.scheme,
+        );
+        const protocols = grpcProtocols(rawHeaderValues(request.rawHeaders, "content-type"));
+        if (!await this.authorize(event, protocols, signal)) {
             denyResponse(request, response, 403, "HTTP request denied");
             return;
         }
+        if (signal.aborted || this.stopping || request.socket.destroyed) return;
+        await forwardRequest(request, response, context, event, this.options.additionalUpstreamCa, signal);
+    }
 
-        await forwardRequest(
-            request,
-            response,
-            context.approval,
-            event,
-            context.agent,
-            this.options.additionalUpstreamCa,
+    private async handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+        const context = this.contexts.get(request.socket);
+        // Upgrades cannot overtake outstanding HTTP responses on this connection.
+        // Reject pipelined upgrades rather than transfer parser ownership mid-queue.
+        if (!context || context.pendingRequests !== 0 || this.stopping) {
+            socket.destroy();
+            return;
+        }
+        socket.pause();
+        validateRequestHeaders(request);
+        const handshake = validateWebSocketRequest(request, head);
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        socket.once("close", abort);
+        socket.once("end", abort);
+        const signal = AbortSignal.any([controller.signal, this.abortController.signal]);
+        let upstream: ClientRequest | undefined;
+        let peer: Duplex | undefined;
+        let relaying = false;
+        const stop = () => {
+            upstream?.destroy();
+            peer?.destroy();
+            socket.destroy();
+        };
+        const pendingHeads = [head];
+        let pendingBytes = head.length;
+        const bufferPending = (chunk: Buffer) => {
+            pendingBytes += chunk.length;
+            if (pendingBytes > HTTP_GATEWAY_MAX_HEADER_BYTES) {
+                controller.abort();
+                return;
+            }
+            pendingHeads.push(chunk);
+        };
+        signal.addEventListener("abort", stop, {once: true});
+        socket.on("data", bufferPending);
+        socket.resume();
+        socket.once("close", () => {
+            socket.removeListener("data", bufferPending);
+            if (relaying && socket.readableEnded && !socket.errored) {
+                // Normal EOF must not discard bytes already queued to a slow peer.
+                peer?.end();
+            } else {
+                stop();
+            }
+            // Keep shutdown cancellation alive while the other writable drains.
+            if (!peer || peer.destroyed) signal.removeEventListener("abort", stop);
+        });
+        const event = createHttpRequestEvent(
+            request.method, request.url, request.headers.host, context.approval, context.scheme,
         );
+        const allowed = await this.authorize(event, [
+            NetworkApplicationProtocol.WEBSOCKET,
+            ...grpcProtocols(rawHeaderValues(request.rawHeaders, "content-type")),
+        ], signal);
+        if (!allowed || signal.aborted || this.stopping || socket.destroyed) {
+            socket.destroy();
+            return;
+        }
+        // Do not negotiate extensions: their syntax and semantics require separate
+        // validation. Clients may offer them, but the upstream never sees the offer.
+        const headers = forwardedRawHeaders(request.rawHeaders);
+        const forwarded: string[] = [];
+        for (let index = 0; index < headers.length; index += 2) {
+            if (headers[index]!.toLowerCase() !== "sec-websocket-extensions") {
+                forwarded.push(headers[index]!, headers[index + 1]!);
+            }
+        }
+        forwarded.push("Connection", "Upgrade", "Upgrade", "websocket");
+        const createRequest = event.scheme === "http" ? createHttpRequest : createHttpsRequest;
+        upstream = createRequest({
+            ...upstreamRequestOptions(context, event, this.options.additionalUpstreamCa),
+            headers: forwarded,
+            maxHeaderSize: HTTP_GATEWAY_MAX_HEADER_BYTES,
+            signal,
+        });
+        upstream.maxHeadersCount = MAX_HTTP_HEADER_COUNT;
+        const timer = setTimeout(stop, 10_000);
+        timer.unref();
+        upstream.once("error", (error) => {
+            clearTimeout(timer);
+            this.reportError(error);
+            stop();
+        });
+        upstream.once("response", () => {
+            clearTimeout(timer);
+            stop();
+        });
+        upstream.once("upgrade", (response, upstreamSocket, upstreamHead) => {
+            clearTimeout(timer);
+            peer = upstreamSocket;
+            peer.on("error", stop);
+            peer.once("close", () => {
+                if (relaying && peer!.readableEnded && !peer!.errored) socket.end();
+                else stop();
+                if (socket.destroyed) signal.removeEventListener("abort", stop);
+            });
+            socket.once("error", stop);
+            if (signal.aborted || this.stopping || socket.destroyed) return stop();
+            try {
+                validateWebSocketResponse(response, handshake.key, handshake.protocols, upstreamHead);
+            } catch (error) {
+                this.reportError(error);
+                return stop();
+            }
+            const responseHeaders = forwardedRawHeaders(response.rawHeaders);
+            const lines = ["HTTP/1.1 101 Switching Protocols", "Connection: Upgrade", "Upgrade: websocket"];
+            for (let index = 0; index < responseHeaders.length; index += 2) {
+                lines.push(`${responseHeaders[index]}: ${responseHeaders[index + 1]}`);
+            }
+            // Restore parser head bytes into the readable queues. pipe() then owns
+            // backpressure for both heads and all subsequent duplex traffic.
+            peer.pause();
+            socket.pause();
+            socket.removeListener("data", bufferPending);
+            socket.removeListener("end", abort);
+            if (upstreamHead.length) peer.unshift(upstreamHead);
+            if (pendingBytes) socket.unshift(Buffer.concat(pendingHeads, pendingBytes));
+            const relay = () => {
+                if (signal.aborted || socket.destroyed || peer!.destroyed) return stop();
+                relaying = true;
+                socket.removeListener("close", abort);
+                socket.pipe(peer!);
+                peer!.pipe(socket);
+            };
+            if (socket.write(`${lines.join("\r\n")}\r\n\r\n`)) relay();
+            else socket.once("drain", relay);
+        });
+        upstream.end();
+    }
+
+    private async authorize(
+        event: HttpRequestEvent,
+        protocols: readonly NetworkApplicationProtocol[],
+        signal: AbortSignal,
+    ): Promise<boolean> {
+        try {
+            return await authorizeHttpOperation(this.options, event, protocols, signal);
+        } catch (error) {
+            this.reportError(error);
+            return false;
+        }
     }
 
     private reportError(error: unknown): void {
@@ -144,143 +292,106 @@ export class HttpRequestBroker {
     }
 }
 
-function createHttpRequestEvent(
-    request: IncomingMessage,
-    approval: TcpGatewayApproval,
-    scheme: "http" | "https",
-): HttpRequestEvent {
-    const method = request.method;
-    const rawTarget = request.url;
-    if (!method || !rawTarget) throw new Error("HTTP gateway received an incomplete request line");
-
-    const authority = parseAuthority(request.headers.host, approval);
-    const authorityText = formatAuthority(authority.hostname, authority.port, scheme);
-    if (rawTarget === "*") {
-        return {
-            scheme,
-            method,
-            url: `${scheme}://${authorityText}/*`,
-            hostname: authority.hostname,
-            port: authority.port,
-            path: "*",
-            rawTarget,
-            family: approval.family,
-            source: approval.source,
-            destination: approval.destination,
-            upstreamAddress: approval.upstream.address,
-        };
+function validateRequestHeaders(request: IncomingMessage): void {
+    if (request.rawHeaders.length / 2 > MAX_HTTP_HEADER_COUNT) throw new Error("Too many HTTP headers");
+    // Node's parsed headers discard duplicate Host values, while raw forwarding
+    // preserves them. Reject that ambiguity before either policy or upstream I/O.
+    if (rawHeaderValues(request.rawHeaders, "host").length > 1) throw new Error("Duplicate Host authority");
+    // Authority, framing, classification and handshake fields must survive filtering
+    // unchanged. Reject their nomination as hop-by-hop rather than changing identity.
+    const protectedHeaders = new Set([
+        "host", "content-type", "content-length", "sec-websocket-key", "sec-websocket-version",
+        "sec-websocket-protocol", "sec-websocket-extensions", "sec-websocket-accept",
+    ]);
+    for (const value of rawHeaderValues(request.rawHeaders, "connection")) {
+        if (value.split(",").some((token) => protectedHeaders.has(token.trim().toLowerCase()))) {
+            throw new Error("HTTP Connection nominates a security-sensitive header");
+        }
     }
+}
 
-    let parsed: URL;
-    try {
-        parsed = new URL(rawTarget, `${scheme}://${authorityText}`);
-    } catch (error) {
-        throw new Error("HTTP gateway received an invalid request target", {cause: error});
-    }
+function headerTokens(value: string): string[] {
+    return value.split(",").map((token) => token.trim());
+}
+
+function singleHeader(request: IncomingMessage, name: string): string | undefined {
+    const values = rawHeaderValues(request.rawHeaders, name);
+    if (values.length > 1) throw new Error(`Duplicate ${name} header`);
+    return values[0];
+}
+
+function validateWebSocketRequest(request: IncomingMessage, head: Buffer): {key: string; protocols: string[]} {
+    const key = singleHeader(request, "sec-websocket-key");
+    const upgrade = singleHeader(request, "upgrade");
+    const version = singleHeader(request, "sec-websocket-version");
+    const host = singleHeader(request, "host");
+    const connection = rawHeaderValues(request.rawHeaders, "connection").join(",");
     if (
-        parsed.protocol !== `${scheme}:`
-        || parsed.username !== ""
-        || parsed.password !== ""
-        || parsed.hash !== ""
-        || normalizedUrlHostname(parsed) !== authority.hostname
-        || effectivePort(parsed, scheme) !== authority.port
-    ) {
-        throw new Error("HTTP gateway request target changed its approved authority");
-    }
-    const path = `${parsed.pathname}${parsed.search}`;
+        request.method !== "GET" || request.httpVersion !== "1.1" || !host
+        || upgrade?.toLowerCase() !== "websocket" || version !== "13"
+        || !headerTokens(connection.toLowerCase()).includes("upgrade")
+        || !key || !/^[A-Za-z0-9+/]{22}==$/.test(key)
+        || Buffer.from(key, "base64").toString("base64") !== key
+        || request.headers["transfer-encoding"] !== undefined
+        || (request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0")
+        || head.length > HTTP_GATEWAY_MAX_HEADER_BYTES
+    ) throw new Error("Invalid WebSocket upgrade request");
+    const offered = singleHeader(request, "sec-websocket-protocol");
+    const protocols = offered === undefined ? [] : headerTokens(offered);
+    if (protocols.some((protocol) => !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(protocol))
+        || new Set(protocols).size !== protocols.length) throw new Error("Invalid WebSocket subprotocols");
+    return {key, protocols};
+}
+
+function validateWebSocketResponse(
+    response: IncomingMessage, key: string, protocols: readonly string[], head: Buffer,
+): void {
+    const expected = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+    const selected = singleHeader(response, "sec-websocket-protocol");
+    if (
+        response.statusCode !== 101
+        || singleHeader(response, "upgrade")?.toLowerCase() !== "websocket"
+        || !headerTokens(rawHeaderValues(response.rawHeaders, "connection").join(",").toLowerCase()).includes("upgrade")
+        || singleHeader(response, "sec-websocket-accept") !== expected
+        || (selected !== undefined && !protocols.includes(selected))
+        || response.headers["sec-websocket-extensions"] !== undefined
+        || response.headers["content-length"] !== undefined
+        || response.headers["transfer-encoding"] !== undefined
+        || response.rawHeaders.length / 2 > MAX_HTTP_HEADER_COUNT
+        || head.length > HTTP_GATEWAY_MAX_HEADER_BYTES
+    ) throw new Error("Invalid upstream WebSocket handshake");
+    validateRequestHeaders(response);
+}
+
+function upstreamRequestOptions(context: HttpConnectionContext, event: HttpRequestEvent, additionalCa?: string) {
     return {
-        scheme,
-        method,
-        url: `${scheme}://${authorityText}${path}`,
-        hostname: authority.hostname,
-        port: authority.port,
-        path,
-        rawTarget,
-        family: approval.family,
-        source: approval.source,
-        destination: approval.destination,
-        upstreamAddress: approval.upstream.address,
+        host: context.approval.upstream.address,
+        port: context.approval.upstream.port,
+        family: context.approval.family === NetworkAddressFamily.IPV4 ? 4 : 6,
+        method: event.method,
+        path: event.path,
+        agent: context.agent,
+        ...(event.scheme === "https" ? {...upstreamTlsOptions(event, additionalCa), ALPNProtocols: ["http/1.1"]} : {}),
     };
-}
-
-function parseAuthority(
-    hostHeader: string | undefined,
-    approval: TcpGatewayApproval,
-): {hostname: string; port: number} {
-    const fallbackHostname = approval.hostname ?? approval.destination.address;
-    if (!hostHeader) return {hostname: fallbackHostname, port: approval.destination.port};
-
-    let parsed: URL;
-    try {
-        parsed = new URL(`http://${hostHeader}`);
-    } catch (error) {
-        throw new Error("HTTP gateway received an invalid Host header", {cause: error});
-    }
-    if (
-        parsed.username !== ""
-        || parsed.password !== ""
-        || parsed.pathname !== "/"
-        || parsed.search !== ""
-        || parsed.hash !== ""
-    ) {
-        throw new Error("HTTP gateway received an invalid Host authority");
-    }
-    const port = parsed.port === "" ? approval.destination.port : Number(parsed.port);
-    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535 || port !== approval.destination.port) {
-        throw new Error("HTTP gateway Host port differs from its approved destination");
-    }
-    return {hostname: normalizedUrlHostname(parsed), port};
-}
-
-function normalizedUrlHostname(url: URL): string {
-    return url.hostname.startsWith("[") && url.hostname.endsWith("]")
-        ? url.hostname.slice(1, -1)
-        : url.hostname;
-}
-
-function effectivePort(url: URL, scheme: "http" | "https"): number {
-    if (url.port === "") return scheme === "http" ? 80 : 443;
-    return Number(url.port);
-}
-
-function formatAuthority(hostname: string, port: number, scheme: "http" | "https"): string {
-    const host = hostname.includes(":") ? `[${hostname}]` : hostname;
-    const defaultPort = scheme === "http" ? 80 : 443;
-    return port === defaultPort ? host : `${host}:${port}`;
 }
 
 async function forwardRequest(
     request: IncomingMessage,
     response: ServerResponse,
-    approval: TcpGatewayApproval,
+    context: HttpConnectionContext,
     event: HttpRequestEvent,
-    agent: HttpAgent,
     additionalUpstreamCa: string | undefined,
+    signal: AbortSignal,
 ): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         const createRequest = event.scheme === "http" ? createHttpRequest : createHttpsRequest;
         const upstream = createRequest({
-            host: approval.upstream.address,
-            port: approval.upstream.port,
-            family: approval.family === NetworkAddressFamily.IPV4 ? 4 : 6,
-            method: event.method,
-            path: event.path,
+            ...upstreamRequestOptions(context, event, additionalUpstreamCa),
             headers: forwardedRawHeaders(request.rawHeaders),
-            agent,
-            ...(event.scheme === "https"
-                ? {
-                    servername: isIP(event.hostname) === 0 ? event.hostname : undefined,
-                    rejectUnauthorized: true,
-                    checkServerIdentity: (_hostname: string, certificate: Parameters<typeof checkServerIdentity>[1]) => (
-                        checkServerIdentity(event.hostname, certificate)
-                    ),
-                    ca: additionalUpstreamCa
-                        ? [...rootCertificates, additionalUpstreamCa]
-                        : undefined,
-                    ALPNProtocols: ["http/1.1"],
-                }
-                : {}),
+            maxHeaderSize: HTTP_GATEWAY_MAX_HEADER_BYTES,
+            signal,
         });
+        upstream.maxHeadersCount = MAX_HTTP_HEADER_COUNT;
         upstream.once("response", (upstreamResponse) => {
             response.writeHead(
                 upstreamResponse.statusCode ?? 502,
@@ -298,15 +409,11 @@ async function forwardRequest(
         upstream.once("error", reject);
         upstream.once("upgrade", (_response, socket) => {
             socket.destroy();
-            reject(new Error("HTTP gateway does not support protocol upgrades"));
+            reject(new Error("Unexpected upstream protocol upgrade"));
         });
         upstream.once("connect", (_response, socket) => {
             socket.destroy();
             reject(new Error("HTTP gateway does not support upstream CONNECT tunnels"));
-        });
-        request.once("aborted", () => upstream.destroy());
-        response.once("close", () => {
-            if (!response.writableEnded) upstream.destroy();
         });
         void forwardRequestBody(request, upstream).catch((error) => {
             upstream.destroy();
@@ -337,40 +444,7 @@ function outgoingHeaders(rawHeaders: readonly string[]): OutgoingHttpHeaders {
     return result;
 }
 
-function forwardedRawHeaders(rawHeaders: readonly string[]): string[] {
-    const excluded = new Set([
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "proxy-connection",
-        "te",
-        "transfer-encoding",
-        "upgrade",
-    ]);
-    for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
-        if (rawHeaders[index]?.toLowerCase() !== "connection") continue;
-        for (const token of rawHeaders[index + 1]!.split(",")) {
-            const name = token.trim().toLowerCase();
-            if (name) excluded.add(name);
-        }
-    }
-
-    const forwarded: string[] = [];
-    for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
-        const name = rawHeaders[index]!;
-        if (excluded.has(name.toLowerCase())) continue;
-        forwarded.push(name, rawHeaders[index + 1]!);
-    }
-    return forwarded;
-}
-
-function denyResponse(
-    request: IncomingMessage,
-    response: ServerResponse,
-    status: number,
-    message: string,
-): void {
+function denyResponse(request: IncomingMessage, response: ServerResponse, status: number, message: string): void {
     request.resume();
     if (response.headersSent || response.destroyed) {
         response.destroy();

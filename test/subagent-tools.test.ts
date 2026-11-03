@@ -52,6 +52,9 @@ test("each subagent tool registers independently and delegates only to the coord
     assert.equal("toolkits" in spawnProperties, false);
     assert.equal("model" in spawnProperties, false);
     assert.equal("mode" in spawnProperties, false);
+    assert.equal(spawnProperties.timeoutSeconds.minimum, 1);
+    assert.equal(spawnProperties.timeoutSeconds.maximum, 86_400);
+    assert.equal(spawnProperties.timeoutSeconds.default, 86_400);
     assert.deepEqual(
         registered[0]!.prepareArguments?.({task: "legacy", role: "worker", mode: "sync"}),
         {task: "legacy", role: "worker"},
@@ -124,6 +127,7 @@ test("each subagent tool registers independently and delegates only to the coord
     const factory: SubagentChildSessionFactory = {
         async create(request) {
             assert.equal(request.parentAgentIdentifier, "subagent-tool-test-agent");
+            assert.equal(request.timeoutSeconds, request.task === "short budget" ? 7 : 86_400);
             assert.equal(request.reasoningSkill, SubagentReasoningSkill.MID);
             assert.equal(request.reasoningAmount, SubagentReasoningAmount.MID);
             assert.equal(request.modelPreference, "provider/default-mid");
@@ -191,6 +195,14 @@ test("each subagent tool registers independently and delegates only to the coord
     for (const scope of turnScopes) {
         assert.throws(() => scope.setTimeout(() => {}, 10), /closed/);
     }
+
+    const short = await invoke(registered[0]!, {
+        task: "short budget", role: "reviewer", timeoutSeconds: 7, ...reasoning,
+    });
+    await coordinator.status([(short as any).details.jobs[0].id], 2);
+    await assert.rejects(invoke(registered[0]!, {
+        task: "too long", role: "reviewer", timeoutSeconds: 86_401, ...reasoning,
+    }), /timeoutSeconds must be between 1 and 86400/);
 
     await coordinator.close();
     assert.equal(activePrincipals.size, 0);

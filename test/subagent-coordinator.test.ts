@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, {type TestContext} from "node:test";
+import {performance} from "node:perf_hooks";
 import type {ToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {PolicyPrincipalRegistry} from "../src/policy/PolicyRuntime.js";
 import {PolicyArea} from "../src/policy/types.js";
@@ -841,6 +842,465 @@ test("nested delegation gates mechanisms but may snapshot any policy area the pa
     );
     await coordinator.close();
 });
+
+const DAY = 86_400_000;
+const LIFETIME = 30 * DAY;
+
+// Node's fake timers do not advance performance.now(), used by execution budgets.
+class BudgetClock {
+    constructor(private readonly context: TestContext) {
+        context.mock.timers.enable({apis: ["Date", "setTimeout"], now: 0});
+        context.mock.method(performance, "now", () => Date.now());
+    }
+
+    elapse(milliseconds: number): void {
+        this.context.mock.timers.setTime(Date.now() + milliseconds);
+    }
+
+    async advance(milliseconds: number): Promise<void> {
+        this.context.mock.timers.tick(milliseconds);
+        await flushBudgets();
+    }
+}
+
+async function flushBudgets(): Promise<void> {
+    for (let index = 0; index < 40; index++) await Promise.resolve();
+}
+
+for (const seconds of [86_400, 7]) {
+    test(`each follow-up gets a fresh ${seconds}-second execution budget`, async (t) => {
+        const clock = new BudgetClock(t);
+        const first = deferred<string>();
+        let prompts = 0;
+        let creations = 0;
+        const session = new FakeSession((_task, signal) => {
+            prompts++;
+            return abortable(prompts === 1 ? first.promise : new Promise<string>(() => {}), signal);
+        });
+        const principals = new FakePolicyPrincipals();
+        const coordinator = new SubagentCoordinator({
+            async create() { creations++; return session; },
+        }, tools(), principals);
+        t.after(() => coordinator.close());
+        const spawned = await coordinator.spawn(request({timeoutSeconds: seconds}));
+        await flushBudgets();
+        await clock.advance(seconds * 500);
+        first.resolve("first answer");
+        await flushBudgets();
+        assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.IDLE);
+        await coordinator.message(spawned.job.id, "fresh turn");
+        await flushBudgets();
+        await clock.advance(seconds * 1000 - 1);
+        assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.RUNNING);
+        await clock.advance(1);
+        assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+        assert.equal(creations, 1);
+        assert.equal(prompts, 2);
+        assert.equal(session.disposed, true);
+        assert.equal(principals.active.size, 0);
+        assert.equal(principals.approvalWaitScopes.size, 0);
+    });
+}
+
+test("24-hour turn budget retains its remainder across approval waits", async (t) => {
+    const clock = new BudgetClock(t);
+    const principals = new FakePolicyPrincipals();
+    const coordinator = new SubagentCoordinator({
+        async create() {
+            return new FakeSession((_task, signal) => abortable(new Promise<string>(() => {}), signal));
+        },
+    }, tools(), principals);
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request({timeoutSeconds: 86_400}));
+    await flushBudgets();
+    await clock.advance(DAY - 1000);
+    const scope = principals.approvalWaitScopes.get(spawned.job.id)!;
+    const release = scope.beginWait();
+    await clock.advance(2000);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.RUNNING);
+    release();
+    await clock.advance(999);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.RUNNING);
+    await clock.advance(1);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+});
+
+test("idle lifetime timer chunks beyond Node's maximum and expires exactly at 30 days", async (t) => {
+    const clock = new BudgetClock(t);
+    const principals = new FakePolicyPrincipals();
+    const session = new FakeSession(async () => "done");
+    const coordinator = new SubagentCoordinator({async create() { return session; }}, tools(), principals);
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request());
+    await flushBudgets();
+    await clock.advance(1);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.IDLE, "no overflowing 1ms timer");
+    await clock.advance(2_147_483_647 - 1);
+    assert.equal(session.disposed, false, "the first long-timer chunk only rearms the remainder");
+    await clock.advance(LIFETIME - 2_147_483_647 - 1);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.IDLE);
+    await clock.advance(1);
+    const [expired] = coordinator.list();
+    assert.equal(expired?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(expired?.finishedAt, LIFETIME);
+    assert.match(expired?.error ?? "", /30-day lifetime/);
+    assert.equal(session.disposed, true);
+    assert.equal(principals.active.size, 0);
+    await assert.rejects(coordinator.message(spawned.job.id, "too late"), /cannot receive a message/);
+});
+
+test("a backwards wall-clock correction rearms the lifetime watchdog", async (t) => {
+    const maxTimer = 2_147_483_647;
+    t.mock.timers.enable({apis: ["setTimeout"]});
+    let wall = 0;
+    t.mock.method(Date, "now", () => wall);
+    const principals = new FakePolicyPrincipals();
+    const session = new FakeSession(async () => "done");
+    const coordinator = new SubagentCoordinator({async create() { return session; }}, tools(), principals);
+    t.after(() => coordinator.close());
+    await coordinator.spawn(request());
+    await flushBudgets();
+    wall = maxTimer;
+    t.mock.timers.tick(maxTimer);
+    await flushBudgets();
+    // Roll the wall clock back across the first chunk boundary.
+    wall = maxTimer - 1;
+    t.mock.timers.tick(LIFETIME - maxTimer);
+    await flushBudgets();
+    wall = LIFETIME - 1;
+    t.mock.timers.tick(LIFETIME - maxTimer);
+    await flushBudgets();
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.IDLE);
+    wall = LIFETIME + DAY;
+    t.mock.timers.tick(DAY + 1);
+    await flushBudgets();
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(session.disposed, true);
+    assert.equal(principals.active.size, 0);
+});
+
+test("a one-millisecond backwards correction at expiry still expires", async (t) => {
+    const maxTimer = 2_147_483_647;
+    t.mock.timers.enable({apis: ["setTimeout"]});
+    let wall = 0;
+    let finalReads = 0;
+    t.mock.method(Date, "now", () => wall === LIFETIME && ++finalReads > 1 ? wall - 1 : wall);
+    const principals = new FakePolicyPrincipals();
+    const session = new FakeSession(async () => "done");
+    const coordinator = new SubagentCoordinator({async create() { return session; }}, tools(), principals);
+    t.after(() => coordinator.close());
+    await coordinator.spawn(request());
+    await flushBudgets();
+    wall = maxTimer;
+    t.mock.timers.tick(maxTimer);
+    await flushBudgets();
+    wall = LIFETIME;
+    t.mock.timers.tick(LIFETIME - maxTimer);
+    await flushBudgets();
+    wall = LIFETIME + DAY;
+    t.mock.timers.tick(DAY + 1);
+    await flushBudgets();
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(session.disposed, true);
+    assert.equal(principals.active.size, 0);
+});
+
+test("follow-ups do not reset lifetime and approval pauses do not extend it", async (t) => {
+    const clock = new BudgetClock(t);
+    const principals = new FakePolicyPrincipals();
+    let prompts = 0;
+    let aborts = 0;
+    let scope: ApprovalWaitScope | undefined;
+    const session = new FakeSession(async (_task, signal) => {
+        prompts++;
+        if (prompts === 1) return "initial answer";
+        scope = ApprovalWaitScope.current()!;
+        scope.beginWait();
+        return abortable(new Promise<string>(() => {}), signal);
+    }, undefined, undefined, async () => { aborts++; throw new Error("lifetime abort failed"); });
+    const coordinator = new SubagentCoordinator({async create() { return session; }}, tools(), principals);
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request({timeoutSeconds: 86_400}));
+    await flushBudgets();
+    await clock.advance(LIFETIME - 1000);
+    await coordinator.message(spawned.job.id, "last follow-up");
+    await flushBudgets();
+    await clock.advance(999);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.RUNNING);
+    assert.equal(scope?.waiting, true);
+    await clock.advance(1);
+    const [expired] = coordinator.list();
+    assert.equal(expired?.status, SubagentJobStatus.TIMED_OUT);
+    assert.match(expired?.error ?? "", /30-day lifetime/);
+    assert.match(expired?.error ?? "", /lifetime abort failed/);
+    assert.equal(aborts, 1);
+    assert.equal(scope?.waiting, false);
+    assert.equal(session.disposed, true);
+    assert.equal(principals.active.size, 0);
+    assert.equal(principals.approvalWaitScopes.size, 0);
+});
+
+test("lifetime expires both initial queued jobs and queued retained follow-ups", async (t) => {
+    const clock = new BudgetClock(t);
+    const principals = new FakePolicyPrincipals();
+    const created: string[] = [];
+    const workerSession = new FakeSession(async () => "worker done");
+    const coordinator = new SubagentCoordinator({
+        async create(child) {
+            created.push(child.role);
+            if (child.role === "worker") return workerSession;
+            return new FakeSession((_task, signal) => {
+                ApprovalWaitScope.current()!.beginWait();
+                return abortable(new Promise<string>(() => {}), signal);
+            });
+        },
+    }, tools(), principals, {maxConcurrency: 1});
+    t.after(() => coordinator.close());
+    const worker = await coordinator.spawn(request({role: "worker"}));
+    await flushBudgets();
+    await clock.advance(1000);
+    const blocker = await coordinator.spawn(request({role: "blocker"}));
+    await flushBudgets();
+    await coordinator.message(worker.job.id, "queued follow-up");
+    const fresh = await coordinator.spawn(request({role: "never-started"}));
+    await coordinator.message(fresh.job.id, "another queued task");
+    await clock.advance(LIFETIME - 1001);
+    assert.equal(coordinator.list([worker.job.id])[0]?.status, SubagentJobStatus.QUEUED);
+    await clock.advance(1);
+    assert.equal(coordinator.list([worker.job.id])[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(workerSession.disposed, true);
+    assert.equal(coordinator.list([fresh.job.id])[0]?.status, SubagentJobStatus.QUEUED);
+    await clock.advance(1000);
+    assert.equal(coordinator.list([fresh.job.id])[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(coordinator.list([blocker.job.id])[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.deepEqual(created, ["worker", "blocker"]);
+    assert.equal(principals.active.size, 0);
+});
+
+for (const boundary of [LIFETIME - 1, LIFETIME]) {
+    test(`follow-up acceptance checks lifetime at ${boundary}ms without timer delivery`, async (t) => {
+        const clock = new BudgetClock(t);
+        let prompts = 0;
+        const principals = new FakePolicyPrincipals();
+        const coordinator = new SubagentCoordinator({
+            async create() { return new FakeSession(async () => { prompts++; return "answer"; }); },
+        }, tools(), principals);
+        t.after(() => coordinator.close());
+        const spawned = await coordinator.spawn(request());
+        await flushBudgets();
+        clock.elapse(boundary);
+        if (boundary < LIFETIME) {
+            await coordinator.message(spawned.job.id, "just in time");
+            await flushBudgets();
+            assert.equal(prompts, 2);
+            assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.IDLE);
+        } else {
+            await assert.rejects(coordinator.message(spawned.job.id, "too late"), /cannot receive a message/);
+            assert.equal(prompts, 1);
+            assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+            assert.equal(principals.active.size, 0);
+        }
+    });
+}
+
+test("queued turns cannot start after lifetime when watchdog delivery is delayed", async (t) => {
+    const clock = new BudgetClock(t);
+    const blocker = deferred<string>();
+    const created: string[] = [];
+    const principals = new FakePolicyPrincipals();
+    const coordinator = new SubagentCoordinator({
+        async create(child) {
+            created.push(child.role);
+            return new FakeSession((_task, signal) => abortable(blocker.promise, signal));
+        },
+    }, tools(), principals, {maxConcurrency: 1});
+    t.after(() => coordinator.close());
+    const first = await coordinator.spawn(request({role: "blocker"}));
+    const queued = await coordinator.spawn(request({role: "never-started"}));
+    await flushBudgets();
+    clock.elapse(LIFETIME);
+    blocker.resolve("late answer");
+    await flushBudgets();
+    assert.equal(coordinator.list([first.job.id])[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(coordinator.list([queued.job.id])[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.deepEqual(created, ["blocker"]);
+    assert.equal(principals.active.size, 0);
+});
+
+test("lifetime abort observes prompt rejection while initial steering is still pending", async (t) => {
+    const clock = new BudgetClock(t);
+    const setup = deferred<SubagentChildSession>();
+    const steering = deferred<boolean>();
+    const principals = new FakePolicyPrincipals();
+    const session = new FakeSession((_task, signal) => {
+        ApprovalWaitScope.current()!.beginWait();
+        return abortable(new Promise<string>(() => {}), signal);
+    }, undefined, () => steering.promise);
+    const coordinator = new SubagentCoordinator({async create() { return setup.promise; }}, tools(), principals);
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request({timeoutSeconds: 86_400}));
+    await coordinator.message(spawned.job.id, "initial steering");
+    setup.resolve(session);
+    await flushBudgets();
+    await clock.advance(LIFETIME);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(session.disposed, true);
+    assert.equal(principals.active.size, 0);
+    assert.equal(principals.approvalWaitScopes.size, 0);
+    const expired = coordinator.list();
+    steering.resolve(false);
+    await flushBudgets();
+    assert.deepEqual(coordinator.list(), expired, "late steering cannot queue another turn");
+});
+
+test("rejected initial steering keeps its follow-up order before later messages", async (t) => {
+    new BudgetClock(t);
+    const setup = deferred<SubagentChildSession>();
+    const first = deferred<string>();
+    const prompts: string[] = [];
+    const session = new FakeSession(async (task, signal) => {
+        prompts.push(task);
+        return prompts.length === 1 ? abortable(first.promise, signal) : "answer";
+    }, undefined, async () => false);
+    const coordinator = new SubagentCoordinator({async create() { return setup.promise; }}, tools(), new FakePolicyPrincipals());
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request());
+    await coordinator.message(spawned.job.id, "earlier setup-time message");
+    setup.resolve(session);
+    await flushBudgets();
+    await coordinator.message(spawned.job.id, "later running message");
+    first.resolve("first answer");
+    await flushBudgets();
+    assert.deepEqual(prompts, ["inspect the change", "earlier setup-time message", "later running message"]);
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.IDLE);
+});
+
+test("lifetime expiry during setup disposes a late-created session without prompting it", async (t) => {
+    const clock = new BudgetClock(t);
+    const setup = deferred<SubagentChildSession>();
+    const principals = new FakePolicyPrincipals();
+    let prompts = 0;
+    let aborts = 0;
+    const session = new FakeSession(async () => { prompts++; return "must not run"; }, undefined, undefined,
+        async () => { aborts++; });
+    const coordinator = new SubagentCoordinator({
+        async create() {
+            ApprovalWaitScope.current()!.beginWait();
+            return setup.promise;
+        },
+    }, tools(), principals);
+    t.after(() => coordinator.close());
+    await coordinator.spawn(request());
+    await flushBudgets();
+    await clock.advance(LIFETIME);
+    setup.resolve(session);
+    await flushBudgets();
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(prompts, 0);
+    assert.equal(aborts, 1);
+    assert.equal(session.disposed, true);
+    assert.equal(principals.active.size, 0);
+    assert.equal(principals.approvalWaitScopes.size, 0);
+});
+
+test("a message awaiting steering cannot accept a follow-up past the lifetime boundary", async (t) => {
+    const clock = new BudgetClock(t);
+    const steering = deferred<boolean>();
+    const principals = new FakePolicyPrincipals();
+    const session = new FakeSession((_task, signal) => {
+        ApprovalWaitScope.current()!.beginWait();
+        return abortable(new Promise<string>(() => {}), signal);
+    }, undefined, () => steering.promise);
+    const coordinator = new SubagentCoordinator({async create() { return session; }}, tools(), principals);
+    t.after(() => coordinator.close());
+    const spawned = await coordinator.spawn(request());
+    await flushBudgets();
+    clock.elapse(LIFETIME - 1);
+    const message = coordinator.message(spawned.job.id, "delayed steering");
+    const rejected = assert.rejects(message, /cannot receive a message/);
+    clock.elapse(1);
+    steering.resolve(false);
+    await rejected;
+    await flushBudgets();
+    assert.equal(coordinator.list()[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(principals.active.size, 0);
+});
+
+test("parent lifetime expiry keeps descendants alive and retains ancestry principals until their release", async (t) => {
+    const clock = new BudgetClock(t);
+    const principals = new FakePolicyPrincipals();
+    let coordinator: SubagentCoordinator;
+    let descendant = "";
+    coordinator = new SubagentCoordinator({
+        async create(child) {
+            return new FakeSession(async (task, signal) => {
+                if (child.role === "descendant") {
+                    ApprovalWaitScope.current()!.beginWait();
+                    return abortable(new Promise<string>(() => {}), signal);
+                }
+                if (task === "delegate late") {
+                    descendant = (await coordinator.spawn(request({
+                        parentAgentIdentifier: child.agentIdentifier,
+                        role: "descendant",
+                    }))).job.id;
+                }
+                return "parent answer";
+            });
+        },
+    }, tools(), principals);
+    t.after(() => coordinator.close());
+    const parent = await coordinator.spawn(request({capabilities: [AgentMechanismCapability.delegate]}));
+    await flushBudgets();
+    await clock.advance(LIFETIME - 1000);
+    await coordinator.message(parent.job.id, "delegate late");
+    await flushBudgets();
+    await clock.advance(1000);
+    assert.equal(coordinator.list([parent.job.id])[0]?.status, SubagentJobStatus.TIMED_OUT);
+    assert.equal(coordinator.list([descendant])[0]?.status, SubagentJobStatus.RUNNING);
+    assert.equal(principals.active.has(parent.job.id), true);
+    await coordinator.stop(descendant);
+    assert.equal(coordinator.list([descendant])[0]?.status, SubagentJobStatus.CANCELLED);
+    assert.equal(principals.active.size, 0);
+});
+
+for (const shutdown of [false, true]) {
+    test(`${shutdown ? "shutdown" : "stop"} cancels running, queued, and idle jobs without later lifetime expiry`, async (t) => {
+        const clock = new BudgetClock(t);
+        const principals = new FakePolicyPrincipals();
+        const sessions: FakeSession[] = [];
+        const coordinator = new SubagentCoordinator({
+            async create(child) {
+                const session = new FakeSession(async (_task, signal) => {
+                    if (child.role === "idle") return "answer";
+                    ApprovalWaitScope.current()!.beginWait();
+                    return abortable(new Promise<string>(() => {}), signal);
+                });
+                sessions.push(session);
+                return session;
+            },
+        }, tools(), principals, {maxConcurrency: 1});
+        t.after(() => coordinator.close());
+        const idle = await coordinator.spawn(request({role: "idle"}));
+        await flushBudgets();
+        const active = await coordinator.spawn(request({role: "active"}));
+        const queued = await coordinator.spawn(request({role: "queued"}));
+        await flushBudgets();
+        await clock.advance(LIFETIME - 1);
+        if (shutdown) await coordinator.close();
+        else {
+            await coordinator.stop(queued.job.id);
+            await coordinator.stop(active.job.id);
+            await coordinator.stop(idle.job.id);
+        }
+        const cancelled = coordinator.list();
+        assert.equal(cancelled.every((job) => job.status === SubagentJobStatus.CANCELLED), true);
+        assert.equal(sessions.every((session) => session.disposed), true);
+        assert.equal(principals.active.size, 0);
+        assert.equal(principals.approvalWaitScopes.size, 0);
+        await clock.advance(LIFETIME);
+        assert.deepEqual(coordinator.list(), cancelled);
+    });
+}
 
 class FakePolicyPrincipals implements PolicyPrincipalRegistry {
     readonly active = new Set<string>();

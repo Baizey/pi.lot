@@ -6,7 +6,7 @@ pi.lot provides retained child-agent conversations with separate model context, 
 
 | Tool | Arguments and behaviour |
 | --- | --- |
-| `subagent_spawn` | Required: `task`, `role`, `reasoning_skill`, `reasoning_amount`. Optional: `capabilities` (default `[]`), `cwd`, `timeoutSeconds` (default 900; range 1–3,600), `systemPrompt`, `contextPaths`. Returns a job ID without waiting for completion. |
+| `subagent_spawn` | Required: `task`, `role`, `reasoning_skill`, `reasoning_amount`. Optional: `capabilities` (default `[]`), `cwd`, `timeoutSeconds` (default 86,400; range 1–86,400), `systemPrompt`, `contextPaths`. Returns a job ID without waiting for completion. |
 | `subagent_status` | Optional `jobIds` and `waitSeconds` (default 0; range 0–3,600). Omit IDs or pass `[]` for the invoking agent's descendant tree. Waiting ends when all selected jobs are idle/terminal or the wait budget expires; check their returned states. |
 | `subagent_message` | Required `jobId`, `task`. Steers a running turn when possible; otherwise queues an ordered follow-up. An idle job starts a new turn in the retained conversation. |
 | `subagent_stop` | Required `jobId`. Stops that job and its descendants, descendants first. |
@@ -99,7 +99,9 @@ An explicit denial is terminal. Otherwise, a covering ancestor allow can route t
 
 ## Turn and wait budgets
 
-`timeoutSeconds` is an execution budget for **each turn**, not a lifetime for the conversation; follow-ups get fresh budgets. User and model policy approval waits pause it without resetting the remainder. Each approval still has an independent [300-second deadline](policy.md#approval-waits-and-execution-budgets), including queued user prompts.
+`timeoutSeconds` is an execution budget for **each turn**, defaulting to and capped at **86,400 seconds (24 hours)**. Optional smaller explicit limits are supported; follow-ups get fresh budgets. User and model policy approval waits pause it without resetting the remainder. Each approval still has an independent [300-second deadline](policy.md#approval-waits-and-execution-budgets), including queued user prompts.
+
+Separately, every retained conversation has a hard **30-day wall-clock lifetime from accepted spawn**. Initial queueing, running, approval waits, idle time, and all follow-ups count toward this fixed limit; messages and new turns do not reset it. Expiry makes running, queued, and idle jobs `timed_out`, aborts active work, and releases the retained session and policy principal (an ancestor principal remains until its retained descendants are released). Lifetime expiry does not automatically stop descendants: each has its own spawn-time lifetime. There is no configurable lifetime parameter. Explicit stop and root shutdown still cancel jobs before their deadlines.
 
 `subagent_status` pauses its wait budget while a selected active job awaits approval. If a parent is waiting in that call, its turn budget pauses too. Background descendants and unselected siblings do not automatically pause the parent. Cancellation still works during approval waits. Independent model, subprocess, application, and server deadlines are not extended.
 

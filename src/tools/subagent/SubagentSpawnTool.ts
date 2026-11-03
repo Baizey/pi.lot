@@ -3,6 +3,10 @@ import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-work
 import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
 import type {SubagentDefaultValues} from "../../subagents/SubagentDefaults.js";
 import {
+    DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
+    MAX_SUBAGENT_TIMEOUT_SECONDS,
+} from "../../subagents/SubagentBudgets.js";
+import {
     SubagentReasoningAmount,
     SubagentReasoningSkill,
 } from "../../subagents/SubagentReasoning.js";
@@ -29,8 +33,6 @@ import {
 } from "../../tui/tool/ToolPresentation";
 import {ToolDisplayRows} from "../../tui/tool/ToolDisplayRows";
 import {ThemeColor} from "../../tui/Color";
-
-const DEFAULT_TIMEOUT_SECONDS = 900;
 
 type SpawnToolInput = {
     task: string;
@@ -127,7 +129,7 @@ function createDefinition(
                 [],
             ),
             cwd: stringSchema("Child working directory; relative paths resolve from the current tool context"),
-            timeoutSeconds: numberSchema("Execution timeout for each child turn, excluding policy approval waits", 1, 3_600, DEFAULT_TIMEOUT_SECONDS),
+            timeoutSeconds: numberSchema("Execution timeout for each child turn, excluding policy approval waits", 1, MAX_SUBAGENT_TIMEOUT_SECONDS, DEFAULT_SUBAGENT_TIMEOUT_SECONDS),
             reasoning_skill: enumSchema(
                 Object.values(SubagentReasoningSkill),
                 "Model reasoning skill; min favors cost and max favors estimated performance",
@@ -155,7 +157,7 @@ function createDefinition(
                 role: input.role,
                 capabilities: input.capabilities ?? [],
                 cwd,
-                timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
+                timeoutSeconds: input.timeoutSeconds ?? DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
                 reasoningSkill: input.reasoning_skill,
                 reasoningAmount: input.reasoning_amount,
                 modelPreference,

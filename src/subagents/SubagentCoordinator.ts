@@ -1,6 +1,8 @@
 import {AsyncLocalStorage} from "node:async_hooks";
 import crypto from "node:crypto";
 import {ApprovalWaitScope} from "../runtime/ApprovalWaitScope.js";
+import {PausableTimeout} from "../runtime/PausableTimeout.js";
+import {MAX_SUBAGENT_TIMEOUT_SECONDS, SUBAGENT_LIFETIME_MS} from "./SubagentBudgets.js";
 import type {PolicyPrincipalRegistry} from "../policy/PolicyRuntime.js";
 import {
     AgentCapabilitySet,
@@ -43,6 +45,7 @@ type SubagentJob = {
     capabilities: AgentCapabilitySet;
     status: SubagentJobStatus;
     createdAt: number;
+    lifetimeTimeout?: PausableTimeout;
     startedAt?: number;
     finishedAt?: number;
     latestLine?: string;
@@ -137,6 +140,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             principalReleased: false,
         };
         this.jobs.set(job.id, job);
+        this.armLifetimeTimeout(job);
         this.queue.push(job);
         this.notify(job);
         this.pump();
@@ -222,6 +226,10 @@ export class SubagentCoordinator implements SubagentJobMonitor {
         this.requireOpen();
         const job = this.requireManageableJob(jobId);
         const normalizedTask = requiredText(task, "task", 100_000);
+        this.expireLifetime(job);
+        if (job.timedOut || job.stopRequested || isTerminal(job.status)) {
+            throw new Error(`Subagent conversation cannot receive a message: ${jobId} (${job.status})`);
+        }
 
         if (job.status === SubagentJobStatus.RUNNING) {
             if (!job.session) {
@@ -232,7 +240,12 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                 return snapshot(job);
             }
             this.updateSteeringPolicyContext(job, normalizedTask);
-            if (await job.session.steer(normalizedTask)) {
+            const accepted = await job.session.steer(normalizedTask);
+            this.expireLifetime(job);
+            if (job.timedOut || job.stopRequested || isTerminal(job.status)) {
+                throw new Error(`Subagent conversation cannot receive a message: ${jobId} (${job.status})`);
+            }
+            if (accepted) {
                 job.latestLine = "Steering message queued";
                 this.notify(job);
                 return snapshot(job);
@@ -325,7 +338,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             role: requiredText(request.role, "role", 120),
             capabilities,
             cwd: requiredText(request.cwd, "cwd", 10_000),
-            timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, 3_600),
+            timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, MAX_SUBAGENT_TIMEOUT_SECONDS),
             reasoningSkill: enumValue(
                 request.reasoningSkill,
                 SubagentReasoningSkill,
@@ -347,6 +360,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             const job = this.queue.shift();
             if (!job) break;
             if (job.status !== SubagentJobStatus.QUEUED) continue;
+            if (this.expireLifetime(job)) continue;
             this.activeCount++;
             const running = this.executeTurn(job)
                 .catch((error) => this.handleUnexpectedTurnFailure(job, error))
@@ -394,6 +408,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                 job.modelSelectionSource = job.session.modelSelection?.source;
                 this.notify(job);
             }
+            this.expireLifetime(job);
             if (controller.signal.aborted) {
                 this.requestAbort(job);
                 throw abortError();
@@ -410,12 +425,20 @@ export class SubagentCoordinator implements SubagentJobMonitor {
                     this.notify(job);
                 });
                 const steering = job.pendingSteering.splice(0);
-                const accepted = await Promise.all(steering.map((task) => job.session!.steer(task)));
-                for (let index = 0; index < steering.length; index++) {
-                    if (!accepted[index]) job.queuedTasks.push(steering[index]!);
-                }
-                return prompting;
+                // Observe prompt rejection immediately, even while steering is still pending.
+                const [answer] = await Promise.all([
+                    prompting,
+                    (async () => {
+                        const accepted = await Promise.all(steering.map((task) => job.session!.steer(task)));
+                        if (controller.signal.aborted) return;
+                        for (let index = 0; index < steering.length; index++) {
+                            if (!accepted[index]) job.queuedTasks.push(steering[index]!);
+                        }
+                    })(),
+                ]);
+                return answer;
             }));
+            this.expireLifetime(job);
             if (controller.signal.aborted) throw abortError();
             job.output = boundedOutput(output);
             job.latestLine = lastMeaningfulLine(output);
@@ -430,7 +453,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             await job.abortPromise;
             job.pendingSteering.splice(0);
             job.queuedTasks.splice(0);
-            job.error = errorMessage(error);
+            job.error = job.timedOut ? job.error ?? errorMessage(error) : errorMessage(error);
             if (job.abortFailure) this.appendJobError(job, job.abortFailure);
             job.finishedAt = Date.now();
             job.status = job.timedOut
@@ -447,13 +470,17 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             this.policyPrincipals.setPolicyApprovalWaitScope(job.agentIdentifier, undefined);
             job.controller = undefined;
             const retainedConversation = [SubagentJobStatus.IDLE, SubagentJobStatus.QUEUED].includes(job.status);
-            if (!retainedConversation) this.disposeSession(job);
+            if (!retainedConversation) {
+                this.clearLifetimeTimeout(job);
+                this.disposeSession(job);
+            }
             this.notify(job);
             this.releaseTerminalPrincipals();
         }
     }
 
     private async stopOne(job: SubagentJob): Promise<void> {
+        this.clearLifetimeTimeout(job);
         if (job.status === SubagentJobStatus.QUEUED) {
             const index = this.queue.indexOf(job);
             if (index >= 0) this.queue.splice(index, 1);
@@ -487,6 +514,51 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             this.notify(job);
             this.releaseTerminalPrincipals();
         }
+    }
+
+    /** Also called at acceptance/start/completion boundaries when timer delivery may be delayed. */
+    private expireLifetime(job: SubagentJob): boolean {
+        if (isTerminal(job.status) || job.stopRequested) return false;
+        const remaining = job.createdAt + SUBAGENT_LIFETIME_MS - Date.now();
+        if (remaining > 0) {
+            // A wall-clock correction can make the chunked timer fire before the
+            // absolute deadline. Keep an active watchdog instead of losing it.
+            this.armLifetimeTimeout(job);
+            return false;
+        }
+        this.clearLifetimeTimeout(job);
+        job.timedOut = true;
+        job.error = "Subagent conversation reached its 30-day lifetime limit";
+        job.latestLine = job.error;
+        job.pendingSteering.splice(0);
+        job.queuedTasks.splice(0);
+        if (job.status === SubagentJobStatus.RUNNING) {
+            this.requestAbort(job);
+        } else {
+            const index = this.queue.indexOf(job);
+            if (index >= 0) this.queue.splice(index, 1);
+            job.status = SubagentJobStatus.TIMED_OUT;
+            job.finishedAt = Date.now();
+            this.disposeSession(job);
+            this.releaseTerminalPrincipals();
+        }
+        this.notify(job);
+        return true;
+    }
+
+    private armLifetimeTimeout(job: SubagentJob): void {
+        // Detached from approval scopes: this wall-clock lifetime includes queueing and idle time.
+        // PausableTimeout chunks the 30-day delay instead of overflowing Node's timer range.
+        job.lifetimeTimeout?.dispose();
+        const remaining = Math.max(0, job.createdAt + SUBAGENT_LIFETIME_MS - Date.now());
+        job.lifetimeTimeout = new PausableTimeout(remaining, () => {
+            this.expireLifetime(job);
+        }, {unref: true, now: () => Date.now()});
+    }
+
+    private clearLifetimeTimeout(job: SubagentJob): void {
+        job.lifetimeTimeout?.dispose();
+        job.lifetimeTimeout = undefined;
     }
 
     private selectJobs(jobIds?: string[]): SubagentJob[] {
@@ -576,10 +648,11 @@ export class SubagentCoordinator implements SubagentJobMonitor {
 
     private handleUnexpectedTurnFailure(job: SubagentJob, error: unknown): void {
         if (isActive(job.status)) {
-            job.status = SubagentJobStatus.FAILED;
+            job.status = job.timedOut ? SubagentJobStatus.TIMED_OUT : SubagentJobStatus.FAILED;
             job.finishedAt = Date.now();
         }
         this.appendJobError(job, lifecycleFailure(job, "turn finalization", error));
+        this.clearLifetimeTimeout(job);
         this.disposeSession(job);
         this.notify(job);
         this.releaseTerminalPrincipals();

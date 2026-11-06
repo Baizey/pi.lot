@@ -127,6 +127,7 @@ export class BashTool {
                         operations: this.createOperations(
                             policy,
                             runtime.fullNetworkInspection,
+                            runtime.writableMmap,
                             runtime.hostCredentialIpc,
                             nativePolicyView,
                             runtime.nativeFuseSessionBroker,
@@ -148,6 +149,7 @@ export class BashTool {
     private createOperations(
         policy: ToolCallPathPolicyEvaluator,
         fullNetworkInspection: boolean,
+        writableMmap: boolean,
         hostCredentialIpc: HostCredentialIpcOptions | undefined,
         nativePolicyView: NativeFilesystemPolicyView,
         nativeFuseSessionBroker?: NativeFuseSessionBroker,
@@ -208,6 +210,7 @@ export class BashTool {
                     onDecisionError: reportFuseDecisionError,
                     onPolicyDeny: report,
                     sessionBroker: nativeFuseSessionBroker,
+                    writableMmap,
                 }, runNetworkSandbox);
 
                 if (result.signal) throw new Error(`network worker terminated by ${result.signal}`);

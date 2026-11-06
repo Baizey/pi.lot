@@ -24,7 +24,7 @@
     "bench:compaction": "node --import jiti/register scripts/benchmark-compaction.ts",
     "build": "npm run build:native && npm run typecheck",
     "install": "npm run build:native",
-    "test:network": "npm run build:native && node --import jiti/register --test ./test/bash-sandbox.test.ts ./test/client-trust.test.ts ./test/host-credential-ipc-config.test.ts ./test/host-credential-ipc.test.ts ./test/network-inspection-command.test.ts ./test/network-policy-authorizer.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network-sandbox-lifecycle.test.ts ./test/network.test.ts",
+    "test:network": "npm run build:native && node --import jiti/register --test ./test/bash-sandbox.test.ts ./test/client-trust.test.ts ./test/host-credential-ipc-config.test.ts ./test/host-credential-ipc.test.ts ./test/sandboxing-command.test.ts ./test/network-policy-authorizer.test.ts ./test/network-policy-logic.test.ts ./test/network-policy.test.ts ./test/network-sandbox-lifecycle.test.ts ./test/network.test.ts",
     "test:runtime": "node ./scripts/test-runtime.mjs",
     "test": "node ./scripts/test-all.mjs"
   },

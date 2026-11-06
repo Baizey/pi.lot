@@ -641,8 +641,9 @@ test("the HTTPS gateway terminates TLS and denies a method and path before upstr
         "/bin/bash",
         "-c",
         [
-          `curl --noproxy '*' --silent --request DELETE 'https://10.0.2.2:${address.port}/baizey/blocked' >/dev/null`,
-          `curl --noproxy '*' --silent --request POST --data '' 'https://10.0.2.2:${address.port}/baizey/allowed?ref=main'`,
+          // The fixture serves HTTP/1 only; HTTP/2 forwarding is covered separately.
+          `curl --noproxy '*' --silent --show-error --http1.1 --request DELETE 'https://10.0.2.2:${address.port}/baizey/blocked' >/dev/null`,
+          `curl --noproxy '*' --silent --show-error --fail --http1.1 --request POST --data '' 'https://10.0.2.2:${address.port}/baizey/allowed?ref=main'`,
         ].join("; "),
       ],
       cwd: workspace,
@@ -789,7 +790,7 @@ test("the HTTPS gateway uses SNI when an application supplies its own address ma
       command: [
         "/bin/bash",
         "-c",
-        `curl --noproxy '*' --silent --resolve '${hostname}:${address.port}:10.0.2.2' 'https://${hostname}:${address.port}/from-sni'`,
+        `curl --noproxy '*' --silent --show-error --fail --http1.1 --resolve '${hostname}:${address.port}:10.0.2.2' 'https://${hostname}:${address.port}/from-sni'`,
       ],
       cwd: workspace,
       additionalUpstreamCa: upstreamAuthority.certificatePem,
@@ -874,14 +875,16 @@ test("request-aware mode fails closed for SSH without protocol authorization", a
   }
 });
 
-for (const [protocol, preface] of [
-    [NetworkApplicationProtocol.SSH, "SSH-2.0-client-fixture\r\n"],
-    [NetworkApplicationProtocol.SMTP, "EHLO client.fixture\r\n"],
+for (const [protocol, preface, greeting] of [
+    [NetworkApplicationProtocol.SSH, "SSH-2.0-client-fixture\r\n", "SSH-2.0-server-fixture\r\n"],
+    [NetworkApplicationProtocol.SMTP, "EHLO client.fixture\r\n", "220 server.fixture ESMTP ready\r\n"],
 ] as const) {
     test(`the native TCP gateway captures and authorizes ${protocol} on a nonstandard port`, async () => {
         const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-protocol-test-"));
         let received = "";
         const server = createServer((socket) => {
+            // The gateway must confirm the server's protocol before releasing client bytes.
+            socket.write(greeting);
             socket.on("data", (data) => {
                 received += data.toString();
                 if (received.length >= preface.length) socket.end("ACCEPTED");
@@ -918,7 +921,7 @@ for (const [protocol, preface] of [
                 onNetworkError: (error) => errors.push(error),
             });
             assert.equal(result.exitCode, 0);
-            assert.equal(output, "ACCEPTED");
+            assert.equal(output, `${greeting}ACCEPTED`, errors.map(String).join("\n"));
             assert.equal(received, preface);
             assert.deepEqual(captured, [protocol]);
             assert.deepEqual(errors, []);
@@ -1076,7 +1079,8 @@ test("the HTTPS gateway observes the exact smart-HTTP URL produced by git fetch"
         [
           "git init --quiet",
           `git remote add origin 'https://${hostname}:${address.port}/baizey/repository.git'`,
-          "GIT_TERMINAL_PROMPT=0 git -c credential.helper= fetch origin >/dev/null 2>&1 || true",
+          // Match the HTTP/1-only fixture, rather than libcurl's HTTP/2 preference.
+          "GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 -c credential.helper= fetch origin >/dev/null || true",
         ].join("; "),
       ],
       cwd: workspace,
@@ -1160,8 +1164,8 @@ test("the HTTPS gateway preserves noninteractive Git credentials without allowin
         "/bin/bash",
         "-c",
         [
-          `git -c credential.helper=${shellQuote(`!${helperPath}`)} ls-remote 'https://10.0.2.2:${address.port}/baizey/repository.git' >/dev/null 2>&1 || true`,
-          `if git -c credential.helper= ls-remote 'https://10.0.2.2:${address.port}/baizey/repository.git' >/dev/null 2>&1; then exit 90; fi`,
+          `git -c http.version=HTTP/1.1 -c credential.helper=${shellQuote(`!${helperPath}`)} ls-remote 'https://10.0.2.2:${address.port}/baizey/repository.git' >/dev/null || true`,
+          `if git -c http.version=HTTP/1.1 -c credential.helper= ls-remote 'https://10.0.2.2:${address.port}/baizey/repository.git' >/dev/null; then exit 90; fi`,
         ].join("; "),
       ],
       cwd: workspace,

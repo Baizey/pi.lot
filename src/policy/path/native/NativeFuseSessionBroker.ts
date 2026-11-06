@@ -3,6 +3,7 @@ import {chmod, mkdir, mkdtemp, realpath, rm} from "node:fs/promises";
 import {createServer, type Server, type Socket} from "node:net";
 import path from "node:path";
 import {ManagedChildProcess} from "../../../runtime/ManagedChildProcess.js";
+import {NativeFuseMappedWriteDrain} from "./NativeFuseMappedWriteDrain.js";
 import {resolveNativeExecutable} from "../../../runtime/NativeExecutable.js";
 import {NativeFilesystemPolicyBridge} from "./NativeFilesystemPolicyBridge.js";
 import {replaceNativeFilesystemSnapshotFile} from "./NativeFilesystemSnapshotFile.js";
@@ -25,6 +26,7 @@ export type NativeFuseBrokerMountOptions = {
     signal?: AbortSignal;
     onDecisionError?: (error: unknown) => void;
     onPolicyDeny?: (message: string) => void;
+    writableMmap?: boolean;
 };
 
 export type NativeFuseBrokerMountContext = {
@@ -127,8 +129,12 @@ export class NativeFuseSessionBroker {
 
         let result: T | undefined;
         let runError: unknown;
+        let mappedWriteDrain: NativeFuseMappedWriteDrain | undefined;
         try {
             await this.startMount(context);
+            if (options.writableMmap) {
+                mappedWriteDrain = await NativeFuseMappedWriteDrain.open(context.mountpoint, options.policyView);
+            }
             result = await run({
                 mediatedHostRoot: context.mountpoint,
                 cwd: commandCwd,
@@ -137,8 +143,16 @@ export class NativeFuseSessionBroker {
         } catch (error) {
             runError = error;
         } finally {
-            abort();
-            options.signal?.removeEventListener("abort", abort);
+            try {
+                await mappedWriteDrain?.finish();
+            } catch (error) {
+                runError = runError
+                    ? new AggregateError([runError, error], "Native FUSE run and mapped-write drain both failed")
+                    : error;
+            } finally {
+                abort();
+                options.signal?.removeEventListener("abort", abort);
+            }
         }
 
         let cleanupError: unknown;
@@ -493,6 +507,7 @@ export class NativeFuseSessionBroker {
             context.agentPolicyState.snapshotPath,
             context.statsPath,
             socketPath,
+            context.options.writableMmap ? "mmap" : "direct",
         ];
         if (fields.some((field) => /[\t\r\n]/.test(field))) {
             throw new Error("Native FUSE broker command contains an invalid separator");

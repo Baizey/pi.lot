@@ -277,16 +277,26 @@ for (const status of [PolicyResponse.ALLOWED, PolicyResponse.DENIED]) {
         const target = path.join(workspace, "content.txt");
         const continuePath = path.join(workspace, "continue");
         writeFileSync(target, "content");
-        const runtime = allowingRuntime(decisionFlow([{
-            uri: target,
-            accessType: PolicyAccessType.FS_READ,
-            lifetime: PolicyLifetime.ONCE,
-            status,
-            reason: "read approval before cached access",
-        }]));
+        let targetRequests = 0;
+        const runtime = allowingRuntime(scriptedPolicyApproval((uri, accessType) => {
+            assert.equal(accessType, PolicyAccessType.FS_READ);
+            const isTarget = uri === target;
+            if (isTarget) targetRequests++;
+            // Constructing OSError can lazily read libc/Python locale resources.
+            // Those runtime reads are not the target of this approval test.
+            return {
+                uri,
+                accessType,
+                lifetime: PolicyLifetime.ONCE,
+                status: isTarget ? status : PolicyResponse.ALLOWED,
+                reason: isTarget ? "read approval before cached access" : "incidental runtime read",
+            };
+        }));
         const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-fuse-test"});
         let defaultChanged = false;
         let stdout = "";
+        let stderr = "";
+        const decisionErrors: string[] = [];
         const script = [
             "import errno,mmap,os,sys,time",
             "print('READY',flush=True)",
@@ -317,10 +327,17 @@ for (const status of [PolicyResponse.ALLOWED, PolicyResponse.DENIED]) {
                     defaultChanged = true;
                     writeFileSync(continuePath, "continue");
                 },
+                onStderr: (data) => { stderr += data; },
+                onDecisionError: (error) => { decisionErrors.push(String(error)); },
+            }).catch((cause: unknown) => {
+                throw new Error(`Read approval ${status} failed: ${stderr}\n${decisionErrors.join("\n")}`, {cause});
             });
             assert.equal(defaultChanged, true);
-            assert.equal(result.exitCode, 0);
-            assert.equal(view.onceSnapshot().layers[0]!.policies[0]!.info[PolicyAccessType.FS_READ]?.status, status);
+            assert.equal(targetRequests, 1, "the target must receive exactly one explicit approval decision");
+            assert.equal(result.exitCode, 0, `${stderr}\n${decisionErrors.join("\n")}`);
+            assert.deepEqual(decisionErrors, []);
+            const targetPolicy = view.onceSnapshot().layers[0]!.policies.find((policy) => policy.pattern === target);
+            assert.equal(targetPolicy?.info[PolicyAccessType.FS_READ]?.status, status);
         } finally {
             view.close();
             rmSync(workspace, {recursive: true, force: true});

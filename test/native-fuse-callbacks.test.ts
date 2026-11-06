@@ -129,6 +129,41 @@ for (const operation of ["open", "create"]) {
     }
 }
 
+for (const operation of ["open", "create"]) {
+    for (const access of [constants.O_RDONLY, constants.O_WRONLY, constants.O_RDWR]) {
+        test(`mmap ${operation} uses cached write-through and checks read authority for O_RDWR (${access})`, async () => {
+            await withFixture(async (directory) => {
+                const target = path.join(directory, "mapped");
+                if (operation === "open") await writeFile(target, "original");
+                const args = [`mmap-abi-${operation}`, target, String(access | constants.O_TRUNC), "1", "1"];
+                if (access === constants.O_RDWR) {
+                    const denied = await probe(directory, [policy(directory, PolicyResponse.DENIED)], ...args);
+                    assert.equal(denied.result, -errno.EACCES);
+                    assertDenied(denied, target, NativeFilesystemAccess.READ);
+                    assert.equal(denied.handleAssigned, false);
+                    assert.equal(denied.directIo, 1);
+                    if (operation === "open") assert.equal(await readFile(target, "utf8"), "original");
+                    else await assert.rejects(stat(target), {code: "ENOENT"});
+                }
+                if (access !== constants.O_RDONLY) {
+                    const denied = await probe(directory, [policy(directory, PolicyResponse.ALLOWED, PolicyResponse.DENIED)], ...args);
+                    assert.equal(denied.result, -errno.EACCES);
+                    assertDenied(denied, target, NativeFilesystemAccess.WRITE);
+                    assert.equal(denied.handleAssigned, false);
+                    if (operation === "open") assert.equal(await readFile(target, "utf8"), "original");
+                    else await assert.rejects(stat(target), {code: "ENOENT"});
+                }
+                const allowed = await probe(directory, [policy(directory)], ...args);
+                assert.equal(allowed.result, 0);
+                assert.equal(allowed.directIo, 0);
+                assert.equal(allowed.keepCache, 0);
+                assert.equal(allowed.fieldsPreserved, true);
+                assert.equal(allowed.releasePreserved, true);
+            });
+        });
+    }
+}
+
 for (const capabilities of ["supported", "unsupported"]) {
     test(`real mount-free INIT declines forbidden ${capabilities} features in the wire reply`, (context) => {
         const executed = spawnSync(initExecutable, [capabilities], {encoding: "utf8", timeout: 5_000});
@@ -473,6 +508,18 @@ for (const operation of ["open", "read", "write", "truncate"] as const) {
             } else {
                 assert.equal(result.retainedValue, "original");
             }
+        });
+    });
+}
+
+for (const operation of ["open", "read", "write", "truncate"]) {
+    test(`cached mmap mode ${operation} still fails closed after controller EOF`, async () => {
+        await withFixture(async (directory) => {
+            const target = path.join(directory, "cached");
+            await writeFile(target, "original");
+            const result = await probe(directory, [policy(directory)], "mmap-disconnect", target, operation);
+            assert.equal(result.result, -errno.EACCES);
+            assert.equal(await readFile(target, "utf8"), "original");
         });
     });
 }

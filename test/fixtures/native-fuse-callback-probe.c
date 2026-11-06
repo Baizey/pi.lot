@@ -145,7 +145,7 @@ static int probe_operations(void) {
     return 0;
 }
 
-static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state) {
+static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state, bool writable_mmap) {
     void *private_state = state;
     probe_context.private_data = private_state;
 
@@ -186,7 +186,7 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
             ? operations.open(argv[4], sentinel) : operations.create(argv[4], 0600, sentinel);
         if (result == 0) {
             expected_info.fh = sentinel->fh;
-            expected_info.direct_io = (expected_info.flags & O_ACCMODE) != O_RDONLY;
+            expected_info.direct_io = !writable_mmap && (expected_info.flags & O_ACCMODE) != O_RDONLY;
             expected_info.keep_cache = 0;
             status_flags = fcntl((int) sentinel->fh, F_GETFL);
             descriptor_flags = fcntl((int) sentinel->fh, F_GETFD);
@@ -538,9 +538,11 @@ complete:
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "abi-operations") == 0) return probe_operations();
     if (argc < 5) return 64;
-    struct pilot_fuse_state *state = pilot_fuse_probe_new(argv[1], argv[2], 3, 4);
+    bool writable_mmap = strncmp(argv[3], "mmap-", 5) == 0;
+    if (writable_mmap) argv[3] += 5;
+    struct pilot_fuse_state *state = pilot_fuse_probe_new(argv[1], argv[2], 3, 4, writable_mmap);
     if (state == NULL) return 64;
-    int result = probe_callbacks(argc, argv, state);
+    int result = probe_callbacks(argc, argv, state, writable_mmap);
     pilot_fuse_probe_free(state);
     close(3);
     close(4);

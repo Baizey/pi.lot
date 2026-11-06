@@ -7,7 +7,7 @@ import {WriteTool} from "./tools/builtin/WriteTool";
 import {PolicyDefaultsCommand} from "./commands/PolicyDefaultsCommand.js";
 import {SubagentDefaultsCommand} from "./commands/SubagentDefaultsCommand.js";
 import {DisplayCommand} from "./commands/DisplayCommand.js";
-import {NetworkInspectionCommand} from "./commands/NetworkInspectionCommand.js";
+import {SandboxingCommand} from "./commands/SandboxingCommand.js";
 import {ServerCommand} from "./commands/ServerCommand.js";
 import {ServerService} from "./server/ServerService.js";
 import {ServerSessionLifecycle} from "./server/ServerSessionLifecycle.js";
@@ -134,7 +134,7 @@ export class PilotExtension {
             (level) => this.subagentRuntime.resolveAutomaticModel(level),
         ).register();
         new DisplayCommand(this.pi, () => this.requireDisplayDefaults()).register();
-        new NetworkInspectionCommand(this.pi, runtimeProvider).register();
+        new SandboxingCommand(this.pi, runtimeProvider).register();
         this.serverCommand.register();
         this.archiveTools.register();
         new CodemodeExtension(this.pi, this.displayRows).register();

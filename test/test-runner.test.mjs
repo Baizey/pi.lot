@@ -5,6 +5,7 @@ import {TestRunner} from "../scripts/TestRunner.mjs";
 
 const hostContracts = [
     "test/native-fuse.test.ts",
+    "test/native-fuse-mmap.test.ts",
     "test/native-fuse-session-broker.test.ts",
     "test/bash-sandbox.test.ts",
     "test/network.test.ts",

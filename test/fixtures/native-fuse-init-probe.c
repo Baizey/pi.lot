@@ -165,7 +165,7 @@ int main(int argc, char **argv) {
             ? pilot_fuse_main(2, arguments, NULL) : fuse_main(2, arguments, &operations, NULL);
     }
     if (argc != 2 || (strcmp(argv[1], "supported") != 0 && strcmp(argv[1], "unsupported") != 0)) return 64;
-    struct pilot_fuse_state *state = pilot_fuse_probe_new(NULL, NULL, -1, -1);
+    struct pilot_fuse_state *state = pilot_fuse_probe_new(NULL, NULL, -1, -1, false);
     if (state == NULL) return 65;
     int result = probe_negotiation(argv, strcmp(argv[1], "supported") == 0, state);
     pilot_fuse_probe_free(state);

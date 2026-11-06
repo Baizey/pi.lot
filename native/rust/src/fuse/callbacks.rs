@@ -231,7 +231,13 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
         }
         Readdir => read_directory(state, path, c),
         Open | Create => {
-            let readonly = c.flags & libc::O_ACCMODE == libc::O_RDONLY;
+            let access = c.flags & libc::O_ACCMODE;
+            let readonly = access == libc::O_RDONLY;
+            // Cached O_RDWR handles can expose data without a READ callback,
+            // including through a later mmap/mprotect. Authorize before O_TRUNC.
+            if state.writable_mmap && access == libc::O_RDWR {
+                state.authorize_path(path, Access::Read, None)?;
+            }
             if matches!(op, Open) {
                 state.authorize_path(
                     path,
@@ -262,7 +268,9 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
                 libc::open(p.as_ptr(), c.flags | libc::O_CREAT | libc::O_EXCL, c.mode)
             };
             c.fh = cvt(fd)? as u64;
-            c.direct_io = (!readonly) as i32;
+            // Opt-in cached write-through permits mmap without passthrough or
+            // writeback-cache. WRITE callbacks still use live policy above.
+            c.direct_io = (!readonly && !state.writable_mmap) as i32;
             c.keep_cache = 0;
             Ok(0)
         }

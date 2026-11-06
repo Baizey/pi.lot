@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import {access} from "node:fs/promises";
 import test from "node:test";
 import {explorationCarry, explorationModelTransition, explorationSourceFiles, explorationStrategies, parseContinuationAnswers, parseExplorationArguments, validateFrozenCandidate} from "../scripts/explore-compaction.js";
 import type {BudgetSnapshot} from "../experiments/compaction/BudgetedModel.js";
 import {smokeModel} from "../scripts/evaluate-compaction.js";
+
+test("exploration source snapshots need no retired Markdown documentation", async () => {
+    assert.ok(explorationSourceFiles.every((file) => file.endsWith(".ts")));
+    await Promise.all(explorationSourceFiles.map((file) => access(new URL(`../${file}`, import.meta.url))));
+});
 
 test("exploration requires explicit SDK resource guards and freezes later-stage selection", () => {
     const plan = parseExplorationArguments(["--output", "/tmp/plan.json"]);

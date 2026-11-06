@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {fileURLToPath} from "node:url";
 import test, {afterEach, beforeEach, mock} from "node:test";
 import type {
     BeforeAgentStartEvent,
@@ -16,6 +15,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {initTheme, SessionManager} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
+import type {NativeFuseBrokerMountOptions} from "../src/policy/path/native/NativeFuseSessionBroker.js";
 import {ServerService} from "../src/server/ServerService.js";
 import {ServerConfigStore} from "../src/server/ServerConfig.js";
 import {ArchiveBackground} from "../src/server/ArchiveBackground.js";
@@ -153,6 +153,9 @@ test("the production extension installs built-in overrides immediately but defer
     assert.deepEqual(harness.registeredToolNames, expectedToolNames);
     assert.ok(harness.registeredCommandNames.includes("server"));
     assert.ok(harness.registeredCommandNames.includes("display"));
+    assert.ok(harness.registeredCommandNames.includes("sandboxing"));
+    assert.equal(harness.registeredCommandNames.includes("network-inspection"), false);
+    assert.equal(harness.registeredCommandNames.includes("mmap"), false);
     assert.equal(harness.registeredTools.every((tool) => tool.renderShell === "self"), true);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
@@ -201,7 +204,7 @@ test("display loads saved modes per session and shares hot-swapped preferences w
         createSessionRuntime(context) {
             const policyRuntime = createPolicyRuntime(context);
             return {
-                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 setFullNetworkInspection() {}, beginShutdown: () => policyRuntime.beginShutdown(), close() {},
             };
         },
@@ -273,7 +276,7 @@ for (const stage of ["runtime construction", "runtime startup", "display default
                 if (stage === "runtime construction") throw failure;
                 const policyRuntime = createPolicyRuntime(context);
                 return {
-                    policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                    policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                     async start() { if (stage === "runtime startup") throw failure; },
                     setFullNetworkInspection() {}, beginShutdown() {}, close() { closed++; },
                 };
@@ -319,7 +322,7 @@ test("identity and source are cached before runtime construction or deferred sta
             assert.equal(manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "pilot.archive"), true);
             const policyRuntime = createPolicyRuntime(context);
             return {
-                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 start() { started(); return barrier; },
                 setFullNetworkInspection() {}, beginShutdown() {}, close() {},
             };
@@ -366,7 +369,7 @@ test("registered builtin and delegation collections supply the same child defini
         createSessionRuntime(context) {
             const policyRuntime = createPolicyRuntime(context);
             return {
-                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 setFullNetworkInspection() {}, beginShutdown: () => policyRuntime.beginShutdown(), close() {},
             };
         },
@@ -411,7 +414,7 @@ test("startup caches session-bound identity before asynchronous child infrastruc
     new PilotExtension(harness.pi, {
         createSessionRuntime(runtimeContext) {
             return {policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() {}};
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {}, close() {}};
         },
         createMcpExtension: () => ({
             ...createNoopMcpExtension(),
@@ -473,7 +476,7 @@ for (const reason of ["quit", "reload", "new", "resume", "fork"] as const) {
             createSessionRuntime(runtimeContext) {
                 return {
                     policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                    fullNetworkInspection: true, setFullNetworkInspection() {},
+                    fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {},
                     beginShutdown() {
                         assert.equal(request?.signal.aborted, true, "server requests cancel before owned teardown");
                         events.push("runtime stopping");
@@ -513,7 +516,7 @@ test("failed owned teardown still queues cached source after closing the session
         createSessionRuntime(runtimeContext) {
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() { closed = true; },
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {}, close() { closed = true; },
             };
         },
     }).register();
@@ -547,7 +550,7 @@ test("the same extension instance resets owned shutdown and server lifecycle for
             starts++;
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() { closes++; },
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {}, close() { closes++; },
             };
         },
     }).register();
@@ -561,16 +564,18 @@ test("the same extension instance resets owned shutdown and server lifecycle for
     assert.deepEqual(files, ["/first.jsonl", "/second.jsonl"]);
 });
 
-test("Bash always routes through a native filesystem policy view", async () => {
+test("Bash always routes through a native filesystem policy view and snapshots the session mmap switch per call", async () => {
     const harness = extensionHarness();
     const ctx = {
         cwd: process.cwd(),
         hasUI: false,
         mode: "print",
-        ui: {},
+        ui: {notify() {}},
         sessionManager: archiveSessionManager(),
-    } as unknown as ExtensionContext;
+    } as unknown as ExtensionCommandContext;
     const sentinel = new Error("native broker routing sentinel");
+    let writableMmap = false;
+    const mountModes: Array<boolean | undefined> = [];
     let brokerCalls = 0;
     let viewClosed = false;
     let capturedToolCall: unknown;
@@ -588,9 +593,12 @@ test("Bash always routes through a native filesystem policy view", async () => {
                 policyRuntime,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
+                get writableMmap() { return writableMmap; },
+                setWritableMmap(enabled: boolean) { writableMmap = enabled; },
                 nativeFuseSessionBroker: {
-                    async withFilesystem(options: any): Promise<never> {
+                    async withFilesystem(options: NativeFuseBrokerMountOptions): Promise<never> {
                         brokerCalls++;
+                        mountModes.push(options.writableMmap);
                         options.policyView.onClosed(() => {
                             viewClosed = true;
                         });
@@ -627,12 +635,20 @@ test("Bash always routes through a native filesystem policy view", async () => {
         });
         assert.equal(brokerCalls, 1);
         assert.equal(viewClosed, true);
+        for (const mode of ["on", "off"]) {
+            await harness.registeredCommands.get("sandboxing")!.handler(`mmap ${mode}`, ctx);
+            await assert.rejects(registeredTool(harness, "bash").execute(
+                `native-route-${mode}`, {command: "true", purpose: "Verify session mmap routing"},
+                undefined, undefined, ctx,
+            ), sentinel);
+        }
+        assert.deepEqual(mountModes, [false, true, false]);
     } finally {
         await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     }
 });
 
-test("the production extension adds routed documentation without forcing or replacing native prompt sections", async () => {
+test("the production extension routes documentation to hmem without forcing or replacing native prompt sections", async () => {
     const harness = extensionHarness();
     const ctx = {} as ExtensionContext;
 
@@ -651,23 +667,27 @@ test("the production extension adds routed documentation without forcing or repl
     const result = await harness.beforeAgentStart()(event, ctx);
     assert.equal(result, undefined);
     assert.equal(event.systemPromptOptions.forceSystemPrompt, undefined);
+    assert.equal(event.systemPrompt, "BASE_SYSTEM_PROMPT");
     assert.equal(sections.mcp_servers, "NATIVE_MCP_SERVERS");
     const systemPrompt = sections.pilot_docs;
     assert.ok(systemPrompt);
-    assert.equal(systemPrompt.match(/pi\.lot documentation/g)?.length, 1);
+    assert.equal(systemPrompt.match(/^pi\.lot documentation/gm)?.length, 1);
     assert.match(systemPrompt, /relevant pi\.lot features or archive-tool use/);
-    assert.match(systemPrompt, /saved configuration sync\/recovery: read docs\/server\.md/);
+    assert.match(systemPrompt, /hmem is the documentation database/);
+    assert.match(systemPrompt, /Use workspace pi\.lot for installation\/setup, policies, permissions/);
+    assert.match(systemPrompt, /saved configuration sync\/recovery, look up the relevant pi\.lot documentation in hmem/);
     assert.match(systemPrompt, /before using archive_list\/archive_fetch/);
-
-    const packageRoot = fileURLToPath(new URL("../", import.meta.url));
-    const documentationDirectory = path.join(packageRoot, "docs");
-    assert.match(systemPrompt, new RegExp(escapeRegex(path.join(packageRoot, "README.md"))));
-    assert.match(systemPrompt, new RegExp(escapeRegex(documentationDirectory)));
-    assert.doesNotMatch(systemPrompt, /docs\/mcp\.md/);
-    for (const filename of ["installation.md", "policy.md", "subagents.md", "web-search.md", "server.md", "security.md"]) {
-        assert.match(systemPrompt, new RegExp(escapeRegex(`docs/${filename}`)));
-        assert.doesNotThrow(() => readFileSync(path.join(documentationDirectory, filename), "utf8"));
-    }
+    assert.match(systemPrompt, /Use workspace pi\.server for server operation or protocol topics/);
+    assert.match(systemPrompt, /initialize your hmem identity if needed, list workspaces, select the workspace by name using its returned ID, search for relevant documentation, then retrieve the full observations/);
+    assert.match(systemPrompt, /Do not assume workspace IDs or answer from search snippets alone/);
+    assert.match(systemPrompt, /Git provenance .*current checkout and working-tree code/);
+    assert.match(systemPrompt, /Treat historical sources as historical, reconcile stale claims with current code/);
+    assert.match(systemPrompt, /source paths recorded in hmem from files no longer present locally/);
+    assert.match(systemPrompt, /not instructions to read deleted files/);
+    assert.match(systemPrompt, /If hmem or the required workspace\/documentation is unavailable, say so explicitly/);
+    assert.match(systemPrompt, /Do not fabricate documentation, silently auto-connect hmem, or change MCP configuration/);
+    assert.doesNotMatch(systemPrompt, /README|docs\/|\.md\b/);
+    assert.doesNotMatch(systemPrompt, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
 });
 
 test("custom-message starts keep the user's policy task while still adding Pilot documentation", async () => {
@@ -694,7 +714,7 @@ test("custom-message starts keep the user's policy task while still adding Pilot
             return {
                 policyRuntime,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true,
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 setFullNetworkInspection() {},
                 beginShutdown() {},
                 close() {},
@@ -752,7 +772,7 @@ test("the registered read override uses the invoking cwd rather than the session
             return {
                 policyRuntime,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true,
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -799,7 +819,7 @@ test("Pilot's expanded state switches Bash between minimal and truncated while r
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true,
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -905,7 +925,7 @@ test("Bash components remain renderable during and after session shutdown", asyn
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true,
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -974,7 +994,7 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext, queue),
-                fullNetworkInspection: true,
+                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -1144,6 +1164,8 @@ test("one session runtime owns the production tool overrides until session shutd
                 policyRuntime: policy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
+                writableMmap: false,
+                setWritableMmap() {},
                 async start() {
                     runtimeStarts++;
                 },
@@ -1310,8 +1332,4 @@ function extensionHarness(): ExtensionHarness {
             return beforeAgentStartHandler;
         },
     };
-}
-
-function escapeRegex(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

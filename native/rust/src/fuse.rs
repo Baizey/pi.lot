@@ -82,6 +82,7 @@ pub struct State {
     request_fd: i32,
     response_fd: i32,
     framed_ready: bool,
+    writable_mmap: bool,
     ready_fd: Mutex<i32>,
     counters: [AtomicU64; 8],
     panicked: std::sync::atomic::AtomicBool,
@@ -101,6 +102,7 @@ impl State {
             request_fd,
             response_fd,
             framed_ready: false,
+            writable_mmap: false,
             ready_fd: Mutex::new(-1),
             counters: std::array::from_fn(|_| AtomicU64::new(0)),
             panicked: std::sync::atomic::AtomicBool::new(false),
@@ -329,6 +331,7 @@ pub unsafe extern "C" fn pilot_fuse_probe_new(
     hidden: *const libc::c_char,
     request: i32,
     response: i32,
+    writable_mmap: bool,
 ) -> *mut State {
     catch_unwind(AssertUnwindSafe(|| {
         if snapshot.is_null() {
@@ -345,12 +348,13 @@ pub unsafe extern "C" fn pilot_fuse_probe_new(
             return std::ptr::null_mut();
         }
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-        let state = Box::new(State::new(
+        let mut state = Box::new(State::new(
             snapshot.to_owned(),
             hidden.to_owned(),
             request,
             response,
         ));
+        state.writable_mmap = writable_mmap;
         if nonblocking(request).is_err() || nonblocking(response).is_err() || state.load().is_err()
         {
             return std::ptr::null_mut();

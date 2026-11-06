@@ -45,8 +45,19 @@ pub(super) fn main() -> i32 {
     if arguments.len() == 2 && arguments[1].to_bytes() == b"--broker" {
         return Broker::default().run(&arguments[0]);
     }
-    if arguments.len() != 8 {
-        diagnostic(b"usage: pi-fuse-native MOUNTPOINT HIDDEN_PATH SNAPSHOT_PATH STATS_PATH READY_FD REQUEST_FD RESPONSE_FD\n       pi-fuse-native --broker\n");
+    if arguments
+        .get(1)
+        .is_some_and(|a| a.to_bytes() == b"--syncfs")
+    {
+        return sync_filesystem(&arguments);
+    }
+    let writable_mmap = match arguments.get(8).map(|a| a.to_bytes()) {
+        None | Some(b"direct") => false,
+        Some(b"mmap") => true,
+        _ => return 64,
+    };
+    if arguments.len() != 8 && arguments.len() != 9 {
+        diagnostic(b"usage: pi-fuse-native MOUNTPOINT HIDDEN_PATH SNAPSHOT_PATH STATS_PATH READY_FD REQUEST_FD RESPONSE_FD [direct|mmap]\n       pi-fuse-native --broker\n       pi-fuse-native --syncfs FD\n");
         return 64;
     }
     unsafe {
@@ -60,9 +71,35 @@ pub(super) fn main() -> i32 {
             libc::atoi(arguments[6].as_ptr()),
             libc::atoi(arguments[7].as_ptr()),
             false,
+            writable_mmap,
         )
     }
 }
+fn sync_filesystem(args: &[CString]) -> i32 {
+    let descriptor = if args.len() == 3 {
+        args[2]
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|fd| *fd >= 0)
+    } else {
+        None
+    };
+    let Some(descriptor) = descriptor else {
+        diagnostic(b"usage: pi-fuse-native --syncfs FD\n");
+        return 64;
+    };
+    loop {
+        if unsafe { libc::syncfs(descriptor) } == 0 {
+            return 0;
+        }
+        if errno() != libc::EINTR {
+            perror("drain native FUSE mapped writes");
+            return 1;
+        }
+    }
+}
+
 fn check_protocol(args: &[CString]) -> i32 {
     if args.len() != 6 {
         diagnostic(
@@ -126,6 +163,7 @@ fn run_filesystem(
     request: i32,
     response: i32,
     framed: bool,
+    writable_mmap: bool,
 ) -> i32 {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
@@ -147,6 +185,7 @@ fn run_filesystem(
     }
     let mut state = Box::new(State::new(snapshot.to_owned(), hidden, request, response));
     state.framed_ready = framed;
+    state.writable_mmap = writable_mmap;
     *state.ready_fd.get_mut().unwrap() = ready;
     if state.load().is_err() {
         perror("load native FUSE policy base snapshot");
@@ -316,9 +355,14 @@ impl Broker {
         let fields: Vec<&[u8]> = line
             .split(|b| matches!(*b, b'\t' | b'\r' | b'\n'))
             .filter(|s| !s.is_empty())
-            .take(8)
+            .take(9)
             .collect();
-        if fields.len() != 7 || fields[0] != b"START" {
+        if !matches!(fields.len(), 7 | 8)
+            || fields[0] != b"START"
+            || fields
+                .get(7)
+                .is_some_and(|mode| !matches!(*mode, b"direct" | b"mmap"))
+        {
             set_errno(libc::EPROTO);
             return Err(-1);
         }
@@ -372,6 +416,7 @@ impl Broker {
                 control.0,
                 control.0,
                 true,
+                fields.get(7).is_some_and(|mode| *mode == b"mmap"),
             );
             drop(control);
             libc::_exit(result);

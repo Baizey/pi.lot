@@ -27,7 +27,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 export const explorationSourceFiles = ["experiments/compaction/SemanticCompaction.ts", "experiments/compaction/CondenserScenarios.ts",
     "experiments/compaction/CondenserScenario.ts", "experiments/compaction/CondenserValidationScenarios.ts", "experiments/compaction/BenchmarkTypes.ts",
     "experiments/compaction/HistoricalCriteria.ts", "experiments/compaction/CondenserRegressionScenarios.ts",
-    "scripts/explore-compaction.ts", "experiments/compaction/notes/condenser-exploration.md", "experiments/compaction/ValueRetention.ts",
+    "scripts/explore-compaction.ts", "experiments/compaction/ValueRetention.ts",
     "experiments/compaction/CompactionEvaluation.ts", "experiments/compaction/CompactionBenchmark.ts",
     "experiments/compaction/BudgetedModel.ts", "experiments/compaction/ParallelSplit.ts",
     "experiments/compaction/BenchmarkStatistics.ts", "experiments/compaction/BenchmarkDeadline.ts",
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
                 !(options.phase === "historical" ? ["holdout"] : options.phase === "refinement" ? ["development"] : ["development", "refinement"]).includes(previous.options?.phase) ||
                 previous.report?.mode !== "live" || !calibrationPassed(previous.calibration)) throw new Error("Previous stage is not complete/calibrated under the same overall limits");
             validateFrozenCandidate(options, previous.options);
-            const refinementChanges = new Set(["experiments/compaction/SemanticCompaction.ts", "scripts/explore-compaction.ts", "experiments/compaction/notes/condenser-exploration.md"]);
+            const refinementChanges = new Set(["experiments/compaction/SemanticCompaction.ts", "scripts/explore-compaction.ts"]);
             for (const file of explorationSourceFiles) {
                 if (previous.hashes?.[file] !== hashes[file] && !(options.phase === "refinement" && refinementChanges.has(file))) {
                     throw new Error("Candidate, criteria or measurement code changed outside an explicit development refinement");

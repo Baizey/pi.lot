@@ -137,7 +137,8 @@ test("the picker shows title-only choices, preselects the slot's mode, applies i
     const {defaults, store, ctx} = harness();
     let closed = false;
     let redraws = 0;
-    const picker = new DisplaySettings(defaults, ctx.ui.theme, () => { closed = true; }, () => { redraws++; });
+    const picker = new DisplaySettings(defaults, ctx.ui.theme, () => { closed = true; }, () => { redraws++; },
+        (message, severity) => ctx.ui.notify(message, severity));
     const plain = () => stripAnsi(picker.render(80).join("\n"));
     assert.match(plain(), /Normal view\s+Compact/);
     assert.match(plain(), /Alternate view\s+Preview/);

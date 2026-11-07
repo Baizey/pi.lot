@@ -1,4 +1,5 @@
-import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
+import {SubagentDefaultsSettings} from "../tui/subagent/SubagentDefaultsSettings.js";
 import {
     AUTO_SUBAGENT_MODEL,
     type SubagentDefaultValues,
@@ -35,7 +36,7 @@ export class SubagentDefaultsCommand {
             handler: async (input, ctx) => {
                 const args = parseArgs(input).args;
                 if (args.length === 0) {
-                    ctx.ui.notify(await this.renderDefaults(this.defaults().values), "info");
+                    await this.showSettings(ctx);
                     return;
                 }
 
@@ -75,6 +76,21 @@ export class SubagentDefaultsCommand {
         });
     }
 
+    private async showSettings(ctx: ExtensionCommandContext): Promise<void> {
+        const defaults = this.defaults();
+        if (!ctx.hasUI || ctx.mode !== "tui") {
+            ctx.ui.notify(await this.renderDefaults(defaults.values), "info");
+            return;
+        }
+        const automaticModels = Object.fromEntries(await Promise.all(SKILLS.map(async (skill) => (
+            [skill, await this.automaticModelLabel(skill)]
+        )))) as Record<SubagentReasoningSkill, string>;
+        await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new SubagentDefaultsSettings(
+            defaults, this.availableModels, automaticModels, theme, () => done(), () => tui.requestRender(),
+            (message, severity) => ctx.ui.notify(message, severity),
+        ), {blocked: {kind: "question", message: "Configure subagent defaults"}});
+    }
+
     private completions(input: string): Completion[] | null {
         const parsed = parseArgs(input);
         const midFilling = !parsed.onNext;
@@ -104,14 +120,17 @@ export class SubagentDefaultsCommand {
     private async renderDefaults(defaults: SubagentDefaultValues): Promise<string> {
         const mappings = await Promise.all(SKILLS.map(async (skill) => {
             if (defaults[skill] !== AUTO_SUBAGENT_MODEL) return `${skill} = ${defaults[skill]}`;
-            try {
-                return `${skill} = ${await this.resolveAutomaticModel(skill)} (auto)`;
-            } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                return `${skill} = <unresolved: ${message}> (auto)`;
-            }
+            return `${skill} = ${await this.automaticModelLabel(skill)} (auto)`;
         }));
         return ["Subagent defaults for this session:", ...mappings].join("\n");
+    }
+
+    private async automaticModelLabel(skill: SubagentReasoningSkill): Promise<string> {
+        try {
+            return await this.resolveAutomaticModel(skill);
+        } catch (error) {
+            return `<unresolved: ${error instanceof Error ? error.message : String(error)}>`;
+        }
     }
 }
 

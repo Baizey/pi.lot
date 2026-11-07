@@ -57,8 +57,9 @@ export class DisplayCommand {
             return;
         }
         await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-            return new DisplaySettings(defaults, theme, () => done(), () => tui.requestRender());
-        });
+            return new DisplaySettings(defaults, theme, () => done(), () => tui.requestRender(),
+                (message, severity) => ctx.ui.notify(message, severity));
+        }, {blocked: {kind: "question", message: "Configure display"}});
     }
 
     private status(defaults: DisplayDefaultsRuntime): string {

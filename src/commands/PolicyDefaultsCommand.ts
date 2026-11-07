@@ -1,4 +1,5 @@
-import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
+import {PolicyDefaultsSettings} from "../tui/PolicyDefaultsSettings.js";
 import {PolicyFallbackResponse} from "../policy/types.js";
 import {initialPolicyDefaults, ResponseDefaults} from "../policy/defaults.js";
 import type {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime";
@@ -30,7 +31,7 @@ export class PolicyDefaultsCommand {
                 const provider = this.runtime()
                 const args = parseArgs(input).args;
                 if (args.length === 0) {
-                    ctx.ui.notify(this.renderDefaults(provider.policyRuntime.defaultResponses), "info");
+                    await this.showSettings(provider, ctx);
                     return;
                 }
                 if (args.length === 1 && isValid(ACTIONS, args[0])) {
@@ -64,6 +65,17 @@ export class PolicyDefaultsCommand {
                 ctx.ui.notify(`Policy default ${key} = ${response} for this session.`, "info");
             },
         });
+    }
+
+    private async showSettings(runtime: PilotSessionRuntimeInterface, ctx: ExtensionCommandContext): Promise<void> {
+        if (!ctx.hasUI || ctx.mode !== "tui") {
+            ctx.ui.notify(this.renderDefaults(runtime.policyRuntime.defaultResponses), "info");
+            return;
+        }
+        await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new PolicyDefaultsSettings(
+            runtime.policyRuntime, theme, () => done(), () => tui.requestRender(),
+            (message, severity) => ctx.ui.notify(message, severity),
+        ), {blocked: {kind: "question", message: "Configure policy defaults"}});
     }
 
     private completions(input: string): Array<{ value: string; label: string; description?: string }> | null {

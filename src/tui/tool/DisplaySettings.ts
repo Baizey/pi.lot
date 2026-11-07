@@ -14,6 +14,7 @@ export class DisplaySettings extends Container {
         theme: Theme,
         onClose: () => void,
         private readonly requestRender: () => void,
+        notify: (message: string, type: "info" | "error") => void,
     ) {
         super();
         const views = defaults.values;
@@ -23,13 +24,33 @@ export class DisplaySettings extends Container {
             currentValue: displayModeTitle(views[slot]),
             submenu: (current, done) => this.modePicker(current, done),
         }));
+        items.push(
+            {id: "save", label: "Save defaults", currentValue: "save", values: ["save"], description: "Persist current views for future sessions."},
+            {id: "reset", label: "Reload saved defaults", currentValue: "reload", values: ["reload"], description: "Reload saved views, or built-ins if none exist."},
+        );
         this.settings = new SettingsList(items, items.length, getSettingsListTheme(), (id, value) => {
-            const mode = parseDisplayMode(value)!;
-            const views: ToolDisplayViews = {...defaults.values, [id]: mode};
-            defaults.setViews(views.normal, views.alternate);
+            try {
+                if (id === "save") {
+                    defaults.save();
+                    notify("Saved current display defaults to ~/.pilot/display-defaults.json.", "info");
+                } else if (id === "reset") {
+                    defaults.reset();
+                    for (const slot of ["normal", "alternate"] as const) {
+                        this.settings.updateValue(slot, displayModeTitle(defaults.values[slot]));
+                    }
+                    notify("Reset display defaults from saved preferences.", "info");
+                } else {
+                    const mode = parseDisplayMode(value)!;
+                    const views: ToolDisplayViews = {...defaults.values, [id]: mode};
+                    defaults.setViews(views.normal, views.alternate);
+                }
+            } catch (error) {
+                notify(error instanceof Error ? error.message : String(error), "error");
+            }
         }, onClose);
         this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
         this.addChild(new Text(theme.fg("accent", theme.bold("Display")), 1, 0));
+        this.addChild(new Text(theme.fg("muted", "Changes apply immediately; save explicitly to persist."), 1, 0));
         this.addChild(this.settings);
         this.addChild(new Text(theme.fg("dim", "/display save · /display reset"), 1, 0));
         this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));

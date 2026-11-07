@@ -6,6 +6,7 @@ import {SERVER_VERSION_REQUIREMENT} from "../server/ServerCompatibility.js";
 import {configSyncStatus} from "../server/config-sync/ConfigSyncStatus.js";
 import {CONFIG_KEYS} from "../server/config-sync/ConfigSyncProtocol.js";
 import type {ConfigSyncResult} from "../server/config-sync/ConfigSyncService.js";
+import {ServerSettings, type ServerSettingsAction} from "../tui/ServerSettings.js";
 
 const ACTIONS = ["login", "logout", "upload", "sync"] as const;
 const USAGE = "Usage: /server [login|logout|upload [current|all]|sync [on|off|recover <json-key> <local|server>]]";
@@ -29,8 +30,14 @@ export class ServerCommand {
                 const controller = this.server.beginRequest();
                 if (!controller) return;
                 this.pendingCheck = controller;
+                let action = input.trim().toLowerCase();
                 try {
-                    const parts = input.trim().toLowerCase().split(/\s+/u);
+                    if (action === "" && ctx.hasUI && ctx.mode === "tui") {
+                        const selected = await this.chooseAction(ctx, controller);
+                        if (!selected || this.pendingCheck !== controller || controller.signal.aborted) return;
+                        action = selected === "status" ? "" : selected;
+                    }
+                    const parts = action.split(/\s+/u);
                     const key = CONFIG_KEYS.find((candidate) => candidate === parts[2]);
                     const direction = parts[3];
                     if (parts.length === 4 && parts[0] === "sync" && parts[1] === "recover"
@@ -39,7 +46,7 @@ export class ServerCommand {
                         this.notifySync(ctx, result, controller);
                         return;
                     }
-                    switch (input.trim().toLowerCase()) {
+                    switch (action) {
                         case "":
                             await this.showStatus(ctx, controller);
                             return;
@@ -60,7 +67,7 @@ export class ServerCommand {
                             return;
                         case "sync":
                         case "sync on":
-                            await this.sync(ctx, input.trim().toLowerCase() === "sync on", controller);
+                            await this.sync(ctx, action === "sync on", controller);
                             return;
                         case "sync off":
                             this.server.configuration.disableAutomatic();
@@ -71,7 +78,7 @@ export class ServerCommand {
                     }
                 } catch (error) {
                     if (this.pendingCheck !== controller || controller.signal.aborted) return;
-                    const archiveOperation = input.trim().toLowerCase().startsWith("upload");
+                    const archiveOperation = action.startsWith("upload");
                     ctx.ui.notify(archiveOperation ? "Server archive work could not be queued. Local session files are unchanged."
                         : error instanceof ServerConfigError ? error.message
                             : "Server configuration operation failed.", "error");
@@ -81,6 +88,22 @@ export class ServerCommand {
                 }
             },
         });
+    }
+
+    private async chooseAction(ctx: ExtensionCommandContext, controller: AbortController): Promise<ServerSettingsAction | undefined> {
+        const config = this.server.store.load();
+        let close: (() => void) | undefined;
+        const abort = () => close?.();
+        controller.signal.addEventListener("abort", abort, {once: true});
+        try {
+            return await ctx.ui.custom<ServerSettingsAction | undefined>((tui, theme, _keybindings, done) => {
+                close = () => done(undefined);
+                if (controller.signal.aborted) close();
+                return new ServerSettings(config?.url, theme, done, close, () => tui.requestRender());
+            }, {blocked: {kind: "question", message: "Configure pi.server"}});
+        } finally {
+            controller.signal.removeEventListener("abort", abort);
+        }
     }
 
     private async showStatus(ctx: ExtensionCommandContext, controller: AbortController): Promise<void> {

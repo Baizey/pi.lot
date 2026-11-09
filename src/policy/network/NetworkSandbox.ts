@@ -647,7 +647,19 @@ class NetworkSandboxRunner {
     const ready = child.readable(3);
     if (!ready) throw new Error("slirp4netns ready pipe was not created");
     await Promise.race([
-      waitForData(ready),
+      waitForData(ready).catch(async (error: unknown) => {
+        // The ready pipe can reach EOF before the process close event (including
+        // on ENOENT). Let the exit branch report its status and drained stderr
+        // instead of hiding the cause behind a generic stream error. Bound this
+        // wait because a broken helper can close fd3 without exiting.
+        await child.settle();
+        if (child.failure) throw child.failure;
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `slirp4netns readiness failed: ${detail}${stderr ? `: ${stderr.trim()}` : ""}`,
+          {cause: error},
+        );
+      }),
       child.wait().then((result) => {
         throw new Error(`slirp4netns exited before becoming ready: ${formatExit(result)}${stderr ? `: ${stderr.trim()}` : ""}`);
       }),

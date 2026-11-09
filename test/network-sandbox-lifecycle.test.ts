@@ -10,11 +10,11 @@ import {runNetworkSandboxedCommand} from "../src/policy/network/NetworkSandbox.j
 import {ManagedChildProcess, type ManagedChildProcessOptions} from "../src/runtime/ManagedChildProcess.js";
 import {ApprovalWaitScope} from "../src/runtime/ApprovalWaitScope.js";
 
-type StalledStage = "network sandbox worker" | "TCP gateway ingress" | "network queue helper";
+type StalledStage = "network sandbox worker" | "TCP gateway ingress" | "network queue helper" | "slirp4netns";
 type Cancellation = "abort" | "timeout";
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-for (const stage of ["network sandbox worker", "TCP gateway ingress", "network queue helper"] as const) {
+for (const stage of ["network sandbox worker", "TCP gateway ingress", "network queue helper", "slirp4netns"] as const) {
     for (const cancellation of ["abort", "timeout"] as const) {
         test(`${cancellation} before ${stage} readiness cleans up`, async (t) => {
             await checkCancellation(t, stage, cancellation);
@@ -29,6 +29,66 @@ test("network runtime launches all three verified Rust helpers from this extensi
 for (const cancellation of ["abort", "timeout"] as const) {
     test(`network execution preserves its remaining budget during approval and still supports ${cancellation}`, async (t) => {
         await checkCancellation(t, "network sandbox worker", cancellation, true);
+    });
+}
+
+for (const failure of ["missing", "exit", "closed pipe"] as const) {
+    test(`slirp4netns ${failure} reports startup diagnostics and cleans up`, async (t) => {
+        const originalSpawn = ManagedChildProcess.spawn;
+        const processes: ManagedChildProcess[] = [];
+        let runtimeDirectory: string | undefined;
+        t.mock.method(ManagedChildProcess, "spawn", (options: ManagedChildProcessOptions) => {
+            let script: string | undefined;
+            switch (options.name) {
+                case "network sandbox worker": {
+                    const resolver = options.arguments?.find((argument) => argument.includes("pilot-network-") && argument.endsWith("/resolv.conf"));
+                    assert.ok(resolver);
+                    runtimeDirectory = path.dirname(resolver);
+                    script = 'require("node:fs").writeSync(3, JSON.stringify({"child-pid":process.pid,"mnt-namespace":1})+"\\n");setInterval(() => {}, 1000);';
+                    break;
+                }
+                case "TCP gateway ingress":
+                    script = 'process.stdout.write("PI_TCP_GATEWAY\\t1\\tREADY\\t12345\\n");setInterval(() => {}, 1000);';
+                    break;
+                case "network queue helper":
+                    script = 'process.stdout.write("PI_NETWORK_QUEUE\\t3\\tREADY\\n");setInterval(() => {}, 1000);';
+                    break;
+                case "slirp4netns":
+                    script = failure === "closed pipe"
+                        ? 'require("node:fs").closeSync(3);process.stderr.write("readiness unavailable\\n");setInterval(() => {}, 1000);'
+                        : 'process.stderr.write("slirp startup diagnostic\\n", () => process.exit(42));';
+                    break;
+            }
+            const child = originalSpawn({
+                ...options,
+                command: options.name === "slirp4netns" && failure === "missing"
+                    ? "/nonexistent/pilot-test-slirp4netns"
+                    : script === undefined ? "/bin/sh" : process.execPath,
+                arguments: script === undefined ? ["-c", "while IFS= read -r line; do :; done"] : ["-e", script],
+            });
+            processes.push(child);
+            return child;
+        });
+        try {
+            await assert.rejects(runNetworkSandboxedCommand({
+                command: ["/bin/true"],
+                cwd: tmpdir(),
+                timeoutSeconds: 10,
+                decide: () => NetworkDecision.DENY,
+            }), failure === "missing"
+                ? /slirp4netns.*ENOENT/
+                : failure === "exit"
+                    ? /slirp4netns.*exit code 42.*slirp startup diagnostic/
+                    : /slirp4netns.*readiness.*readiness unavailable/);
+            assert.ok(runtimeDirectory);
+            assert.equal(existsSync(runtimeDirectory), false);
+            for (const child of processes) {
+                assert.ok(!child.pid || !isRunning(child.pid), `process ${child.pid} remains alive`);
+            }
+        } finally {
+            for (const child of processes) child.terminate();
+            await Promise.all(processes.map((child) => child.waitForExit()));
+        }
     });
 }
 
@@ -103,6 +163,9 @@ async function checkCancellation(
                 script = stage === options.name
                     ? 'process.stderr.write("STALLED\\n");setInterval(() => {}, 1000);'
                     : 'process.stdout.write("PI_NETWORK_QUEUE\\t3\\tREADY\\n");setInterval(() => {}, 1000);';
+                break;
+            case "slirp4netns":
+                script = 'process.stderr.write("STALLED\\n");setInterval(() => {}, 1000);';
                 break;
             default:
                 // Fake nsenter/ip/nft commands; never execute host namespace or firewall tools.

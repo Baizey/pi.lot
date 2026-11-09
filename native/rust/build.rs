@@ -106,16 +106,18 @@ fn clang_resource_dir(library: &Path, version: &str) -> Option<PathBuf> {
     }
     for library in libraries {
         let directory = library.parent()?;
-        let mut roots = vec![directory.join("clang")];
-        if let Some(prefix) = directory.parent() {
-            // Covers multiarch lib directories as well as lib/lib64 layouts.
-            roots.push(prefix.join("clang"));
-            roots.push(prefix.join("lib/clang"));
-            roots.push(prefix.join("lib64/clang"));
-        }
-        for root in roots {
-            if let Some(resource) = matching_clang_resource(&root, &version) {
-                return Some(resource);
+        // Prefer adjacent headers, then walk installation prefixes. Fedora can
+        // put libclang in /usr/lib64/llvm22/lib64 but its headers in
+        // /usr/lib/clang/22, several levels above the loaded library.
+        for prefix in directory.ancestors() {
+            for root in [
+                prefix.join("clang"),
+                prefix.join("lib/clang"),
+                prefix.join("lib64/clang"),
+            ] {
+                if let Some(resource) = matching_clang_resource(&root, &version) {
+                    return Some(resource);
+                }
             }
         }
     }
@@ -424,6 +426,38 @@ mod tests {
             clang_resource_dir(
                 &fixture.0.join("lib/x86_64-linux-gnu/libclang.so.19"),
                 "Debian clang version 19.1.7-3"
+            ),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn resource_discovery_supports_fedora_nested_llvm_libraries() {
+        for libdir in ["lib", "lib64"] {
+            let fixture = ResourceFixture::new();
+            let expected = fixture.header("usr/lib/clang/22");
+            fixture.header("usr/lib/clang/21");
+            assert_eq!(
+                clang_resource_dir(
+                    &fixture
+                        .0
+                        .join(format!("usr/lib64/llvm22/{libdir}/libclang.so.22.1.8")),
+                    "clang version 22.1.8 (Fedora 22.1.8-2.fc45)"
+                ),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn resource_discovery_prefers_adjacent_headers_over_shared_prefix() {
+        let fixture = ResourceFixture::new();
+        let expected = fixture.header("usr/lib64/llvm22/lib64/clang/22");
+        fixture.header("usr/lib/clang/22");
+        assert_eq!(
+            clang_resource_dir(
+                &fixture.0.join("usr/lib64/llvm22/lib64/libclang.so.22.1.8"),
+                "clang version 22.1.8"
             ),
             Some(expected)
         );

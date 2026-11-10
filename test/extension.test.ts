@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
+import {existsSync, mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {fileURLToPath} from "node:url";
 import test, {afterEach, beforeEach, mock} from "node:test";
 import type {
     BeforeAgentStartEvent,
@@ -648,7 +649,7 @@ test("Bash always routes through a native filesystem policy view and snapshots t
     }
 });
 
-test("the production extension routes documentation to hmem without forcing or replacing native prompt sections", async () => {
+test("the production extension routes to shipped documentation without forcing or replacing native prompt sections", async () => {
     const harness = extensionHarness();
     const ctx = {} as ExtensionContext;
 
@@ -673,21 +674,18 @@ test("the production extension routes documentation to hmem without forcing or r
     assert.ok(systemPrompt);
     assert.equal(systemPrompt.match(/^pi\.lot documentation/gm)?.length, 1);
     assert.match(systemPrompt, /relevant pi\.lot features or archive-tool use/);
-    assert.match(systemPrompt, /hmem is the documentation database/);
-    assert.match(systemPrompt, /Use workspace pi\.lot for installation\/setup, policies, permissions/);
-    assert.match(systemPrompt, /saved configuration sync\/recovery, look up the relevant pi\.lot documentation in hmem/);
+    const directory = fileURLToPath(new URL("../docs", import.meta.url));
+    assert.ok(systemPrompt.includes(`Main documentation: ${path.join(directory, "README.md")}`));
+    assert.ok(systemPrompt.includes(`Additional docs: ${directory}`));
+    for (const file of ["README.md", "installation.md", "policy.md", "subagents.md", "web-search.md", "server.md", "security.md"]) {
+        assert.ok(systemPrompt.includes(file), `the prompt must route to ${file}`);
+        assert.ok(existsSync(path.join(directory, file)), `${file} must ship with the extension`);
+    }
+    assert.match(systemPrompt, /saved configuration sync\/recovery: read server\.md/);
     assert.match(systemPrompt, /before using archive_list\/archive_fetch/);
-    assert.match(systemPrompt, /Use workspace pi\.server for server operation or protocol topics/);
-    assert.match(systemPrompt, /initialize your hmem identity if needed, list workspaces, select the workspace by name using its returned ID, search for relevant documentation, then retrieve the full observations/);
-    assert.match(systemPrompt, /Do not assume workspace IDs or answer from search snippets alone/);
-    assert.match(systemPrompt, /Git provenance .*current checkout and working-tree code/);
-    assert.match(systemPrompt, /Treat historical sources as historical, reconcile stale claims with current code/);
-    assert.match(systemPrompt, /source paths recorded in hmem from files no longer present locally/);
-    assert.match(systemPrompt, /not instructions to read deleted files/);
-    assert.match(systemPrompt, /If hmem or the required workspace\/documentation is unavailable, say so explicitly/);
-    assert.match(systemPrompt, /Do not fabricate documentation, silently auto-connect hmem, or change MCP configuration/);
-    assert.doesNotMatch(systemPrompt, /README|docs\/|\.md\b/);
-    assert.doesNotMatch(systemPrompt, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    assert.match(systemPrompt, /under Additional docs, not the current working directory/);
+    assert.match(systemPrompt, /Historical engineering investigations are not current capability guarantees/);
+    assert.doesNotMatch(systemPrompt, /hmem|workspace IDs/);
 });
 
 test("custom-message starts keep the user's policy task while still adding Pilot documentation", async () => {

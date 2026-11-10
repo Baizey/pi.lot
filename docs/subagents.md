@@ -1,0 +1,133 @@
+# Subagents
+
+[Documentation index](README.md)
+
+pi.lot provides retained child-agent conversations with separate model context, explicit policy inheritance, optional MCP access, and bounded nested delegation.
+
+## Tools
+
+| Tool | Arguments and behaviour |
+| --- | --- |
+| `subagent_spawn` | Required: `task`, `role`, `reasoning_skill`, `reasoning_amount`. Optional: `capabilities` (default `[]`), `cwd`, `timeoutSeconds` (default 86,400; range 1–86,400), `systemPrompt`, `contextPaths`. Returns a job ID without waiting for completion. |
+| `subagent_status` | Optional `jobIds`, `waitSeconds` (default 0; range 0–3,600), and `mode` (`"all"` or `"first"`, default `"all"`). Omit IDs or pass `[]` for the invoking agent's descendant tree. `all` waits until all selected jobs are idle/terminal; `first` returns as soon as any selected job is idle/terminal, including an already settled job. Queued and running jobs are active. Either mode returns on budget expiry or can be cancelled, and returns the full selected snapshot, not just the jobs that settled; check their states. Zero wait or an empty selection returns immediately. |
+| `subagent_message` | Required `jobId`, `task`. Steers a running turn when possible; otherwise queues an ordered follow-up. An idle job starts a new turn in the retained conversation. |
+| `subagent_stop` | Required `jobId`. Stops that job and its descendants, descendants first. |
+
+`cwd` defaults to the invoking tool's working directory; relative values resolve from it. Relative `contextPaths` resolve from the child's `cwd`. Give a self-contained task and explicit file ownership when delegating concurrent edits: children share the host files, not isolated worktrees.
+
+Jobs are `queued`, `running`, `idle`, `failed`, `cancelled`, or `timed_out`. Idle jobs retain their conversations; failed, cancelled, and timed-out jobs reject follow-ups. Spawn success does not guarantee model/session setup or task success. A parent's failure/timeout does not automatically stop its descendants; use `subagent_stop` to cancel the subtree.
+
+Returned child answer text is capped at about 50,000 characters per job; status is not a complete transcript.
+
+## Session history
+
+With a persistent root, children save ordinary Pi JSONL sessions in the root's resolved session directory, including custom session-directory settings. Sessions are named `Subagent: <role>`, retain the child's working directory, and link to their immediate parent. Inspect them with Pi's normal session tools.
+
+Files retain full conversation/tool history, including instructions and delivered steering—not just status previews. They survive child stops and root shutdown and can contain sensitive data. File creation starts with the first user or assistant message; storage failures fail the child rather than silently switching to memory-only history.
+
+An ephemeral root (`--no-session`) keeps child histories in memory. In either mode, live jobs and child policy grants are not restored after root-session shutdown.
+
+Saved server configuration enables current-family background archival on graceful root-session shutdown. After local teardown—even if teardown reports failure—the root queues its cached source descriptor; an independent worker later captures discoverable descendants and persistent policy reviewers. `/server upload current` and explicit `all` use the same queue and report queued, not uploaded. Complete JSONL is sent outside agent policy approval, potentially after Pi exits; `/server logout` pauses retained work. The descriptor is not an exact departure image, and uncaptured files can still be lost. See [Server archive](server.md) for lifetime limits, classification, variants, and recovery.
+
+## Compaction snapshots (root sessions)
+
+Pilot's root extension wraps Pi 1.5's exported stock compaction helper. After all summary generation succeeds, it samples the current subagent tree once and appends a deterministic `## Subagents` section to the **same compaction entry's summary**. There are no separate snapshot messages, request-context hooks, additional session entries, or snapshot-generation model calls/turns. Child SDK sessions do not install this override.
+
+The timestamped section is **not live status**: call `subagent_status` before acting. It includes queued/running jobs, idle retained conversations available for follow-up, full job/parent IDs, role/task/cwd, bounded activity, and a recent terminal-job/failure preview—not full output/history. Quoted fields are data, not instructions. The snapshot is limited to 24 jobs and 12,000 characters, with explicit omissions and a full-query pointer. Empty snapshots explicitly report no live retained conversations; jobs mentioned in older summaries are not evidence of live jobs. Resuming history does not restore those jobs.
+
+The wrapper reuses stock split-turn prompts, custom `/compact` instructions, usage/error validation, and kept-entry/token boundaries; Pi saves the normal system/tool checkpoint. Versioned metadata in that entry's details records the exact owned text range and its hash. Subsequent compactions strip only that unchanged snapshot/file range from a **copied preparation** and carry its cumulative file sets, since Pi skips file details from extension-generated checkpoints. Unknown text appended after that range survives; incomplete or changed ownership metadata is not interpreted. Other extensions' summary/detail formats are not interpreted. Saved entries are never rewritten. Blank summaries are rejected. Errors/aborts save no snapshot: because Pi swallows hook exceptions and would otherwise run its summarizer again, Pilot deliberately returns cancellation and reports non-abort failures through the extension notification UI.
+
+**Public SDK boundary:** summarization uses `ctx.modelRegistry.streamSimple()` with the selected model/reasoning and effective retry policy. For virtual selections, the registry routes **each summary request using that summary request's context**; native Pi instead pre-resolves once against the original conversation. Router decisions and router-model call counts may therefore differ, especially for split summaries. The extension API does not expose a host-supplied `agent.streamFunction` or native summarization retry-UI callbacks; those are not reused. The deterministic snapshot itself never calls a model.
+
+## Child context
+
+A child receives Pilot's subagent instructions plus its role, task, reasoning/capability summary, and any supplied `systemPrompt` or `contextPaths`—not the parent's conversation. Ambient `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `SYSTEM.md`, skills, prompt templates, themes, and other extensions are not loaded. Include necessary instructions explicitly. `contextPaths` are hints, not copied file contents; the child must read them through policy-mediated tools.
+
+## Capability model
+
+Spawn capabilities have two forms.
+
+### Policy-area capabilities
+
+These are `fs_read`, `fs_write`, and all `web_*` policy areas. Selecting one snapshots the parent's complete effective allows and denials for that area into the child when the spawn is accepted.
+
+- Snapshots are fixed; later parent policy changes do not update an existing child.
+- Durable parent rules become child-session rules.
+- `ONCE` authority is not copied by a broad area snapshot.
+- Omitting an area leaves that area blank rather than denied. The child can request policy later.
+- A nested snapshot cannot copy authority its immediate parent does not hold.
+
+Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always available, even with `capabilities: []`. Selecting a policy area changes initial policy state, not tool availability. `archive_list` and `archive_fetch` remain root-only regardless of capabilities; the parent must provide any needed archive evidence explicitly.
+
+### Hard mechanism capabilities
+
+- `mcp` snapshots the root's currently exposed native MCP tools when the child session starts, not when a queued spawn is accepted. No child MCP configuration is loaded. Servers still connecting may contribute no tools; later discovery does not widen an existing child. Spawn a new child after discovery if needed. Withdrawn/hidden tools and changed schemas fail at execution rather than using stale definitions.
+- `delegate` exposes the four subagent tools and permits nested delegation.
+
+A child cannot request these mechanisms later, and cannot grant a nested child a mechanism it lacks. An `mcp` grant is not a per-tool allowlist: a new nested session takes its own snapshot from the root's then-current catalog. Aggregate MCP resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) remain root-only.
+
+Indirect MCP tools are discoverable through codemode/tool search; use `describeNamespace()` for server instructions. Child codemode retains Pi's native input convention: raw JavaScript when supported by the model transport, or `{code}` for function-tool fallback. Unlike the root wrapper, it does not require `purpose`. It exposes no model globals. In scripts, probe unknown tool availability with `'name' in tools`, not `typeof tools.name`.
+
+Root and child codemode share Pi 1.5's process-wide worker pool: two live workers by default, configurable with `PI_CODEMODE_MAX_WORKERS`. Further scripts queue in arrival order for up to 60 seconds; queue time consumes any finite execution budget. Cancellation removes a queued request without running it, but a running worker keeps its slot until it exits. A parent script waiting for a child still occupies a slot, so queuing does not eliminate stalls when its child also needs a worker. This is not a two-subagent limit. See [codemode budgets and worker limits](policy.md#finite-codemode-timeouts).
+
+MCP effects are opaque and **outside filesystem/network mediation**; policy-area grants do not restrict them. See [MCP security boundary](security.md#mcp).
+
+## Reasoning and model selection
+
+A spawn requests:
+
+- `reasoning_skill`: `min`, `low`, `mid`, `high`, or `max`; and
+- `reasoning_amount`: `low`, `mid`, or `high`.
+
+Skill chooses from Pi's authenticated reasoning models; amount maps to `low`, `medium`, or `high` thinking after selection. All skills default to `auto`: `min` favours cost, `max` estimated performance, and the intermediate skills trade off both using catalogue metadata. This is a heuristic, not a benchmark or a guarantee of distinct models for each skill.
+
+| Command | Effect |
+| --- | --- |
+| `/subagent-defaults` | Open terminal settings when `ctx.hasUI && ctx.mode === "tui"`; otherwise report active mappings and resolve `auto` choices. |
+| `/subagent-defaults auto mid` | Use automatic selection for `mid`; use `all` for every skill. |
+| `/subagent-defaults <provider>/<model> high` | Pin an authenticated canonical model to `high` (or another skill/`all`). |
+| `/subagent-defaults save` | Persist active mappings. |
+| `/subagent-defaults reset` | Reload saved mappings. |
+
+In the terminal menu, choose a skill to open a **searchable model picker** containing `auto` and authenticated models. An unavailable current pin remains visible and unchanged when opening or canceling the picker; browsing does not silently replace it. Highlighting a model does not change the mapping; confirming it applies immediately. **Save defaults** explicitly persists the active mappings; **Reload saved defaults** reloads them and refreshes the displayed rows. Closing the main menu does **not** roll back confirmed changes. No terminal picker opens in RPC/print mode, even if input dialogs are supported.
+
+Changes affect the current session until `save`; `reset` reloads `~/.pilot/subagent-defaults.json`, or restores all skills to `auto` if no file exists. A spawn snapshots its skill's mapping when accepted: menu changes, reloads, and text commands affect **future accepted jobs only**, not queued/running accepted jobs or retained conversations.
+
+An eligible preferred model is used exactly, without automatic ranking. If its pin is missing, unauthenticated, or no longer supports normal reasoning, selection falls back locally to the existing `auto` selector for the requested skill. Status visibly names the preferred pin and fallback reason. **The saved/active preference is not changed**, so configuration sync never uploads a temporary substitute; the exact pin returns when eligible again. No eligible local model fails clearly. Registry failures and cancellation propagate rather than trigger fallback; selection does not probe providers. Unsupported requested amounts clamp to a supported `low`, `medium`, or `high` thinking level after model selection. See [configuration sync](server.md#saved-configuration-sync).
+
+## Session-only Bash sandbox settings
+
+Root `/sandboxing` settings are independent of model mappings and inherited policy-area snapshots:
+
+- `/sandboxing network-inspection on|off` controls network inspection (default **on**).
+- `/sandboxing mmap on|off` controls writable mmap compatibility (default **off**).
+
+Each text command takes one literal mode, `on` or `off`. Bare `/sandboxing` opens terminal settings only when `ctx.hasUI && ctx.mode === "tui"`; otherwise it reports the switches. Confirmed switches apply immediately and closing the menu does not undo them. They are **never saved** and reset with the root session runtime. They affect **new Bash calls from the root and children**, including children already accepted; existing calls and mappings stay unchanged. This differs from spawn-time policy/model snapshots.
+
+Turning inspection off leaves HTTPS end-to-end, with transport-only policy for opaque traffic; recognized plaintext protocols still receive policy checks. Enabling mmap retains checks on opens and backing I/O, not individual memory stores or their revocation. Cancellation/revocation can lose dirty changes, writeback errors can be delayed, and host/cross-call SQLite WAL is unsupported. See [sandbox setup](installation.md#session-only-sandbox-switches) and [security limitations](security.md).
+
+## Policy requests from children
+
+Each child is a policy principal in one ancestry tree. See [Policy agent authority](policy.md#agent-authority-and-approvals) for the full flow.
+
+An explicit denial is terminal. Otherwise, a covering ancestor allow can route the request to a bounded reviewer; without ancestor authority, the root fallback chooses user review, model review, allow, or deny. Derived scope/lifetime cannot exceed source authority, and session grants stay on the requesting branch, not siblings. Reviewers have only a structured decision tool; failure or stale authority denies the operation.
+
+## Turn and wait budgets
+
+`timeoutSeconds` is an execution budget for **each turn**, defaulting to and capped at **86,400 seconds (24 hours)**. Optional smaller explicit limits are supported; follow-ups get fresh budgets. User and model policy approval waits pause it without resetting the remainder. Each approval still has an independent [300-second deadline](policy.md#approval-waits-and-execution-budgets), including queued user prompts.
+
+Separately, every retained conversation has a hard **30-day wall-clock lifetime from accepted spawn**. Initial queueing, running, approval waits, idle time, and all follow-ups count toward this fixed limit; messages and new turns do not reset it. Expiry makes running, queued, and idle jobs `timed_out`, aborts active work, and releases the retained session and policy principal (an ancestor principal remains until its retained descendants are released). Lifetime expiry does not automatically stop descendants: each has its own spawn-time lifetime. There is no configurable lifetime parameter. Explicit stop and root shutdown still cancel jobs before their deadlines.
+
+In either mode, `subagent_status` pauses its remaining wait budget while a selected active job awaits approval. If a parent is waiting in that call, its turn budget pauses too. Background descendants and unselected siblings do not automatically pause the parent. Cancellation still works during approval waits. Independent model, subprocess, application, and server deadlines are not extended.
+
+## Work-tree visibility
+
+The root agent can inspect and manage the whole tree. A child can inspect, message, and stop only its descendants; it cannot manage itself, ancestors, siblings, or unrelated jobs.
+
+Root-session shutdown aborts all active children before policy and MCP resources close.
+
+## Current boundary
+
+Subagents are independent Pi SDK sessions, not separate operating-system processes. They share the trusted root Pi process and policy runtime while retaining separate model context and principal-specific policy state.
+
+See [Security model and limitations](security.md).

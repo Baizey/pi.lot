@@ -6,9 +6,6 @@ import {type Policy, PolicyAccessType, PolicyLifetime, PolicyResponse} from "../
 export const policyStatusesSql = sqlStringList(Object.values(PolicyResponse));
 export const policyLifetimesSql = sqlStringList(Object.values(PolicyLifetime));
 export const fsAccessTypesSql = sqlStringList(Object.values(PolicyAccessType));
-// Historical delete-only decisions remain stored but carry no current authority.
-// Converting them to FS_WRITE would broaden grants and alter existing denials.
-const RETIRED_ACCESS_TYPES = new Set(["FS_DELETE"]);
 
 function sqlStringList(values: string[]): string {
     return values.map((it) => `'${it.replace(/'/g, "''")}'`).join(", ");
@@ -70,7 +67,6 @@ export class PolicyDao implements PolicyDaoInterface {
         const rows = this.db.prepare(`
             select "pattern", "accessType", "lifetime", "status", "reason"
             from "policy_rules"
-            where "accessType" in (${fsAccessTypesSql})
             order by "pattern" asc, "accessType" asc
         `).all() as PathPolicyRuleRow[];
 
@@ -134,7 +130,7 @@ export class PolicyDao implements PolicyDaoInterface {
         }
         const previous = new Set(literals.map((literal) => literal.slice(1, -1).replaceAll("''", "'")));
         const current = Object.values(PolicyAccessType);
-        if ([...previous].some((type) => !current.some((entry) => entry === type) && !RETIRED_ACCESS_TYPES.has(type))) {
+        if ([...previous].some((type) => !current.some((entry) => entry === type))) {
             throw new Error("Unsupported policy access-type vocabulary.");
         }
         if (current.every((type) => previous.has(type))) return;
@@ -142,8 +138,7 @@ export class PolicyDao implements PolicyDaoInterface {
         this.assertNoPolicyForeignKeys();
         const createPrefix = /^create\s+table\s+(?:"policy_rules"|policy_rules)\s*(?=\()/iu;
         if (!createPrefix.test(sql)) throw new Error("Unsupported policy table schema.");
-        const retained = [...current, ...[...previous].filter((type) => RETIRED_ACCESS_TYPES.has(type))];
-        const upgraded = sql.slice(0, check.index) + `check ("accessType" in (${sqlStringList(retained)}))`
+        const upgraded = sql.slice(0, check.index) + `check ("accessType" in (${fsAccessTypesSql}))`
             + sql.slice(check.index + check[0].length);
         const objects = this.db.prepare(`select sql from sqlite_master
             where tbl_name = 'policy_rules' and type in ('index', 'trigger') and sql is not null

@@ -236,7 +236,7 @@ node --import jiti/register --test test/native-fuse-callbacks.test.ts
 
 This means pi.lot has no active session runtime; the requested tool has not started. It is not an ADB, Gradle, or network-inspection error. After a startup failure, tool errors include the original cause. Correct that cause in the loaded installation, then run `/reload` or restart Pi. Retrying `pwd` cannot initialize a failed runtime.
 
-Older releases can report only `pi.lot session runtime is not available`; check the first startup notification for the actual error. One upgrade failure was `Unsupported policy access-type vocabulary.` on databases retaining the retired `FS_DELETE` permission. Current migration accepts that known historical schema and preserves its records without activating them or converting them to broader `FS_WRITE` grants. Current permissions, metadata, and schema objects are retained; unknown future vocabularies still fail closed. Updating the extension and reloading performs the migration automatically. Do not delete the policy database to repair it.
+Older releases can report only `pi.lot session runtime is not available`; check the first startup notification for the actual error. An unsupported policy schema needs a database repair using a verified backup. The runtime accepts current permission types and fails closed on unsupported ones. Do not delete the policy database to repair it.
 
 ### `/dev/fuse` is unavailable
 

@@ -160,8 +160,6 @@ The `ask_llm` reviewer receives bounded operation and task context and only a st
 
 ## Configure defaults
 
-Saved policy databases are upgraded transactionally when opened. Historical `FS_DELETE` rows are retained as inactive records, excluded from effective policy and GLOBAL configuration sync. Deletion now uses `FS_WRITE`; old delete-only grants are not converted into permission to write files. Unknown schema vocabularies still fail closed. See [startup troubleshooting](installation.md#session-runtime-is-not-available-after-reload).
-
 Open the per-area settings picker in the interactive terminal TUI, or report current values in other modes:
 
 ```text

@@ -7,8 +7,8 @@ const LEGACY_ACCESS_TYPES = [
     "WEBSOCKET", "GRPC", "SSH", "TCP", "UDP", "DNS", "SMTP",
 ];
 
-export function createLegacyPolicySchema(database: SqliteDatabase, includeAdb = false, includeRetiredDelete = false): void {
-    const types = [...LEGACY_ACCESS_TYPES, ...(includeAdb ? ["ADB"] : []), ...(includeRetiredDelete ? ["FS_DELETE"] : [])];
+export function createLegacyPolicySchema(database: SqliteDatabase, includeAdb = false): void {
+    const types = includeAdb ? [...LEGACY_ACCESS_TYPES, "ADB"] : LEGACY_ACCESS_TYPES;
     database.exec(`
         create table "policy_rules" (
             "pattern" text not null,
@@ -29,10 +29,6 @@ export function createLegacyPolicySchema(database: SqliteDatabase, includeAdb = 
     insert.run(81, "deny.test:443", "POST", "GLOBAL", "DENIED", "Saved GLOBAL denial", 1700000000004);
     insert.run(90, "once.test:22", "SSH", "ONCE", "DENIED", "Preserve all stored lifetimes", 1700000000005);
     insert.run(99, "session.test:25", "SMTP", "SESSION", "ALLOWED", "Preserve session metadata", 1700000000006);
-    if (includeRetiredDelete) {
-        insert.run(102, "/work/delete-only", "FS_DELETE", "LOCAL", "ALLOWED", "Retired delete grant", 1700000000007);
-        insert.run(105, "/work/private", "FS_DELETE", "GLOBAL", "DENIED", "Retired delete denial", 1700000000008);
-    }
     database.exec(`
         create index "idx_policy_rules_global" on "policy_rules" ("pattern") where "lifetime" = 'GLOBAL';
         create table "policy_migration_audit" ("action" text not null, "pattern" text not null);

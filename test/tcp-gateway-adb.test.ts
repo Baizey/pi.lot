@@ -118,6 +118,20 @@ for (const response of ["HTTP/1.1 200 OK\r\n", "220 mail ESMTP ready\r\n", "NOPE
     });
 }
 
+test("ADB FAIL reclaims connection slots even when clients keep their sending half open", {timeout: 15_000}, async (t) => {
+    const failure = Buffer.from("FAIL0007offline");
+    const f = await fixture(t, allowed(), (socket) => socket.once("data", () => socket.end(failure)));
+    // Exceed the broker's active-connection limit. These clients deliberately do not
+    // send FIN after receiving the terminal failure, and have queued service bytes.
+    for (let index = 0; index < 1_026; index++) {
+        const client = await f.connect(Buffer.concat([request, frame("shell:must-not-run")]), true);
+        await once(client.socket, "end");
+        assert.deepEqual(client.bytes, failure);
+    }
+    assert.equal(f.connections, 1_026);
+    assert.deepEqual(f.received, Buffer.concat(Array.from({length: 1_026}, () => request)));
+});
+
 test("ADB cancellation during policy review prevents a late allow from opening upstream", {timeout: 3_000}, async (t) => {
     const decision = deferred<boolean>();
     const reviewed = deferred<AbortSignal>();
@@ -236,8 +250,8 @@ async function fixture(t: TestContext, options: TcpGatewayBrokerOptions, onConne
                 await new Promise((resolve) => setTimeout(resolve, 2));
             }
         },
-        async connect(payload?: Buffer) {
-            const socket = createConnection({host: "127.0.0.1", port: gateway.port});
+        async connect(payload?: Buffer, allowHalfOpen = false) {
+            const socket = createConnection({host: "127.0.0.1", port: gateway.port, allowHalfOpen});
             sockets.add(socket);
             const client = new Client(socket);
             await once(socket, "connect");

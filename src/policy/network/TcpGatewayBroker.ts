@@ -237,7 +237,9 @@ export class TcpGatewayBroker {
                 this.assertFlowActive(client, signal);
                 if (response.subarray(0, 4).toString("ascii") === "FAIL") {
                     // A failed selection must not release queued commands to the server.
-                    client.end(response);
+                    // A terminal failure must release the slot even if the peer leaves
+                    // its sending half open. Flush FAIL, then discard queued commands.
+                    client.end(response, () => client.destroy());
                     upstream.destroy();
                     return;
                 }

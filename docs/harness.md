@@ -145,6 +145,7 @@ An ADB channel grant does not expand the user's task. Inspecting an emulator doe
 | Timeout, reset, or EOF | Inspect accompanying pi.lot errors and audit reasons; these symptoms alone do not identify the failing layer |
 | `web_tcp` denied | Transport admission is missing; application approval cannot replace it |
 | `web_adb` denied after TCP approval | ADB needs its own approval; TCP permission alone is insufficient |
+| `expired or unknown synthetic DNS lease` | Synthetic identities now survive upstream TTL expiry within one call; expired bindings refresh through the trusted resolver. Check the loaded version, call boundaries, and accompanying refresh/policy errors. Do not change Kotlin/TLS settings or broaden permission to repair a DNS lifecycle failure; see [DNS identity/freshness](policy.md#synthetic-dns-identity-and-freshness) |
 | Unsupported/opaque protocol with inspection on | Check the actual endpoint and protocol, and the loaded pi.lot version. ADB support means the host smart-socket protocol, not every Android-related port |
 | Certificate or hostname error | Investigate TLS trust and logical identity. Ordinary ADB smart sockets do not use certificates |
 | ADB reports `offline`, `unauthorized`, or a server/client version mismatch | Resolve that specific host/device/client state. Do not kill the user's server or expose it on all interfaces as an automatic repair |

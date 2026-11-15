@@ -55,9 +55,21 @@ For agent workflows, address mappings, and troubleshooting, read [Working inside
 
 The Bash worker has a private network namespace. Its command and descendants are checked for DNS resolution and IPv4/IPv6 TCP/UDP flows to hostnames or literal IPs. With full inspection enabled, supported HTTP/1 and HTTP/2 requests over TCP also receive method and canonical-URL checks, including HTTPS. UDP payloads, including QUIC, receive flow checks, not HTTP method/path inspection.
 
-Within one Bash call, a DNS hostname decision can cover later DNS, TCP, UDP, IPv4/IPv6, and all destination ports. Literal-IP flow decisions start at an exact address and port.
+Within one Bash call, a DNS hostname decision can cover later DNS, TCP, UDP, IPv4/IPv6, and all destination ports. Literal-IP flow decisions start at an exact address and port. Reusing a cached ALLOW revalidates its original authorizing operation against current policy; a covering DNS grant remains a DNS grant, not a new TCP/UDP prompt. This does not introduce comprehensive transport-specific denial precedence beneath that broader grant, nor revoke established flows.
 
 The HTTP gateway observes canonical URLs, including queries, but current policy identity removes the scheme, query string, and fragment. Policy therefore cannot distinguish HTTP from HTTPS or distinguish requests only by query string.
+
+### Synthetic DNS identity and freshness
+
+Synthetic A/AAAA addresses retain their original requested hostname and address family for the entire Bash call. Applications may cache those tokens beyond an upstream DNS TTL without losing their hostname identity. Tokens are never reassigned to another hostname and are not valid across separate calls. A newer NODATA answer withdraws its address family; NXDOMAIN withdraws both families, without removing the retained identities. Older pending positive responses cannot resurrect a withdrawn binding. SERVFAIL and truncated replies are not treated as authoritative withdrawals.
+
+Upstream bindings expire independently, using the minimum applicable CNAME-chain and address-RRset TTL, capped at 60 seconds. A new flow using an expired binding requires an authorized, coalesced refresh through the trusted resolver. Refresh failure, an unknown token, wrong family, expired/superseded binding, or cancelled approval fails closed: there is no stale-IP or literal-IP fallback. TTL zero is not stretched into a fresh one-second binding.
+
+Freshness is rechecked after approval and UDP routing installation; waiting does not restart the upstream TTL. Admitted TCP connections pin their selected upstream address and logical identity. Synthetic UDP routing uses the approved full original flow tuple rather than a shared mutable hostname-address rule; existing conntrack flows retain their endpoint/reverse translation while new tuples can select refreshed addresses.
+
+Per-call limits are 4,096 permanent identities, 64 addresses per answer set, 64 pending refreshes, 128 pending client DNS queries, 192 tracked query owners, and 4,096 synthetic UDP tuple reservations. Temporary withdrawal state is released when no issued identity or pending query needs it. An uncertain routing-update outcome remains accounted until exact removal succeeds or the namespace is torn down. Capacity errors fail explicitly rather than evicting or reassigning issued identities. These are owned-state bounds, not a bound on every kernel/network resource.
+
+The deterministic admission tests model the five-second-answer/thirty-second-client-cache mismatch. `test/synthetic-dns-proxy.test.ts` exercises a disposable UDP resolver/proxy; prepared-host rotation and reverse-NAT cases are in `test/network.test.ts`. Real Java/Gradle behavior and kernel UDP rotation require controlled prepared-host verification; passing pure tests is not proof of those runtime properties. Run the host profile from a normal prepared Linux terminal, not inside another sandbox.
 
 ### Application-protocol admission
 

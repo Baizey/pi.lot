@@ -71,6 +71,7 @@ export type NetworkPolicyScope = Readonly<{
 
 type NetworkDecisionRecord = {
     scope: NetworkPolicyScope;
+    event: NetworkPolicyEvent;
     decision: NetworkDecision;
 };
 
@@ -144,6 +145,7 @@ export class NetworkDecisionCoordinator {
     private readonly options: NetworkDecisionCoordinatorOptions;
     private readonly projector: NetworkPolicyProjector;
     private readonly decisions: NetworkDecisionRecord[] = [];
+    private readonly revisions = new Map<string, number>();
 
     constructor(options: NetworkDecisionCoordinatorOptions) {
         this.options = options;
@@ -151,19 +153,48 @@ export class NetworkDecisionCoordinator {
     }
 
     async decide(event: NetworkPolicyEvent, signal: AbortSignal): Promise<NetworkDecision> {
-        const scope = this.projector.project(event);
-        const existing = this.decisions.find((record) => this.projector.covers(record.scope, scope));
-        if (existing) {
-            this.reportReuse(event, existing.scope, existing.decision);
-            return existing.decision;
+        const candidate = this.projector.project(event);
+        const existing = this.decisions.find((record) => this.projector.covers(record.scope, candidate));
+        // Preserve the actual authorizing operation and scope. In particular, a
+        // broad DNS grant is revalidated as DNS, not silently changed to a TCP
+        // prompt. This is new-flow validation, not active-flow revocation or a
+        // new transport-specific precedence model beneath broad DNS grants.
+        const scope = existing?.scope ?? candidate;
+        const authorizingEvent = existing?.event ?? event;
+        const key = JSON.stringify([scope.targetKind, scope.target, scope.operation, scope.family]);
+        const revision = (this.revisions.get(key) ?? 0) + 1;
+        this.revisions.set(key, revision);
+        try {
+            if (signal.aborted) throw new Error("network decision aborted");
+            if (existing?.decision === NetworkDecision.DENY) {
+                this.reportReuse(event, scope, NetworkDecision.DENY);
+                return NetworkDecision.DENY;
+            }
+            const decision = await this.options.decide(authorizingEvent, scope, signal);
+            if (signal.aborted) throw new Error("network decision aborted");
+            if (decision !== NetworkDecision.ALLOW && decision !== NetworkDecision.DENY) {
+                throw new Error(`invalid network decision: ${String(decision)}`);
+            }
+            // A later check (including a failed/cancelled check) owns publication.
+            // An older ALLOW can neither resurrect its cache nor admit a flow.
+            if (this.revisions.get(key) !== revision) return NetworkDecision.DENY;
+            this.invalidate(scope);
+            this.decisions.push({scope, event: authorizingEvent, decision});
+            if (existing) this.reportReuse(event, scope, decision);
+            return decision;
+        } catch (error) {
+            if (this.revisions.get(key) === revision) this.invalidate(scope);
+            throw error;
         }
+    }
 
-        const decision = await this.options.decide(event, scope, signal);
-        if (decision !== NetworkDecision.ALLOW && decision !== NetworkDecision.DENY) {
-            throw new Error(`invalid network decision: ${String(decision)}`);
+    private invalidate(scope: NetworkPolicyScope): void {
+        for (let index = this.decisions.length - 1; index >= 0; index--) {
+            const record = this.decisions[index]!;
+            if (this.projector.covers(record.scope, scope) || this.projector.covers(scope, record.scope)) {
+                this.decisions.splice(index, 1);
+            }
         }
-        this.decisions.push({scope, decision});
-        return decision;
     }
 
     private reportReuse(

@@ -70,7 +70,9 @@ test("network policy granularity projects one hostname into the configured appro
         for (const event of googleEvents()) {
             assert.equal(await coordinator.decide(event, signal), NetworkDecision.ALLOW);
         }
-        assert.equal(decisions.length, testCase.expectedDecisions, JSON.stringify(testCase.granularity));
+        assert.equal(new Set(decisions.map((scope) => JSON.stringify(scope))).size,
+            testCase.expectedDecisions, JSON.stringify(testCase.granularity));
+        assert.equal(decisions.length, 4, "cached allows are live-revalidated on their original scope");
         assert.equal(reuses.length, testCase.expectedReuses, JSON.stringify(testCase.granularity));
     }
 });
@@ -107,29 +109,22 @@ test("coarse hostname resolution grants host scope while direct flows grant one 
 
 test("synthetic DNS leases keep shared real addresses separated by authoritative hostname", async () => {
     let now = 1_000;
-    const installed: string[] = [];
     const leases = new SyntheticDnsLeaseTable({
         now: () => now,
-        install(lease) {
-            installed.push(`${lease.syntheticAddress}->${lease.realAddress}`);
-        },
+        refresh: async () => ({receivedAt: now, answers: [{realAddress: "203.0.113.9", ttlSeconds: 60}]}),
     });
     const first = await leases.lease("first.example", NetworkAddressFamily.IPV4, "203.0.113.8", 120);
     const repeated = await leases.lease("first.example", NetworkAddressFamily.IPV4, "203.0.113.8", 120);
     const shared = await leases.lease("second.example", NetworkAddressFamily.IPV4, "203.0.113.8", 120);
 
-    assert.equal(first, repeated);
+    assert.equal(first.syntheticAddress, repeated.syntheticAddress);
     assert.notEqual(first.syntheticAddress, shared.syntheticAddress);
     assert.equal(first.expiresAt, 61_000);
     assert.equal(leases.remainingTtlSeconds(first), 60);
     assert.equal(leases.lookup(first.syntheticAddress)?.hostname, "first.example");
-    assert.deepEqual(installed, [
-        "198.18.0.1->203.0.113.8",
-        "198.18.0.2->203.0.113.8",
-    ]);
-
     now = first.expiresAt;
-    assert.equal(leases.lookup(first.syntheticAddress), null);
+    assert.equal(leases.lookup(first.syntheticAddress)?.hostname, "first.example");
+    assert.equal((await leases.resolve(first.syntheticAddress, signal, async () => {})).realAddress, "203.0.113.9");
     assert.equal(leases.isSyntheticAddress(first.syntheticAddress), true);
     assert.equal(leases.isSyntheticAddress("2001:2::1"), true);
     assert.equal(leases.isSyntheticAddress("2001:2:1::1"), false);
@@ -137,21 +132,22 @@ test("synthetic DNS leases keep shared real addresses separated by authoritative
         leases.lease("invalid.example", NetworkAddressFamily.IPV4, "198.18.0.99", 30),
         /overlaps the synthetic lease range/,
     );
+    await leases.close();
 });
 
 test("localhost identity collapses loopback address families only when configured", async () => {
     for (const [distinguishAddressFamily, expectedDecisions] of [[false, 1], [true, 2]] as const) {
-        let decisions = 0;
+        const decisions = new Set<string>();
         const coordinator = new NetworkDecisionCoordinator({
             granularity: {distinguishOperation: false, distinguishAddressFamily},
-            decide() {
-                decisions++;
+            decide(_event, scope) {
+                decisions.add(JSON.stringify(scope));
                 return NetworkDecision.ALLOW;
             },
         });
         await coordinator.decide(localhostEvent(1, NetworkAddressFamily.IPV4), signal);
         await coordinator.decide(localhostEvent(2, NetworkAddressFamily.IPV6), signal);
-        assert.equal(decisions, expectedDecisions);
+        assert.equal(decisions.size, expectedDecisions);
     }
 });
 
@@ -172,7 +168,7 @@ test("operation-sensitive policy groups A and AAAA but separates other DNS types
         udpEvent(5, "example.com", NetworkAddressFamily.IPV4, 443),
     ];
     for (const event of events) await coordinator.decide(event, signal);
-    assert.deepEqual(decisions, ["DNS_ADDRESS", "DNS_TXT", "TCP_CONNECT", "UDP_FLOW"]);
+    assert.deepEqual(decisions, ["DNS_ADDRESS", "DNS_ADDRESS", "DNS_TXT", "TCP_CONNECT", "UDP_FLOW"]);
 });
 
 function localhostEvent(sequence: number, family: NetworkAddressFamily): NetworkPolicyEvent {

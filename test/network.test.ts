@@ -2120,7 +2120,9 @@ async function verifySyntheticHostnameConnection(testCase: {
     }, null, 2));
     assert.equal(output, "OK");
     assert.equal(acceptedConnections, 1);
-    assert.deepEqual(prompted, [{operation: NetworkOperation.DNS_QUERY, target: testCase.hostname}]);
+    assert.ok(prompted.length >= 2, "DNS and the later flow each check live policy");
+    assert.equal(prompted.every((event) => event.operation === NetworkOperation.DNS_QUERY
+      && event.target === testCase.hostname), true, "flow reuse revalidates DNS authority, not a mandatory TCP grant");
     assert.deepEqual(httpRequests, [{
       hostname: testCase.hostname,
       url: `http://${testCase.hostname}:${httpAddress.port}/`,
@@ -2139,6 +2141,115 @@ async function verifySyntheticHostnameConnection(testCase: {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     rmSync(workspace, {recursive: true, force: true});
   }
+}
+
+// Prepared-host coverage: these exercise real conntrack and reverse NAT, not
+// the in-memory admission model. The isolated worker's UDP timeout is shortened
+// without flushing conntrack or resetting marks on any established flow.
+for (const family of [NetworkAddressFamily.IPV4, NetworkAddressFamily.IPV6]) {
+  test(`synthetic ${family} UDP pins old tuples, refreshes new tuples, and replaces expired tuple NAT`, async (t) => {
+    const ipv4 = family === NetworkAddressFamily.IPV4;
+    const loopback = ipv4 ? "127.0.0.1" : "::1";
+    const hostAlias = ipv4 ? "10.0.2.2" : "fd00::2";
+    const hostname = "udp-rotation.test";
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-udp-rotation-"));
+    const upstream = createSocket("udp4");
+    const server = createSocket(ipv4 ? "udp4" : "udp6");
+    let queries = 0;
+    let hostEffects = 0;
+    server.on("message", (_message, remote) => {
+      hostEffects++;
+      server.send("A", remote.port, remote.address);
+    });
+    upstream.on("message", (query, remote) => {
+      const address = ++queries === 1 ? hostAlias : loopback;
+      const response = createTestDnsResponse(query, ipv4 ? {ipv4: address} : {ipv6: address});
+      response.writeUInt32BE(1, parseTestDnsQuestion(query).questionEnd + 6);
+      upstream.send(response, remote.port, remote.address);
+    });
+    let output = "";
+    let stderr = "";
+    let udpAdmissions = 0;
+    const errors: unknown[] = [];
+    const spawn = ManagedChildProcess.spawn;
+    let configuredTimeout = false;
+    t.mock.method(ManagedChildProcess, "spawn", (options: ManagedChildProcessOptions) => {
+      if (options.name !== "worker nftables configuration" || configuredTimeout) return spawn(options);
+      configuredTimeout = true;
+      const args = [...options.arguments ?? []];
+      const nft = args.indexOf("/usr/sbin/nft");
+      assert.ok(nft >= 0);
+      args.splice(nft, args.length - nft, "/bin/sh", "-c",
+        "/usr/sbin/nft -f - && /usr/sbin/sysctl -q -w net.netfilter.nf_conntrack_udp_timeout=3 net.netfilter.nf_conntrack_udp_timeout_stream=3");
+      return spawn({...options, arguments: args});
+    });
+    try {
+      await Promise.all([
+        new Promise<void>((resolve, reject) => { upstream.once("error", reject); upstream.bind(0, "127.0.0.1", resolve); }),
+        new Promise<void>((resolve, reject) => { server.once("error", reject); server.bind(0, loopback, resolve); }),
+      ]);
+      const port = server.address().port;
+      const result = await runNetworkSandboxedCommand({
+        command: [process.execPath, "--input-type=module", "--eval", [
+          "import assert from 'node:assert/strict'",
+          "import {createSocket} from 'node:dgram'",
+          "import {resolve4, resolve6} from 'node:dns/promises'",
+          `const type = ${JSON.stringify(ipv4 ? "udp4" : "udp6")}`,
+          `const port = ${port}`,
+          `const loopback = ${JSON.stringify(loopback)}`,
+          "const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))",
+          "const local = createSocket(type)",
+          "local.on('message', (_data, peer) => local.send('B', peer.port, peer.address))",
+          "await new Promise(resolve => local.bind(port, loopback, resolve))",
+          `const [token] = await ${ipv4 ? "resolve4" : "resolve6"}(${JSON.stringify(hostname)})`,
+          "const bind = async sourcePort => { const socket = createSocket(type); await new Promise(resolve => socket.bind(sourcePort, resolve)); return socket }",
+          "const request = (socket, label) => new Promise((resolve, reject) => { const timer = setTimeout(() => { socket.off('message', received); reject(new Error('no reply: ' + label)) }, 2000); const received = (data, peer) => { clearTimeout(timer); try { assert.equal(peer.address, token); assert.equal(peer.port, port); resolve(data.toString()) } catch (error) { reject(error) } }; socket.once('message', received); socket.send(label, port, token, error => { if (error) { clearTimeout(timer); reject(error) } }) })",
+          "const old = await bind(0)",
+          "const oldPort = old.address().port",
+          "assert.equal(await request(old, 'old-A'), 'A')",
+          "await sleep(1100)",
+          "const fresh = await bind(0)",
+          "assert.equal(await request(fresh, 'new-B'), 'B')",
+          "assert.equal(await request(old, 'still-A'), 'A')",
+          "await new Promise(resolve => old.close(resolve))",
+          "await new Promise(resolve => fresh.close(resolve))",
+          "await sleep(3400)",
+          "const reused = await bind(oldPort)",
+          "assert.equal(await request(reused, 'reused-B'), 'B')",
+          "await new Promise(resolve => reused.close(resolve))",
+          "await new Promise(resolve => local.close(resolve))",
+          "console.log('UDP-ROTATION-OK')",
+        ].join("; ")],
+        cwd: workspace,
+        timeoutSeconds: 25,
+        dnsUpstream: {address: upstream.address().address, port: upstream.address().port},
+        globalIpv6Available: true,
+        onStdout: (data) => { output += data.toString(); },
+        onStderr: (data) => { stderr += data.toString(); },
+        onDecisionError: (error) => errors.push(error),
+        decide: (event) => {
+          assert.equal(event.target.kind, NetworkTargetKind.HOSTNAME);
+          if (event.target.kind !== NetworkTargetKind.HOSTNAME) return NetworkDecision.DENY;
+          assert.equal(event.target.hostname, hostname);
+          if (event.operation === NetworkOperation.UDP_FLOW) {
+            udpAdmissions++;
+            assert.equal(event.target.address, udpAdmissions === 1 ? hostAlias : loopback);
+          }
+          return NetworkDecision.ALLOW;
+        },
+      });
+      assert.equal(result.exitCode, 0, stderr);
+      assert.match(output, /UDP-ROTATION-OK/);
+      assert.equal(udpAdmissions, 3, "the established old tuple does not reenter admission");
+      assert.equal(hostEffects, 2, "only old conntrack traffic reaches A");
+      assert.ok(queries >= 3, "new and expired-reused tuples refresh the cached hostname identity");
+      assert.deepEqual(errors, []);
+    } finally {
+      upstream.close();
+      server.close();
+      rmSync(workspace, {recursive: true, force: true});
+    }
+  });
 }
 
 function createTestDnsResponse(

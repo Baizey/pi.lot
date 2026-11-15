@@ -1,5 +1,7 @@
+import {randomInt} from "node:crypto";
 import {createSocket, type RemoteInfo, type Socket} from "node:dgram";
 import {isIP} from "node:net";
+import {performance} from "node:perf_hooks";
 import {NetworkAddressFamily} from "./network-queue-protocol.js";
 
 const DNS_PORT = 53;
@@ -11,7 +13,10 @@ const DNS_TYPE_AAAA = 28;
 const MAX_DNS_MESSAGE_LENGTH = 65_535;
 const MAX_DNS_LEASES = 4_096;
 const MAX_DNS_TTL_SECONDS = 60;
-const MIN_DNS_TTL_SECONDS = 1;
+const MAX_DNS_ANSWERS = 64;
+const MAX_PENDING_REFRESHES = 64;
+const MAX_PENDING_QUERIES = 128;
+const MAX_TRACKED_QUERIES = MAX_PENDING_QUERIES + MAX_PENDING_REFRESHES;
 const DNS_REQUEST_TIMEOUT_MILLISECONDS = 5_000;
 
 export type SyntheticDnsLease = Readonly<{
@@ -23,12 +28,35 @@ export type SyntheticDnsLease = Readonly<{
     ttlSeconds: number;
 }>;
 
+export type SyntheticDnsIdentity = Readonly<{
+    hostname: string;
+    family: NetworkAddressFamily;
+    syntheticAddress: string;
+    originalAddress: string;
+}>;
+
+export type SyntheticDnsAnswer = Readonly<{realAddress: string; ttlSeconds: number}>;
+export type SyntheticDnsResolution = Readonly<{
+    receivedAt: number;
+    answers: readonly SyntheticDnsAnswer[];
+    withdrawal?: "NODATA" | "NXDOMAIN";
+}>;
+
 export type SyntheticDnsLeaseTableOptions = {
-    install: (lease: SyntheticDnsLease) => void | Promise<void>;
+    refresh: (
+        hostname: string,
+        family: NetworkAddressFamily,
+        signal: AbortSignal,
+    ) => Promise<SyntheticDnsResolution>;
     now?: () => number;
 };
 
-type PendingLease = Promise<SyntheticDnsLease>;
+export type SyntheticDnsQuery = Readonly<{
+    release: () => void;
+    isCurrent: (family: NetworkAddressFamily) => boolean;
+}>;
+
+type FreshAnswer = Readonly<{realAddress: string; expiresAt: number; ttlSeconds: number}>;
 
 type DnsQuestion = {
     id: number;
@@ -58,16 +86,25 @@ export type SyntheticDnsProxyOptions = {
     upstreamPort?: number;
     leases: SyntheticDnsLeaseTable;
     globalIpv6Available?: boolean;
+    now?: () => number;
     onError?: (error: unknown) => void;
     onFatalError?: (error: unknown) => void;
 };
 
 export class SyntheticDnsLeaseTable {
     private readonly options: SyntheticDnsLeaseTableOptions;
-    private readonly leasesBySyntheticAddress = new Map<string, SyntheticDnsLease>();
-    private readonly leasesByAnswer = new Map<string, SyntheticDnsLease>();
-    private readonly pendingByAnswer = new Map<string, PendingLease>();
-    private installedLeaseCount = 0;
+    private readonly identities = new Map<string, SyntheticDnsIdentity>();
+    private readonly identitiesByAnswer = new Map<string, SyntheticDnsIdentity>();
+    // Positive sets and withdrawal watermarks share one ordering domain: at most
+    // MAX_DNS_LEASES retained family keys + 2 * MAX_TRACKED_QUERIES temporary keys.
+    private readonly answers = new Map<string, {receivedAt: number; values: readonly FreshAnswer[]}>();
+    private readonly pendingRefreshes = new Map<string, Promise<void>>();
+    private readonly bindingAnswers = new WeakMap<SyntheticDnsLease, FreshAnswer>();
+    private readonly retainedFamilies = new Set<string>();
+    private readonly trackedQueries = new Map<string, number>();
+    private trackedQueryCount = 0;
+    private readonly abortController = new AbortController();
+    private closed = false;
     private nextIpv4Lease = 1;
     private nextIpv6Lease = 1;
 
@@ -81,41 +118,168 @@ export class SyntheticDnsLeaseTable {
         realAddress: string,
         ttlSeconds: number,
     ): Promise<SyntheticDnsLease> {
-        validateDnsHostname(hostname);
-        this.validateAnswer(family, realAddress);
-        if (!Number.isFinite(ttlSeconds) || ttlSeconds < 0 || ttlSeconds > 0xffff_ffff) {
-            throw new Error("DNS answer used an invalid TTL");
-        }
-        const answerKey = `${hostname}\0${family}\0${realAddress}`;
-        const existing = this.leasesByAnswer.get(answerKey);
-        if (existing && existing.expiresAt > this.now()) return existing;
-        if (existing) {
-            this.leasesByAnswer.delete(answerKey);
-            this.leasesBySyntheticAddress.delete(existing.syntheticAddress);
-        }
+        return this.recordAnswers(hostname, family, {
+            receivedAt: this.now(),
+            answers: [{realAddress, ttlSeconds}],
+        })[0]!;
+    }
 
-        const pending = this.pendingByAnswer.get(answerKey);
-        if (pending) return pending;
-        const creation = this.createLease(hostname, family, realAddress, ttlSeconds, answerKey);
-        this.pendingByAnswer.set(answerKey, creation);
-        try {
-            return await creation;
-        } finally {
-            this.pendingByAnswer.delete(answerKey);
+    recordAnswers(
+        hostname: string,
+        family: NetworkAddressFamily,
+        resolution: SyntheticDnsResolution,
+    ): readonly SyntheticDnsLease[] {
+        this.assertOpen();
+        const values = this.validateResolution(hostname, family, resolution);
+        if (resolution.withdrawal) {
+            this.withdraw(hostname, resolution.withdrawal === "NXDOMAIN" ? null : family, resolution.receivedAt);
+            return [];
+        }
+        const missing = new Set(values.map((answer) => `${hostname}\0${family}\0${answer.realAddress}`)
+            .filter((key) => !this.identitiesByAnswer.has(key)));
+        if (this.identities.size + missing.size > MAX_DNS_LEASES) {
+            throw new Error("synthetic DNS lease limit exceeded");
+        }
+        const leases = values.map((answer) => {
+            const key = `${hostname}\0${family}\0${answer.realAddress}`;
+            let identity = this.identitiesByAnswer.get(key);
+            if (!identity) {
+                identity = Object.freeze({
+                    hostname, family, originalAddress: answer.realAddress,
+                    syntheticAddress: family === NetworkAddressFamily.IPV4
+                        ? this.allocateIpv4Address() : this.allocateIpv6Address(),
+                });
+                this.identitiesByAnswer.set(key, identity);
+                this.identities.set(identity.syntheticAddress, identity);
+                this.retainedFamilies.add(`${hostname}\0${family}`);
+            }
+            return this.binding(identity, answer);
+        });
+        this.publishAnswers(hostname, family, resolution.receivedAt, values);
+        return leases;
+    }
+
+    /** Keep withdrawal ordering for not-yet-issued names only while a bounded query is in flight. */
+    trackQuery(hostname: string): SyntheticDnsQuery {
+        this.assertOpen();
+        validateDnsHostname(hostname);
+        if (this.trackedQueryCount >= MAX_TRACKED_QUERIES) throw new Error("synthetic DNS tracked query limit exceeded");
+        this.trackedQueryCount++;
+        this.trackedQueries.set(hostname, (this.trackedQueries.get(hostname) ?? 0) + 1);
+        // Receipt timestamps order completed publications; this snapshot also
+        // prevents an older pending positive from undoing an intervening withdrawal
+        // merely because that old request's response arrives later.
+        const previous = new Map([NetworkAddressFamily.IPV4, NetworkAddressFamily.IPV6]
+            .map((family) => [family, this.answers.get(`${hostname}\0${family}`)]));
+        let released = false;
+        const release = () => {
+            if (released || this.closed) return;
+            released = true;
+            this.trackedQueryCount--;
+            const remaining = this.trackedQueries.get(hostname)! - 1;
+            if (remaining > 0) this.trackedQueries.set(hostname, remaining);
+            else {
+                this.trackedQueries.delete(hostname);
+                for (const family of [NetworkAddressFamily.IPV4, NetworkAddressFamily.IPV6]) {
+                    const key = `${hostname}\0${family}`;
+                    if (!this.retainedFamilies.has(key)) this.answers.delete(key);
+                }
+            }
+        };
+        return Object.freeze({release, isCurrent: (family: NetworkAddressFamily) =>
+            !this.closed && !released && this.answers.get(`${hostname}\0${family}`) === previous.get(family)});
+    }
+
+    /** Null family is an authoritative name-wide NXDOMAIN withdrawal. */
+    withdraw(hostname: string, family: NetworkAddressFamily | null, receivedAt: number): void {
+        this.assertOpen();
+        validateDnsHostname(hostname);
+        this.validateReceptionTime(receivedAt);
+        if (family !== null && family !== NetworkAddressFamily.IPV4 && family !== NetworkAddressFamily.IPV6) {
+            throw new Error("DNS withdrawal used an invalid address family");
+        }
+        const families = family === null ? [NetworkAddressFamily.IPV4, NetworkAddressFamily.IPV6] : [family];
+        for (const candidate of families) {
+            const key = `${hostname}\0${candidate}`;
+            // Permanent watermarks are charged to issued identity families. Other
+            // names are retained only by tracked in-flight queries, never by an
+            // unbounded stream of negative answers for never-issued hostnames.
+            if (this.retainedFamilies.has(key) || this.trackedQueries.has(hostname)) {
+                this.publishAnswers(hostname, candidate, receivedAt, []);
+            }
+        }
+    }
+
+    async resolve(
+        syntheticAddress: string,
+        signal: AbortSignal,
+        authorizeRefresh: () => Promise<void>,
+    ): Promise<SyntheticDnsLease> {
+        this.assertOpen(signal);
+        const identity = this.lookup(syntheticAddress);
+        if (!identity) throw new Error(`expired or unknown synthetic DNS lease: ${syntheticAddress}`);
+        const current = this.freshBinding(identity);
+        if (current) return current;
+
+        // Authorization belongs to the caller's policy context, not to the address token.
+        await authorizeRefresh();
+        this.assertOpen(signal);
+        const key = `${identity.hostname}\0${identity.family}`;
+        if (!this.freshBinding(identity)) {
+            let pending = this.pendingRefreshes.get(key);
+            if (!pending) {
+                if (this.pendingRefreshes.size >= MAX_PENDING_REFRESHES) {
+                    throw new Error("synthetic DNS pending refresh limit exceeded");
+                }
+                pending = this.refresh(identity);
+                this.pendingRefreshes.set(key, pending);
+                void pending.finally(() => {
+                    if (this.pendingRefreshes.get(key) === pending) this.pendingRefreshes.delete(key);
+                }).catch(() => {});
+            }
+            await this.waitForRefresh(pending, signal);
+        }
+        this.assertOpen(signal);
+        const refreshed = this.freshBinding(identity);
+        if (!refreshed) throw new Error(`upstream DNS returned no fresh ${identity.family} binding for ${identity.hostname}`);
+        return refreshed;
+    }
+
+    assertFresh(lease: SyntheticDnsLease, signal: AbortSignal): void {
+        this.assertOpen(signal);
+        const identity = this.lookup(lease.syntheticAddress);
+        const answer = this.bindingAnswers.get(lease);
+        const current = this.answers.get(`${lease.hostname}\0${lease.family}`);
+        // An approval is a snapshot, not authority to outlive a newer RRset.
+        // Conservatively reject superseded snapshots, even if the new set happens
+        // to contain the same address. Already admitted connections are unaffected.
+        if (!identity || identity.hostname !== lease.hostname || identity.family !== lease.family
+            || !answer || !current?.values.includes(answer) || lease.expiresAt <= this.now()) {
+            throw new Error("upstream DNS binding expired or superseded before flow admission");
         }
     }
 
     remainingTtlSeconds(lease: SyntheticDnsLease): number {
-        return Math.max(1, Math.floor((lease.expiresAt - this.now()) / 1_000));
+        return Math.max(0, Math.floor((lease.expiresAt - this.now()) / 1_000));
     }
 
-    lookup(syntheticAddress: string): SyntheticDnsLease | null {
-        const lease = this.leasesBySyntheticAddress.get(syntheticAddress);
-        if (!lease) return null;
-        if (lease.expiresAt > this.now()) return lease;
-        this.leasesBySyntheticAddress.delete(syntheticAddress);
-        this.leasesByAnswer.delete(this.answerKey(lease));
-        return null;
+    lookup(syntheticAddress: string): SyntheticDnsIdentity | null {
+        const canonical = isIP(syntheticAddress) === 6
+            ? formatIpv6(parseIpAddress(syntheticAddress, NetworkAddressFamily.IPV6)) : syntheticAddress;
+        return this.identities.get(canonical) ?? null;
+    }
+
+    async close(): Promise<void> {
+        this.closed = true;
+        this.abortController.abort();
+        this.identities.clear();
+        this.identitiesByAnswer.clear();
+        this.answers.clear();
+        this.retainedFamilies.clear();
+        this.trackedQueries.clear();
+        this.trackedQueryCount = 0;
+        await Promise.allSettled(this.pendingRefreshes.values());
+        this.pendingRefreshes.clear();
     }
 
     isSyntheticAddress(address: string): boolean {
@@ -137,51 +301,96 @@ export class SyntheticDnsLeaseTable {
         }
     }
 
-    private async createLease(
-        hostname: string,
-        family: NetworkAddressFamily,
-        realAddress: string,
-        ttlSeconds: number,
-        answerKey: string,
-    ): Promise<SyntheticDnsLease> {
-        this.pruneExpiredLeases();
-        if (this.installedLeaseCount >= MAX_DNS_LEASES) {
-            throw new Error("synthetic DNS lease limit exceeded");
+    private async refresh(identity: SyntheticDnsIdentity): Promise<void> {
+        const signal = this.abortController.signal;
+        const key = `${identity.hostname}\0${identity.family}`;
+        const previous = this.answers.get(key);
+        const resolution = await this.options.refresh(identity.hostname, identity.family, signal);
+        this.assertOpen(signal);
+        const values = this.validateResolution(identity.hostname, identity.family, resolution);
+        if (resolution.withdrawal) {
+            // A name-wide withdrawal must reach the other family even if this
+            // query's own family changed while it was pending. Receipt ordering
+            // still prevents an older negative from withdrawing a newer answer.
+            this.withdraw(identity.hostname, resolution.withdrawal === "NXDOMAIN" ? null : identity.family, resolution.receivedAt);
+        } else if (this.answers.get(key) === previous) {
+            // An intervening trusted publication supersedes an old positive refresh.
+            this.publishAnswers(identity.hostname, identity.family, resolution.receivedAt, values);
         }
-        const boundedTtl = Math.max(
-            MIN_DNS_TTL_SECONDS,
-            Math.min(MAX_DNS_TTL_SECONDS, Math.floor(ttlSeconds)),
-        );
-        const syntheticAddress = family === NetworkAddressFamily.IPV4
-            ? this.allocateIpv4Address()
-            : this.allocateIpv6Address();
-        const lease = Object.freeze({
-            hostname,
-            family,
-            syntheticAddress,
-            realAddress,
-            expiresAt: this.now() + boundedTtl * 1_000,
-            ttlSeconds: boundedTtl,
-        });
-        this.installedLeaseCount++;
-        try {
-            await this.options.install(lease);
-        } catch (error) {
-            this.installedLeaseCount--;
-            throw error;
-        }
-        this.leasesBySyntheticAddress.set(syntheticAddress, lease);
-        this.leasesByAnswer.set(answerKey, lease);
-        return lease;
     }
 
-    private pruneExpiredLeases(): void {
-        const now = this.now();
-        for (const [address, lease] of this.leasesBySyntheticAddress) {
-            if (lease.expiresAt > now) continue;
-            this.leasesBySyntheticAddress.delete(address);
-            this.leasesByAnswer.delete(this.answerKey(lease));
+    private async waitForRefresh(pending: Promise<void>, signal: AbortSignal): Promise<void> {
+        if (signal.aborted) throw new Error("synthetic DNS leases closed or aborted");
+        await new Promise<void>((resolve, reject) => {
+            const abort = () => reject(new Error("synthetic DNS leases closed or aborted"));
+            signal.addEventListener("abort", abort, {once: true});
+            void pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+        });
+    }
+
+    private validateResolution(
+        hostname: string,
+        family: NetworkAddressFamily,
+        resolution: SyntheticDnsResolution,
+    ): readonly FreshAnswer[] {
+        validateDnsHostname(hostname);
+        if (family !== NetworkAddressFamily.IPV4 && family !== NetworkAddressFamily.IPV6) {
+            throw new Error("DNS answer used an invalid address family");
         }
+        this.validateReceptionTime(resolution.receivedAt);
+        if (resolution.withdrawal !== undefined) {
+            if ((resolution.withdrawal !== "NXDOMAIN" && resolution.withdrawal !== "NODATA") || resolution.answers.length !== 0) {
+                throw new Error("DNS withdrawal resolution is invalid");
+            }
+            return [];
+        }
+        if (resolution.answers.length === 0 || resolution.answers.length > MAX_DNS_ANSWERS) {
+            throw new Error("DNS answer count is empty or exceeds the limit");
+        }
+        const values = resolution.answers.map(({realAddress, ttlSeconds}) => {
+            this.validateAnswer(family, realAddress);
+            if (!Number.isFinite(ttlSeconds) || ttlSeconds < 0 || ttlSeconds > 0xffff_ffff) {
+                throw new Error("DNS answer used an invalid TTL");
+            }
+            const boundedTtl = Math.min(MAX_DNS_TTL_SECONDS, Math.floor(ttlSeconds));
+            return {realAddress, ttlSeconds: boundedTtl};
+        });
+        const rrsetTtl = Math.min(...values.map((answer) => answer.ttlSeconds));
+        return values.map(({realAddress}) => Object.freeze({realAddress, ttlSeconds: rrsetTtl,
+            expiresAt: resolution.receivedAt + rrsetTtl * 1_000}));
+    }
+
+    private validateReceptionTime(receivedAt: number): void {
+        if (!Number.isFinite(receivedAt) || receivedAt > this.now()) throw new Error("DNS answer used an invalid reception time");
+    }
+
+    private publishAnswers(
+        hostname: string,
+        family: NetworkAddressFamily,
+        receivedAt: number,
+        values: readonly FreshAnswer[],
+    ): void {
+        const key = `${hostname}\0${family}`;
+        const previous = this.answers.get(key);
+        if (!previous || previous.receivedAt <= receivedAt) this.answers.set(key, {receivedAt, values});
+    }
+
+    private freshBinding(identity: SyntheticDnsIdentity): SyntheticDnsLease | null {
+        const values = this.answers.get(`${identity.hostname}\0${identity.family}`)?.values
+            .filter((answer) => answer.expiresAt > this.now());
+        const answer = values?.find((value) => value.realAddress === identity.originalAddress) ?? values?.[0];
+        return answer ? this.binding(identity, answer) : null;
+    }
+
+    private binding(identity: SyntheticDnsIdentity, answer: FreshAnswer): SyntheticDnsLease {
+        const binding = Object.freeze({hostname: identity.hostname, family: identity.family,
+            syntheticAddress: identity.syntheticAddress, ...answer});
+        this.bindingAnswers.set(binding, answer);
+        return binding;
+    }
+
+    private assertOpen(signal?: AbortSignal): void {
+        if (this.closed || signal?.aborted) throw new Error("synthetic DNS leases closed or aborted");
     }
 
     private allocateIpv4Address(): string {
@@ -201,12 +410,8 @@ export class SyntheticDnsLeaseTable {
         if (this.isSyntheticAddress(address)) throw new Error("DNS answer overlaps the synthetic lease range");
     }
 
-    private answerKey(lease: SyntheticDnsLease): string {
-        return `${lease.hostname}\0${lease.family}\0${lease.realAddress}`;
-    }
-
     private now(): number {
-        return this.options.now?.() ?? Date.now();
+        return this.options.now?.() ?? performance.now();
     }
 }
 
@@ -263,6 +468,33 @@ export class SyntheticDnsProxy {
         ipv6Socket.on("error", (error) => this.reportFatalError(error));
     }
 
+    async resolve(
+        hostname: string,
+        family: NetworkAddressFamily,
+        signal: AbortSignal,
+    ): Promise<SyntheticDnsResolution> {
+        validateDnsHostname(hostname);
+        if (family !== NetworkAddressFamily.IPV4 && family !== NetworkAddressFamily.IPV6) {
+            throw new Error("DNS refresh used an invalid address family");
+        }
+        const labels = hostname.split(".").map((label) => Buffer.concat([
+            Buffer.from([label.length]), Buffer.from(label, "ascii"),
+        ]));
+        const header = Buffer.alloc(DNS_HEADER_LENGTH);
+        header.writeUInt16BE(randomInt(65_536), 0);
+        header.writeUInt16BE(0x0100, 2);
+        header.writeUInt16BE(1, 4);
+        const question = Buffer.from([0, 0, family === NetworkAddressFamily.IPV4 ? DNS_TYPE_A : DNS_TYPE_AAAA, 0, DNS_CLASS_IN]);
+        const query = Buffer.concat([header, ...labels, question]);
+        const ownership = this.options.leases.trackQuery(hostname);
+        try {
+            const {response, receivedAt} = await this.queryUpstream(query, signal);
+            return resolveDnsResponse(response, hostname, family, this.options.leases, receivedAt, ownership);
+        } finally {
+            ownership.release();
+        }
+    }
+
     async close(): Promise<void> {
         this.stopping = true;
         this.abortController.abort();
@@ -278,6 +510,11 @@ export class SyntheticDnsProxy {
 
     private handleQuery(server: Socket, query: Buffer, remote: RemoteInfo): void {
         if (this.stopping) return;
+        if (this.pendingQueries.size >= MAX_PENDING_QUERIES) {
+            // Dropping overload is bounded and cannot create an upstream effect.
+            this.reportError(new Error("synthetic DNS pending query limit exceeded"));
+            return;
+        }
         const pending = this.processQuery(server, query, remote);
         this.pendingQueries.add(pending);
         void pending.finally(() => this.pendingQueries.delete(pending));
@@ -302,28 +539,31 @@ export class SyntheticDnsProxy {
     private async answerQuery(query: Buffer): Promise<Buffer> {
         if (query.length > MAX_DNS_MESSAGE_LENGTH) throw new Error("DNS query exceeds the message limit");
         const question = parseDnsQuestion(query, false);
-        const response = await forwardDnsQuery(
-            query,
-            this.options.upstreamAddress,
+        const ownership = this.options.leases.trackQuery(question.name);
+        try {
+            const {response, receivedAt} = await this.queryUpstream(query, this.abortController.signal);
+            return rewriteDnsResponse(response, question.name, this.options.leases, receivedAt,
+                ownership, this.options.globalIpv6Available);
+        } finally {
+            ownership.release();
+        }
+    }
+
+    private async queryUpstream(query: Buffer, signal: AbortSignal): Promise<{
+        response: Buffer; parsed: ParsedDnsResponse; receivedAt: number;
+    }> {
+        if (this.stopping) throw new Error("synthetic DNS proxy closed");
+        const question = parseDnsQuestion(query, false);
+        const {response, receivedAt} = await forwardDnsQuery(query, this.options.upstreamAddress,
             this.options.upstreamPort ?? DNS_PORT,
-            this.abortController.signal,
-        );
+            AbortSignal.any([signal, this.abortController.signal]),
+            () => this.options.now?.() ?? performance.now());
         const parsed = parseDnsResponse(response);
-        if (
-            parsed.question.id !== question.id
-            || parsed.question.name !== question.name
-            || parsed.question.type !== question.type
-        ) {
+        if (parsed.question.id !== question.id || parsed.question.name !== question.name
+            || parsed.question.type !== question.type) {
             throw new Error("upstream DNS response did not match its query");
         }
-        if (
-            question.type === DNS_TYPE_AAAA
-            && this.options.globalIpv6Available === false
-            && hasOnlyGlobalIpv6Answers(response, parsed, question.name)
-        ) {
-            return createDnsNoDataResponse(query);
-        }
-        return rewriteAddressAnswers(response, parsed, question.name, this.options.leases);
+        return {response, parsed, receivedAt};
     }
 
     private reportError(error: unknown): void {
@@ -345,36 +585,117 @@ export class SyntheticDnsProxy {
     }
 }
 
-async function rewriteAddressAnswers(
+/** Decode the trusted refresh response, publishing withdrawals before query ownership ends. */
+export function resolveDnsResponse(
+    response: Buffer,
+    requestedName: string,
+    family: NetworkAddressFamily,
+    leases: SyntheticDnsLeaseTable,
+    receivedAt: number,
+    ownership?: SyntheticDnsQuery,
+): SyntheticDnsResolution {
+    const parsed = parseDnsResponse(response);
+    const expectedType = family === NetworkAddressFamily.IPV4 ? DNS_TYPE_A : DNS_TYPE_AAAA;
+    if (parsed.question.name !== requestedName || parsed.question.type !== expectedType) {
+        throw new Error("DNS refresh response question mismatch");
+    }
+    const flags = response.readUInt16BE(2);
+    if ((flags & 0x0200) !== 0 || ((flags & 0x000f) !== 0 && (flags & 0x000f) !== 3)) {
+        throw new Error("upstream DNS refresh failed or was truncated");
+    }
+    if ((flags & 0x000f) === 3) {
+        leases.withdraw(requestedName, null, receivedAt);
+        return {receivedAt, answers: [], withdrawal: "NXDOMAIN"};
+    }
+    const answers = attributedAddressAnswers(response, parsed, requestedName)
+        .filter((answer) => answer.family === family)
+        .map(({realAddress, ttlSeconds}) => ({realAddress, ttlSeconds}));
+    if (answers.length === 0) {
+        leases.withdraw(requestedName, family, receivedAt);
+        return {receivedAt, answers: [], withdrawal: "NODATA"};
+    }
+    if (ownership && !ownership.isCurrent(family)) throw new Error("DNS refresh response was superseded by a newer trusted answer");
+    return {receivedAt, answers};
+}
+
+export function rewriteDnsResponse(
     original: Buffer,
-    parsed: ParsedDnsResponse,
     requestedName: string,
     leases: SyntheticDnsLeaseTable,
-): Promise<Buffer> {
+    receivedAt: number,
+    ownership?: SyntheticDnsQuery,
+    globalIpv6Available = true,
+): Buffer {
     const response = Buffer.from(original);
-    const attributedNames = attributedAnswerNames(parsed, requestedName);
-
-    let rewritten = false;
-    for (const answer of parsed.answers) {
-        if (answer.class !== DNS_CLASS_IN || !attributedNames.has(answer.owner)) continue;
-        const family = answer.type === DNS_TYPE_A && answer.dataLength === 4
-            ? NetworkAddressFamily.IPV4
-            : answer.type === DNS_TYPE_AAAA && answer.dataLength === 16
-                ? NetworkAddressFamily.IPV6
-                : null;
-        if (!family) continue;
-
-        const realAddress = family === NetworkAddressFamily.IPV4
-            ? formatIpv4(response.subarray(answer.dataOffset, answer.dataOffset + answer.dataLength))
-            : formatIpv6(response.subarray(answer.dataOffset, answer.dataOffset + answer.dataLength));
-        const lease = await leases.lease(requestedName, family, realAddress, answer.ttl);
-        const syntheticBytes = parseIpAddress(lease.syntheticAddress, family);
-        syntheticBytes.copy(response, answer.dataOffset);
-        response.writeUInt32BE(leases.remainingTtlSeconds(lease), answer.ttlOffset);
-        rewritten = true;
+    const parsed = parseDnsResponse(response);
+    if (parsed.question.name !== requestedName) throw new Error("DNS response hostname mismatch");
+    // SERVFAIL/truncation cannot establish or withdraw a binding. NXDOMAIN
+    // authoritatively withdraws both families, including for a non-address query.
+    const flags = response.readUInt16BE(2);
+    if ((flags & 0x020f) !== 0) {
+        if ((flags & 0x020f) === 3) leases.withdraw(requestedName, null, receivedAt);
+        if (parsed.answers.some((answer) => answer.type === DNS_TYPE_A || answer.type === DNS_TYPE_AAAA)) {
+            throw new Error("upstream DNS response failed or was truncated");
+        }
+        return response;
     }
-    if (rewritten) response.writeUInt16BE(response.readUInt16BE(2) & ~0x0020, 2);
+    if (parsed.question.type === DNS_TYPE_AAAA && !globalIpv6Available
+        && hasOnlyGlobalIpv6Answers(response, parsed, requestedName)) {
+        leases.withdraw(requestedName, NetworkAddressFamily.IPV6, receivedAt);
+        return createDnsNoDataResponse(response);
+    }
+    const addresses = attributedAddressAnswers(response, parsed, requestedName);
+    for (const family of [NetworkAddressFamily.IPV4, NetworkAddressFamily.IPV6]) {
+        const answers = addresses.filter((answer) => answer.family === family);
+        if (answers.length === 0) {
+            const type = family === NetworkAddressFamily.IPV4 ? DNS_TYPE_A : DNS_TYPE_AAAA;
+            if (parsed.question.type === type) leases.withdraw(requestedName, family, receivedAt);
+            continue;
+        }
+        if (ownership && !ownership.isCurrent(family)) throw new Error("DNS response was superseded by a newer trusted answer");
+        const rewritten = leases.recordAnswers(requestedName, family, {receivedAt,
+            answers: answers.map(({realAddress, ttlSeconds}) => ({realAddress, ttlSeconds}))});
+        answers.forEach(({record}, index) => {
+            const lease = rewritten[index]!;
+            parseIpAddress(lease.syntheticAddress, family).copy(response, record.dataOffset);
+            response.writeUInt32BE(leases.remainingTtlSeconds(lease), record.ttlOffset);
+        });
+    }
+    if (addresses.length > 0) response.writeUInt16BE(response.readUInt16BE(2) & ~0x0020, 2);
     return response;
+}
+
+function attributedAddressAnswers(response: Buffer, parsed: ParsedDnsResponse, requestedName: string): Array<{
+    record: DnsResourceRecord; family: NetworkAddressFamily; realAddress: string; ttlSeconds: number;
+}> {
+    let owner = requestedName;
+    let chainTtl = MAX_DNS_TTL_SECONDS;
+    const visited = new Set<string>();
+    while (true) {
+        if (visited.has(owner) || visited.size >= MAX_DNS_ANSWERS) throw new Error("DNS CNAME chain is cyclic or exceeds the limit");
+        visited.add(owner);
+        const aliases = parsed.answers.filter((answer) => answer.class === DNS_CLASS_IN
+            && answer.owner === owner && answer.type === DNS_TYPE_CNAME);
+        if (aliases.length === 0) break;
+        if (aliases.some((answer) => answer.cname !== aliases[0]!.cname)
+            || parsed.answers.some((answer) => answer.owner === owner && answer.class === DNS_CLASS_IN
+                && (answer.type === DNS_TYPE_A || answer.type === DNS_TYPE_AAAA))) {
+            throw new Error("DNS CNAME chain is ambiguous");
+        }
+        chainTtl = Math.min(chainTtl, ...aliases.map((answer) => answer.ttl));
+        owner = aliases[0]!.cname!;
+    }
+    return parsed.answers.flatMap((record) => {
+        if (record.owner !== owner || record.class !== DNS_CLASS_IN) return [];
+        const family = record.type === DNS_TYPE_A ? NetworkAddressFamily.IPV4
+            : record.type === DNS_TYPE_AAAA ? NetworkAddressFamily.IPV6 : null;
+        if (!family) return [];
+        const bytes = response.subarray(record.dataOffset, record.dataOffset + record.dataLength);
+        const realAddress = family === NetworkAddressFamily.IPV4 ? formatIpv4(bytes) : formatIpv6(bytes);
+        const rrsetTtl = Math.min(...parsed.answers.filter((answer) => answer.owner === owner
+            && answer.class === DNS_CLASS_IN && answer.type === record.type).map((answer) => answer.ttl));
+        return [{record, family, realAddress, ttlSeconds: Math.min(chainTtl, rrsetTtl)}];
+    });
 }
 
 function attributedAnswerNames(parsed: ParsedDnsResponse, requestedName: string): Set<string> {
@@ -544,14 +865,15 @@ async function forwardDnsQuery(
     upstreamAddress: string,
     upstreamPort: number,
     signal: AbortSignal,
-): Promise<Buffer> {
+    now: () => number,
+): Promise<{response: Buffer; receivedAt: number}> {
     const type = isIP(upstreamAddress) === 4 ? "udp4" : "udp6";
     const socket = createSocket(type);
-    return new Promise<Buffer>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
         let settled = false;
         const timeout = setTimeout(() => finish(new Error("upstream DNS request timed out")), DNS_REQUEST_TIMEOUT_MILLISECONDS);
         const onAbort = () => finish(new Error("synthetic DNS proxy closed"));
-        const finish = (error?: Error, response?: Buffer) => {
+        const finish = (error?: Error, response?: {response: Buffer; receivedAt: number}) => {
             if (settled) return;
             settled = true;
             clearTimeout(timeout);
@@ -571,7 +893,7 @@ async function forwardDnsQuery(
             return;
         }
         socket.once("error", (error) => finish(error));
-        socket.once("message", (response) => finish(undefined, response));
+        socket.once("message", (response) => finish(undefined, {response, receivedAt: now()}));
         socket.connect(upstreamPort, upstreamAddress, () => {
             if (settled) return;
             socket.send(query, (error) => {
@@ -581,10 +903,10 @@ async function forwardDnsQuery(
     });
 }
 
-function createDnsNoDataResponse(query: Buffer): Buffer {
-    const question = parseDnsQuestion(query, false);
-    const response = Buffer.from(query.subarray(0, question.questionEnd));
-    const preservedFlags = query.readUInt16BE(2) & 0x0110;
+function createDnsNoDataResponse(message: Buffer): Buffer {
+    const question = parseDnsQuestion(message, true);
+    const response = Buffer.from(message.subarray(0, question.questionEnd));
+    const preservedFlags = message.readUInt16BE(2) & 0x0110;
     response.writeUInt16BE(0x8080 | preservedFlags, 2);
     response.writeUInt16BE(0, 6);
     response.writeUInt16BE(0, 8);
@@ -616,6 +938,14 @@ function parseIpAddress(address: string, family: NetworkAddressFamily): Buffer {
         return Buffer.from(octets);
     }
 
+    // inet_ntop and clients can use an IPv4 tail for any IPv6 prefix.
+    // Normalize it before inspecting the reserved synthetic prefix or identity.
+    const tail = /(?:^|:)(\d+\.\d+\.\d+\.\d+)$/.exec(address);
+    if (tail) {
+        const bytes = parseIpAddress(tail[1]!, NetworkAddressFamily.IPV4);
+        address = address.slice(0, -tail[1]!.length)
+            + `${bytes.readUInt16BE(0).toString(16)}:${bytes.readUInt16BE(2).toString(16)}`;
+    }
     const halves = address.toLowerCase().split("::");
     if (halves.length > 2) throw new Error("invalid synthetic IPv6 address");
     const left = halves[0] ? halves[0].split(":") : [];

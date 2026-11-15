@@ -21,7 +21,7 @@ import {
   SyntheticDnsLeaseTable,
   SyntheticDnsProxy,
 } from "./SyntheticDnsProxy.js";
-import type {SyntheticDnsLease} from "./SyntheticDnsProxy.js";
+import {NetworkFlowAdmission, syntheticUdpMapUpdate} from "./NetworkFlowAdmission.js";
 import type {HttpRequestAuthorizer} from "./HttpRequestBroker.js";
 import type {NetworkProtocolAuthorizer} from "./NetworkProtocol.js";
 import {TcpGatewayBroker} from "./TcpGatewayBroker.js";
@@ -148,6 +148,7 @@ class NetworkSandboxRunner {
   private pendingEvent = false;
   private lastSequence = 0;
   private readonly dnsLeases: SyntheticDnsLeaseTable;
+  private readonly flowAdmission: NetworkFlowAdmission;
   private dnsProxy: SyntheticDnsProxy | undefined;
   private readonly tlsCertificateAuthority: TlsCertificateAuthority | undefined;
   private readonly tcpBroker: TcpGatewayBroker;
@@ -170,7 +171,17 @@ class NetworkSandboxRunner {
   constructor(options: NetworkRunOptions) {
     this.options = options;
     this.dnsLeases = new SyntheticDnsLeaseTable({
-      install: (lease) => this.installSyntheticLease(lease),
+      refresh: (hostname, family, signal) => {
+        if (!this.dnsProxy) throw new Error("synthetic DNS proxy is unavailable");
+        return this.dnsProxy.resolve(hostname, family, signal);
+      },
+    });
+    this.flowAdmission = new NetworkFlowAdmission({
+      leases: this.dnsLeases,
+      decide: options.decide,
+      updateUdp: (flow, binding, replace) => this.runWorkerNft(syntheticUdpMapUpdate(flow, binding, replace)),
+      clearUdp: () => this.runWorkerNft("flush map inet pi_network synthetic_udp4\nflush map inet pi_network synthetic_udp6\n"),
+      approveTcp: (event) => this.tcpBroker.approve(this.tcpGatewayApproval(event)),
     });
     this.tlsCertificateAuthority = options.authorizeHttpRequest
       ? new TlsCertificateAuthority()
@@ -699,20 +710,7 @@ class NetworkSandboxRunner {
   private async resolveAttempt(queueEvent: NetworkQueueEvent): Promise<void> {
     let decision = NetworkDecision.DENY;
     try {
-      const event = this.attributePolicyEvent(queueEvent);
-      const requested = await this.options.decide(event, this.decisionAbort.signal);
-      if (requested !== NetworkDecision.ALLOW && requested !== NetworkDecision.DENY) {
-        throw new Error(`invalid network decision: ${String(requested)}`);
-      }
-      if (
-        requested === NetworkDecision.ALLOW
-        && queueEvent.operation === NetworkOperation.TCP_CONNECT
-        && event.operation === NetworkOperation.TCP_CONNECT
-        && event.target.kind !== NetworkTargetKind.LOCALHOST
-      ) {
-        this.tcpBroker.approve(this.tcpGatewayApproval(queueEvent, event));
-      }
-      decision = requested;
+      decision = await this.flowAdmission.admit(queueEvent, this.decisionAbort.signal);
     } catch (error) {
       this.reportDecisionError(error);
     }
@@ -724,13 +722,12 @@ class NetworkSandboxRunner {
   }
 
   private tcpGatewayApproval(
-    queueEvent: Extract<NetworkQueueEvent, {operation: NetworkOperation.TCP_CONNECT}>,
     event: Extract<NetworkPolicyEvent, {operation: NetworkOperation.TCP_CONNECT}>,
   ): TcpGatewayApproval {
-    const destination = queueEvent.destination;
+    const destination = event.destination;
     return {
       family: event.family,
-      source: queueEvent.source,
+      source: event.source,
       destination,
       upstream: {
         address: hostAddressForGateway(event.target.address),
@@ -739,47 +736,6 @@ class NetworkSandboxRunner {
       hostname: event.target.kind === NetworkTargetKind.HOSTNAME
         ? event.target.hostname
         : undefined,
-    };
-  }
-
-  private attributePolicyEvent(event: NetworkQueueEvent): NetworkPolicyEvent {
-    if (event.operation === NetworkOperation.DNS_QUERY) {
-      const expectedResolver = event.family === NetworkAddressFamily.IPV4 ? "10.0.2.3" : "fd00::3";
-      if (event.destination.address !== expectedResolver) {
-        throw new Error(`direct DNS to an untrusted resolver is denied: ${event.destination.address}`);
-      }
-      return {
-        ...event,
-        target: {kind: NetworkTargetKind.HOSTNAME, hostname: event.dns.name},
-      };
-    }
-
-    const lease = this.dnsLeases.lookup(event.destination.address);
-    if (lease) {
-      if (lease.family !== event.family) throw new Error("synthetic DNS lease family mismatch");
-      return {
-        ...event,
-        target: {
-          kind: NetworkTargetKind.HOSTNAME,
-          hostname: lease.hostname,
-          port: event.destination.port,
-          address: lease.realAddress,
-          syntheticAddress: lease.syntheticAddress,
-        },
-      };
-    }
-    if (this.dnsLeases.isSyntheticAddress(event.destination.address)) {
-      throw new Error(`expired or unknown synthetic DNS lease: ${event.destination.address}`);
-    }
-    return {
-      ...event,
-      target: {
-        kind: isLoopbackAddress(event.destination.address)
-          ? NetworkTargetKind.LOCALHOST
-          : NetworkTargetKind.IP,
-        address: event.destination.address,
-        port: event.destination.port,
-      },
     };
   }
 
@@ -826,13 +782,6 @@ class NetworkSandboxRunner {
     }
     const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
     throw new Error(`slirp4netns did not configure IPv6 before the worker startup deadline${detail}`);
-  }
-
-  private async installSyntheticLease(lease: SyntheticDnsLease): Promise<void> {
-    const rule = lease.family === NetworkAddressFamily.IPV4
-      ? `add rule inet pi_network destination_nat meta l4proto udp ip daddr ${lease.syntheticAddress} dnat ip to ${lease.realAddress}\n`
-      : `add rule inet pi_network destination_nat meta l4proto udp ip6 daddr ${lease.syntheticAddress} dnat ip6 to ${lease.realAddress}\n`;
-    await this.runWorkerNft(rule);
   }
 
   private dnsProxyPort(): number {
@@ -949,6 +898,11 @@ class NetworkSandboxRunner {
     this.queueLines = undefined;
     this.tcpIngressLines?.close();
     this.tcpIngressLines = undefined;
+    await Promise.allSettled([
+      this.flowAdmission.close(),
+      this.dnsLeases.close(),
+      this.dnsProxy?.close(),
+    ]);
     this.terminate();
     const workerResources = this.workerResources;
     this.workerResources = [];
@@ -1031,12 +985,6 @@ class NetworkSandboxRunner {
     }
 }
 
-function isLoopbackAddress(address: string): boolean {
-  if (address === "::1") return true;
-  if (isIP(address) !== 4) return false;
-  return address.split(".", 1)[0] === "127";
-}
-
 function parseUpstreamDnsAddress(resolverConfiguration: string): string {
   for (const line of resolverConfiguration.split("\n")) {
     const match = /^\s*nameserver\s+(\S+)/.exec(line);
@@ -1106,6 +1054,14 @@ function baseRuleset(dnsProxyPort: number, tcpBrokerPort: number): string {
     throw new Error("TCP gateway broker returned an invalid port");
   }
   return `table inet pi_network {
+  map synthetic_udp4 {
+    type ipv4_addr . inet_service . ipv4_addr . inet_service : ipv4_addr;
+    size 4096;
+  }
+  map synthetic_udp6 {
+    type ipv6_addr . inet_service . ipv6_addr . inet_service : ipv6_addr;
+    size 4096;
+  }
   chain output {
     type filter hook output priority -150; policy drop;
     oifname "lo" meta mark ${ALLOW_MARK} ct mark set ${ALLOW_MARK} accept
@@ -1143,6 +1099,8 @@ function baseRuleset(dnsProxyPort: number, tcpBrokerPort: number): string {
 
   chain destination_nat {
     type nat hook output priority dstnat; policy accept;
+    meta l4proto udp ct mark ${ALLOW_MARK} ip daddr 198.18.0.0/15 dnat ip to ip saddr . udp sport . ip daddr . udp dport map @synthetic_udp4
+    meta l4proto udp ct mark ${ALLOW_MARK} ip6 daddr 2001:2::/48 dnat ip6 to ip6 saddr . udp sport . ip6 daddr . udp dport map @synthetic_udp6
     ip daddr 10.0.2.3 udp dport 53 dnat ip to 10.0.2.2:${dnsProxyPort}
     ip6 daddr fd00::3 udp dport 53 dnat ip6 to [fd00::2]:${dnsProxyPort}
   }

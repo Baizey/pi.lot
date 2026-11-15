@@ -932,6 +932,67 @@ for (const [protocol, preface, greeting] of [
     });
 }
 
+test("the native TCP gateway recognizes ADB and gates it independently of TCP admission", async () => {
+    const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-adb-test-"));
+    const request = "000chost:version";
+    const response = "OKAY00040029";
+    let connections = 0;
+    let received = "";
+    const server = createServer((socket) => {
+        connections++;
+        let buffered = "";
+        socket.on("data", (data) => {
+            buffered += data.toString();
+            received += data.toString();
+            if (buffered === request) socket.end(response);
+        });
+    });
+    server.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    try {
+        for (const allow of [false, true]) {
+            const checks: string[] = [];
+            const errors: string[] = [];
+            let output = "";
+            const result = await runNetworkSandboxedCommand({
+                command: [process.execPath, "--input-type=module", "--eval", [
+                    "import {createConnection} from 'node:net'",
+                    `const socket = createConnection(${address.port}, '10.0.2.2', () => socket.write('${request}'))`,
+                    "socket.on('data', data => process.stdout.write(data))",
+                    "await new Promise((resolve, reject) => { socket.once('close', resolve); socket.once('error', reject) })",
+                ].join("; ")],
+                cwd: workspace, timeoutSeconds: 10,
+                decide: () => NetworkDecision.ALLOW,
+                authorizeHttpRequest: () => { throw new Error("ADB must not become HTTP"); },
+                authorizeProtocol(event) {
+                    assert.equal(event.protocol, NetworkApplicationProtocol.ADB);
+                    assert.equal(event.uri, `10.0.2.2:${address.port}`);
+                    assert.equal(event.upstreamAddress, "127.0.0.1");
+                    checks.push(event.protocol);
+                    return allow;
+                },
+                onStdout: (data) => { output += data.toString(); },
+                onNetworkError: (error) => errors.push(String(error)),
+            });
+            assert.deepEqual(checks, [NetworkApplicationProtocol.ADB]);
+            assert.equal(output, allow ? response : "");
+            assert.equal(connections, allow ? 1 : 0);
+            assert.equal(received, allow ? request : "");
+            if (allow) {
+                assert.equal(result.exitCode, 0);
+                assert.deepEqual(errors, []);
+            } else {
+                assert.ok(errors.some((error) => error.includes("ADB connection denied")));
+            }
+        }
+    } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(workspace, {recursive: true, force: true});
+    }
+});
+
 test("coarse network inspection relays plaintext HTTP bytes without request mediation", async () => {
   const workspace = mkdtempSync(path.join(os.tmpdir(), "pi-network-coarse-http-test-"));
   let expectedRequest = "";

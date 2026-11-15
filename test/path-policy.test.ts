@@ -423,6 +423,28 @@ test("root policy defaults and subagent capability snapshots use the same policy
     runtime.removePolicyPrincipal(childIdentifier);
 });
 
+test("ADB approval is scoped separately from TCP and inherited by its policy-area capability", async (t) => {
+    const target = "10.0.2.2:5037";
+    const decisions = scriptedDecisionFlow([{
+        uri: target, accessType: PolicyAccessType.ADB_ACCESS, lifetime: PolicyLifetime.SESSION,
+        status: PolicyResponse.ALLOWED, reason: "Use the local Android test device",
+    }]);
+    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t), decisions.flow);
+    runtime.setDefaultResponse(PolicyArea.web_tcp, PolicyFallbackResponse.allow);
+    assert.equal((await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.TCP_ACCESS)).matchedStatus, PolicyResponse.ALLOWED);
+    assert.equal(decisions.callCount(), 0);
+    const approved = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.ADB_ACCESS);
+    assert.equal(approved.matchedStatus, PolicyResponse.ALLOWED);
+    assert.equal(decisions.callCount(), 1, "a TCP allow must not satisfy ADB permission");
+    runtime.registerPolicyPrincipal("adb-child", TEST_AGENT_IDENTIFIER, [PolicyArea.web_adb]);
+    const inherited = await runtime.beginToolCall("adb-child")(target, PolicyAccessType.ADB_ACCESS);
+    assert.equal(inherited.matchedStatus, PolicyResponse.ALLOWED);
+    assert.equal(inherited.matchedReason, approved.matchedReason);
+    assert.equal(decisions.callCount(), 1);
+    runtime.setDefaultResponse(PolicyArea.web_adb, PolicyFallbackResponse.deny);
+    assert.equal((await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)("10.0.2.2:5038", PolicyAccessType.ADB_ACCESS)).matchedStatus, PolicyResponse.DENIED);
+});
+
 test("subagent policy capabilities snapshot complete parent areas without becoming hard ceilings", async (t) => {
     const inheritedChild = "path-policy-inherited-child";
     const blankChild = "path-policy-blank-child";

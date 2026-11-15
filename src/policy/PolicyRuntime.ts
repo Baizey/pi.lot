@@ -236,7 +236,12 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
 
     resetDefaultResponses(): void {
         const defaults = this.defaultsStore?.load() ?? initialPolicyDefaults;
-        for (const area of POLICY_AREAS) this.setDefaultResponse(area, defaults[area]);
+        for (const area of POLICY_AREAS) {
+            // Saved defaults from before ADB support have no value for this area.
+            const response = area === PolicyArea.web_adb && defaults[area] === undefined
+                ? initialPolicyDefaults.web_adb : defaults[area];
+            this.setDefaultResponse(area, response);
+        }
     }
 
     registerPolicyPrincipal(

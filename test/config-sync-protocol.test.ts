@@ -64,10 +64,26 @@ for (const key of CONFIG_KEYS) {
         for (const field of Object.keys(savedSourceObject(key))) {
             // Web-search provider credentials are optional; its required fields are version/providers.
             if (key === "web-search" && field === "brave") continue;
+            if (key === "policy-defaults" && field === "web_adb") continue;
             rejects(() => validateConfigContent(key, JSON.stringify(without(savedSourceObject(key), field))));
         }
     });
 }
+
+test("ADB policy defaults and rules round-trip while legacy v1 defaults retain their identity", () => {
+    const legacy = canonicalConfigContent(without({...initialPolicyDefaults}, "web_adb"));
+    assert.doesNotThrow(() => validateConfigContent("policy-defaults", legacy));
+    assert.equal(decodeConfigState(state("policy-defaults", legacy)).content, legacy);
+    for (const value of ["allow", "deny", "ask_user", "ask_llm"]) {
+        const content = canonicalConfigContent({...initialPolicyDefaults, web_adb: value});
+        assert.equal(decodeConfigExchange(exchange("policy-defaults", content)).content, content);
+    }
+    for (const value of [null, true, "unknown"]) {
+        rejects(() => validateConfigContent("policy-defaults", canonicalConfigContent({...initialPolicyDefaults, web_adb: value})));
+    }
+    const adb = {...rule("10.0.2.2:5037"), accessType: PolicyAccessType.ADB_ACCESS};
+    assert.deepEqual(decodeGlobalPolicyRules(canonicalConfigContent({rules: [adb]})), [adb]);
+});
 
 test("configuration capability and key vocabulary are fixed, with no unrelated settings admitted", () => {
     assert.equal(CONFIG_SYNC_CAPABILITY, "config_sync_v1");

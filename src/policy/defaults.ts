@@ -13,6 +13,7 @@ export const initialPolicyDefaults: Readonly<ResponseDefaults> = {
     web_dns: PolicyFallbackResponse.ask_user,
     web_grpc: PolicyFallbackResponse.ask_user,
     web_smtp: PolicyFallbackResponse.ask_user,
+    web_adb: PolicyFallbackResponse.ask_user,
     web_ssh: PolicyFallbackResponse.ask_user,
     web_tcp: PolicyFallbackResponse.ask_user,
     web_udp: PolicyFallbackResponse.ask_user,

@@ -3,6 +3,7 @@ import {once} from "node:events";
 import {createConnection, createServer, type Socket} from "node:net";
 import test, {type TestContext} from "node:test";
 import {classifyTcpProtocol, sniffTcpProtocol, TcpApplicationProtocol} from "../src/policy/network/TcpProtocol.js";
+import {isAdbRequest, MAX_ADB_REQUEST_BYTES} from "../src/policy/network/AdbProtocol.js";
 
 const protocol = (value: string, direction: "client" | "server" = "client") => classifyTcpProtocol(Buffer.from(value), direction);
 
@@ -46,9 +47,55 @@ test("malformed, oversized and binary identifications never authorize a stream",
     for (const value of ["SSH-2.0-\r\n", "SSH-1.5-obsolete\r\n", "SSH-2.0-bad\u0000name\r\n", `SSH-2.0-${"x".repeat(250)}\r\n`, "not a protocol\r\n"]) {
         assert.equal(protocol(value), TcpApplicationProtocol.OPAQUE);
     }
-    assert.equal(protocol("x".repeat(64 * 1024)), TcpApplicationProtocol.OPAQUE);
-    assert.equal(protocol("x".repeat(64 * 1024), "server"), TcpApplicationProtocol.OPAQUE);
+    assert.equal(protocol("x".repeat(MAX_ADB_REQUEST_BYTES)), TcpApplicationProtocol.OPAQUE);
+    assert.equal(protocol("x".repeat(MAX_ADB_REQUEST_BYTES), "server"), TcpApplicationProtocol.OPAQUE);
 });
+
+test("ADB recognition requires a complete byte-counted host request, independent of ports", () => {
+    for (const service of ["host:version", "host:devices-l", "host:tport:serial:emulator-5554",
+        "host:transport-any", "host-usb:features", "host-local:get-state",
+        "host-serial:192.0.2.1:5555:features", "host-transport-id:42:features",
+        "host:forward:tcp:1234;tcp:4321"]) {
+        const request = adbFrame(service);
+        for (let index = 0; index < request.length; index++) {
+            assert.equal(classifyTcpProtocol(request.subarray(0, index), "client"), undefined);
+        }
+        assert.equal(classifyTcpProtocol(request, "client"), TcpApplicationProtocol.ADB);
+        assert.equal(classifyTcpProtocol(Buffer.concat([request, Buffer.from([0, 255, 10])]), "client"), TcpApplicationProtocol.ADB);
+    }
+    assert.equal(protocol("000Chost:version"), TcpApplicationProtocol.ADB);
+    assert.equal(isAdbRequest(adbFrame("host:" + "a".repeat(0xffff - 5))), true);
+    assert.equal(protocol("OKAY", "server"), undefined, "a status alone is not a server-first ADB identity");
+});
+
+test("ADB rejects malformed framing and non-ADB envelopes", () => {
+    for (const request of [Buffer.from("0000"), Buffer.from("+00chost:version"), Buffer.from("0004host:version"),
+        Buffer.from("000dhost:version"), Buffer.from("ffffhost:version"), adbFrame("host:"),
+        adbFrame("host-serial::features"), adbFrame("host-transport-id:no:features"),
+        adbFrame("host:version\r\nEHLO bad"), adbFrame("host:version\0"), adbFrame("nope:version"),
+        adbFrame("GET / HTTP/1.1\r\n"), Buffer.from("CNXN\x00\x00\x00\x01"),
+        Buffer.from([0xb0, 0xb0, 0xb0, 0xe3, ...Buffer.from("host:version")])]) {
+        assert.equal(isAdbRequest(request), false, request.toString("hex"));
+        assert.notEqual(classifyTcpProtocol(request, "client"), TcpApplicationProtocol.ADB);
+    }
+});
+
+test("live ADB classification handles fragmentation without a newline or timeout", {timeout: 2_000}, async (t) => {
+    const {client, accepted} = await socketPair(t);
+    const request = adbFrame("host:version");
+    const sniffing = sniffTcpProtocol(accepted, "client", new AbortController().signal);
+    const firstData = once(accepted, "data");
+    client.write(request.subarray(0, 6));
+    await firstData;
+    client.write(request.subarray(6));
+    const result = await sniffing;
+    assert.equal(result.protocol, TcpApplicationProtocol.ADB);
+    assert.deepEqual(result.bytes, request);
+});
+
+function adbFrame(service: string): Buffer {
+    return Buffer.concat([Buffer.from(Buffer.byteLength(service).toString(16).padStart(4, "0")), Buffer.from(service)]);
+}
 
 test("live sniffing returns fragmented bytes exactly once and leaves the socket paused", {timeout: 5_000}, async (t) => {
     const {client, accepted} = await socketPair(t);

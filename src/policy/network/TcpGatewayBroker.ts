@@ -12,6 +12,7 @@ import type {NetworkEndpoint} from "./network-queue-protocol.js";
 import {parseTcpGatewayFlow} from "./tcp-gateway-protocol.js";
 import type {TcpGatewayFlow} from "./tcp-gateway-protocol.js";
 import {TlsCertificateAuthority} from "./TlsCertificateAuthority.js";
+import {exchangeAdbHandshake} from "./AdbProtocol.js";
 
 const MAX_HEADER_BYTES = 1_024;
 const MAX_PENDING_APPROVALS = 256;
@@ -228,6 +229,24 @@ export class TcpGatewayBroker {
             this.httpBroker.accept(client, approval, scheme);
         } else if (protocol === TcpApplicationProtocol.HTTP2) {
             this.http2Broker.accept(client, approval, scheme);
+        } else if (protocol === TcpApplicationProtocol.ADB) {
+            await this.authorizeStream(client, approval, protocol, signal);
+            const upstream = await this.connectUpstream(approval, scheme, signal, tlsIdentity);
+            try {
+                const response = await exchangeAdbHandshake(client, upstream, signal);
+                this.assertFlowActive(client, signal);
+                if (response.subarray(0, 4).toString("ascii") === "FAIL") {
+                    // A failed selection must not release queued commands to the server.
+                    client.end(response);
+                    upstream.destroy();
+                    return;
+                }
+                client.write(response);
+                relaySockets(client, upstream);
+            } catch (error) {
+                upstream.destroy();
+                throw error;
+            }
         } else if (protocol === TcpApplicationProtocol.SSH || protocol === TcpApplicationProtocol.SMTP) {
             await this.authorizeStream(client, approval, protocol, signal);
             const upstream = await this.connectUpstream(approval, scheme, signal, tlsIdentity);
@@ -290,14 +309,18 @@ export class TcpGatewayBroker {
     private async authorizeStream(
         client: Socket,
         approval: TcpGatewayApproval,
-        protocol: TcpApplicationProtocol.SSH | TcpApplicationProtocol.SMTP,
+        protocol: TcpApplicationProtocol.SSH | TcpApplicationProtocol.SMTP | TcpApplicationProtocol.ADB,
         signal: AbortSignal,
     ): Promise<void> {
         const hostname = approval.hostname ?? approval.destination.address;
         const host = hostname.includes(":") ? `[${hostname}]` : hostname;
         this.assertFlowActive(client, signal);
         const allowed = await awaitWithAbort(() => this.options.authorizeProtocol?.({
-            protocol: protocol === TcpApplicationProtocol.SSH ? NetworkApplicationProtocol.SSH : NetworkApplicationProtocol.SMTP,
+            protocol: {
+                [TcpApplicationProtocol.SSH]: NetworkApplicationProtocol.SSH,
+                [TcpApplicationProtocol.SMTP]: NetworkApplicationProtocol.SMTP,
+                [TcpApplicationProtocol.ADB]: NetworkApplicationProtocol.ADB,
+            }[protocol],
             uri: `${host}:${approval.destination.port}`,
             family: approval.family,
             source: approval.source,
@@ -343,12 +366,13 @@ export class TcpGatewayBroker {
             }
             const protocol = await sniffProbeProtocols(client, upstream, probeSignal);
             this.assertFlowActive(client, probeSignal);
-            if (isHttpOrTlsProtocol(protocol) && (protocol !== TcpApplicationProtocol.TLS || scheme === "http")) {
+            if ((isHttpOrTlsProtocol(protocol) || protocol === TcpApplicationProtocol.ADB)
+                && (protocol !== TcpApplicationProtocol.TLS || scheme === "http")) {
                 if (!this.options.authorizeHttpRequest && !this.options.authorizeProtocol) {
                     relaySockets(client, upstream);
                     return;
                 }
-                // HTTP/TLS handlers own their pinned connections; discard only the
+                // HTTP/TLS/ADB handlers own their pinned connections; discard only the
                 // speculative upstream, without letting its close cancel the client.
                 cleanup();
                 upstream.destroy();

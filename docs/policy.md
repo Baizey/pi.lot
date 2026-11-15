@@ -65,16 +65,38 @@ The TCP gateway recognizes supported protocol envelopes and evaluates their spec
 | --- | --- | --- |
 | SSH | A bounded SSH identification line from the client or server, including supported server pre-identification lines; approved hostname/IP plus exact destination port | `web_ssh` |
 | SMTP | A supported client greeting/command or an SMTP/ESMTP-bearing server greeting; approved hostname/IP plus exact destination port | `web_smtp` |
+| ADB | A complete length-prefixed host smart-socket request; approved hostname/IP plus exact destination port | `web_adb` |
 | WebSocket | A validated HTTP/1 upgrade handshake and canonical HTTP(S) URL | `web_websocket`, plus HTTP GET under full inspection |
 | gRPC | Supported `application/grpc` and gRPC-Web media types; canonical HTTP(S) service/method URL, checked separately for each HTTP/2 stream or HTTP/1 request | `web_grpc`, plus HTTP method policy under full inspection |
 
 SSH/SMTP grants authorize the **outer connection**, not individual remote commands, port forwards, recipients, or subsequent opaque bytes. This permits SSH encryption and SMTP STARTTLS continuations but does not verify the contents of those continuations or detect other protocols tunneled inside an authorized channel. End-to-end STARTTLS certificate verification remains the client's responsibility; implicit TLS intercepted by the gateway uses separately verified upstream TLS. Importing an SSH-agent socket supplies credential IPC, not SSH network authority.
 
+ADB grants likewise authorize the **server channel**, including device selection, shell commands, installation, file transfer, forwarding, and later binary streams. They do not restrict individual services or devices. After `web_adb` approval, the gateway sends only the initial complete host request and validates the server's `OKAY` or framed `FAIL` response. It holds queued client bytes until `OKAY`; `FAIL` is returned without forwarding follow-up commands. Malformed, truncated, cancelled, and timed-out handshakes fail closed. Recognition uses the four-hex-digit byte length and host routing syntax, not port 5037. Host, host-usb/local, host-serial, and host-transport-id requests are recognized, including fragmented requests and transport selection followed by raw service data. This implements the [ADB client/server smart-socket protocol](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/overview.md), not the separate binary server/adbd transport or emulator console protocol. As with other channel grants, an ADB-compatible endpoint can carry arbitrary subsequent traffic.
+
 A server-first or initially silent client may require an already-transport-approved upstream connection to inspect a greeting; implicit TLS can also require an upstream TLS handshake. A client-first SSH/SMTP identification is only a claim. After its protocol authorization, the gateway waits for the upstream greeting and requires it to identify the same protocol; contradictory or unconfirmed envelopes fail closed before relay. No client application bytes or server greeting are released until those checks complete. Classification is bounded and preserves fragmented input. Generic `220` replies are ambiguous (FTP also uses them); unsupported or inconclusive greetings fail closed under full inspection rather than being guessed from a port.
 
 Inspected TLS negotiates HTTP/2 or HTTP/1.1, or classifies decrypted application bytes when ALPN is absent. Upstream connections retain the approved IP/port and verify the logical TLS identity; client headers and SNI do not select a new upstream address. WebSocket extensions are not negotiated. HTTP `CONNECT`, HTTP/2 extended WebSockets, and HTTP/1 `h2c` upgrades remain unsupported.
 
-**Inspection off is explicitly a compatibility boundary, not comprehensive application-protocol enforcement.** Recognized plaintext SSH/SMTP and supported plaintext HTTP protocol requests still receive their specific checks, but opaque end-to-end TLS and unrecognized plaintext can retain transport-only forwarding. Encrypted WebSocket/gRPC/SMTP therefore cannot be reliably captured in that mode. An allowed outer channel can also carry other applications. Namespace-local loopback flows receive transport checks but do not traverse the application gateway.
+**Inspection off is explicitly a compatibility boundary, not comprehensive application-protocol enforcement.** Recognized plaintext SSH/SMTP/ADB and supported plaintext HTTP protocol requests still receive their specific checks, but opaque end-to-end TLS and unrecognized plaintext can retain transport-only forwarding. Encrypted WebSocket/gRPC/SMTP/ADB therefore cannot be reliably captured in that mode. An allowed outer channel can also carry other applications. Namespace-local loopback flows receive transport checks but do not traverse the application gateway.
+
+### Android devices and the host ADB server
+
+Keep network inspection **on**. Each Bash call has private loopback, so a plain `adb devices` can start a separate server with no host devices. Reuse the user's running host server through the host gateway:
+
+```bash
+~/Android/Sdk/platform-tools/adb -H 10.0.2.2 -P 5037 devices -l
+```
+
+Use the installed SDK path and host ADB port; these defaults are examples. This route maps to the host's `127.0.0.1` and needs no externally listening ADB server. Approve `web_tcp` and `web_adb` for the exact endpoint, such as `10.0.2.2:5037`. A transport approval alone does not authorize ADB. Both areas use the normal scope, lifetime, user/model review, audit, and child-inheritance mechanisms. Existing saved defaults without `web_adb` use `ask_user`, including after reload.
+
+Keep `-H` and `-P` on every ADB invocation; separate Bash calls do not share shell variables. Select the discovered device explicitly with `-s`. For example:
+
+```bash
+~/Android/Sdk/platform-tools/adb -H 10.0.2.2 -P 5037 \
+  -s emulator-5554 exec-out screencap -p > /tmp/pixel-screen.png
+```
+
+The screenshot destination requires filesystem-write permission. Use `read` to view the PNG, and ADB's `shell input` and `uiautomator dump` for interaction and UI inspection. An empty device list from a sandbox-local server is not evidence that the host emulator is unavailable. Do not restart the user's server or expose it on all interfaces to solve namespace isolation.
 
 [`web_search`](web-search.md) is different: it is a trusted extension operation using host-side HTTP. Its requests and redirects receive HTTP method/URL policy checks but do not traverse Bash's DNS/TCP/UDP gate.
 
@@ -99,6 +121,7 @@ Root-only `archive_list` and `archive_fetch` check each actual URL and method wi
 | `web_websocket` | Supported WebSocket upgrades | `ask_user` |
 | `web_grpc` | Supported gRPC and gRPC-Web requests | `ask_user` |
 | `web_smtp` | Recognized SMTP connections | `ask_user` |
+| `web_adb` | Recognized ADB server channels | `ask_user` |
 
 Each area accepts one fallback:
 

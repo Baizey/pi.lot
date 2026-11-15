@@ -21,6 +21,7 @@ test("agent capabilities are the complete policy-area set plus hard mechanisms",
     ]);
     assert.equal(AGENT_CAPABILITIES.includes(PolicyArea.web_grpc), true);
     assert.equal(AGENT_CAPABILITIES.includes(PolicyArea.web_smtp), true);
+    assert.equal(AGENT_CAPABILITIES.includes(PolicyArea.web_adb), true);
     assert.equal(AGENT_CAPABILITIES.includes(PolicyArea.web_ssh), true);
     assert.equal(AGENT_CAPABILITIES.includes(PolicyArea.web_websocket), true);
 });

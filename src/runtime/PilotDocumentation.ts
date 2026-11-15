@@ -11,6 +11,7 @@ export class PilotDocumentation {
             `- Additional docs: ${this.directory}`,
             "- Installation or setup: read installation.md.",
             "- Policies, permissions, network mediation, sandboxing settings, credentials, or audit logs: read policy.md.",
+            "- Android, ADB, or emulator access: read policy.md, especially Android devices and the host ADB server.",
             "- Subagents or delegation: read subagents.md.",
             "- Web search: read web-search.md.",
             "- pi.server connections, session uploads, archive browsing, or saved configuration sync/recovery: read server.md; also read it before using archive_list/archive_fetch.",

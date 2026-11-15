@@ -3,6 +3,7 @@ import type {NetworkAddressFamily, NetworkEndpoint} from "./network-queue-protoc
 export enum NetworkApplicationProtocol {
     SSH = "ssh",
     SMTP = "smtp",
+    ADB = "adb",
     WEBSOCKET = "websocket",
     GRPC = "grpc",
 }

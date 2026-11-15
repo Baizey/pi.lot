@@ -39,6 +39,7 @@ export enum PolicyAccessType {
 
     // Remote access
     SSH_ACCESS = "SSH",
+    ADB_ACCESS = "ADB",
 
     // Generic transport
     TCP_ACCESS = "TCP",
@@ -91,6 +92,7 @@ export enum PolicyArea {
     web_websocket = "web_websocket",
     web_grpc = "web_grpc",
     web_smtp = "web_smtp",
+    web_adb = "web_adb",
 }
 
 export const POLICY_AREAS: readonly PolicyArea[] = Object.freeze(Object.values(PolicyArea));
@@ -116,6 +118,7 @@ const POLICY_AREA_ACCESS_TYPES: Readonly<Record<PolicyArea, readonly PolicyAcces
     [PolicyArea.web_ssh]: Object.freeze([PolicyAccessType.SSH_ACCESS]),
     [PolicyArea.web_udp]: Object.freeze([PolicyAccessType.UDP_ACCESS]),
     [PolicyArea.web_smtp]: Object.freeze([PolicyAccessType.SMTP_ACCESS]),
+    [PolicyArea.web_adb]: Object.freeze([PolicyAccessType.ADB_ACCESS]),
     [PolicyArea.web_websocket]: Object.freeze([PolicyAccessType.WEBSOCKET_ACCESS]),
 });
 

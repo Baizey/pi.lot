@@ -84,6 +84,7 @@ test("application protocols receive distinct policy checks rather than reusing t
     for (const [protocol, accessType] of [
         [NetworkApplicationProtocol.SSH, PolicyAccessType.SSH_ACCESS],
         [NetworkApplicationProtocol.SMTP, PolicyAccessType.SMTP_ACCESS],
+        [NetworkApplicationProtocol.ADB, PolicyAccessType.ADB_ACCESS],
         [NetworkApplicationProtocol.WEBSOCKET, PolicyAccessType.WEBSOCKET_ACCESS],
         [NetworkApplicationProtocol.GRPC, PolicyAccessType.GRPC_ACCESS],
     ] as const) {
@@ -91,7 +92,7 @@ test("application protocols receive distinct policy checks rather than reusing t
         assert.equal(await authorizer.authorizeProtocol(event, signal), false);
         assert.deepEqual(evaluations.at(-1), {uri: event.uri, accessType});
     }
-    assert.equal(reports.length, 4);
+    assert.equal(reports.length, 5);
     assert.ok(reports.every((message) => message.startsWith("ACCESS DENIED")));
 });
 
@@ -123,6 +124,7 @@ function protocolEvent(protocol: NetworkApplicationProtocol): NetworkProtocolEve
     return {
         protocol,
         uri: protocol === NetworkApplicationProtocol.SSH || protocol === NetworkApplicationProtocol.SMTP
+            || protocol === NetworkApplicationProtocol.ADB
             ? "[2001:db8::8]:2222"
             : event.url,
         family: event.family,

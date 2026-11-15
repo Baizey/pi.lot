@@ -8,6 +8,7 @@ import {NetworkApplicationProtocol, type NetworkProtocolEvent} from "./NetworkPr
 const PROTOCOL_ACCESS_TYPES = {
     [NetworkApplicationProtocol.SSH]: PolicyAccessType.SSH_ACCESS,
     [NetworkApplicationProtocol.SMTP]: PolicyAccessType.SMTP_ACCESS,
+    [NetworkApplicationProtocol.ADB]: PolicyAccessType.ADB_ACCESS,
     [NetworkApplicationProtocol.WEBSOCKET]: PolicyAccessType.WEBSOCKET_ACCESS,
     [NetworkApplicationProtocol.GRPC]: PolicyAccessType.GRPC_ACCESS,
 } satisfies Record<NetworkApplicationProtocol, PolicyAccessType>;

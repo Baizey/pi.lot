@@ -94,6 +94,19 @@ test("policy runtime loads, saves, and resets active defaults through its store"
     });
 });
 
+test("legacy saved defaults acquire ask_user for ADB on load and reset", () => {
+    withStore((store) => {
+        const {web_adb: _adb, ...legacy} = initialPolicyDefaults;
+        writeFileSync(store.file, JSON.stringify({...legacy, web_tcp: "allow"}));
+        const runtime = new PolicyRuntime("legacy-adb-defaults", emptyPolicyDao(), unusedDecisionFlow(), store);
+        assert.equal(runtime.defaultResponses.web_adb, PolicyFallbackResponse.ask_user);
+        runtime.setDefaultResponse(PolicyArea.web_adb, PolicyFallbackResponse.allow);
+        runtime.resetDefaultResponses();
+        assert.equal(runtime.defaultResponses.web_adb, PolicyFallbackResponse.ask_user);
+        assert.equal(runtime.defaultResponses.web_tcp, PolicyFallbackResponse.allow);
+    });
+});
+
 test("a persisted ask_llm default routes policy misses to the structured reviewer", async () => {
     await withAsyncStore(async (store) => {
         store.save({...initialPolicyDefaults, fs_write: PolicyFallbackResponse.ask_llm});

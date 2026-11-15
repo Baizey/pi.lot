@@ -1,7 +1,8 @@
 import type {Socket} from "node:net";
+import {isAdbRequest, MAX_ADB_REQUEST_BYTES} from "./AdbProtocol.js";
 
 const HTTP2_PREFACE = Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-const MAX_CLASSIFICATION_BYTES = 64 * 1024;
+const MAX_CLASSIFICATION_BYTES = MAX_ADB_REQUEST_BYTES;
 const MAX_SSH_IDENTIFICATION_BYTES = 255;
 const INITIAL_CLIENT_WAIT_MILLISECONDS = 250;
 const CLASSIFICATION_TIMEOUT_MILLISECONDS = 5_000;
@@ -12,6 +13,7 @@ export enum TcpApplicationProtocol {
     TLS = "tls",
     SSH = "ssh",
     SMTP = "smtp",
+    ADB = "adb",
     OPAQUE = "opaque",
     SILENT = "silent",
 }
@@ -30,6 +32,7 @@ export function classifyTcpProtocol(bytes: Buffer, direction: "client" | "server
     if (bytes.length === 0) return undefined;
     if (direction === "server") return classifyServerGreeting(bytes);
     if (bytes.length >= 3 && bytes[0] === 0x16 && bytes[1] === 0x03) return TcpApplicationProtocol.TLS;
+    if (isAdbRequest(bytes)) return TcpApplicationProtocol.ADB;
     const prefaceLength = Math.min(bytes.length, HTTP2_PREFACE.length);
     if (bytes.subarray(0, prefaceLength).equals(HTTP2_PREFACE.subarray(0, prefaceLength))) {
         return bytes.length >= HTTP2_PREFACE.length ? TcpApplicationProtocol.HTTP2 : undefined;

@@ -13,6 +13,7 @@ These references ship with the package. Pilot supplies their installation-relati
 | Install, update, load, or troubleshoot host dependencies | [Installation and setup](installation.md) |
 | Bash execution environment, localhost versus host services, Android/ADB, and connection troubleshooting | [Working inside the harness](harness.md) |
 | Policy defaults, approvals, sandboxing, networking, credentials, and audit logs | [Policy system](policy.md) |
+| Database, messaging, file/directory, and mail protocol versions and channel limits | [Service protocol admission](network-protocols.md) |
 | Spawn, steer, inspect, or stop children; choose models and capabilities | [Subagents](subagents.md) |
 | Search providers, filters, fallback, and credentials | [Web search](web-search.md) |
 | pi.server connections, archive tools, uploads, configuration sync and recovery | [Server](server.md) |

@@ -3,6 +3,7 @@ import {once} from "node:events";
 import {createConnection, createServer, type Socket} from "node:net";
 import test, {type TestContext} from "node:test";
 import {classifyTcpProtocol, sniffTcpProtocol, TcpApplicationProtocol} from "../src/policy/network/TcpProtocol.js";
+import {NetworkApplicationProtocol} from "../src/policy/network/NetworkProtocol.js";
 import {isAdbRequest, MAX_ADB_REQUEST_BYTES} from "../src/policy/network/AdbProtocol.js";
 
 const protocol = (value: string, direction: "client" | "server" = "client") => classifyTcpProtocol(Buffer.from(value), direction);
@@ -35,7 +36,7 @@ test("server-first SSH supports pre-identification and SMTP needs actual greetin
     assert.equal(protocol("220 mail.example Microsoft ESMTP MAIL Service ready\r\n", "server"), TcpApplicationProtocol.SMTP);
     assert.equal(protocol("220-mail.example ESMTP\r\n220 service ready\r\n", "server"), TcpApplicationProtocol.SMTP);
     assert.equal(protocol("220-mail.example ESMTP\r\n220 service", "server"), undefined);
-    assert.equal(protocol("220 FTP server ready\r\n", "server"), TcpApplicationProtocol.OPAQUE);
+    assert.equal(protocol("220 FTP server ready\r\n", "server"), NetworkApplicationProtocol.FTP);
     assert.equal(protocol("220 service ready\r\n", "server"), TcpApplicationProtocol.OPAQUE);
     assert.equal(protocol("220-mail ESMTP\r\ninvalid continuation\r\n", "server"), TcpApplicationProtocol.OPAQUE);
     assert.equal(protocol("220-mail ESMTP\r\nSSH-2.0-server\r\n", "server"), TcpApplicationProtocol.OPAQUE);

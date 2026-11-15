@@ -51,7 +51,7 @@ The filesystem view is not a rollback layer: completed writes can survive cancel
 
 ## Separate routing, policy, and protocol failures
 
-A host gateway address supplies a route, not permission. For a literal TCP endpoint, transport policy (`web_tcp`) and the applicable application policy are separate. HTTP uses method/URL policy; SSH, SMTP, ADB, WebSocket, and gRPC have dedicated areas. DNS hostname grants can cover subsequent transport flows more broadly within a call; see [network mediation](policy.md#network-mediation) for exact scope.
+A host gateway address supplies a route, not permission. For a literal TCP endpoint, transport policy (`web_tcp`) and the applicable application policy are separate. HTTP uses method/URL policy; SSH, SMTP, ADB, WebSocket, gRPC, and supported database/messaging/file/mail channels have dedicated areas. See the [supported service modes](network-protocols.md) before assuming that a protocol family includes every version or auxiliary connection. DNS hostname grants can cover subsequent transport flows more broadly within a call; see [network mediation](policy.md#network-mediation) for exact scope.
 
 Network inspection starts **on**. The TCP gateway recognizes supported application bytes rather than assuming a protocol from a port. Unsupported or inconclusive traffic fails closed under full inspection. This is independent of certificate checking: ordinary client-to-server ADB on port 5037 is plaintext, so rejecting its protocol is not a TLS certificate failure.
 
@@ -162,7 +162,7 @@ These are the current implementation and regression-test entry points, useful wh
 
 - [BashTool](../src/tools/builtin/BashTool.ts): per-call filesystem and network composition.
 - [NetworkSandbox](../src/policy/network/NetworkSandbox.ts): worker namespaces, cleanup, DNS, and `hostAddressForGateway` mappings.
-- [TcpGatewayBroker](../src/policy/network/TcpGatewayBroker.ts) and [AdbProtocol](../src/policy/network/AdbProtocol.ts): protocol admission and smart-socket handshake.
+- [TcpGatewayBroker](../src/policy/network/TcpGatewayBroker.ts), [AdbProtocol](../src/policy/network/AdbProtocol.ts), and [ChannelProtocols](../src/policy/network/ChannelProtocols.ts): protocol admission, smart-socket handshake, and bounded service channel confirmation.
 - [NetworkPolicyAuthorizer](../src/policy/network/NetworkPolicyAuthorizer.ts): transport and application-policy decisions.
 - [Network integration tests](../test/network.test.ts) and [ADB gateway tests](../test/tcp-gateway-adb.test.ts): host aliases and protocol/denial/streaming coverage. Run native integration on a prepared host, not inside another sandbox.
 

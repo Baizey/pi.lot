@@ -1,5 +1,7 @@
 import type {Socket} from "node:net";
 import {isAdbRequest, MAX_ADB_REQUEST_BYTES} from "./AdbProtocol.js";
+import type {NetworkApplicationProtocol} from "./NetworkProtocol.js";
+import {ChannelClassifier, classifyChannelProtocol} from "./ChannelProtocols.js";
 
 const HTTP2_PREFACE = Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
 const MAX_CLASSIFICATION_BYTES = MAX_ADB_REQUEST_BYTES;
@@ -18,8 +20,10 @@ export enum TcpApplicationProtocol {
     SILENT = "silent",
 }
 
+export type ClassifiedTcpProtocol = TcpApplicationProtocol | NetworkApplicationProtocol;
+
 export type SniffedTcpProtocol = {
-    protocol: TcpApplicationProtocol;
+    protocol: ClassifiedTcpProtocol;
     bytes: Buffer;
 };
 
@@ -28,9 +32,20 @@ export type TcpProtocolSniffOptions = {
 };
 
 /** Looks only at bounded protocol envelopes, never command names or destination ports. */
-export function classifyTcpProtocol(bytes: Buffer, direction: "client" | "server"): TcpApplicationProtocol | undefined {
+export function classifyTcpProtocol(
+    bytes: Buffer,
+    direction: "client" | "server",
+    channels?: ChannelClassifier,
+): ClassifiedTcpProtocol | undefined {
     if (bytes.length === 0) return undefined;
-    if (direction === "server") return classifyServerGreeting(bytes);
+    if (direction === "server") {
+        const channel = channels?.classify(bytes) ?? classifyChannelProtocol(bytes, direction);
+        if (channel.ambiguous) return TcpApplicationProtocol.OPAQUE;
+        if (channel.protocol) return channel.protocol;
+        const greeting = classifyServerGreeting(bytes);
+        if (greeting === TcpApplicationProtocol.SSH || greeting === TcpApplicationProtocol.SMTP) return greeting;
+        return channel.incomplete && bytes.length < MAX_CLASSIFICATION_BYTES ? undefined : greeting;
+    }
     if (bytes.length >= 3 && bytes[0] === 0x16 && bytes[1] === 0x03) return TcpApplicationProtocol.TLS;
     if (isAdbRequest(bytes)) return TcpApplicationProtocol.ADB;
     const prefaceLength = Math.min(bytes.length, HTTP2_PREFACE.length);
@@ -38,15 +53,23 @@ export function classifyTcpProtocol(bytes: Buffer, direction: "client" | "server
         return bytes.length >= HTTP2_PREFACE.length ? TcpApplicationProtocol.HTTP2 : undefined;
     }
     const newline = bytes.indexOf(0x0a);
-    if (newline < 0) return bytes.length >= MAX_CLASSIFICATION_BYTES ? TcpApplicationProtocol.OPAQUE : undefined;
-    const lineBytes = bytes.subarray(0, newline + 1);
-    if (!printableLine(lineBytes)) return TcpApplicationProtocol.OPAQUE;
-    const line = lineBytes.toString("ascii").replace(/\r?\n$/, "");
-    if (/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\s+\S+\s+HTTP\/1\.[01]$/.test(line)) return TcpApplicationProtocol.HTTP1;
-    if (isSshIdentification(line, lineBytes.length)) return TcpApplicationProtocol.SSH;
-    if (/^(?:EHLO|HELO) [^\s]+$/i.test(line) || /^(?:MAIL FROM:|RCPT TO:)/i.test(line)) {
-        return TcpApplicationProtocol.SMTP;
+    if (newline >= 0) {
+        const lineBytes = bytes.subarray(0, newline + 1);
+        if (printableLine(lineBytes)) {
+            const line = lineBytes.toString("ascii").replace(/\r?\n$/, "");
+            if (/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+\s+\S+\s+HTTP\/1\.[01]$/.test(line)) return TcpApplicationProtocol.HTTP1;
+            if (isSshIdentification(line, lineBytes.length)) return TcpApplicationProtocol.SSH;
+            if (/^(?:EHLO|HELO) [^\s]+$/i.test(line) || /^(?:MAIL FROM:|RCPT TO:)/i.test(line)) {
+                return TcpApplicationProtocol.SMTP;
+            }
+        }
     }
+    // Binary framing can contain LF long before a complete envelope arrives.
+    const channel = channels?.classify(bytes) ?? classifyChannelProtocol(bytes, direction);
+    if (channel.ambiguous) return TcpApplicationProtocol.OPAQUE;
+    if (channel.protocol) return channel.protocol;
+    if (bytes.length >= MAX_CLASSIFICATION_BYTES) return TcpApplicationProtocol.OPAQUE;
+    if (channel.incomplete || newline < 0) return undefined;
     return TcpApplicationProtocol.OPAQUE;
 }
 
@@ -58,6 +81,7 @@ export async function sniffTcpProtocol(
     options: TcpProtocolSniffOptions = {},
 ): Promise<SniffedTcpProtocol> {
     if (signal.aborted || socket.destroyed) throw new Error("TCP protocol classification was aborted");
+    const channels = new ChannelClassifier(direction);
     return new Promise((resolve, reject) => {
         let buffered: Buffer = Buffer.alloc(0);
         let settled = false;
@@ -74,8 +98,12 @@ export async function sniffTcpProtocol(
                 clearTimeout(timeout);
                 timeout = setTimeout(onTimeout, CLASSIFICATION_TIMEOUT_MILLISECONDS);
             }
-            const protocol = classifyTcpProtocol(buffered.subarray(0, MAX_CLASSIFICATION_BYTES), direction);
-            if (protocol) finish(undefined, {protocol, bytes: buffered});
+            try {
+                const protocol = classifyTcpProtocol(buffered.subarray(0, MAX_CLASSIFICATION_BYTES), direction, channels);
+                if (protocol) finish(undefined, {protocol, bytes: buffered});
+            } catch (error) {
+                finish(new Error("TCP protocol classifier failed", {cause: error}));
+            }
         };
         const onEnd = () => finish(new Error("TCP peer closed before a recognizable protocol envelope"));
         const onError = (error: Error) => finish(error);

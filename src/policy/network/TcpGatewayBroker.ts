@@ -6,7 +6,9 @@ import {HttpRequestBroker} from "./HttpRequestBroker.js";
 import type {HttpRequestAuthorizer} from "./HttpRequestBroker.js";
 import {Http2RequestBroker} from "./Http2RequestBroker.js";
 import {NetworkApplicationProtocol, type NetworkProtocolAuthorizer} from "./NetworkProtocol.js";
-import {sniffTcpProtocol, TcpApplicationProtocol, type SniffedTcpProtocol} from "./TcpProtocol.js";
+import {sniffTcpProtocol, TcpApplicationProtocol, type ClassifiedTcpProtocol, type SniffedTcpProtocol} from "./TcpProtocol.js";
+import {channelProtocol} from "./ChannelProtocols.js";
+import {exchangeChannelHandshake} from "./ChannelHandshake.js";
 import {NetworkAddressFamily} from "./network-queue-protocol.js";
 import type {NetworkEndpoint} from "./network-queue-protocol.js";
 import {parseTcpGatewayFlow} from "./tcp-gateway-protocol.js";
@@ -216,11 +218,12 @@ export class TcpGatewayBroker {
         client: Socket,
         approval: TcpGatewayApproval,
         scheme: "http" | "https",
-        protocol: TcpApplicationProtocol,
+        protocol: ClassifiedTcpProtocol,
         signal: AbortSignal,
         tlsIdentity?: string,
     ): Promise<void> {
         this.assertFlowActive(client, signal);
+        const definition = channelProtocol(protocol);
         if (protocol === TcpApplicationProtocol.TLS && scheme === "http") {
             // Inspection off intentionally preserves opaque, end-to-end encrypted traffic.
             if (!this.options.authorizeHttpRequest) await this.relayUnmodified(client, approval, signal);
@@ -244,6 +247,19 @@ export class TcpGatewayBroker {
                     return;
                 }
                 client.write(response);
+                relaySockets(client, upstream);
+            } catch (error) {
+                upstream.destroy();
+                throw error;
+            }
+        } else if (definition) {
+            if (definition.initiation !== "client") throw new Error("TCP gateway received an unexpected client greeting");
+            await this.authorizeChannel(client, approval, definition.protocol, signal);
+            const upstream = await this.connectUpstream(approval, scheme, signal, tlsIdentity);
+            try {
+                const relay = await exchangeChannelHandshake(client, upstream, definition, signal);
+                if (!relay) return;
+                this.assertFlowActive(client, signal);
                 relaySockets(client, upstream);
             } catch (error) {
                 upstream.destroy();
@@ -308,21 +324,31 @@ export class TcpGatewayBroker {
         }
     }
 
-    private async authorizeStream(
+    private authorizeStream(
         client: Socket,
         approval: TcpGatewayApproval,
         protocol: TcpApplicationProtocol.SSH | TcpApplicationProtocol.SMTP | TcpApplicationProtocol.ADB,
+        signal: AbortSignal,
+    ): Promise<void> {
+        const applicationProtocol = {
+            [TcpApplicationProtocol.SSH]: NetworkApplicationProtocol.SSH,
+            [TcpApplicationProtocol.SMTP]: NetworkApplicationProtocol.SMTP,
+            [TcpApplicationProtocol.ADB]: NetworkApplicationProtocol.ADB,
+        }[protocol];
+        return this.authorizeChannel(client, approval, applicationProtocol, signal);
+    }
+
+    private async authorizeChannel(
+        client: Socket,
+        approval: TcpGatewayApproval,
+        protocol: NetworkApplicationProtocol,
         signal: AbortSignal,
     ): Promise<void> {
         const hostname = approval.hostname ?? approval.destination.address;
         const host = hostname.includes(":") ? `[${hostname}]` : hostname;
         this.assertFlowActive(client, signal);
         const allowed = await awaitWithAbort(() => this.options.authorizeProtocol?.({
-            protocol: {
-                [TcpApplicationProtocol.SSH]: NetworkApplicationProtocol.SSH,
-                [TcpApplicationProtocol.SMTP]: NetworkApplicationProtocol.SMTP,
-                [TcpApplicationProtocol.ADB]: NetworkApplicationProtocol.ADB,
-            }[protocol],
+            protocol,
             uri: `${host}:${approval.destination.port}`,
             family: approval.family,
             source: approval.source,
@@ -368,7 +394,8 @@ export class TcpGatewayBroker {
             }
             const protocol = await sniffProbeProtocols(client, upstream, probeSignal);
             this.assertFlowActive(client, probeSignal);
-            if ((isHttpOrTlsProtocol(protocol) || protocol === TcpApplicationProtocol.ADB)
+            const definition = channelProtocol(protocol);
+            if ((isHttpOrTlsProtocol(protocol) || protocol === TcpApplicationProtocol.ADB || definition?.initiation === "client")
                 && (protocol !== TcpApplicationProtocol.TLS || scheme === "http")) {
                 if (!this.options.authorizeHttpRequest && !this.options.authorizeProtocol) {
                     relaySockets(client, upstream);
@@ -381,7 +408,9 @@ export class TcpGatewayBroker {
                 await this.dispatchApplication(client, approval, scheme, protocol, signal, tlsIdentity);
                 return;
             }
-            if (protocol === TcpApplicationProtocol.SSH || protocol === TcpApplicationProtocol.SMTP) {
+            if (definition?.initiation === "server") {
+                await this.authorizeChannel(client, approval, definition.protocol, probeSignal);
+            } else if (protocol === TcpApplicationProtocol.SSH || protocol === TcpApplicationProtocol.SMTP) {
                 await this.authorizeStream(client, approval, protocol, probeSignal);
             } else if (this.options.authorizeHttpRequest || scheme === "https") {
                 throw new Error("request-aware gateway denied an unrecognized server greeting");
@@ -632,7 +661,7 @@ async function awaitWithAbort<T>(operation: () => T | Promise<T>, signal: AbortS
 
 type DirectionalProbe = {direction: "client" | "server"; value: SniffedTcpProtocol};
 
-async function sniffProbeProtocols(client: Socket, upstream: Socket, signal: AbortSignal): Promise<TcpApplicationProtocol> {
+async function sniffProbeProtocols(client: Socket, upstream: Socket, signal: AbortSignal): Promise<ClassifiedTcpProtocol> {
     const controller = new AbortController();
     const sniffSignal = AbortSignal.any([signal, controller.signal]);
     let failure: {error: unknown} | undefined;
@@ -673,7 +702,7 @@ async function sniffProbeProtocols(client: Socket, upstream: Socket, signal: Abo
     }
     if (signal.aborted) throw new Error("TCP gateway probe was aborted");
     if (failure) throw failure.error;
-    const protocols = new Set<TcpApplicationProtocol>();
+    const protocols = new Set<ClassifiedTcpProtocol>();
     let opaque = false;
     for (const result of results) {
         if (result.status !== "fulfilled") continue;
@@ -691,12 +720,12 @@ async function sniffProbeProtocols(client: Socket, upstream: Socket, signal: Abo
     return protocols.values().next().value ?? (opaque ? TcpApplicationProtocol.OPAQUE : TcpApplicationProtocol.SILENT);
 }
 
-function isHttpOrTlsProtocol(protocol: TcpApplicationProtocol): boolean {
+function isHttpOrTlsProtocol(protocol: ClassifiedTcpProtocol): boolean {
     return protocol === TcpApplicationProtocol.HTTP1 || protocol === TcpApplicationProtocol.HTTP2
         || protocol === TcpApplicationProtocol.TLS;
 }
 
-function isIdentifiedProtocol(protocol: TcpApplicationProtocol): boolean {
+function isIdentifiedProtocol(protocol: ClassifiedTcpProtocol): boolean {
     return protocol !== TcpApplicationProtocol.OPAQUE && protocol !== TcpApplicationProtocol.SILENT;
 }
 

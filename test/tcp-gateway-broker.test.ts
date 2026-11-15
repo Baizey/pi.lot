@@ -161,12 +161,12 @@ test("broker shutdown cancels pending approval and late completion has no effect
     assert.equal(fixture.connections, 0);
 });
 
-test("an ambiguous FTP-style 220 greeting does not become an SMTP permission", {timeout: 8_000}, async (t) => {
+test("an ambiguous 220 greeting does not become a protocol permission", {timeout: 8_000}, async (t) => {
     let reviews = 0;
     const fixture = await GatewayFixture.create(t, {
         authorizeHttpRequest: () => true,
         authorizeProtocol: () => { reviews++; return true; },
-    }, "220 FTP service ready\r\n");
+    }, "220 service ready\r\n");
     const client = await fixture.connect();
     await client.closed;
     assert.equal(reviews, 0);

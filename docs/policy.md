@@ -70,6 +70,12 @@ The TCP gateway recognizes supported protocol envelopes and evaluates their spec
 | ADB | A complete length-prefixed host smart-socket request; approved hostname/IP plus exact destination port | `web_adb` |
 | WebSocket | A validated HTTP/1 upgrade handshake and canonical HTTP(S) URL | `web_websocket`, plus HTTP GET under full inspection |
 | gRPC | Supported `application/grpc` and gRPC-Web media types; canonical HTTP(S) service/method URL, checked separately for each HTTP/2 stream or HTTP/1 request | `web_grpc`, plus HTTP method policy under full inspection |
+| Database channels | PostgreSQL, MySQL/MariaDB, Redis, MongoDB; approved hostname/IP plus exact destination port | `web_postgres`, `web_mysql`, `web_redis`, `web_mongodb` respectively |
+| Messaging channels | MQTT, AMQP, Kafka, NATS; approved hostname/IP plus exact destination port | `web_mqtt`, `web_amqp`, `web_kafka`, `web_nats` respectively |
+| File/directory channels | FTP/FTPS control, SMB, NFS over TCP, LDAP; approved hostname/IP plus exact destination port | `web_ftp`, `web_smb`, `web_nfs`, `web_ldap` respectively |
+| Mail retrieval channels | IMAP, POP3; approved hostname/IP plus exact destination port | `web_imap`, `web_pop3` respectively |
+
+See [service protocol admission](network-protocols.md) for the supported wire versions, initial envelopes, and important FTP/NFS limitations. These grants authorize entire channels, not individual queries, keys, topics, shares, paths, directory operations, mailboxes, or authentication identities. A client-first channel sends only its bounded initial request after protocol approval, validates the upstream response envelope, and holds pipelined continuation until that confirmation. **The approved initial request itself can have effects.** Server-first channels withhold the identifying greeting and queued client bytes until approval. Subsequent operations and in-band TLS upgrades are opaque continuations; client-side certificate verification remains the client's responsibility for those upgrades. Initial envelopes larger than 65,539 bytes are unsupported and fail closed under full inspection.
 
 SSH/SMTP grants authorize the **outer connection**, not individual remote commands, port forwards, recipients, or subsequent opaque bytes. This permits SSH encryption and SMTP STARTTLS continuations but does not verify the contents of those continuations or detect other protocols tunneled inside an authorized channel. End-to-end STARTTLS certificate verification remains the client's responsibility; implicit TLS intercepted by the gateway uses separately verified upstream TLS. Importing an SSH-agent socket supplies credential IPC, not SSH network authority.
 
@@ -79,7 +85,7 @@ A server-first or initially silent client may require an already-transport-appro
 
 Inspected TLS negotiates HTTP/2 or HTTP/1.1, or classifies decrypted application bytes when ALPN is absent. Upstream connections retain the approved IP/port and verify the logical TLS identity; client headers and SNI do not select a new upstream address. WebSocket extensions are not negotiated. HTTP `CONNECT`, HTTP/2 extended WebSockets, and HTTP/1 `h2c` upgrades remain unsupported.
 
-**Inspection off is explicitly a compatibility boundary, not comprehensive application-protocol enforcement.** Recognized plaintext SSH/SMTP/ADB and supported plaintext HTTP protocol requests still receive their specific checks, but opaque end-to-end TLS and unrecognized plaintext can retain transport-only forwarding. Encrypted WebSocket/gRPC/SMTP/ADB therefore cannot be reliably captured in that mode. An allowed outer channel can also carry other applications. Namespace-local loopback flows receive transport checks but do not traverse the application gateway.
+**Inspection off is explicitly a compatibility boundary, not comprehensive application-protocol enforcement.** Recognized plaintext SSH/SMTP/ADB, the service channels listed above, and supported plaintext HTTP protocol requests still receive their specific checks, but opaque end-to-end TLS and unrecognized plaintext can retain transport-only forwarding. Encrypted WebSocket/gRPC/SMTP/ADB therefore cannot be reliably captured in that mode. An allowed outer channel can also carry other applications. Namespace-local loopback flows receive transport checks but do not traverse the application gateway.
 
 ### Android devices and the host ADB server
 
@@ -126,6 +132,10 @@ Root-only `archive_list` and `archive_fetch` check each actual URL and method wi
 | `web_grpc` | Supported gRPC and gRPC-Web requests | `ask_user` |
 | `web_smtp` | Recognized SMTP connections | `ask_user` |
 | `web_adb` | Recognized ADB server channels | `ask_user` |
+| `web_postgres`, `web_mysql`, `web_redis`, `web_mongodb` | Recognized database channels | `ask_user` |
+| `web_mqtt`, `web_amqp`, `web_kafka`, `web_nats` | Recognized messaging channels | `ask_user` |
+| `web_ftp`, `web_smb`, `web_nfs`, `web_ldap` | Recognized file/directory channels (see supported modes) | `ask_user` |
+| `web_imap`, `web_pop3` | Recognized mail retrieval channels | `ask_user` |
 
 Each area accepts one fallback:
 

@@ -3,9 +3,11 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {initialPolicyDefaults, PolicyDefaultJsonStorage} from "../src/policy/defaults.js";
+import {ADDITIVE_POLICY_AREAS, initialPolicyDefaults, parsePolicyDefaults, PolicyDefaultJsonStorage} from "../src/policy/defaults.js";
+import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
 import {
+    POLICY_AREAS,
     PolicyAccessType,
     PolicyArea,
     PolicyFallbackResponse,
@@ -49,11 +51,18 @@ test("missing policy defaults share the frozen built-in object across stores", (
     });
 });
 
-test("JSON policy defaults retain permissive parsing without merging or validation", () => {
+test("JSON policy defaults reject incomplete, unknown, and invalid snapshots", () => {
     withStore((store) => {
-        for (const value of [{fs_write: "deny"}, {unexpected: "value"}, null, [], "allow", 42]) {
+        for (const value of [{fs_write: "deny"}, {unexpected: "value"}, null, [], "allow", 42,
+            {...initialPolicyDefaults, unexpected: "allow"}, {...initialPolicyDefaults, fs_read: "invalid"}]) {
             writeFileSync(store.file, JSON.stringify(value));
-            assert.deepEqual(store.load(), value);
+            assert.throws(() => store.load(), /Invalid policy defaults/);
+        }
+        for (const area of POLICY_AREAS.filter((area) => !ADDITIVE_POLICY_AREAS.includes(area))) {
+            const incomplete: Record<string, unknown> = {...initialPolicyDefaults};
+            delete incomplete[area];
+            writeFileSync(store.file, JSON.stringify(incomplete));
+            assert.throws(() => store.load(), /Invalid policy defaults/);
         }
         store.save({...initialPolicyDefaults});
         const defaults = store.load();
@@ -94,16 +103,62 @@ test("policy runtime loads, saves, and resets active defaults through its store"
     });
 });
 
-test("legacy saved defaults acquire ask_user for ADB on load and reset", () => {
+test("legacy saved defaults acquire ask_user for every additive channel on load and reset", () => {
     withStore((store) => {
-        const {web_adb: _adb, ...legacy} = initialPolicyDefaults;
-        writeFileSync(store.file, JSON.stringify({...legacy, web_tcp: "allow"}));
-        const runtime = new PolicyRuntime("legacy-adb-defaults", emptyPolicyDao(), unusedDecisionFlow(), store);
-        assert.equal(runtime.defaultResponses.web_adb, PolicyFallbackResponse.ask_user);
-        runtime.setDefaultResponse(PolicyArea.web_adb, PolicyFallbackResponse.allow);
+        const legacy: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
+        for (const area of ADDITIVE_POLICY_AREAS) delete legacy[area];
+        writeFileSync(store.file, JSON.stringify(legacy));
+        const runtime = new PolicyRuntime("legacy-channel-defaults", emptyPolicyDao(), unusedDecisionFlow(), store);
+        assert.deepEqual(store.load(), {...initialPolicyDefaults, web_tcp: PolicyFallbackResponse.allow});
+        for (const [, , area] of APPLICATION_POLICY_CHANNELS) {
+            assert.equal(runtime.defaultResponses[area], PolicyFallbackResponse.ask_user, area);
+            runtime.setDefaultResponse(area, PolicyFallbackResponse.allow);
+        }
         runtime.resetDefaultResponses();
-        assert.equal(runtime.defaultResponses.web_adb, PolicyFallbackResponse.ask_user);
+        for (const [, , area] of APPLICATION_POLICY_CHANNELS) {
+            assert.equal(runtime.defaultResponses[area], PolicyFallbackResponse.ask_user, area);
+        }
         assert.equal(runtime.defaultResponses.web_tcp, PolicyFallbackResponse.allow);
+    });
+});
+
+for (const [protocol, , area] of APPLICATION_POLICY_CHANNELS) {
+    test(`${protocol} saved defaults migrate only absent fields and preserve every explicit response`, () => {
+        withStore((store) => {
+            const legacy: Record<string, unknown> = {...initialPolicyDefaults};
+            delete legacy[area];
+            writeFileSync(store.file, JSON.stringify(legacy));
+            assert.equal(store.load()[area], PolicyFallbackResponse.ask_user);
+            for (const response of Object.values(PolicyFallbackResponse)) {
+                store.save({...initialPolicyDefaults, [area]: response});
+                const runtime = new PolicyRuntime("explicit-channel-defaults", emptyPolicyDao(), unusedDecisionFlow(), store);
+                assert.equal(runtime.defaultResponses[area], response);
+                runtime.setDefaultResponse(area, PolicyFallbackResponse.allow);
+                runtime.resetDefaultResponses();
+                assert.equal(runtime.defaultResponses[area], response);
+            }
+            for (const response of [null, true, "invalid", 0, {}, []]) {
+                writeFileSync(store.file, JSON.stringify({...legacy, [area]: response}));
+                assert.throws(() => store.load(), /Invalid policy defaults/);
+            }
+            assert.throws(() => parsePolicyDefaults({...legacy, [area]: undefined}), /invalid policy default/i);
+        });
+    });
+}
+
+test("invalid reloaded defaults cannot partially change live responses or overwrite saved defaults", () => {
+    withStore((store) => {
+        const runtime = new PolicyRuntime("atomic-default-reset", emptyPolicyDao(), unusedDecisionFlow(), store);
+        runtime.setDefaultResponse(PolicyArea.fs_write, PolicyFallbackResponse.deny);
+        const before = {...runtime.defaultResponses};
+        const invalid = {...initialPolicyDefaults, fs_read: "deny", web_pop3: "invalid"};
+        writeFileSync(store.file, JSON.stringify(invalid));
+        assert.throws(() => runtime.resetDefaultResponses(), /Invalid policy defaults/);
+        assert.deepEqual(runtime.defaultResponses, before);
+        assert.throws(() => new PolicyRuntime("invalid-defaults", emptyPolicyDao(), unusedDecisionFlow(), store), /Invalid policy defaults/);
+        // The save boundary validates even callers that bypass TypeScript.
+        assert.throws(() => Reflect.apply(store.save, store, [invalid]), /invalid policy default/i);
+        assert.deepEqual(JSON.parse(readFileSync(store.file, "utf8")), invalid);
     });
 });
 

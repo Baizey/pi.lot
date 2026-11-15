@@ -3,7 +3,8 @@ import {decodeArchiveBinding, decodeArchiveSequence, type Binding} from "../Arch
 import {parseDisplayDefaults} from "../../tui/tool/DisplayDefaults.js";
 import {parseSubagentDefaults} from "../../subagents/SubagentDefaults.js";
 import {parseWebSearchConfig} from "../../web-search/WebSearchConfig.js";
-import {POLICY_AREAS, PolicyAccessType, PolicyArea, PolicyFallbackResponse, PolicyResponse} from "../../policy/types.js";
+import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
+import {parsePolicyDefaults} from "../../policy/defaults.js";
 
 export const CONFIG_SYNC_CAPABILITY = "config_sync_v1";
 export const CONFIG_KEYS = ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "global-policies"] as const;
@@ -55,13 +56,9 @@ export function validateConfigContent(key: ConfigKey, content: unknown): asserts
             case "subagent-defaults": parseSubagentDefaults(value); break;
             case "web-search": parseWebSearchConfig(value); break;
             case "policy-defaults": {
-                // Preserve legacy v1 snapshots byte-for-byte; omitted ADB defaults
-                // resolve to ask_user in the runtime, never to a transport allow.
-                const areas = POLICY_AREAS.filter((area) => area !== PolicyArea.web_adb
-                    || (typeof value === "object" && value !== null && Object.hasOwn(value, area)));
-                const row = configObject(value, areas);
-                const allowed = Object.values(PolicyFallbackResponse);
-                for (const area of areas) requireConfig(allowed.some((entry) => entry === row[area]));
+                // Validate with the runtime's migration policy without changing legacy
+                // snapshot bytes/hashes. Only additive areas may be omitted.
+                parsePolicyDefaults(value);
                 break;
             }
             case "global-policies": {

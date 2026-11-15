@@ -32,7 +32,7 @@ import {
     policyAreaForAccessType,
 } from "./types";
 import type {PolicyDaoInterface} from "../storage/PolicyDao";
-import {initialPolicyDefaults, type PolicyDefaultJsonStorageInterface, type ResponseDefaults} from "./defaults.js";
+import {initialPolicyDefaults, parsePolicyDefaults, type PolicyDefaultJsonStorageInterface, type ResponseDefaults} from "./defaults.js";
 import {UNIVERSAL_NETWORK_POLICY_PATTERN} from "./network/ParsedUri.js";
 import {
     NativeFilesystemPolicyBase,
@@ -153,7 +153,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             context: normalizedPrincipalContext(rootContext),
             contextRevision: 0,
         });
-        this.defaultResponses = {...initialPolicyDefaults, ...defaultsStore?.load()};
+        this.defaultResponses = parsePolicyDefaults(defaultsStore ? defaultsStore.load() : initialPolicyDefaults);
         this.setFallbacks();
         this.nativeFilesystemPolicyBases.set(
             agentIdentifier,
@@ -235,12 +235,10 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
     }
 
     resetDefaultResponses(): void {
-        const defaults = this.defaultsStore?.load() ?? initialPolicyDefaults;
+        // Validate the complete snapshot before changing any live fallback.
+        const defaults = parsePolicyDefaults(this.defaultsStore ? this.defaultsStore.load() : initialPolicyDefaults);
         for (const area of POLICY_AREAS) {
-            // Saved defaults from before ADB support have no value for this area.
-            const response = area === PolicyArea.web_adb && defaults[area] === undefined
-                ? initialPolicyDefaults.web_adb : defaults[area];
-            this.setDefaultResponse(area, response);
+            this.setDefaultResponse(area, defaults[area]);
         }
     }
 

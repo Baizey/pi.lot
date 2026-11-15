@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, {type TestContext} from "node:test";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
+import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 import {
     type Policy,
     type PolicyStatus,
@@ -83,6 +84,24 @@ test("deleting a policy leaves other access types and patterns untouched", (cont
     dao.deletePolicy("/work", PolicyAccessType.FS_READ);
     assert.deepEqual(dao.loadPolicies(), [other]);
 });
+
+for (const [protocol, accessType] of APPLICATION_POLICY_CHANNELS) {
+    test(`${protocol} channel grants and denials round-trip through newly initialized policy storage`, (context) => {
+        const database = createDatabase(context);
+        const dao = new PolicyDao(database);
+        const target = `${protocol}.test:15555`;
+        const grant = policy(target, status(accessType));
+        dao.upsertPolicies([grant]);
+        assert.deepEqual(new PolicyDao(database).loadPolicies(), [grant]);
+        const denial = policy(target, status(accessType, {
+            lifetime: PolicyLifetime.GLOBAL, status: PolicyResponse.DENIED, reason: "Explicit channel denial",
+        }));
+        dao.upsertPolicies([denial]);
+        assert.deepEqual(new PolicyDao(database).loadPolicies(), [denial]);
+        dao.deletePolicy(target, accessType);
+        assert.deepEqual(dao.loadPolicies(), []);
+    });
+}
 
 test("invalid policy rows roll back the entire upsert batch", (context) => {
     const dao = new PolicyDao(createDatabase(context));

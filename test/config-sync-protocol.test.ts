@@ -24,8 +24,9 @@ import {
 } from "../src/server/config-sync/ConfigSyncProtocol.js";
 import {initialDisplayDefaults} from "../src/tui/tool/DisplayDefaults.js";
 import {initialSubagentDefaults} from "../src/subagents/SubagentDefaults.js";
-import {initialPolicyDefaults} from "../src/policy/defaults.js";
-import {PolicyAccessType, PolicyResponse} from "../src/policy/types.js";
+import {ADDITIVE_POLICY_AREAS, initialPolicyDefaults} from "../src/policy/defaults.js";
+import {PolicyAccessType, PolicyFallbackResponse, PolicyResponse} from "../src/policy/types.js";
+import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 
 const binding = {server_id: "server", namespace_id: "namespace", history_generation: "generation"};
 const timestamp = "2025-01-02T03:04:05.006Z";
@@ -64,26 +65,47 @@ for (const key of CONFIG_KEYS) {
         for (const field of Object.keys(savedSourceObject(key))) {
             // Web-search provider credentials are optional; its required fields are version/providers.
             if (key === "web-search" && field === "brave") continue;
-            if (key === "policy-defaults" && field === "web_adb") continue;
+            if (key === "policy-defaults" && ADDITIVE_POLICY_AREAS.some((area) => area === field)) continue;
             rejects(() => validateConfigContent(key, JSON.stringify(without(savedSourceObject(key), field))));
         }
     });
 }
 
-test("ADB policy defaults and rules round-trip while legacy v1 defaults retain their identity", () => {
-    const legacy = canonicalConfigContent(without({...initialPolicyDefaults}, "web_adb"));
-    assert.doesNotThrow(() => validateConfigContent("policy-defaults", legacy));
-    assert.equal(decodeConfigState(state("policy-defaults", legacy)).content, legacy);
-    for (const value of ["allow", "deny", "ask_user", "ask_llm"]) {
-        const content = canonicalConfigContent({...initialPolicyDefaults, web_adb: value});
-        assert.equal(decodeConfigExchange(exchange("policy-defaults", content)).content, content);
+test("legacy v1 policy defaults may omit all additive channels without changing content or hashes", () => {
+    const defaults: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
+    for (const area of ADDITIVE_POLICY_AREAS) delete defaults[area];
+    const content = canonicalConfigContent(defaults);
+    const hash = configHash(content);
+    assert.doesNotThrow(() => validateConfigContent("policy-defaults", content));
+    for (const decoded of [decodeConfigState(state("policy-defaults", content)), decodeConfigExchange(exchange("policy-defaults", content))]) {
+        assert.equal(decoded.content, content);
+        assert.equal(decoded.sha256, hash);
     }
-    for (const value of [null, true, "unknown"]) {
-        rejects(() => validateConfigContent("policy-defaults", canonicalConfigContent({...initialPolicyDefaults, web_adb: value})));
-    }
-    const adb = {...rule("10.0.2.2:5037"), accessType: PolicyAccessType.ADB_ACCESS};
-    assert.deepEqual(decodeGlobalPolicyRules(canonicalConfigContent({rules: [adb]})), [adb]);
 });
+
+for (const [protocol, accessType, area] of APPLICATION_POLICY_CHANNELS) {
+    test(`${protocol} policy defaults and GLOBAL rules round-trip while absent additive fields remain optional`, () => {
+        const legacy = canonicalConfigContent(without({...initialPolicyDefaults}, area));
+        assert.doesNotThrow(() => validateConfigContent("policy-defaults", legacy));
+        assert.equal(decodeConfigState(state("policy-defaults", legacy)).content, legacy);
+        assert.equal(decodeConfigExchange(exchange("policy-defaults", legacy)).content, legacy);
+        for (const value of Object.values(PolicyFallbackResponse)) {
+            const content = canonicalConfigContent({...initialPolicyDefaults, [area]: value});
+            assert.equal(decodeConfigExchange(exchange("policy-defaults", content)).content, content);
+            assert.equal(decodeConfigState(state("policy-defaults", content)).content, content);
+        }
+        for (const value of [null, true, false, "unknown", "allow\n", 0, [], {}]) {
+            const content = canonicalConfigContent({...initialPolicyDefaults, [area]: value});
+            rejects(() => validateConfigContent("policy-defaults", content));
+            rejects(() => decodeConfigExchange(exchange("policy-defaults", content)));
+            rejects(() => decodeConfigState(state("policy-defaults", content)));
+        }
+        const channelRule = {...rule("channel.test:15555"), accessType};
+        const rulesContent = canonicalConfigContent({rules: [channelRule]});
+        assert.deepEqual(decodeGlobalPolicyRules(rulesContent), [channelRule]);
+        assert.equal(decodeConfigExchange(exchange("global-policies", rulesContent)).content, rulesContent);
+    });
+}
 
 test("configuration capability and key vocabulary are fixed, with no unrelated settings admitted", () => {
     assert.equal(CONFIG_SYNC_CAPABILITY, "config_sync_v1");

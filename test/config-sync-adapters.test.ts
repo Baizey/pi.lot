@@ -11,7 +11,7 @@ import {
 } from "../src/server/config-sync/ConfigSyncProtocol.js";
 import {initialDisplayDefaults} from "../src/tui/tool/DisplayDefaults.js";
 import {initialSubagentDefaults} from "../src/subagents/SubagentDefaults.js";
-import {initialPolicyDefaults} from "../src/policy/defaults.js";
+import {ADDITIVE_POLICY_AREAS, initialPolicyDefaults, PolicyDefaultJsonStorage} from "../src/policy/defaults.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {openIsolatedTestDatabase} from "./fixtures/IsolatedTestDatabase.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
@@ -99,6 +99,23 @@ for (const [key, value] of savedFiles) {
         assert.deepEqual(fs.readdirSync(directory), []);
     });
 }
+
+test("legacy policy-default imports preserve saved bytes while storage supplies additive ask_user defaults", (t) => {
+    const {directory, adapters} = fixture(t);
+    const legacy: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
+    for (const area of ADDITIVE_POLICY_AREAS) delete legacy[area];
+    const content = canonicalConfigContent(legacy);
+    assert.deepEqual(adapters.apply("policy-defaults", adapters.capture("policy-defaults"), content), {
+        applied: true, materialized: content,
+    });
+    const file = path.join(directory, "policy-defaults.json");
+    assert.equal(fs.readFileSync(file, "utf8"), content);
+    assert.deepEqual(new PolicyDefaultJsonStorage("policy-defaults", directory).load(), {
+        ...initialPolicyDefaults, web_tcp: "allow",
+    });
+    assert.equal(adapters.capture("policy-defaults").content, content);
+    assert.equal(fs.readFileSync(file, "utf8"), content);
+});
 
 test("file replacement is atomic and private, without modifying hard-link peers or unrelated saved files", (t) => {
     const {directory, adapters} = fixture(t);

@@ -48,8 +48,24 @@ export enum PolicyAccessType {
     // Network services
     DNS_ACCESS = "DNS",
 
+    // Application channels
+    POSTGRES_ACCESS = "POSTGRES",
+    MYSQL_ACCESS = "MYSQL",
+    REDIS_ACCESS = "REDIS",
+    MONGODB_ACCESS = "MONGODB",
+    MQTT_ACCESS = "MQTT",
+    AMQP_ACCESS = "AMQP",
+    KAFKA_ACCESS = "KAFKA",
+    NATS_ACCESS = "NATS",
+    FTP_ACCESS = "FTP",
+    SMB_ACCESS = "SMB",
+    NFS_ACCESS = "NFS",
+    LDAP_ACCESS = "LDAP",
+
     // Email
     SMTP_ACCESS = "SMTP",
+    IMAP_ACCESS = "IMAP",
+    POP3_ACCESS = "POP3",
 }
 
 export function httpMethodAccessType(method: string): PolicyAccessType {
@@ -93,6 +109,20 @@ export enum PolicyArea {
     web_grpc = "web_grpc",
     web_smtp = "web_smtp",
     web_adb = "web_adb",
+    web_postgres = "web_postgres",
+    web_mysql = "web_mysql",
+    web_redis = "web_redis",
+    web_mongodb = "web_mongodb",
+    web_mqtt = "web_mqtt",
+    web_amqp = "web_amqp",
+    web_kafka = "web_kafka",
+    web_nats = "web_nats",
+    web_ftp = "web_ftp",
+    web_smb = "web_smb",
+    web_nfs = "web_nfs",
+    web_ldap = "web_ldap",
+    web_imap = "web_imap",
+    web_pop3 = "web_pop3",
 }
 
 export const POLICY_AREAS: readonly PolicyArea[] = Object.freeze(Object.values(PolicyArea));
@@ -119,6 +149,20 @@ const POLICY_AREA_ACCESS_TYPES: Readonly<Record<PolicyArea, readonly PolicyAcces
     [PolicyArea.web_udp]: Object.freeze([PolicyAccessType.UDP_ACCESS]),
     [PolicyArea.web_smtp]: Object.freeze([PolicyAccessType.SMTP_ACCESS]),
     [PolicyArea.web_adb]: Object.freeze([PolicyAccessType.ADB_ACCESS]),
+    [PolicyArea.web_postgres]: Object.freeze([PolicyAccessType.POSTGRES_ACCESS]),
+    [PolicyArea.web_mysql]: Object.freeze([PolicyAccessType.MYSQL_ACCESS]),
+    [PolicyArea.web_redis]: Object.freeze([PolicyAccessType.REDIS_ACCESS]),
+    [PolicyArea.web_mongodb]: Object.freeze([PolicyAccessType.MONGODB_ACCESS]),
+    [PolicyArea.web_mqtt]: Object.freeze([PolicyAccessType.MQTT_ACCESS]),
+    [PolicyArea.web_amqp]: Object.freeze([PolicyAccessType.AMQP_ACCESS]),
+    [PolicyArea.web_kafka]: Object.freeze([PolicyAccessType.KAFKA_ACCESS]),
+    [PolicyArea.web_nats]: Object.freeze([PolicyAccessType.NATS_ACCESS]),
+    [PolicyArea.web_ftp]: Object.freeze([PolicyAccessType.FTP_ACCESS]),
+    [PolicyArea.web_smb]: Object.freeze([PolicyAccessType.SMB_ACCESS]),
+    [PolicyArea.web_nfs]: Object.freeze([PolicyAccessType.NFS_ACCESS]),
+    [PolicyArea.web_ldap]: Object.freeze([PolicyAccessType.LDAP_ACCESS]),
+    [PolicyArea.web_imap]: Object.freeze([PolicyAccessType.IMAP_ACCESS]),
+    [PolicyArea.web_pop3]: Object.freeze([PolicyAccessType.POP3_ACCESS]),
     [PolicyArea.web_websocket]: Object.freeze([PolicyAccessType.WEBSOCKET_ACCESS]),
 });
 

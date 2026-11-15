@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {NetworkPolicyAuthorizer} from "../src/policy/network/NetworkPolicyAuthorizer.js";
+import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 import {NetworkAddressFamily, NetworkDecision, NetworkOperation} from "../src/policy/network/network-queue-protocol.js";
 import {NetworkTargetKind} from "../src/policy/network/NetworkPolicy.js";
 import type {NetworkPolicyEvent, NetworkPolicyScope} from "../src/policy/network/NetworkPolicy.js";
@@ -84,7 +85,7 @@ test("application protocols receive distinct policy checks rather than reusing t
     for (const [protocol, accessType] of [
         [NetworkApplicationProtocol.SSH, PolicyAccessType.SSH_ACCESS],
         [NetworkApplicationProtocol.SMTP, PolicyAccessType.SMTP_ACCESS],
-        [NetworkApplicationProtocol.ADB, PolicyAccessType.ADB_ACCESS],
+        ...APPLICATION_POLICY_CHANNELS,
         [NetworkApplicationProtocol.WEBSOCKET, PolicyAccessType.WEBSOCKET_ACCESS],
         [NetworkApplicationProtocol.GRPC, PolicyAccessType.GRPC_ACCESS],
     ] as const) {
@@ -92,7 +93,7 @@ test("application protocols receive distinct policy checks rather than reusing t
         assert.equal(await authorizer.authorizeProtocol(event, signal), false);
         assert.deepEqual(evaluations.at(-1), {uri: event.uri, accessType});
     }
-    assert.equal(reports.length, 5);
+    assert.equal(reports.length, Object.values(NetworkApplicationProtocol).length);
     assert.ok(reports.every((message) => message.startsWith("ACCESS DENIED")));
 });
 
@@ -123,10 +124,9 @@ function protocolEvent(protocol: NetworkApplicationProtocol): NetworkProtocolEve
     const event = httpEvent("POST");
     return {
         protocol,
-        uri: protocol === NetworkApplicationProtocol.SSH || protocol === NetworkApplicationProtocol.SMTP
-            || protocol === NetworkApplicationProtocol.ADB
-            ? "[2001:db8::8]:2222"
-            : event.url,
+        uri: protocol === NetworkApplicationProtocol.WEBSOCKET || protocol === NetworkApplicationProtocol.GRPC
+            ? event.url
+            : "[2001:db8::8]:2222",
         family: event.family,
         source: event.source,
         destination: event.destination,

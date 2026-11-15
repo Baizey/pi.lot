@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 import {
     AGENT_CAPABILITIES,
     AgentCapabilitySet,
@@ -25,6 +26,19 @@ test("agent capabilities are the complete policy-area set plus hard mechanisms",
     assert.equal(AGENT_CAPABILITIES.includes(PolicyArea.web_ssh), true);
     assert.equal(AGENT_CAPABILITIES.includes(PolicyArea.web_websocket), true);
 });
+
+for (const [protocol, accessType, area] of APPLICATION_POLICY_CHANNELS) {
+    test(`${protocol} channel has its own inheritable capability and exact vocabulary`, () => {
+        assert.equal(accessType, protocol.toUpperCase());
+        assert.equal(area, `web_${protocol}`);
+        assert.ok(AGENT_CAPABILITIES.includes(area));
+        assert.deepEqual(policyAreaAccessTypes(area), [accessType]);
+        assert.equal(policyAreaForAccessType(accessType), area);
+        const capabilities = new AgentCapabilitySet([area]);
+        assert.deepEqual(capabilities.policyAreas(), [area]);
+        assert.deepEqual(capabilities.mechanisms(), []);
+    });
+}
 
 test("every concrete policy access type belongs to exactly one capability area", () => {
     const covered = POLICY_AREAS.flatMap((area) => policyAreaAccessTypes(area));

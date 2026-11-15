@@ -10,6 +10,7 @@ import {PolicyDecisionFlow} from "../src/policy/PolicyDecisionFlow";
 import type {PolicyChoice, QueuedPolicyApproval} from "../src/policy/PolicyDecisionFlow";
 import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 import {createMemoryPolicyDao} from "./fixtures/MemoryPolicyDao.js";
+import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 import type {Policy} from "../src/policy/types";
 import {
     PolicyAccessType,
@@ -423,27 +424,41 @@ test("root policy defaults and subagent capability snapshots use the same policy
     runtime.removePolicyPrincipal(childIdentifier);
 });
 
-test("ADB approval is scoped separately from TCP and inherited by its policy-area capability", async (t) => {
-    const target = "10.0.2.2:5037";
-    const decisions = scriptedDecisionFlow([{
-        uri: target, accessType: PolicyAccessType.ADB_ACCESS, lifetime: PolicyLifetime.SESSION,
-        status: PolicyResponse.ALLOWED, reason: "Use the local Android test device",
-    }]);
-    const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t), decisions.flow);
-    runtime.setDefaultResponse(PolicyArea.web_tcp, PolicyFallbackResponse.allow);
-    assert.equal((await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.TCP_ACCESS)).matchedStatus, PolicyResponse.ALLOWED);
-    assert.equal(decisions.callCount(), 0);
-    const approved = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.ADB_ACCESS);
-    assert.equal(approved.matchedStatus, PolicyResponse.ALLOWED);
-    assert.equal(decisions.callCount(), 1, "a TCP allow must not satisfy ADB permission");
-    runtime.registerPolicyPrincipal("adb-child", TEST_AGENT_IDENTIFIER, [PolicyArea.web_adb]);
-    const inherited = await runtime.beginToolCall("adb-child")(target, PolicyAccessType.ADB_ACCESS);
-    assert.equal(inherited.matchedStatus, PolicyResponse.ALLOWED);
-    assert.equal(inherited.matchedReason, approved.matchedReason);
-    assert.equal(decisions.callCount(), 1);
-    runtime.setDefaultResponse(PolicyArea.web_adb, PolicyFallbackResponse.deny);
-    assert.equal((await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)("10.0.2.2:5038", PolicyAccessType.ADB_ACCESS)).matchedStatus, PolicyResponse.DENIED);
-});
+for (const [protocol, accessType, area] of APPLICATION_POLICY_CHANNELS) {
+    test(`${protocol} approvals and explicit denials are separate from TCP and inherited by capability`, async (t) => {
+        const target = "channel.test:15555";
+        const deniedTarget = "channel.test:15556";
+        const decisions = scriptedDecisionFlow([{
+            uri: target, accessType, lifetime: PolicyLifetime.SESSION,
+            status: PolicyResponse.ALLOWED, reason: `Use the ${protocol} channel`,
+        }]);
+        const runtime = new PolicyRuntime(TEST_AGENT_IDENTIFIER, createMemoryPolicyDao(t, (dao) => {
+            t.mock.method(dao, "loadPolicies", () => [policy(
+                deniedTarget, accessType, PolicyLifetime.LOCAL, PolicyResponse.DENIED, "Explicit channel denial",
+            )]);
+        }), decisions.flow);
+        runtime.setDefaultResponse(PolicyArea.web_tcp, PolicyFallbackResponse.allow);
+        assert.equal((await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, PolicyAccessType.TCP_ACCESS)).matchedStatus, PolicyResponse.ALLOWED);
+        assert.equal(decisions.callCount(), 0);
+        const approved = await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)(target, accessType);
+        assert.equal(approved.matchedStatus, PolicyResponse.ALLOWED);
+        assert.equal(decisions.callCount(), 1, "a TCP allow must not satisfy application permission");
+        runtime.registerPolicyPrincipal("channel-child", TEST_AGENT_IDENTIFIER, [area]);
+        const inherited = await runtime.beginToolCall("channel-child")(target, accessType);
+        assert.equal(inherited.matchedStatus, PolicyResponse.ALLOWED);
+        assert.equal(inherited.matchedReason, approved.matchedReason);
+        runtime.setDefaultResponse(area, PolicyFallbackResponse.allow);
+        for (const principal of [TEST_AGENT_IDENTIFIER, "channel-child"]) {
+            const denied = await runtime.beginToolCall(principal)(deniedTarget, accessType);
+            assert.equal(denied.matchedStatus, PolicyResponse.DENIED);
+            assert.equal(denied.matchedReason, "Explicit channel denial");
+            assert.equal(denied.resolutionSource, PolicyResolutionSource.EXISTING_USER_POLICY);
+        }
+        assert.equal(decisions.callCount(), 1, "explicit denies do not trigger another review");
+        runtime.setDefaultResponse(area, PolicyFallbackResponse.deny);
+        assert.equal((await runtime.beginToolCall(TEST_AGENT_IDENTIFIER)("channel.test:15557", accessType)).matchedStatus, PolicyResponse.DENIED);
+    });
+}
 
 test("subagent policy capabilities snapshot complete parent areas without becoming hard ceilings", async (t) => {
     const inheritedChild = "path-policy-inherited-child";

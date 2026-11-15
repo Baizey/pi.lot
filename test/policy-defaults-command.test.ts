@@ -39,36 +39,11 @@ test("policy-defaults autocompletes responses and full response/key arguments", 
     ]);
     assert.deepEqual(
         (await complete(command, "allow "))?.map((item) => item.value),
-        [
-            "allow all",
-            "allow fs_read",
-            "allow fs_write",
-            "allow web_read",
-            "allow web_write",
-            "allow web_dns",
-            "allow web_grpc",
-            "allow web_smtp",
-            "allow web_adb",
-            "allow web_ssh",
-            "allow web_tcp",
-            "allow web_udp",
-            "allow web_websocket",
-        ],
+        ["allow all", ...Object.keys(initialPolicyDefaults).map((area) => `allow ${area}`)],
     );
     assert.deepEqual(
         (await complete(command, "deny web_"))?.map((item) => item.value),
-        [
-            "deny web_read",
-            "deny web_write",
-            "deny web_dns",
-            "deny web_grpc",
-            "deny web_smtp",
-            "deny web_adb",
-            "deny web_ssh",
-            "deny web_tcp",
-            "deny web_udp",
-            "deny web_websocket",
-        ],
+        Object.keys(initialPolicyDefaults).filter((area) => area.startsWith("web_")).map((area) => `deny ${area}`),
     );
     assert.equal((await complete(command, "ask_llm "))?.[0]?.value, "ask_llm all");
     assert.deepEqual(await complete(command, "allow fs_read "), []);

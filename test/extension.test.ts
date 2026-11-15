@@ -250,7 +250,7 @@ test("display loads saved modes per session and shares hot-swapped preferences w
     }
 });
 
-for (const stage of ["runtime construction", "runtime startup", "display defaults"] as const) {
+for (const stage of ["runtime construction", "runtime startup", "synchronous startup", "display defaults"] as const) {
     test(`${stage} failure preserves the synchronously cached outgoing source for shutdown`, async (t) => {
         const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-startup-archive-"));
         t.after(() => rmSync(directory, {recursive: true, force: true}));
@@ -278,13 +278,25 @@ for (const stage of ["runtime construction", "runtime startup", "display default
                 const policyRuntime = createPolicyRuntime(context);
                 return {
                     policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
-                    async start() { if (stage === "runtime startup") throw failure; },
+                    start() {
+                        if (stage === "synchronous startup") throw failure;
+                        if (stage === "runtime startup") return Promise.reject(failure);
+                    },
                     setFullNetworkInspection() {}, beginShutdown() {}, close() { closed++; },
                 };
             },
         }).register();
         await assert.rejects(async () => harness.sessionStart()({type: "session_start", reason: "startup"}, ctx), failure);
         assert.equal(closed, stage === "runtime construction" ? 0 : 1);
+        await assert.rejects(registeredTool(harness, "bash").execute(
+            "failed-startup", {command: "pwd", purpose: "Check failed startup diagnostics"}, undefined, undefined, ctx,
+        ), (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.ok(error.message.includes(failure.message));
+            assert.match(error.message, /\/reload/);
+            assert.equal(error.cause, failure);
+            return true;
+        });
         await assert.rejects(async () => harness.registeredCommands.get("display")!.handler("save", ctx), /before session startup/);
         await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
         assert.equal(enqueue.mock.callCount(), 1);
@@ -296,6 +308,50 @@ for (const stage of ["runtime construction", "runtime startup", "display default
         assert.equal(source.sessionDirectory, manager.getSessionDir());
     });
 }
+
+test("startup diagnostics survive cleanup failure and clear when a subsequent session starts", async () => {
+    const harness = extensionHarness();
+    const ctx = {cwd: process.cwd(), hasUI: false, mode: "print", ui: {notify() {}},
+        sessionManager: archiveSessionManager()} as unknown as ExtensionContext;
+    const startupFailure = new Error("fixture startup failed");
+    const cleanupFailure = new Error("fixture cleanup failed");
+    let failing = true;
+    let closes = 0;
+    new PilotExtension(harness.pi, {
+        createMcpExtension: createNoopMcpExtension,
+        createSessionRuntime(context) {
+            const policyRuntime = createPolicyRuntime(context);
+            return {
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
+                writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {},
+                start() { if (failing) throw startupFailure; },
+                close() { closes++; if (failing) throw cleanupFailure; },
+            };
+        },
+    }).register();
+    await assert.rejects(Promise.resolve(harness.sessionStart()({type: "session_start", reason: "reload"}, ctx)), (error: unknown) => {
+        assert.ok(error instanceof AggregateError);
+        assert.deepEqual(error.errors, [startupFailure, cleanupFailure]);
+        assert.equal(error.cause, startupFailure);
+        return true;
+    });
+    const probe = () => registeredTool(harness, "bash").execute(
+        "startup-probe", {command: "pwd", purpose: "Check startup state"}, undefined, undefined, ctx,
+    );
+    await assert.rejects(probe(), {cause: startupFailure});
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "reload"}, ctx);
+    failing = false;
+    await harness.sessionStart()({type: "session_start", reason: "reload"}, ctx);
+    await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
+    assert.equal(closes, 2);
+    await assert.rejects(probe(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /session runtime is not available/);
+        assert.doesNotMatch(error.message, /fixture startup failed/);
+        assert.equal(error.cause, undefined);
+        return true;
+    });
+});
 
 test("identity and source are cached before runtime construction or deferred startup can mutate the manager", async (t) => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-deferred-startup-archive-"));

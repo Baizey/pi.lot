@@ -67,6 +67,7 @@ export class PilotExtension {
         SubagentSpawnTool | SubagentStatusTool | SubagentMessageTool | SubagentStopTool
     )[];
     private sessionRuntime: PilotSessionRuntimeInterface | undefined;
+    private sessionStartupError: Error | undefined;
     private sessionShutdown: Promise<void> | undefined;
     private registered = false;
 
@@ -161,22 +162,40 @@ export class PilotExtension {
         this.serverLifecycle.register();
     }
 
-    private startSession(ctx: ExtensionContext): Promise<void> {
+    private async startSession(ctx: ExtensionContext): Promise<void> {
         if (this.sessionRuntime) throw new Error("pi.lot session runtime is already started");
         this.sessionShutdown = undefined;
-        recordMainSessionIdentity(this.pi, ctx.sessionManager);
-        this.serverLifecycle.captureSource(ctx);
-
-        const runtime = this.createSessionRuntime(ctx);
-        this.sessionRuntime = runtime;
-        return Promise.resolve(runtime.start?.()).then(() => this.startOwnedExtensions(ctx)).catch(async (error) => {
+        this.sessionStartupError = undefined;
+        let runtime: PilotSessionRuntimeInterface | undefined;
+        try {
+            recordMainSessionIdentity(this.pi, ctx.sessionManager);
+            this.serverLifecycle.captureSource(ctx);
+            runtime = this.createSessionRuntime(ctx);
+            this.sessionRuntime = runtime;
+            await runtime.start?.();
+            await this.startOwnedExtensions(ctx);
+        } catch (error) {
+            this.sessionStartupError = error instanceof Error ? error : new Error(String(error));
             this.sessionRuntime = undefined;
             this.displayDefaults = undefined;
-            await this.stopOwnedExtensions().catch(() => undefined);
+            const failures: unknown[] = [error];
+            try {
+                await this.stopOwnedExtensions();
+            } catch (cleanupError) {
+                failures.push(cleanupError);
+            }
             this.displayRows.clear();
-            await runtime.close();
+            try {
+                await runtime?.close();
+            } catch (cleanupError) {
+                failures.push(cleanupError);
+            }
+            if (failures.length > 1) {
+                throw new AggregateError(failures,
+                    `pi.lot startup failed: ${this.sessionStartupError.message}; cleanup also failed.`, {cause: error});
+            }
             throw error;
-        });
+        }
     }
 
     private stopSession(): Promise<void> {
@@ -244,7 +263,16 @@ export class PilotExtension {
     }
 
     private requireSessionRuntime(): PilotSessionRuntimeInterface {
-        if (!this.sessionRuntime) throw new Error("pi.lot session runtime is not available");
+        if (!this.sessionRuntime) {
+            if (this.sessionStartupError) {
+                throw new Error(
+                    `pi.lot session runtime is not available because startup failed: ${this.sessionStartupError.message}. `
+                    + "Correct the startup failure, then run /reload or restart Pi.",
+                    {cause: this.sessionStartupError},
+                );
+            }
+            throw new Error("pi.lot session runtime is not available. Run /reload or restart Pi to initialize it.");
+        }
         return this.sessionRuntime;
     }
 }

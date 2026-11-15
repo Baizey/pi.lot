@@ -139,6 +139,7 @@ An ADB channel grant does not expand the user's task. Inspecting an emulator doe
 
 | Observation | Next check |
 | --- | --- |
+| `pi.lot session runtime is not available`, even for `pwd` or `read` | The tool has not started. Check the original startup error and [runtime recovery](installation.md#session-runtime-is-not-available-after-reload); repeated Bash probes cannot repair initialization |
 | Plain `adb devices` is empty, host terminal lists an emulator | Use explicit host gateway flags; the two clients may be querying different servers |
 | Gateway `devices -l` succeeds but is empty | The server is reachable; check that it is the intended host/port and that the device is registered there |
 | Connection refused | Check the server's listening address, port, and running state; use the matching IPv4/IPv6 alias |

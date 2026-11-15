@@ -232,6 +232,12 @@ node --import jiti/register --test test/native-fuse-callbacks.test.ts
 
 ## Common setup failures
 
+### Session runtime is not available after `/reload`
+
+This means pi.lot has no active session runtime; the requested tool has not started. It is not an ADB, Gradle, or network-inspection error. After a startup failure, tool errors include the original cause. Correct that cause in the loaded installation, then run `/reload` or restart Pi. Retrying `pwd` cannot initialize a failed runtime.
+
+Older releases can report only `pi.lot session runtime is not available`; check the first startup notification for the actual error. One upgrade failure was `Unsupported policy access-type vocabulary.` on databases retaining the retired `FS_DELETE` permission. Current migration accepts that known historical schema and preserves its records without activating them or converting them to broader `FS_WRITE` grants. Current permissions, metadata, and schema objects are retained; unknown future vocabularies still fail closed. Updating the extension and reloading performs the migration automatically. Do not delete the policy database to repair it.
+
 ### `/dev/fuse` is unavailable
 
 Ensure FUSE 3 is installed, `/usr/bin/fusermount3` and `/dev/fuse` exist, and the current user can read and write `/dev/fuse`. Containers and managed development environments may need explicit device access.

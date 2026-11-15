@@ -10,9 +10,9 @@ import {canonicalConfigContent, decodeGlobalPolicyRules} from "../src/server/con
 import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 import {createLegacyPolicySchema, policySchemaObjects, storedPolicyRows} from "./fixtures/LegacyPolicyDatabase.js";
 
-for (const includeAdb of [false, true]) {
-    test(`${includeAdb ? "ADB-era" : "pre-ADB"} schema upgrades preserve data, metadata, constraints and schema objects`, (t) => {
-        const database = legacyDatabase(t, includeAdb);
+for (const era of ["pre-ADB", "ADB-era", "retired FS_DELETE"] as const) {
+    test(`${era} schema upgrades preserve data, metadata, constraints and schema objects`, (t) => {
+        const database = legacyDatabase(t, era === "ADB-era", era === "retired FS_DELETE");
         const before = storedPolicyRows(database);
         const objects = policySchemaObjects(database);
         const dao = new PolicyDao(database);
@@ -57,6 +57,26 @@ for (const includeAdb of [false, true]) {
         assert.deepEqual(database.prepare("pragma integrity_check").pluck().all(), ["ok"]);
     });
 }
+
+test("retired delete rules stay stored without becoming write authority or synchronized GLOBAL rules", (t) => {
+    const database = legacyDatabase(t, false, true);
+    const retiredRows = () => database.prepare(`select rowid, * from "policy_rules"
+        where "accessType" = 'FS_DELETE' order by rowid`).all();
+    const before = retiredRows();
+    const dao = new PolicyDao(database);
+    const policies = dao.loadPolicies();
+    assert.ok(policies.every((policy) => !("FS_DELETE" in policy.info)));
+    assert.equal(policies.find((policy) => policy.pattern === "/work/delete-only"), undefined);
+    assert.equal(policies.find((policy) => policy.pattern === "/work/private")?.info.FS_WRITE?.status, PolicyResponse.DENIED);
+    const adapters = new ConfigSyncAdapters(path.join(os.tmpdir(), "unused-retired-policy-settings"), database);
+    t.after(() => adapters.close());
+    const captured = adapters.capture("global-policies");
+    assert.ok(decodeGlobalPolicyRules(captured.content).every((rule) => rule.pattern !== "/work/private"));
+    assert.deepEqual(adapters.apply("global-policies", captured, null), {applied: true, materialized: null});
+    assert.deepEqual(retiredRows(), before, "sync must retain retired GLOBAL records as well as LOCAL records");
+    assert.equal(adapters.capture("global-policies").content, null);
+    assert.equal(dao.loadPolicies().find((policy) => policy.pattern === "/work/private")?.info.FS_WRITE?.status, PolicyResponse.DENIED);
+});
 
 test("migration rolls back schema, data and indexes when object recreation fails, and the same DAO can retry", (t) => {
     const database = legacyDatabase(t);
@@ -208,10 +228,10 @@ test("config-sync upgrades a legacy schema and imports every additive channel wi
     }
 });
 
-function legacyDatabase(t: TestContext, includeAdb = false): SqliteDatabase {
+function legacyDatabase(t: TestContext, includeAdb = false, includeRetiredDelete = false): SqliteDatabase {
     const database = SqliteDatabase.test(false, ":memory:");
     t.after(() => database.close());
-    createLegacyPolicySchema(database, includeAdb);
+    createLegacyPolicySchema(database, includeAdb, includeRetiredDelete);
     return database;
 }
 

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
-import {PolicyDao} from "../../storage/PolicyDao.js";
+import {fsAccessTypesSql, PolicyDao} from "../../storage/PolicyDao.js";
 import {SqliteDatabase} from "../../storage/sqlite.js";
 import {PolicyLifetime} from "../../policy/types.js";
 import {
@@ -89,7 +89,9 @@ export class ConfigSyncAdapters {
             // Persistent local masks must not churn unchanged GLOBAL rows when
             // the service re-materializes its cached canonical bundle.
             if (this.rulesContent(projected) === current) return {applied: true, materialized: current};
-            database.prepare('delete from "policy_rules" where "lifetime" = ?').run(PolicyLifetime.GLOBAL);
+            // Retired permission records are local historical data, outside sync.
+            database.prepare(`delete from "policy_rules" where "lifetime" = ?
+                and "accessType" in (${fsAccessTypesSql})`).run(PolicyLifetime.GLOBAL);
             const insert = database.prepare(`
                 insert into "policy_rules" ("pattern", "accessType", "lifetime", "status", "reason", "updatedAt")
                 values (@pattern, @accessType, 'GLOBAL', @status, @reason, @updatedAt)
@@ -223,6 +225,7 @@ export class ConfigSyncAdapters {
         const rows = database.prepare(`
             select "pattern", "accessType", "status", "reason"
             from "policy_rules" where "lifetime" = ?
+                and "accessType" in (${fsAccessTypesSql})
         `).iterate(PolicyLifetime.GLOBAL);
         for (const row of rows) {
             // SQLite supplies objects; protocol validation below establishes the

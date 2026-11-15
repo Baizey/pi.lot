@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
 import {SqliteDatabase} from "../../storage/sqlite.js";
+import {PolicyDao} from "../../storage/PolicyDao.js";
 import {syncDirectory} from "../ArchiveLock.js";
 import {decodeArchiveBinding, sameArchiveBinding, type Binding} from "../ArchiveProtocol.js";
 import {
@@ -34,6 +35,7 @@ export class ConfigSyncJournal {
         const db = SqliteDatabase.open(file);
         try {
             fs.chmodSync(file, 0o600);
+            new PolicyDao(db).initializeSchema();
             db.exec(`
                 PRAGMA synchronous=FULL;
                 CREATE TABLE IF NOT EXISTS config_sync_items (

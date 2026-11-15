@@ -7,8 +7,8 @@ const LEGACY_ACCESS_TYPES = [
     "WEBSOCKET", "GRPC", "SSH", "TCP", "UDP", "DNS", "SMTP",
 ];
 
-export function createLegacyPolicySchema(database: SqliteDatabase, includeAdb = false): void {
-    const types = includeAdb ? [...LEGACY_ACCESS_TYPES, "ADB"] : LEGACY_ACCESS_TYPES;
+export function createLegacyPolicySchema(database: SqliteDatabase, includeAdb = false, includeRetiredDelete = false): void {
+    const types = [...LEGACY_ACCESS_TYPES, ...(includeAdb ? ["ADB"] : []), ...(includeRetiredDelete ? ["FS_DELETE"] : [])];
     database.exec(`
         create table "policy_rules" (
             "pattern" text not null,

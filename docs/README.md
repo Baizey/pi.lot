@@ -1,6 +1,6 @@
 # pi.lot documentation
 
-pi.lot provides policy-controlled filesystem and Bash tools, retained subagents, MCP, web search, session archival, and saved configuration sync for [Pi](https://pi.dev). The supported target is **Linux x86-64**, with development dependencies pinned to Pi **1.5.0**.
+pi.lot provides policy-controlled filesystem and Bash tools, retained subagents, MCP, web search, session archival, and saved configuration sync for [Pi](https://pi.dev). The supported target is **Linux x86-64**, with development dependencies pinned to Pi **1.5.2**.
 
 > pi.lot is experimental and has not been independently security audited. It is not hardened isolation for hostile code. Allowed operations retain the user's host permissions. Read the [security model](security.md) before using it for sensitive workloads.
 
@@ -27,7 +27,7 @@ These references ship with the package. Pilot supplies their installation-relati
 Install the [host prerequisites](installation.md#requirements), then build and register a trusted checkout:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
 git clone https://github.com/Baizey/pi-sandbox.git pilot
 cd pilot
 npm install

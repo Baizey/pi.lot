@@ -6,9 +6,9 @@ pi.lot (npm package name `pilot`) is a local Pi extension for **Linux x86-64**, 
 
 ## Requirements
 
-This checkout targets Pi `1.5.0` and requires:
+This checkout targets Pi `1.5.2` and requires:
 
-- Node.js **22.19 or newer** and npm (Pi 1.5.0's Node requirement);
+- Node.js **22.19 or newer** and npm (Pi 1.5.2's Node requirement);
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
@@ -74,7 +74,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.0
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:

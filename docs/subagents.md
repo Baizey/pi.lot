@@ -43,6 +43,8 @@ The wrapper reuses stock split-turn prompts, custom `/compact` instructions, usa
 
 A child receives Pilot's subagent instructions plus its role, task, reasoning/capability summary, and any supplied `systemPrompt` or `contextPaths`—not the parent's conversation. Ambient `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `SYSTEM.md`, skills, prompt templates, themes, and other extensions are not loaded. Include necessary instructions explicitly. `contextPaths` are hints, not copied file contents; the child must read them through policy-mediated tools.
 
+Children also receive the same installation-relative documentation pointers as the root, including the [harness guide](harness.md) for Bash networking and host/emulator access. This does not load ambient project instructions or grant additional tools or policy authority.
+
 ## Capability model
 
 Spawn capabilities have two forms.

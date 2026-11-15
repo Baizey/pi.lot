@@ -4,13 +4,14 @@ pi.lot provides policy-controlled filesystem and Bash tools, retained subagents,
 
 > pi.lot is experimental and has not been independently security audited. It is not hardened isolation for hostile code. Allowed operations retain the user's host permissions. Read the [security model](security.md) before using it for sensitive workloads.
 
-These references ship with the package. Pilot supplies their installation-relative absolute paths in the root agent's documentation prompt; reading them does not require a documentation service or MCP server.
+These references ship with the package. Pilot supplies their installation-relative absolute paths in root and child agents' documentation prompts; reading them does not require a documentation service or MCP server.
 
 ## Topic map
 
 | Topic | Reference |
 | --- | --- |
 | Install, update, load, or troubleshoot host dependencies | [Installation and setup](installation.md) |
+| Bash execution environment, localhost versus host services, Android/ADB, and connection troubleshooting | [Working inside the harness](harness.md) |
 | Policy defaults, approvals, sandboxing, networking, credentials, and audit logs | [Policy system](policy.md) |
 | Spawn, steer, inspect, or stop children; choose models and capabilities | [Subagents](subagents.md) |
 | Search providers, filters, fallback, and credentials | [Web search](web-search.md) |

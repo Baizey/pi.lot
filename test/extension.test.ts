@@ -677,7 +677,7 @@ test("the production extension routes to shipped documentation without forcing o
     const directory = fileURLToPath(new URL("../docs", import.meta.url));
     assert.ok(systemPrompt.includes(`Main documentation: ${path.join(directory, "README.md")}`));
     assert.ok(systemPrompt.includes(`Additional docs: ${directory}`));
-    for (const file of ["README.md", "installation.md", "policy.md", "subagents.md", "web-search.md", "server.md", "security.md"]) {
+    for (const file of ["README.md", "installation.md", "harness.md", "policy.md", "subagents.md", "web-search.md", "server.md", "security.md"]) {
         assert.ok(systemPrompt.includes(file), `the prompt must route to ${file}`);
         assert.ok(existsSync(path.join(directory, file)), `${file} must ship with the extension`);
     }

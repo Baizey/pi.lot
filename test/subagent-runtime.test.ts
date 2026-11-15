@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {fileURLToPath} from "node:url";
 import test from "node:test";
 import {
     createAgentSession,
@@ -83,6 +84,10 @@ test("SDK subagent resource loader excludes ambient context and system files", a
         assert.deepEqual(loader.getAppendSystemPromptSources(), []);
         assert.equal(loader.getAppendSystemPrompt().length, 1);
         assert.match(loadedText, /PARENT_PROMPT_SENTINEL/);
+        const docsDirectory = fileURLToPath(new URL("../docs", import.meta.url));
+        assert.ok(loadedText.includes(`Additional docs: ${docsDirectory}`));
+        assert.match(loadedText, /read harness\.md before probing/);
+        assert.equal(loadedText.match(/^pi\.lot documentation/gm)?.length, 1);
         for (const sentinel of sentinels) assert.doesNotMatch(loadedText, new RegExp(sentinel));
     } finally {
         rmSync(directory, {recursive: true, force: true});

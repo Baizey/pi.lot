@@ -1,4 +1,5 @@
 import path from "node:path";
+import {PilotDocumentation} from "../runtime/PilotDocumentation.js";
 import {getSessionRootId, recordChildSessionIdentity} from "../sessions/SessionIdentity.js";
 import {
     createAgentSession,
@@ -340,6 +341,7 @@ function subagentSystemPrompt(request: SubagentSessionRequest): string {
         "Complete the delegated task independently and return a concise, useful result.",
         "Policy-area capabilities describe inherited policy snapshots, not permanent prohibitions. Missing policies may still be requested when needed.",
         "MCP and delegation are hard capabilities: do not claim or attempt them when they were not provided.",
+        new PilotDocumentation().routingPrompt(),
         request.contextPaths?.length
             ? `Suggested context paths: ${request.contextPaths.join(", ")}`
             : "",

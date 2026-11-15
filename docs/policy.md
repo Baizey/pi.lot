@@ -51,6 +51,8 @@ Turning inspection off reduces application visibility; turning mmap on reduces l
 
 ## Network mediation
 
+For agent workflows, address mappings, and troubleshooting, read [Working inside the harness](harness.md).
+
 The Bash worker has a private network namespace. Its command and descendants are checked for DNS resolution and IPv4/IPv6 TCP/UDP flows to hostnames or literal IPs. With full inspection enabled, supported HTTP/1 and HTTP/2 requests over TCP also receive method and canonical-URL checks, including HTTPS. UDP payloads, including QUIC, receive flow checks, not HTTP method/path inspection.
 
 Within one Bash call, a DNS hostname decision can cover later DNS, TCP, UDP, IPv4/IPv6, and all destination ports. Literal-IP flow decisions start at an exact address and port.
@@ -80,6 +82,8 @@ Inspected TLS negotiates HTTP/2 or HTTP/1.1, or classifies decrypted application
 **Inspection off is explicitly a compatibility boundary, not comprehensive application-protocol enforcement.** Recognized plaintext SSH/SMTP/ADB and supported plaintext HTTP protocol requests still receive their specific checks, but opaque end-to-end TLS and unrecognized plaintext can retain transport-only forwarding. Encrypted WebSocket/gRPC/SMTP/ADB therefore cannot be reliably captured in that mode. An allowed outer channel can also carry other applications. Namespace-local loopback flows receive transport checks but do not traverse the application gateway.
 
 ### Android devices and the host ADB server
+
+See the [Android walkthrough](harness.md#android-and-emulator-walkthrough) for discovery, device selection, screenshots, UI interaction, and failure diagnosis.
 
 Keep network inspection **on**. Each Bash call has private loopback, so a plain `adb devices` can start a separate server with no host devices. Reuse the user's running host server through the host gateway:
 

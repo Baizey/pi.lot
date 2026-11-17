@@ -132,7 +132,7 @@ test("bare server with no config makes no request, queue, or startup probe", asy
     assert.equal(h.enqueue.mock.callCount(), 0);
 });
 
-test("login saves credentials before background initialization/wake; status intentionally displays the key", async (t) => {
+test("login saves credentials before background initialization; status does not reveal them", async (t) => {
     const h = harness(t, [CONFIG.url, CONFIG.apiKey]);
     t.mock.method(h.background, "initialize", async () => {
         assert.deepEqual(h.store.load(), CONFIG);
@@ -153,7 +153,7 @@ test("login saves credentials before background initialization/wake; status inte
     await h.command.handler("", h.ctx);
     assert.deepEqual(h.checks.map((check) => check.config), [CONFIG]);
     assert.deepEqual(h.notifications.at(-1), {
-        message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: Connected (pi.server ${SERVER_VERSION}; compatible).`, type: "info",
+        message: `Server: ${CONFIG.url}\nStatus: Connected (pi.server ${SERVER_VERSION}; compatible).`, type: "info",
     });
 });
 
@@ -178,7 +178,7 @@ test("status retains incompatible and failure presentation without changing stor
         h.store.save(CONFIG);
         const before = readFileSync(h.store.file);
         await h.command.handler("", h.ctx);
-        assert.deepEqual(h.notifications, [{message: `${JSON.stringify(CONFIG, null, 2)}\n\nStatus: ${entry.message}`, type: entry.type}]);
+        assert.deepEqual(h.notifications, [{message: `Server: ${CONFIG.url}\nStatus: ${entry.message}`, type: entry.type}]);
         assert.deepEqual(readFileSync(h.store.file), before);
     }
 });

@@ -77,7 +77,7 @@ export class ToolPresentationRenderer<TArgs extends object> {
             ? (options.isPartial ? ToolDisplayMode.TRUNCATED : ToolDisplayMode.MINIMAL)
             : mode;
         return renderLineFactory((width) => this.renderCallLines(
-            args, theme, callMode, width, options.indicator?.(),
+            args, theme, callMode, width, options.indicator?.(), options.isError,
         ), options.outputPad);
     }
 
@@ -88,9 +88,10 @@ export class ToolPresentationRenderer<TArgs extends object> {
         mode: ToolDisplayMode,
         width: number,
         indicator?: string,
+        isError = false,
     ): string[] {
         if (mode === ToolDisplayMode.HIDDEN) return [];
-        return this.toolCallLines((args ?? {}) as Partial<TArgs>, theme, mode, indicator, width);
+        return this.toolCallLines((args ?? {}) as Partial<TArgs>, theme, mode, indicator, width, isError);
     }
 
     renderResult(
@@ -109,9 +110,10 @@ export class ToolPresentationRenderer<TArgs extends object> {
         mode: ToolDisplayMode,
         indicator: string | undefined,
         width: number,
+        isError: boolean,
     ): string[] {
         const resolved = this.resolveArguments(args);
-        let title = this.toolTitle(theme, indicator);
+        let title = this.toolTitle(theme, indicator, isError);
         for (const argument of resolved) {
             if (argument.placement === ToolArgumentPlacement.BODY) continue;
             title = this.appendTitleArgument(title, argument, args, theme);
@@ -274,8 +276,8 @@ export class ToolPresentationRenderer<TArgs extends object> {
         return argument.presentation?.label ?? argument.key;
     }
 
-    private toolTitle(theme: Theme, indicator: string | undefined): string {
-        const title = theme.fg(ThemeColor.toolTitle, theme.bold(this.presentation.toolName));
+    private toolTitle(theme: Theme, indicator: string | undefined, isError: boolean): string {
+        const title = theme.fg(isError ? ThemeColor.error : ThemeColor.toolTitle, theme.bold(this.presentation.toolName));
         // Keep the spinner's column empty after completion rather than shifting the title left.
         const status = indicator ? theme.fg(ThemeColor.accent, indicator) : " ";
         return `${status} ${title}`;

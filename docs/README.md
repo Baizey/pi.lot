@@ -46,7 +46,7 @@ Bare commands open their settings only in terminal TUI mode; outside TUI they re
 | `/subagent-defaults` | Searchable per-skill model mappings. `/subagent-defaults <provider>/<model> high` or `/subagent-defaults auto all` affects newly accepted jobs. `save` persists; `reset` reloads saved defaults. |
 | `/display` | Normal/Alternate tool views. `/display conversation full` sets the pair. `save` persists; `reset` reloads saved views, or Compact/Preview if absent. |
 | `/sandboxing` | Network inspection and writable-mmap switches for new Bash calls, including subagents. Changes are session-only and are never saved or synchronized. |
-| `/server` | Connection, upload, configuration-sync and recovery actions. Opening the terminal menu sends nothing and hides the API key. **Check connection still displays the key**, as does bare `/server` outside TUI. Never share unredacted status output. |
+| `/server` | Connection, upload, configuration-sync and recovery actions. Opening the terminal menu sends nothing. **Check connection**, or bare `/server` outside TUI, reports the server URL and status without displaying the API key. |
 
 Policy, subagent and display pickers also provide explicit **Save defaults** and **Reload saved defaults** actions. Saving is not automatic. `/server status` is not a text command; select **Check connection** from the menu.
 

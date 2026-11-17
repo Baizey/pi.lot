@@ -52,6 +52,12 @@ test("fresh source package installs Rust helpers and preserves them on a failed 
     delete environment.PILOT_NATIVE_BUILD_DIRECTORY;
     delete environment.PILOT_NATIVE_SDK_FLAGS;
     try {
+        // Force the native host triple to exercise Cargo's target-specific output layout.
+        const compiler = execute(environment.RUSTC ?? "rustc", ["-vV"], originalRoot, environment);
+        assert.equal(compiler.status, 0, compiler.stderr);
+        const host = /^host: (\S+)$/m.exec(compiler.stdout)?.[1];
+        assert.ok(host, "rustc did not report its host triple");
+        environment.CARGO_BUILD_TARGET = host;
         copyFreshPackage(packageRoot);
         mkdirSync(cacheDirectory);
         assert.equal(existsSync(targetDirectory), false, "Cargo must start with a fresh target directory");
@@ -67,7 +73,7 @@ test("fresh source package installs Rust helpers and preserves them on a failed 
         await t.test("the four installed executables are executable ELF files identical to fresh Cargo release outputs", () => {
             for (const name of productionNames) {
                 const filename = path.join(packageRoot, "build", name);
-                const source = path.join(targetDirectory, "release", name);
+                const source = path.join(targetDirectory, host, "release", name);
                 const metadata = statSync(filename);
                 const bytes = readFileSync(filename);
                 assert.ok(metadata.isFile(), name);

@@ -17,7 +17,7 @@ Builds use the checked-in Cargo lockfile. The platform, Rust, SDK, linker, and l
 
 ## Builds and artifact checks
 
-The npm install hook builds Rust helpers into this package's `build/` directory. Successful compilation precedes staging, each executable is published by rename, and the SHA-256 receipt `build/native-rust.json` is published last. Preflight, compilation, and staging failures preserve installed artifacts. Publication is not transactional: a rename failure can leave binaries inconsistent with the old receipt until rebuilt. `npm run clean` is explicitly destructive.
+The npm install hook builds Rust helpers into this package's `build/` directory. Only artifacts reported by the successful Cargo build are staged. Each executable is published by rename, and the SHA-256 receipt `build/native-rust.json` is published last. Preflight, compilation, and staging failures preserve installed artifacts. Publication is not transactional: a rename failure can leave binaries inconsistent with the old receipt until rebuilt. `npm run clean` is explicitly destructive.
 
 `src/runtime/NativeExecutable.ts` resolves only package-local helpers and verifies their digests against the receipt. Missing/invalid receipts or missing/mismatched binaries fail with rebuild guidance. It does **not** check source freshness: an old binary with its matching receipt can pass after source changes. Rebuild and restart Pi after native changes; existing processes may retain old executable/library mappings.
 

@@ -10,6 +10,8 @@ import {minimumFuseVersion, parsePkgConfigFlags} from "../scripts/native-build-f
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const resolver = new URL("../scripts/native-build-flags.mjs", import.meta.url).href;
+const artifactNames = ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native",
+    "pi-network-queue-probe", "pi-tcp-gateway-probe", "libpilot_native.a"];
 
 function withBuildTools(run: (directory: string, environment: NodeJS.ProcessEnv) => void): void {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-build-flags-"));
@@ -38,10 +40,13 @@ const path = require("node:path");
 const flags = fs.readFileSync(path.join(process.env.PILOT_NATIVE_SDK_FLAGS, "fuse3.flags"), "utf8").split("\\0").filter(Boolean);
 fs.appendFileSync(process.env.CARGO_MARKER, JSON.stringify({args: process.argv.slice(2), flags}) + "\\n");
 if (process.env.CARGO_FAIL) process.exit(33);
-const out = path.join(process.env.CARGO_TARGET_DIR, "release");
+const out = path.join(process.env.CARGO_TARGET_DIR, process.env.CARGO_BUILD_TARGET ?? "", "release");
 fs.mkdirSync(out, {recursive:true});
-for (const name of ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native", "pi-network-queue-probe", "pi-tcp-gateway-probe", "libpilot_native.a"]) {
-    if (process.env.CARGO_OMIT !== name) fs.writeFileSync(path.join(out, name), "rust binary", {mode: 0o755});
+for (const name of ${JSON.stringify(artifactNames)}) {
+    if (process.env.CARGO_OMIT === name) continue;
+    const filename = path.join(out, name);
+    fs.writeFileSync(filename, "rust binary", {mode: 0o755});
+    console.log(JSON.stringify({reason: "compiler-artifact", manifest_path: process.argv.at(-1), filenames: [filename]}));
 }
 `, {mode: 0o755});
     try {
@@ -128,7 +133,8 @@ test("Rust builder locks dependencies, forwards unsplit SDK flags and publishes 
         assert.ifError(result.error);
         assert.equal(result.status, 0, result.stderr);
         const call = JSON.parse(readFileSync(environment.CARGO_MARKER!, "utf8").trim());
-        assert.deepEqual(call.args, ["build", "--locked", "--release", "--manifest-path", path.join(root, "native/rust/Cargo.toml")]);
+        assert.deepEqual(call.args, ["build", "--locked", "--release", "--message-format=json-render-diagnostics",
+            "--manifest-path", path.join(root, "native/rust/Cargo.toml")]);
         assert.deepEqual(call.flags, ["-I/sdk directory/include/fuse3", "-L/sdk directory/lib", "-lfuse3", "-lpthread"]);
         assert.equal(existsSync(environment.COMPILER_MARKER!), false);
         for (const name of ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native", "libpilot_native.a"]) {
@@ -167,6 +173,20 @@ for (const flags of ["", "'-Iunterminated", "-Itrailing\\"]) {
     });
 }
 
+test("native build publishes artifacts from the selected Cargo target, not stale default outputs", () => {
+    withBuildTools((_directory, environment) => {
+        const target = "x86_64-unknown-linux-gnu";
+        const stale = path.join(environment.CARGO_TARGET_DIR!, "release");
+        mkdirSync(stale, {recursive: true});
+        for (const name of artifactNames) writeFileSync(path.join(stale, name), "stale binary");
+        const result = build({...environment, CARGO_BUILD_TARGET: target});
+        assert.equal(result.status, 0, result.stderr);
+        for (const name of artifactNames) {
+            assert.equal(readFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "utf8"), "rust binary", name);
+        }
+    });
+});
+
 test("failed Cargo build leaves all installed helper binaries unchanged", () => {
     withBuildTools((_directory, environment) => {
         mkdirSync(environment.PILOT_NATIVE_BUILD_DIRECTORY!, {recursive: true});
@@ -178,13 +198,17 @@ test("failed Cargo build leaves all installed helper binaries unchanged", () => 
     });
 });
 
-test("missing Rust artifact does not publish a partial build and removes staging files", () => {
+test("missing Cargo artifact report leaves the installed build intact even if stale files exist", () => {
     withBuildTools((_directory, environment) => {
         mkdirSync(environment.PILOT_NATIVE_BUILD_DIRECTORY!, {recursive: true});
         const names = ["pi-exec-clean-native", "pi-fuse-native", "pi-network-queue-native", "pi-tcp-gateway-native", "native-rust.json"];
         for (const name of names) writeFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "running installation");
+        const stale = path.join(environment.CARGO_TARGET_DIR!, process.env.CARGO_BUILD_TARGET ?? "", "release");
+        mkdirSync(stale, {recursive: true});
+        writeFileSync(path.join(stale, "pi-fuse-native"), "stale binary");
         const result = build({...environment, CARGO_OMIT: "pi-fuse-native"});
         assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /Cargo did not report the required artifact pi-fuse-native/);
         for (const name of names) assert.equal(readFileSync(path.join(environment.PILOT_NATIVE_BUILD_DIRECTORY!, name), "utf8"), "running installation");
         assert.equal(readdirSync(environment.PILOT_NATIVE_BUILD_DIRECTORY!).some((name) => name.includes(".tmp-")), false);
     });

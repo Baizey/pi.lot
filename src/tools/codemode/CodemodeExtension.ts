@@ -120,6 +120,7 @@ export class CodemodeExtension {
                         this.displayRows.resolveMode(context.expanded, context.state),
                         {
                             isPartial: context.isPartial,
+                            isError: !context.isPartial && context.isError,
                             outputPad: context.outputPad,
                             indicator: () => context.state.pilotCallSpinner?.frame(),
                         },

@@ -113,7 +113,7 @@ export class ServerCommand {
             return;
         }
         const status = await this.server.checkConnection(config, controller.signal);
-        // Cancelled or superseded commands must not reveal stale credentials/status later.
+        // Cancelled or superseded commands must not publish stale status.
         if (this.pendingCheck !== controller || controller.signal.aborted) return;
         let message: string;
         let severity: "info" | "warning" | "error";
@@ -130,7 +130,7 @@ export class ServerCommand {
                 message = status.message;
                 severity = "error";
         }
-        ctx.ui.notify(`${JSON.stringify(config, null, 2)}\n\nStatus: ${message}`, severity);
+        ctx.ui.notify(`Server: ${config.url}\nStatus: ${message}`, severity);
     }
 
     private async upload(ctx: ExtensionCommandContext, scope: "current" | "all", controller: AbortController): Promise<void> {

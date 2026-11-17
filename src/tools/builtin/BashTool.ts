@@ -35,7 +35,7 @@ const BASH_PRESENTATION = {
         {
             key: "timeout",
             placement: ToolArgumentPlacement.TITLE_SECONDARY,
-            format: (value) => ` (timeout ${String(value)}s)`,
+            format: (value) => typeof value === "number" ? ` (timeout ${value}s)` : "",
             color: ThemeColor.muted,
         },
         {

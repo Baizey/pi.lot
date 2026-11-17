@@ -175,6 +175,29 @@ test("codemode keeps all nested calls in every view with bounded script and outp
     }
 });
 
+test("Compact codemode marks a failed script without expanding its output", () => {
+    const {tool} = harness(new ToolDisplayRows());
+    const theme = {...plainTheme, fg: (color: string, text: string) => color === "error" ? `[${text}]` : text} as Theme;
+    const args = {purpose: "Check", code: "throw new Error()"};
+    for (const isError of [false, true]) {
+        const context = renderContext({}, {expanded: false, isError});
+        const title = tool.renderCall!(args, theme, context).render(120);
+        assert.deepEqual(title, [isError ? "  [codemode] | Check" : "  codemode | Check"]);
+        assert.deepEqual(tool.renderResult!({content: [{type: "text", text: "script output"}], details: {calls: []}},
+            {expanded: false, isPartial: false}, theme, context).render(120), []);
+    }
+});
+
+test("Bash omits the timeout suffix for a null optional argument", () => {
+    const {definitions} = harness(new ToolDisplayRows());
+    const bash = definitions.find((tool) => tool.name === "bash")!;
+    const args = {purpose: "Check", command: "true"};
+    const title = (timeout: number | null | undefined) => bash.renderCall!({...args, timeout}, plainTheme,
+        renderContext({}, {expanded: false})).render(120);
+    assert.deepEqual(title(null), title(undefined));
+    assert.deepEqual(title(15), ["  bash | Check (timeout 15s)"]);
+});
+
 test("nested calls reuse ordinary builtin, web-search, and subagent layouts in every display mode", () => {
     const rows = new ToolDisplayRows();
     const {tool, definitions} = harness(rows);

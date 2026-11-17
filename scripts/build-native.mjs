@@ -26,17 +26,51 @@ function buildRust() {
     for (const [name, flags] of [["fuse3", fuseCompilerFlags], ["libnetfilter_queue", netfilterCompilerFlags]]) {
         writeFileSync(path.join(sdkDirectory, `${name}.flags`), flags.join("\0") + "\0");
     }
-    execute("cargo", ["build", "--locked", "--release", "--manifest-path", path.join(root, "native/rust/Cargo.toml")], {
-        ...process.env,
-        CARGO_TARGET_DIR: targetDirectory,
-        PILOT_NATIVE_SDK_FLAGS: sdkDirectory,
-    });
-    publishRustArtifacts([...rustHelpers, "pi-network-queue-probe", "pi-tcp-gateway-probe", "libpilot_native.a"]);
+    const names = [...rustHelpers, "pi-network-queue-probe", "pi-tcp-gateway-probe", "libpilot_native.a"];
+    publishRustArtifacts(compileRust(sdkDirectory, names));
 }
 
-function publishRustArtifacts(names) {
-    const artifacts = names.map((name) => ({
-        source: path.join(targetDirectory, "release", name),
+function compileRust(sdkDirectory, names) {
+    const manifest = path.join(root, "native/rust/Cargo.toml");
+    const result = spawnSync("cargo", ["build", "--locked", "--release", "--message-format=json-render-diagnostics", "--manifest-path", manifest], {
+        cwd: root,
+        env: {...process.env, CARGO_TARGET_DIR: targetDirectory, PILOT_NATIVE_SDK_FLAGS: sdkDirectory},
+        stdio: ["ignore", "pipe", "inherit"],
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+    });
+    if (result.error?.code === "ENOENT") {
+        throw new Error("Cargo is required to build Pilot's Rust helpers. Install Rust >= 1.85 and Cargo.", {cause: result.error});
+    }
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`cargo exited with ${result.signal ?? `status ${result.status}`}`);
+
+    // Cargo target configuration can move artifacts out of target/release. Never
+    // fall back to that directory: it may contain binaries from an earlier build.
+    const sources = new Map();
+    for (const line of result.stdout.split("\n")) {
+        if (!line.startsWith("{")) continue;
+        const message = JSON.parse(line);
+        if (message.reason !== "compiler-artifact" || message.manifest_path !== manifest) continue;
+        for (const source of message.filenames) {
+            const name = path.basename(source);
+            if (!names.includes(name)) continue;
+            if (sources.has(name) && sources.get(name) !== source) {
+                throw new Error(`Cargo reported multiple artifacts for ${name}; build for a single target.`);
+            }
+            sources.set(name, source);
+        }
+    }
+    return names.map((name) => {
+        const source = sources.get(name);
+        if (!source) throw new Error(`Cargo did not report the required artifact ${name}.`);
+        return [name, source];
+    });
+}
+
+function publishRustArtifacts(sources) {
+    const artifacts = sources.map(([name, source]) => ({
+        source,
         output: path.join(outputDirectory, name),
         temporary: path.join(outputDirectory, `${name}.tmp-${process.pid}`),
     }));
@@ -56,13 +90,4 @@ function publishRustArtifacts(names) {
         for (const artifact of artifacts) rmSync(artifact.temporary, {force: true});
         rmSync(stagedReceipt, {force: true});
     }
-}
-
-function execute(command, arguments_, env = process.env) {
-    const result = spawnSync(command, arguments_, {cwd: root, env, stdio: "inherit"});
-    if (result.error) {
-        if (command === "cargo") throw new Error("Cargo is required to build Pilot's Rust helpers. Install Rust >= 1.85 and Cargo.", {cause: result.error});
-        throw result.error;
-    }
-    if (result.status !== 0) throw new Error(`${command} exited with status ${result.status ?? "unknown"}`);
 }

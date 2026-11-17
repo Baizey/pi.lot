@@ -85,6 +85,8 @@ export class TestRunner {
     }
 
     #nodeTests(tests) {
+        // Without explicit files, Node falls back to its own discovery.
+        if (tests.length === 0) return;
         this.#run(process.execPath, ["--import", "jiti/register", "--test", ...tests]);
     }
 }

@@ -59,6 +59,12 @@ test("standalone runtime discovers both test extensions and retains native cover
     ]);
 });
 
+test("an empty runtime selection does not fall back to Node test discovery", () => {
+    const {runner, commands} = recorder({testFiles: () => ["a.test.ts", "fixture.ts"]});
+    runner.runtime(["test/a.test.ts"]);
+    assert.deepEqual(commands, []);
+});
+
 test("native default builds before Rust units and stays mount-free", () => {
     const {runner, commands} = recorder();
     const files = runner.native();

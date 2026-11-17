@@ -157,7 +157,7 @@ Inspect the initial state with these commands. Their availability checks extensi
 
 Bare `/policy-defaults`, `/subagent-defaults`, `/display`, `/sandboxing`, and `/server` open terminal settings only when `ctx.hasUI && ctx.mode === "tui"`; otherwise they report current settings/status without opening a terminal picker. In the policy, subagent, and display menus, confirmed choices apply immediately to the current session. Highlighting or canceling a choice does not apply it; closing the main menu does not roll back confirmed changes. **Save defaults** explicitly persists them; **Reload saved defaults** explicitly reloads saved values (the text commands use `save` and `reset`).
 
-`/server` opens a local action menu in the terminal UI: it displays the URL but not the key, and opening/closing it sends no requests. Selecting **Check connection**, or invoking bare `/server` outside the terminal UI, checks compatibility and displays the **API key**. Do not share that output. See [server setup and archive boundaries](server.md).
+`/server` opens a local action menu in the terminal UI. Opening or closing it sends no requests. Selecting **Check connection**, or invoking bare `/server` outside the terminal UI, checks authentication and compatibility. Status shows the server URL, not the API key. See [server setup and archive boundaries](server.md).
 
 ### Session-only sandbox switches
 

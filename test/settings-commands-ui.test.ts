@@ -269,7 +269,7 @@ for (const action of ["status", "login", "logout", "upload current", "upload all
         }
         else if (action === "logout") assert.equal(store.load(), undefined);
         else assert.deepEqual(calls, [action === "recover" ? "recover display-defaults server" : action]);
-        if (action !== "status") assert.doesNotMatch(JSON.stringify(notifications), /private-settings-key/);
+        assert.doesNotMatch(JSON.stringify(notifications), /private-settings-key/);
     });
 }
 
@@ -309,12 +309,16 @@ test("cancelling or superseding a server picker never dispatches an action or ex
 });
 
 for (const mode of ["rpc", "print"] as const) {
-    test(`server no-args preserves status output in ${mode} without a terminal picker`, async (t) => {
+    test(`server no-args reports connection status without exposing credentials in ${mode}`, async (t) => {
         const {ctx, directory, notifications} = context(t);
         ctx.mode = mode;
-        const server = new ServerService(new ServerConfigStore(directory));
+        const store = new ServerConfigStore(directory);
+        store.save(CONFIG);
+        const server = new ServerService(store, async () => ({kind: "compatible", version: "0.4.0"}));
         const command = register((pi) => new ServerCommand(pi, server).register());
         await command.handler("", ctx);
-        assert.deepEqual(notifications, [{message: "Config: none\nStatus: Not configured.", type: "info"}]);
+        assert.deepEqual(notifications, [{
+            message: `Server: ${CONFIG.url}\nStatus: Connected (pi.server 0.4.0; compatible).`, type: "info",
+        }]);
     });
 }

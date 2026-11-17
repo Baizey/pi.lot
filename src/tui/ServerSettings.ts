@@ -27,7 +27,7 @@ export class ServerSettings extends Container {
             {value: "sync off", label: "Disable startup sync", description: "Disable automatic checks on this computer. Session archival is unchanged."},
         ];
         const items: SettingItem[] = [
-            {id: "status", label: "Check connection", currentValue: "check", values: ["check"], description: "Check server compatibility and display the saved URL and API key locally. Do not share unredacted output."},
+            {id: "status", label: "Check connection", currentValue: "check", values: ["check"], description: "Check authentication and server compatibility."},
             {id: "login", label: url ? "Replace connection" : "Configure connection", currentValue: "login", values: ["login"], description: "Enter URL and API key in dialogs. Saving enables automatic publication of complete session histories, which can include secrets."},
             {id: "logout", label: "Remove connection", currentValue: "logout", values: ["logout"], description: "Remove local authorization. Does not revoke the remote API key or delete local archives."},
             {

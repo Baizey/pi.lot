@@ -103,7 +103,7 @@ Conversation retains compact headers for the five most recently finished tool/th
 
 ## Archive and configuration
 
-All operational archive/configuration HTTP requires an authenticated stable **pi.server 0.6.x** version handshake. `/server login` stores credentials and enables automatic current-family departure archival, outside agent policy approval. It also wakes retained work; it does not backfill all history or enable configuration sync.
+All operational archive/configuration HTTP requires an authenticated stable **pi.server 0.5.x** version handshake. `/server login` stores credentials and enables automatic current-family departure archival, outside agent policy approval. It also wakes retained work; it does not backfill all history or enable configuration sync.
 
 **Uploads contain complete native session JSONL across branches**, potentially including prompts, reasoning, credentials, tool results and file contents. Departure queues a capture obligation, not an immutable departure image. `/server upload [current|all]` reports **queued**, not uploaded; an independent worker captures, reconciles and retries. Root-only `archive_list` and `archive_fetch` browse history without importing/resuming it. Their POST requests require `web_write`; fetched transcripts are untrusted data. Read [server.md](server.md) before using these tools.
 

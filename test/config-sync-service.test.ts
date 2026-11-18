@@ -37,7 +37,7 @@ const NEW_DISPLAY = {normal: "minimal", alternate: "truncated"};
 class Authority {
     binding = {...BINDING};
     capabilities = ["config_sync_v1"];
-    version = "0.6.0";
+    version = "0.5.1";
     versions = 0;
     bindings = 0;
     readonly checks: ConfigCheck[] = [];
@@ -396,14 +396,14 @@ test("deleting a saved file submits an explicit reset, without resetting other k
 });
 
 for (const mode of ["manual", "enable", "recover"] as const) {
-    test(`${mode} rejects pi.server 0.5 before binding, capture, or sync state changes even when capability is advertised`, async (t) => {
+    test(`${mode} rejects pi.server 0.4 before binding, capture, or sync state changes even when capability is advertised`, async (t) => {
         const h = fixture(t);
-        h.authority.version = "0.5.99";
+        h.authority.version = "0.4.99";
         fs.writeFileSync(path.join(h.directory, "display-defaults.json"), "invalid-sensitive-source");
         const result = mode === "manual" ? h.service.synchronize() : mode === "enable"
             ? h.service.enableAutomatic() : h.service.recover("personas", "local");
         await assert.rejects(result, {name: "ConfigSyncClientError", kind: "configuration",
-            message: "Incompatible pi.server version; required 0.6.*."});
+            message: "Incompatible pi.server version; required 0.5.*."});
         assert.equal(h.authority.versions, 1);
         assert.equal(h.authority.bindings, 0);
         assert.equal(h.authority.checks.length, 0);
@@ -414,7 +414,7 @@ for (const mode of ["manual", "enable", "recover"] as const) {
     });
 }
 
-test("pi.server 0.6 compatibility, not optional capability metadata, authorizes the whole configuration pass", async (t) => {
+test("pi.server 0.5 compatibility, not optional capability metadata, authorizes the whole configuration pass", async (t) => {
     const h = fixture(t);
     h.save("personas", SAVED_PERSONAS);
     h.authority.capabilities = [];
@@ -431,8 +431,8 @@ test("an opted-in startup pass rejects a downgraded server and preserves local c
     const before = h.entry("display-defaults");
     const bindings = h.authority.bindings;
     const exchanges = h.authority.exchanges.length;
-    h.authority.version = "0.5.0";
-    await assert.rejects(h.service.synchronizeAutomatic(), /Incompatible pi\.server version; required 0\.6\.\*/);
+    h.authority.version = "0.4.0";
+    await assert.rejects(h.service.synchronizeAutomatic(), /Incompatible pi\.server version; required 0\.5\.\*/);
     assert.equal(h.authority.bindings, bindings);
     assert.equal(h.authority.exchanges.length, exchanges);
     assert.deepEqual(h.entry("display-defaults"), before);
@@ -468,11 +468,11 @@ test("roles-only pass uses opt-in, the shared version gate, and the exact approv
     h.save("display-defaults", DISPLAY);
     const replace = (roles: RoleProfile[]) => h.policies((_dao, db) => db.transaction(() => new RoleStore(db).replace({roles})).immediate());
     replace([SECOND_ROLE, FIRST_ROLE]);
-    h.authority.version = "0.5.99";
-    await assert.rejects(h.service.synchronizeRolesAutomatic(), /Incompatible pi\.server version; required 0\.6\.\*/);
+    h.authority.version = "0.4.99";
+    await assert.rejects(h.service.synchronizeRolesAutomatic(), /Incompatible pi\.server version; required 0\.5\.\*/);
     assert.equal(h.authority.bindings, bindings);
     assert.deepEqual(h.entry("roles"), rolesBefore);
-    h.authority.version = "0.6.0";
+    h.authority.version = "0.5.1";
     h.authority.binding = {...BINDING, history_generation: "new-generation"};
     assert.deepEqual(await h.service.synchronizeRolesAutomatic(), {kind: "binding_changed"});
     assert.equal(h.authority.checks.length, checks);

@@ -7,6 +7,9 @@ import {ServerConfigStore} from "../src/server/ServerConfig.js";
 import {ArchiveLock} from "../src/server/ArchiveLock.js";
 import {withPersonaCatalogLock} from "../src/personas/PersonaStore.js";
 import {OTHER_PERSONA, SAVED_PERSONAS, UPDATED_PERSONAS} from "./fixtures/SavedPersonas.js";
+import {FIRST_ROLE, SECOND_ROLE, THIRD_ROLE} from "./fixtures/SavedRoles.js";
+import type {RoleProfile} from "../src/roles/RoleCatalog.js";
+import {RoleStore} from "../src/roles/RoleStore.js";
 import {ServerHttpError} from "../src/server/ServerHttpTransport.js";
 import {ConfigSyncClient, ConfigSyncClientError} from "../src/server/config-sync/ConfigSyncClient.js";
 import {ConfigSyncService} from "../src/server/config-sync/ConfigSyncService.js";
@@ -34,7 +37,7 @@ const NEW_DISPLAY = {normal: "minimal", alternate: "truncated"};
 class Authority {
     binding = {...BINDING};
     capabilities = ["config_sync_v1"];
-    version = "0.5.0";
+    version = "0.6.0";
     versions = 0;
     bindings = 0;
     readonly checks: ConfigCheck[] = [];
@@ -393,14 +396,14 @@ test("deleting a saved file submits an explicit reset, without resetting other k
 });
 
 for (const mode of ["manual", "enable", "recover"] as const) {
-    test(`${mode} rejects pi.server 0.4 before binding, capture, or sync state changes even when capability is advertised`, async (t) => {
+    test(`${mode} rejects pi.server 0.5 before binding, capture, or sync state changes even when capability is advertised`, async (t) => {
         const h = fixture(t);
-        h.authority.version = "0.4.99";
+        h.authority.version = "0.5.99";
         fs.writeFileSync(path.join(h.directory, "display-defaults.json"), "invalid-sensitive-source");
         const result = mode === "manual" ? h.service.synchronize() : mode === "enable"
             ? h.service.enableAutomatic() : h.service.recover("personas", "local");
         await assert.rejects(result, {name: "ConfigSyncClientError", kind: "configuration",
-            message: "Incompatible pi.server version; required 0.5.*."});
+            message: "Incompatible pi.server version; required 0.6.*."});
         assert.equal(h.authority.versions, 1);
         assert.equal(h.authority.bindings, 0);
         assert.equal(h.authority.checks.length, 0);
@@ -411,7 +414,7 @@ for (const mode of ["manual", "enable", "recover"] as const) {
     });
 }
 
-test("pi.server 0.5 compatibility, not optional capability metadata, authorizes the whole configuration pass", async (t) => {
+test("pi.server 0.6 compatibility, not optional capability metadata, authorizes the whole configuration pass", async (t) => {
     const h = fixture(t);
     h.save("personas", SAVED_PERSONAS);
     h.authority.capabilities = [];
@@ -428,8 +431,8 @@ test("an opted-in startup pass rejects a downgraded server and preserves local c
     const before = h.entry("display-defaults");
     const bindings = h.authority.bindings;
     const exchanges = h.authority.exchanges.length;
-    h.authority.version = "0.4.0";
-    await assert.rejects(h.service.synchronizeAutomatic(), /Incompatible pi\.server version; required 0\.5\.\*/);
+    h.authority.version = "0.5.0";
+    await assert.rejects(h.service.synchronizeAutomatic(), /Incompatible pi\.server version; required 0\.6\.\*/);
     assert.equal(h.authority.bindings, bindings);
     assert.equal(h.authority.exchanges.length, exchanges);
     assert.deepEqual(h.entry("display-defaults"), before);
@@ -450,6 +453,99 @@ test("automatic startup checks require per-device opt-in and the exact approved 
     assert.equal(await h.service.synchronizeAutomatic(), undefined);
     assert.equal(fs.existsSync(path.join(h.directory, "config-sync.enabled")), false);
     assert.equal(fs.existsSync(path.join(h.directory, "pilot.sqlite")), true);
+});
+
+test("roles-only pass uses opt-in, the shared version gate, and the exact approved binding", async (t) => {
+    const h = fixture(t);
+    assert.equal(await h.service.synchronizeRolesAutomatic(), undefined);
+    assert.equal(h.authority.versions, 0);
+    await h.service.enableAutomatic();
+    const checks = h.authority.checks.length;
+    const exchanges = h.authority.exchanges.length;
+    const bindings = h.authority.bindings;
+    const displayBefore = h.entry("display-defaults");
+    const rolesBefore = h.entry("roles");
+    h.save("display-defaults", DISPLAY);
+    const replace = (roles: RoleProfile[]) => h.policies((_dao, db) => db.transaction(() => new RoleStore(db).replace({roles})).immediate());
+    replace([SECOND_ROLE, FIRST_ROLE]);
+    h.authority.version = "0.5.99";
+    await assert.rejects(h.service.synchronizeRolesAutomatic(), /Incompatible pi\.server version; required 0\.6\.\*/);
+    assert.equal(h.authority.bindings, bindings);
+    assert.deepEqual(h.entry("roles"), rolesBefore);
+    h.authority.version = "0.6.0";
+    h.authority.binding = {...BINDING, history_generation: "new-generation"};
+    assert.deepEqual(await h.service.synchronizeRolesAutomatic(), {kind: "binding_changed"});
+    assert.equal(h.authority.checks.length, checks);
+    h.authority.binding = {...BINDING};
+    const result = assertComplete((await h.service.synchronizeRolesAutomatic())!);
+    assert.deepEqual(result, [{key: "roles", status: "applied", outcome: "client_won"}]);
+    assert.deepEqual(h.authority.checks.slice(checks).map(({key}) => key), ["roles"]);
+    assert.deepEqual(h.authority.exchanges.slice(exchanges).map(({key}) => key), ["roles"]);
+    assert.equal(h.authority.current("roles").content, canonicalConfigContent({roles: [FIRST_ROLE, SECOND_ROLE]}));
+    assert.deepEqual(h.entry("display-defaults"), displayBefore);
+    h.service.disableAutomatic();
+    assert.equal(await h.service.synchronizeRolesAutomatic(), undefined);
+});
+
+test("deferred role imports preserve newer local edits and remote IDs that were never materialized", async (t) => {
+    const h = fixture(t);
+    const first = canonicalConfigContent({roles: [FIRST_ROLE]});
+    h.authority.force("roles", first);
+    await h.service.enableAutomatic();
+    const winner = h.authority.force("roles", canonicalConfigContent({roles: [FIRST_ROLE, SECOND_ROLE]}));
+    h.authority.afterExchange = ({key}) => {
+        if (key !== "roles") return;
+        h.policies((_dao, db) => db.transaction(() => new RoleStore(db).replace({roles: [THIRD_ROLE]})).immediate());
+    };
+    const deferred = assertComplete((await h.service.synchronizeRolesAutomatic())!);
+    assert.deepEqual(deferred, [{key: "roles", status: "deferred", outcome: "server_won"}]);
+    h.policies((_dao, db) => assert.deepEqual(new RoleStore(db).catalog(), {roles: [THIRD_ROLE]}));
+    assert.equal(h.entry("roles").base?.revision, winner.revision);
+    assert.equal(h.entry("roles").materialized, first);
+    assert.equal(h.entry("roles").pending, undefined);
+
+    h.authority.afterExchange = undefined;
+    const followUp = assertComplete((await h.service.synchronizeRolesAutomatic())!);
+    assert.deepEqual(followUp, [{key: "roles", status: "applied", outcome: "client_won"}]);
+    assert.equal(h.authority.current("roles").content, canonicalConfigContent({roles: [SECOND_ROLE, THIRD_ROLE]}));
+    h.policies((_dao, db) => assert.deepEqual(new RoleStore(db).catalog(), {roles: [SECOND_ROLE, THIRD_ROLE]}));
+});
+
+test("a frozen no-op role check defers when a newer local save exists", async (t) => {
+    const h = fixture(t);
+    const original = canonicalConfigContent({roles: [FIRST_ROLE]});
+    h.authority.force("roles", original);
+    await h.service.enableAutomatic();
+    const controller = new AbortController();
+    h.authority.onCheck = () => controller.abort(new Error("fixture interruption after freezing"));
+    await assert.rejects(h.service.synchronizeRolesAutomatic(controller.signal), /fixture interruption/);
+    assert.equal(h.entry("roles").pending?.request.content, original);
+    h.policies((_dao, db) => db.transaction(() => new RoleStore(db).replace({roles: [SECOND_ROLE]})).immediate());
+    h.authority.onCheck = undefined;
+    const exchanges = h.authority.exchanges.length;
+    assert.deepEqual(assertComplete((await h.service.synchronizeRolesAutomatic())!), [{key: "roles", status: "deferred"}]);
+    assert.equal(h.authority.exchanges.length, exchanges);
+    assert.equal(h.entry("roles").pending, undefined);
+    assert.deepEqual(assertComplete((await h.service.synchronizeRolesAutomatic())!),
+        [{key: "roles", status: "applied", outcome: "client_won"}]);
+    assert.equal(h.authority.current("roles").content, canonicalConfigContent({roles: [SECOND_ROLE]}));
+});
+
+test("an accepted explicit empty role catalog is stable without a local row or a reset exchange", async (t) => {
+    const h = fixture(t);
+    const empty = canonicalConfigContent({roles: []});
+    const remote = h.authority.force("roles", empty);
+    await h.service.enableAutomatic();
+    assert.equal(h.entry("roles").base?.content, empty);
+    assert.equal(h.entry("roles").materialized, null);
+    const exchanges = h.authority.exchanges.length;
+    const unchanged = assertComplete((await h.service.synchronizeRolesAutomatic())!);
+    assert.deepEqual(unchanged, [{key: "roles", status: "unchanged"}]);
+    assert.equal(h.authority.exchanges.length, exchanges);
+    const check = h.authority.checks.at(-1)!;
+    assert.equal(check.known_revision, remote.revision);
+    assert.equal(check.sha256, configHash(empty));
+    assert.equal(h.entry("roles").materialized, null);
 });
 
 test("logout or connection generation changes stop stale response application", async (t) => {

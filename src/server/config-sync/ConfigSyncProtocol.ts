@@ -6,12 +6,19 @@ import {parseWebSearchConfig} from "../../web-search/WebSearchConfig.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
 import {parsePolicyDefaults} from "../../policy/defaults.js";
 import {parsePersonaCatalog} from "../../personas/PersonaCatalog.js";
+import {parseRoleCatalog} from "../../roles/RoleCatalog.js";
 
 export const CONFIG_SYNC_CAPABILITY = "config_sync_v1";
-export const CONFIG_KEYS = ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "personas", "global-policies"] as const;
+export const JSON_CONFIG_KEYS = ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "personas"] as const;
+export const CONFIG_KEYS = [...JSON_CONFIG_KEYS, "global-policies", "roles"] as const;
 export const MAX_CONFIG_CONTENT_BYTES = 256 * 1024;
 export const MAX_CONFIG_WIRE_BYTES = 2 * MAX_CONFIG_CONTENT_BYTES + 8192;
+export type JsonConfigKey = typeof JSON_CONFIG_KEYS[number];
 export type ConfigKey = typeof CONFIG_KEYS[number];
+
+export function isJsonConfigKey(value: unknown): value is JsonConfigKey {
+    return JSON_CONFIG_KEYS.some((key) => key === value);
+}
 export type ConfigOutcome = "client_won" | "server_won" | "merged" | "unchanged";
 export type ConfigSnapshot = {content: string | null; modifiedAt: string; materialized: string | null};
 export type ConfigBaseline = {content: string | null; materialized: string | null};
@@ -57,6 +64,7 @@ export function validateConfigContent(key: ConfigKey, content: unknown): asserts
             case "subagent-defaults": parseSubagentDefaults(value); break;
             case "web-search": parseWebSearchConfig(value); break;
             case "personas": parsePersonaCatalog(value); break;
+            case "roles": parseRoleCatalog(value); break;
             case "policy-defaults": {
                 // Validate with the runtime's migration policy without changing legacy
                 // snapshot bytes/hashes. Only additive areas may be omitted.

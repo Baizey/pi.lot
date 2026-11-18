@@ -49,12 +49,12 @@ for (const [name, invoke] of [...ARCHIVE_OPERATIONS.map(([name, invoke]) => ["ar
             assert.equal(init?.method, "GET");
             assert.equal(init.body, undefined);
             assert.equal(new Headers(init.headers).get("x-apikey"), CONFIG.apiKey);
-            return Response.json({version: "0.4.99", capabilities: ["config_sync_v1", "preserved_variants_v1"]});
+            return Response.json({version: "0.5.99", capabilities: ["config_sync_v1", "preserved_variants_v1"]});
         }), (error: unknown) => {
             assert.ok(error instanceof ServerHttpError);
             assert.equal(error.kind, "configuration");
             assert.equal(error.retryable, false);
-            assert.equal(error.message, "Incompatible pi.server version; required 0.5.*.");
+            assert.equal(error.message, "Incompatible pi.server version; required 0.6.*.");
             assert.ok(name.startsWith("archive") ? error instanceof ArchiveClientError : error instanceof ConfigSyncClientError);
             return true;
         });
@@ -63,7 +63,7 @@ for (const [name, invoke] of [...ARCHIVE_OPERATIONS.map(([name, invoke]) => ["ar
 }
 
 test("only a decoded compatible stable version opens the shared transport", async () => {
-    for (const version of ["0.5.0", "0.5.42", "0.5.0+build.7"]) {
+    for (const version of ["0.6.0", "0.6.42", "0.6.0+build.7"]) {
         const paths: string[] = [];
         const transport = new ServerHttpTransport(CONFIG, {fetch: async (input) => {
             const path = new URL(String(input)).pathname;
@@ -76,8 +76,8 @@ test("only a decoded compatible stable version opens the shared transport", asyn
         }
         assert.deepEqual(paths, ["/v1/version", "/v1/binding", "/v1/future-feature"]);
     }
-    for (const value of [{version: "0.2.0"}, {version: "0.4.0"}, {version: "0.6.0"}, {version: "0.5.0-rc.1"},
-        {version: "0.5.0\n"}, {version: CONFIG.apiKey}, {version: 4}, {}, null]) {
+    for (const value of [{version: "0.2.0"}, {version: "0.5.0"}, {version: "0.7.0"}, {version: "0.6.0-rc.1"},
+        {version: "0.6.0\n"}, {version: CONFIG.apiKey}, {version: 4}, {}, null]) {
         const paths: string[] = [];
         const client = new ArchiveClient(CONFIG, {fetch: async (input) => {
             paths.push(new URL(String(input)).pathname);
@@ -94,7 +94,7 @@ test("compatible archive and configuration clients perform normal operations wit
     const fetcher: typeof fetch = async (input) => {
         const path = new URL(String(input)).pathname;
         paths.push(path);
-        if (path === "/v1/version") return Response.json({version: "0.5.0"});
+        if (path === "/v1/version") return Response.json({version: "0.6.0"});
         if (path === "/v1/binding") return Response.json({binding: BINDING, head: "0"});
         if (path === "/v1/list") return Response.json({binding: BINDING, sessions: [], next_cursor: null});
         if (path === "/v1/config/check") return Response.json({binding: BINDING, key: EXCHANGE.key, sync_needed: false});
@@ -117,7 +117,7 @@ test("successful compatibility cannot authorize a replacement connection or skip
     const paths: string[] = [];
     const approved: string[] = [];
     const config = {...CONFIG};
-    let version = "0.5.0";
+    let version = "0.6.0";
     let expectedKey = CONFIG.apiKey;
     let revoked = false;
     const options = {
@@ -140,7 +140,7 @@ test("successful compatibility cannot authorize a replacement connection or skip
     assert.deepEqual(paths, ["/v1/version", "/v1/binding"]);
     assert.deepEqual(approved, ["/v1/version", "/v1/binding", "/v1/binding"]);
     revoked = false;
-    version = "0.4.0";
+    version = "0.5.0";
     expectedKey = config.apiKey;
     await assert.rejects(new ConfigSyncClient(config, options).binding(), (error: unknown) => error instanceof ConfigSyncClientError
         && error.kind === "configuration");
@@ -160,7 +160,7 @@ test("authorization must allow the handshake and still allow the operation after
             fetch: async (input) => {
                 fetched.push(new URL(String(input)).pathname);
                 allowed = false;
-                return Response.json({version: "0.5.0"});
+                return Response.json({version: "0.6.0"});
             },
         });
         await assert.rejects(client.sync(EXCHANGE), (error: unknown) => error instanceof ConfigSyncClientError
@@ -207,7 +207,7 @@ async function mockHttp(t: TestContext, handler: RequestListener) {
 }
 
 test("real HTTP handshakes are authenticated, bodyless, and bounded to 4 KiB with or without a declared length", async (t) => {
-    let version = JSON.stringify({version: "0.5.0"});
+    let version = JSON.stringify({version: "0.6.0"});
     version += " ".repeat(4096 - Buffer.byteLength(version));
     let declared = true;
     const paths: string[] = [];

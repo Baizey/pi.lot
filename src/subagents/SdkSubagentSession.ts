@@ -345,6 +345,7 @@ function subagentSystemPrompt(request: SubagentSessionRequest): string {
         request.contextPaths?.length
             ? `Suggested context paths: ${request.contextPaths.join(", ")}`
             : "",
+        request.roleProfile ? `Saved role instructions (${request.roleProfile.title}):\n${request.roleProfile.text}` : "",
         request.systemPrompt ?? "",
     ].filter(Boolean).join("\n");
 }

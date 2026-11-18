@@ -1,12 +1,11 @@
 import {DynamicBorder, getSettingsListTheme, type Theme} from "@earendil-works/pi-coding-agent";
 import {Container, SettingsList, Text, type SettingItem} from "@earendil-works/pi-tui";
-import {CONFIG_KEYS, type ConfigKey} from "../server/config-sync/ConfigSyncProtocol.js";
+import {JSON_CONFIG_KEYS, type JsonConfigKey} from "../server/config-sync/ConfigSyncProtocol.js";
 import {SettingsChoice} from "./SettingsChoice.js";
 import {truncateToWidth} from "./terminalText.js";
 
-type RecoverableKey = Exclude<ConfigKey, "global-policies">;
 export type ServerSettingsAction = "status" | "login" | "logout" | "upload current" | "upload all"
-    | "sync" | "sync on" | "sync off" | `sync recover ${RecoverableKey} ${"local" | "server"}`;
+    | "sync" | "sync on" | "sync off" | `sync recover ${JsonConfigKey} ${"local" | "server"}`;
 
 /** Selecting an action closes this screen before input dialogs or network work begin. */
 export class ServerSettings extends Container {
@@ -22,9 +21,9 @@ export class ServerSettings extends Container {
     ) {
         super();
         const syncOptions: Array<{value: "sync" | "sync on" | "sync off"; label: string; description: string}> = [
-            {value: "sync", label: "Sync now", description: "One foreground pass over saved settings and GLOBAL rules; includes saved web-search keys."},
-            {value: "sync on", label: "Enable startup sync", description: "Sync now and persist opt-in for startup checks on this server binding; includes saved web-search keys."},
-            {value: "sync off", label: "Disable startup sync", description: "Disable automatic checks on this computer. Session archival is unchanged."},
+            {value: "sync", label: "Sync now", description: "One foreground pass over saved settings, roles, and GLOBAL rules; includes saved web-search keys."},
+            {value: "sync on", label: "Enable automatic sync", description: "Sync now and opt in to startup checks and roles-only sync after local role edits. Startup includes saved web-search keys."},
+            {value: "sync off", label: "Disable automatic sync", description: "Disable automatic checks on this computer. Session archival is unchanged."},
         ];
         const items: SettingItem[] = [
             {id: "status", label: "Check connection", currentValue: "check", values: ["check"], description: "Check authentication and server compatibility."},
@@ -40,7 +39,7 @@ export class ServerSettings extends Container {
             },
             {
                 id: "sync", label: "Configuration sync", currentValue: "choose action",
-                description: "Saved configuration and GLOBAL rules only. Includes web-search keys; connection credentials and live session overrides are not synchronized.",
+                description: "Saved configuration, roles, and GLOBAL rules only. Includes web-search keys; connection credentials and live session overrides are not synchronized.",
                 submenu: (current, done) => new SettingsChoice(syncOptions, current, done),
             },
             {
@@ -75,7 +74,7 @@ export class ServerSettings extends Container {
     }
 
     private recoveryPicker(onAction: (action: ServerSettingsAction) => void, onCancel: () => void): SettingsList {
-        const keys = CONFIG_KEYS.filter((key): key is RecoverableKey => key !== "global-policies");
+        const keys = JSON_CONFIG_KEYS;
         return new SettingsList(keys.map((key) => ({
             id: key, label: key, currentValue: "choose side",
             submenu: (current, done) => new SettingsChoice([

@@ -57,6 +57,8 @@ const expectedToolNames = [
     "subagent_message",
     "subagent_stop",
     "persona_manage",
+    "role_lookup",
+    "role_manage",
 ];
 
 function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
@@ -159,9 +161,10 @@ test("the production extension installs built-in overrides immediately but defer
     assert.ok(harness.registeredCommandNames.includes("display"));
     assert.ok(harness.registeredCommandNames.includes("sandboxing"));
     assert.ok(harness.registeredCommandNames.includes("persona"));
+    assert.ok(harness.registeredCommandNames.includes("role"));
     assert.equal(harness.registeredCommandNames.includes("network-inspection"), false);
     assert.equal(harness.registeredCommandNames.includes("mmap"), false);
-    assert.equal(harness.registeredTools.filter((tool) => tool.name !== "persona_manage")
+    assert.equal(harness.registeredTools.filter((tool) => !["persona_manage", "role_lookup", "role_manage"].includes(tool.name))
         .every((tool) => tool.renderShell === "self"), true);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
@@ -440,7 +443,7 @@ test("registered builtin and delegation collections supply the same child defini
     try {
         await harness.sessionStart()({type: "session_start", reason: "startup"}, ctx);
         const builtins = ["bash", "web_search", "read", "edit", "write"];
-        const delegation = ["subagent_spawn", "subagent_status", "subagent_message", "subagent_stop"];
+        const delegation = ["subagent_spawn", "subagent_status", "subagent_message", "subagent_stop", "role_lookup"];
         assert.deepEqual(childTools.map((tools) => tools.map((tool) => tool.name)), [
             builtins, [...builtins, ...delegation],
         ]);
@@ -712,7 +715,7 @@ test("Bash always routes through a native filesystem policy view and snapshots t
 
 test("the production extension routes to shipped documentation without forcing or replacing native prompt sections", async () => {
     const harness = extensionHarness();
-    const ctx = {} as ExtensionContext;
+    const ctx = {sessionManager: SessionManager.inMemory(process.cwd())} as unknown as ExtensionContext;
 
     new PilotExtension(harness.pi, {
         createMcpExtension: createNoopMcpExtension,
@@ -1291,7 +1294,7 @@ function toolRenderContext(
 
 function archiveSessionManager() {
     return {getSessionId: () => "extension-test-agent", getSessionFile: () => undefined,
-        getSessionDir: () => "/sessions", getHeader: () => null, getEntries: () => []};
+        getSessionDir: () => "/sessions", getHeader: () => null, getEntries: () => [], getBranch: () => []};
 }
 
 function createNoopMcpExtension() {

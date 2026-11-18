@@ -1,6 +1,8 @@
 import path from "node:path";
 import type {AgentToolResult, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {SubagentCoordinator} from "../../subagents/SubagentCoordinator";
+import {resolveRole} from "../../roles/RoleCatalog.js";
+import type {RoleLibrary} from "../../roles/RoleStore.js";
 import type {SubagentDefaultValues} from "../../subagents/SubagentDefaults.js";
 import {
     DEFAULT_SUBAGENT_TIMEOUT_SECONDS,
@@ -36,7 +38,8 @@ import {ThemeColor} from "../../tui/Color";
 
 type SpawnToolInput = {
     task: string;
-    role: string;
+    role?: string;
+    roleProfile?: string;
     capabilities?: AgentCapability[];
     cwd?: string;
     timeoutSeconds?: number;
@@ -57,6 +60,7 @@ const SPAWN_PRESENTATION = {
             placement: ToolArgumentPlacement.TITLE_PRIMARY,
             color: ThemeColor.text,
         },
+        {key: "roleProfile", label: "saved role"},
         {
             key: "capabilities",
             format: (value) => Array.isArray(value) && value.length > 0 ? value.join(", ") : "(none)",
@@ -94,8 +98,9 @@ export class SubagentSpawnTool {
         coordinator: CoordinatorProvider,
         defaults: DefaultsProvider,
         displayRows: ToolDisplayRows,
+        roles?: RoleLibrary,
     ) {
-        this.definition = createDefinition(coordinator, defaults, displayRows) as unknown as ToolDefinition<any, any>;
+        this.definition = createDefinition(coordinator, defaults, displayRows, roles) as unknown as ToolDefinition<any, any>;
     }
 
     register(): void {
@@ -113,6 +118,7 @@ function createDefinition(
     coordinator: CoordinatorProvider,
     defaults: DefaultsProvider,
     displayRows: ToolDisplayRows,
+    roles?: RoleLibrary,
 ): ToolDefinition<any, SubagentToolDetails> {
     return {
         name: "subagent_spawn",
@@ -122,7 +128,8 @@ function createDefinition(
         ...displayRows.bind(SPAWN_PRESENTATION),
         parameters: objectSchema({
             task: stringSchema("Task to delegate"),
-            role: stringSchema("Concise role or title for the child agent", 120),
+            role: stringSchema("Concise ad hoc job title; required if no saved role is selected", 120),
+            ...(roles ? {roleProfile: stringSchema("Optional saved role ID from role_lookup", 36)} : {}),
             capabilities: arraySchema(
                 enumSchema([...AGENT_CAPABILITIES], "Capability"),
                 "Policy areas to inherit plus optional MCP and delegation capabilities",
@@ -140,7 +147,7 @@ function createDefinition(
             ),
             systemPrompt: stringSchema("Optional additional child instructions", 100_000),
             contextPaths: arraySchema(stringSchema("Suggested context path"), "Suggested context paths"),
-        }, ["task", "role", "reasoning_skill", "reasoning_amount"]),
+        }, ["task", ...(roles ? [] : ["role"]), "reasoning_skill", "reasoning_amount"]),
         prepareArguments(args) {
             if (!args || typeof args !== "object" || Array.isArray(args) || !("mode" in args)) return args;
             const {mode: _legacyMode, ...current} = args as Record<string, unknown>;
@@ -148,13 +155,19 @@ function createDefinition(
         },
         async execute(_id, params, signal, _onUpdate, ctx): Promise<AgentToolResult<SubagentToolDetails>> {
             const input = params as SpawnToolInput;
+            signal?.throwIfAborted();
+            if (input.roleProfile !== undefined && !roles) throw new Error("Saved roles are unavailable.");
+            const profile = input.roleProfile !== undefined ? resolveRole(roles!.catalog(), input.roleProfile) : undefined;
+            const role = input.role ?? profile?.title;
+            if (!role) throw new Error("Specify a role title or a saved role ID.");
             const cwd = path.resolve(ctx.cwd, input.cwd ?? ".");
             const activeCoordinator = coordinator();
             const modelPreference = defaults()[input.reasoning_skill];
             const result = await activeCoordinator.spawn({
                 parentAgentIdentifier: ctx.sessionManager.getSessionId(),
                 task: input.task,
-                role: input.role,
+                role,
+                ...(profile ? {roleProfile: profile} : {}),
                 capabilities: input.capabilities ?? [],
                 cwd,
                 timeoutSeconds: input.timeoutSeconds ?? DEFAULT_SUBAGENT_TIMEOUT_SECONDS,

@@ -1,3 +1,5 @@
+import {isProfileId as isPersonaId} from "../storage/profileId.js";
+
 export const PERSONA_ACTIONS = ["off", "save", "reset"] as const;
 export const MAX_PERSONAS = 64;
 export const MAX_PERSONA_NAME = 48;
@@ -7,10 +9,7 @@ export const MAX_PERSONA_CATALOG_BYTES = 256 * 1024;
 export type Persona = {id: string; name: string; prompt: string};
 export type PersonaCatalog = {personas: Persona[]};
 
-export function isPersonaId(value: unknown): value is string {
-    return typeof value === "string" && value.length === 36
-        && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
-}
+export {isProfileId as isPersonaId} from "../storage/profileId.js";
 
 export function parsePersonaCatalog(value: unknown): PersonaCatalog {
     if (!exactObject(value, ["personas"]) || !Array.isArray(value.personas) || value.personas.length > MAX_PERSONAS) {

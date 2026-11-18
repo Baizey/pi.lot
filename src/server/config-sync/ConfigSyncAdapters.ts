@@ -6,14 +6,18 @@ import {PolicyDao} from "../../storage/PolicyDao.js";
 import {SqliteDatabase} from "../../storage/sqlite.js";
 import {PolicyLifetime} from "../../policy/types.js";
 import {withPersonaCatalogLock} from "../../personas/PersonaStore.js";
+import {parseRoleCatalog, type RoleCatalog} from "../../roles/RoleCatalog.js";
+import {RoleStore} from "../../roles/RoleStore.js";
 import {
     canonicalConfigContent,
+    compareConfigText,
     decodeGlobalPolicyRules,
     MAX_CONFIG_CONTENT_BYTES,
     type ConfigBaseline,
     type ConfigKey,
     type ConfigSnapshot,
     type GlobalPolicyRule,
+    type JsonConfigKey,
     validateConfigContent,
 } from "./ConfigSyncProtocol.js";
 
@@ -21,7 +25,7 @@ import {
 const MAX_SOURCE_BYTES = MAX_CONFIG_CONTENT_BYTES;
 type ApplyResult = {applied: boolean; materialized: string | null};
 
-/** Saved files and persisted GLOBAL decisions only; never runtime defaults or grants. */
+/** Saved files, role profiles, and persisted GLOBAL decisions; never runtime defaults or local grants. */
 export class ConfigSyncAdapters {
     private database: SqliteDatabase | undefined;
     private policyDao: PolicyDao | undefined;
@@ -38,6 +42,7 @@ export class ConfigSyncAdapters {
 
     capture(key: ConfigKey, baseline?: ConfigBaseline): ConfigSnapshot {
         this.assertOpen();
+        if (key === "roles") return this.captureRoles(baseline);
         if (key !== "global-policies") return this.captureFile(key);
         const database = this.policyDatabase();
         return database.transaction(() => {
@@ -76,6 +81,7 @@ export class ConfigSyncAdapters {
             // Serialize the guarded file replacement/reset with ordinary catalog saves, never HTTP.
             return withPersonaCatalogLock(this.directory, () => this.applyFile(key, captured, content, beforeWrite));
         }
+        if (key === "roles") return this.applyRoles(captured, content);
         if (key !== "global-policies") return this.applyFile(key, captured, content, beforeWrite);
         const rules = [...this.ruleMap(content).values()];
         const database = this.policyDatabase();
@@ -112,7 +118,59 @@ export class ConfigSyncAdapters {
         if (this.ownsDatabase) this.database?.close();
     }
 
-    private captureFile(key: Exclude<ConfigKey, "global-policies">): ConfigSnapshot {
+    private captureRoles(baseline?: ConfigBaseline): ConfigSnapshot {
+        // RoleStore.catalog reads the whole catalog; no local mask lookup is needed.
+        const materialized = this.rolesContent(new RoleStore(this.policyDatabase()).catalog().roles);
+        let content = materialized;
+        if (baseline) {
+            const accepted = this.roleCatalog(baseline.content).roles;
+            const retained = new Map(accepted.map((role) => [role.id, role]));
+            const previous = new Map(this.roleCatalog(baseline.materialized).roles.map((role) => [role.id, role]));
+            const current = new Map(this.roleCatalog(materialized).roles.map((role) => [role.id, role]));
+            // A received snapshot may be acknowledged while its import defers to a
+            // concurrent local edit. Rebase actual local changes by ID so profiles
+            // never imported from that snapshot aren't mistaken for local deletions.
+            for (const id of previous.keys()) {
+                if (!current.has(id)) retained.delete(id);
+            }
+            for (const [id, role] of current) {
+                if (canonicalConfigContent(previous.get(id) ?? null) !== canonicalConfigContent(role)) retained.set(id, role);
+            }
+            content = this.rolesContent([...retained.values()]);
+            // Preserve the accepted wire identity of an explicit empty catalog;
+            // SQLite has no separate marker for it, so materialization stays null.
+            if (content === null && accepted.length === 0) content = baseline.content;
+        }
+        return Object.freeze({content, materialized, modifiedAt: new Date().toISOString()});
+    }
+
+    private applyRoles(captured: ConfigSnapshot, content: string | null): ApplyResult {
+        const roles = this.roleCatalog(content).roles;
+        const materialized = this.rolesContent(roles);
+        const database = this.policyDatabase();
+        const store = new RoleStore(database);
+        // Guard and replacement share the writer transaction; when invoked by the
+        // journal this is a savepoint inside its import acknowledgement transaction.
+        return database.transaction((): ApplyResult => {
+            const current = this.rolesContent(store.catalog().roles);
+            if (current !== captured.materialized) return {applied: false, materialized: captured.materialized};
+            if (current !== materialized) store.replace({roles: [...roles].sort((a, b) => compareConfigText(a.id, b.id))});
+            return {applied: true, materialized};
+        }).immediate();
+    }
+
+    private roleCatalog(content: string | null): RoleCatalog {
+        return content === null ? {roles: []} : parseRoleCatalog(JSON.parse(content));
+    }
+
+    private rolesContent(roles: RoleCatalog["roles"]): string | null {
+        if (roles.length === 0) return null;
+        const content = canonicalConfigContent({roles: [...roles].sort((a, b) => compareConfigText(a.id, b.id))});
+        validateConfigContent("roles", content);
+        return content;
+    }
+
+    private captureFile(key: JsonConfigKey): ConfigSnapshot {
         const file = path.join(this.directory, `${key}.json`);
         if (!this.checkDirectory()) return this.unsetSnapshot();
         let descriptor: number;
@@ -144,7 +202,7 @@ export class ConfigSyncAdapters {
     }
 
     private applyFile(
-        key: Exclude<ConfigKey, "global-policies">,
+        key: JsonConfigKey,
         captured: ConfigSnapshot,
         content: string | null,
         beforeWrite?: (materialized: string | null) => void,

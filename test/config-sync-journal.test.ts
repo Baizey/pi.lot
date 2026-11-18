@@ -17,6 +17,7 @@ import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 import {PolicyAccessType, PolicyLifetime, PolicyResponse} from "../src/policy/types.js";
 import {mockIsolatedDatabaseOpens} from "./fixtures/IsolatedTestDatabase.js";
+import {FIRST_ROLE, SECOND_ROLE, THIRD_ROLE} from "./fixtures/SavedRoles.js";
 
 const binding: Binding = {server_id: "fixture-server", namespace_id: "fixture-namespace", history_generation: "generation-1"};
 const origin = "https://first.example.test";
@@ -312,6 +313,41 @@ test("GLOBAL source, losing-payload recovery, and acknowledgement roll back toge
     assert.equal(dao.loadPolicies().find((entry) => entry.pattern === "local")?.info.GET?.lifetime, PolicyLifetime.LOCAL);
 });
 
+test("role imports normalize ID order and roll back with acknowledgement and retained evidence", (t) => {
+    const {journal, directory} = fixture(t);
+    const standalone = new ConfigSyncAdapters(directory);
+    try {
+        const empty = standalone.capture("roles");
+        assert.equal(empty.content, null);
+        const original = canonicalConfigContent({roles: [THIRD_ROLE]});
+        assert.deepEqual(standalone.apply("roles", empty, original), {applied: true, materialized: original});
+    } finally {
+        standalone.close();
+    }
+    const adapters = new ConfigSyncAdapters(directory, journal.database());
+    t.after(() => adapters.close());
+    const snapshot = adapters.capture("roles");
+    const work = makePending("roles", snapshot.content);
+    journal.begin(destination, "roles", work);
+    const winner = stateFor(work, canonicalConfigContent({roles: [SECOND_ROLE, FIRST_ROLE]}), {outcome: "merged"});
+    const sorted = canonicalConfigContent({roles: [FIRST_ROLE, SECOND_ROLE]});
+    const checkpoint = () => assert.fail("SQLite import must not prepare a file checkpoint");
+
+    assert.throws(() => journal.complete(destination, "roles", work, winner, () => {
+        assert.deepEqual(adapters.apply("roles", snapshot, winner.content, checkpoint), {applied: true, materialized: sorted});
+        assert.equal(adapters.capture("roles").content, sorted);
+        throw new Error("fixture acknowledgement rollback");
+    }), /fixture acknowledgement rollback/);
+    assert.equal(adapters.capture("roles").content, snapshot.content);
+    assert.deepEqual(journal.read(destination, "roles"), {base: undefined, materialized: null, pending: work});
+    assert.deepEqual(recoveries(journal, "roles"), []);
+
+    journal.complete(destination, "roles", work, winner, () => adapters.apply("roles", snapshot, winner.content, checkpoint));
+    assert.equal(adapters.capture("roles").content, sorted);
+    assert.deepEqual(journal.read(destination, "roles"), {base: winner, materialized: sorted, pending: undefined});
+    assert.deepEqual(recoveries(journal, "roles"), [{pending: work}]);
+});
+
 test("adapter closure does not close its borrowed journal database; the journal owns its lifetime", (t) => {
     const {journal, directory, reopen} = fixture(t);
     const db = journal.database();
@@ -473,7 +509,7 @@ test("repeated interruptions before source mutation checkpoint newer winners whi
     assert.deepEqual(recoveries(active), [{pending: original}]);
 });
 
-test("application checkpoint validates canonical target and guard, exact fields, key/binding, and rejects GLOBAL intent", (t) => {
+test("application checkpoint validates canonical target and guard, exact fields, key/binding, and rejects SQLite intents", (t) => {
     const {journal} = fixture(t);
     const original = makePending("display-defaults", displayA);
     journal.begin(destination, "display-defaults", original);
@@ -507,11 +543,14 @@ test("application checkpoint validates canonical target and guard, exact fields,
         assert.throws(() => journal.read(destination, "display-defaults"));
     }
     update.run(JSON.stringify(prepared), destination, "display-defaults");
-    const globals = makePending("global-policies", policyContent("global"));
-    journal.begin(destination, "global-policies", globals);
-    assert.throws(() => journal.prepareApplication(destination, "global-policies", globals,
-        stateFor(globals), globals.snapshot, globals.snapshot.materialized), /GLOBAL/);
-    assert.deepEqual(journal.read(destination, "global-policies").pending, globals);
+    for (const key of ["global-policies", "roles"] as const) {
+        const work = makePending(key, null);
+        journal.begin(destination, key, work);
+        assert.throws(() => journal.prepareApplication(destination,
+            // @ts-expect-error Verify runtime rejection of SQLite keys from untyped callers.
+            key, work, stateFor(work), work.snapshot, work.snapshot.materialized), /SQLite/);
+        assert.deepEqual(journal.read(destination, key).pending, work);
+    }
 });
 
 test("application evidence refuses nested savepoints before a non-transactional file mutation", (t) => {

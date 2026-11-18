@@ -1,6 +1,6 @@
 # Background session archival: historical implementation plan
 
-> Historical design and checkpoint evidence. The implementation slices below are complete; their proposal language, old 0.2.x compatibility scope, and exclusion of policy sync are retained as history, not current runtime requirements. Current operational archive/configuration HTTP requires stable pi.server **0.5.x**, and saved configuration sync includes GLOBAL policies. Use [server.md](server.md) for current behavior. Recorded test totals are historical, not tests rerun at the current revision.
+> Historical design and checkpoint evidence. The implementation slices below are complete; their proposal language, old 0.2.x compatibility scope, and exclusion of policy sync are retained as history, not current runtime requirements. Current operational archive/configuration HTTP requires stable pi.server **0.6.x**, and saved configuration sync includes GLOBAL policies. Use [server.md](server.md) for current behavior. Recorded test totals are historical, not tests rerun at the current revision.
 
 Status: **implemented, independently reviewed, and locally validated**, following the
 reviewed revision-3 design. All six production slices and the bounded retirement of unused

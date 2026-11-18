@@ -73,7 +73,7 @@ test("HTTP and HTTPS origins on non-loopback configured hosts are accepted", asy
 test("the default check accepts stable 0.5 releases, not just a pinned patch", async (t) => {
     let version = "";
     t.mock.method(globalThis, "fetch", async () => Response.json({version}));
-    for (version of ["0.5.0", "0.5.42+build.7"]) {
+    for (version of ["0.6.0", "0.6.42+build.7"]) {
         assert.deepEqual(await requestServerVersion(CONFIG), {kind: "compatible", version});
     }
 });
@@ -81,7 +81,7 @@ test("the default check accepts stable 0.5 releases, not just a pinned patch", a
 test("the default check rejects other release lines and 0.5 prereleases", async (t) => {
     let version = "";
     t.mock.method(globalThis, "fetch", async () => Response.json({version}));
-    for (version of ["0.1.99", "0.2.99", "0.4.99", "0.5.0-rc.1", "0.6.0"]) {
+    for (version of ["0.1.99", "0.2.99", "0.4.99", "0.5.99", "0.6.0-rc.1", "0.7.0"]) {
         assert.deepEqual(await requestServerVersion(CONFIG), {kind: "incompatible", version});
     }
 });

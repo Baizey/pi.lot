@@ -8,21 +8,20 @@ import {ConfigSyncClient, ConfigSyncClientError} from "./ConfigSyncClient.js";
 import {ConfigSyncAdapters} from "./ConfigSyncAdapters.js";
 import {ConfigSyncJournal, type PendingConfigSync} from "./ConfigSyncJournal.js";
 import {
-    CONFIG_KEYS, canonicalConfigContent, configHash, decodeConfigExchange,
-    type ConfigKey, type ConfigOutcome, type ConfigSnapshot,
+    CONFIG_KEYS, canonicalConfigContent, configHash, decodeConfigExchange, isJsonConfigKey,
+    type ConfigKey, type ConfigOutcome, type ConfigSnapshot, type JsonConfigKey,
 } from "./ConfigSyncProtocol.js";
 
-export type ConfigSyncItemResult = {
-    key: ConfigKey;
-    status: "unchanged" | "applied" | "deferred" | "failed" | "needs_recovery";
+export type ConfigSyncItemResult = ({key: ConfigKey; status: "unchanged" | "applied" | "deferred" | "failed"}
+    | {key: JsonConfigKey; status: "needs_recovery"}) & {
     outcome?: ConfigOutcome;
     phase?: "capture" | "check" | "exchange" | "apply";
 };
 export type ConfigSyncResult =
     | {kind: "complete"; items: ConfigSyncItemResult[]}
     | {kind: "unconfigured" | "busy" | "binding_changed"};
-type SyncMode = {kind: "manual" | "enable"} | {kind: "automatic"; binding: Binding}
-    | {kind: "recover"; key: ConfigKey; direction: "local" | "server"};
+type SyncMode = {kind: "manual" | "enable"} | {kind: "automatic"; binding: Binding; keys: readonly ConfigKey[]}
+    | {kind: "recover"; key: JsonConfigKey; direction: "local" | "server"};
 type ConfigSyncPass = {
     client: ConfigSyncClient; journal: ConfigSyncJournal; adapters: ConfigSyncAdapters;
     binding: Binding; destination: string; signal?: AbortSignal; assertConnection(): void;
@@ -41,18 +40,28 @@ export class ConfigSyncService {
         return this.run({kind: "enable"}, signal);
     }
 
-    recover(key: ConfigKey, direction: "local" | "server", signal?: AbortSignal): Promise<ConfigSyncResult> {
+    async recover(key: JsonConfigKey, direction: "local" | "server", signal?: AbortSignal): Promise<ConfigSyncResult> {
+        if (!isJsonConfigKey(key)) throw new Error("Only JSON configuration can be recovered explicitly.");
         return this.run({kind: "recover", key, direction}, signal);
     }
 
-    async synchronizeAutomatic(signal?: AbortSignal): Promise<ConfigSyncResult | undefined> {
+    synchronizeAutomatic(signal?: AbortSignal): Promise<ConfigSyncResult | undefined> {
+        return this.runAutomatic(CONFIG_KEYS, signal);
+    }
+
+    synchronizeRolesAutomatic(signal?: AbortSignal): Promise<ConfigSyncResult | undefined> {
+        return this.runAutomatic(["roles"], signal);
+    }
+
+    private async runAutomatic(keys: readonly ConfigKey[], signal?: AbortSignal): Promise<ConfigSyncResult | undefined> {
+        signal?.throwIfAborted();
         const connection = this.store.connection();
         if (!connection) return undefined;
         const journal = new ConfigSyncJournal(this.store.directory);
         let binding: Binding | undefined;
         try { binding = journal.automaticBinding(connection.config.url); }
         finally { journal.close(); }
-        try { return binding ? await this.run({kind: "automatic", binding}, signal) : undefined; }
+        try { return binding ? await this.run({kind: "automatic", binding, keys}, signal) : undefined; }
         catch (error) {
             if (error instanceof AutomaticSyncDisabled) return undefined;
             throw error;
@@ -98,7 +107,8 @@ export class ConfigSyncService {
             adapters = new ConfigSyncAdapters(this.store.directory, journal.database());
             const pass: ConfigSyncPass = {client, journal, adapters, destination, binding: authority.binding, signal, assertConnection};
             const items: ConfigSyncItemResult[] = [];
-            for (const key of mode.kind === "recover" ? [mode.key] : CONFIG_KEYS) {
+            const keys = mode.kind === "automatic" ? mode.keys : mode.kind === "recover" ? [mode.key] : CONFIG_KEYS;
+            for (const key of keys) {
                 assertConnection();
                 const {item, stop} = await this.synchronizeItem(pass, key, mode.kind === "recover" ? mode.direction : undefined);
                 items.push(item);
@@ -120,7 +130,7 @@ export class ConfigSyncService {
         try {
             let entry = journal.read(destination, key);
             pending = entry.pending;
-            if (recovery && (key === "global-policies" || !pending?.application)) throw new Error("No interrupted JSON application.");
+            if (recovery && (!isJsonConfigKey(key) || !pending?.application)) throw new Error("No interrupted JSON application.");
             // A recovery choice freezes its selected local file before any advisory check.
             const selected = recovery ? adapters.capture(key) : undefined;
             if (!pending) {
@@ -140,11 +150,13 @@ export class ConfigSyncService {
                 if (!check.sync_needed && !pending.application && !(recovery && attempt === 0)) {
                     phase = "apply";
                     const captured = pending.snapshot;
-                    // Removing a LOCAL collision reveals its cached GLOBAL rule
-                    // even when the authoritative bundle needs no network exchange.
+                    // Guard roles even on a no-op check: an old frozen request can
+                    // match the server while a newer local save still needs a pass.
+                    // For GLOBAL rules, rematerialize if a LOCAL mask was removed.
+                    const cached = entry.base;
                     const result = journal.unchanged(destination, key, pending,
-                        key === "global-policies" && entry.base && entry.base.content !== captured.materialized
-                            ? () => { assertConnection(); return adapters.apply(key, captured, entry.base!.content); } : undefined);
+                        cached && (key === "roles" || (key === "global-policies" && cached.content !== captured.materialized))
+                            ? () => { assertConnection(); return adapters.apply(key, captured, cached.content); } : undefined);
                     return {item: {key, status: !result.applied ? "deferred"
                         : result.materialized !== captured.materialized ? "applied" : "unchanged"}, stop: false};
                 }
@@ -152,7 +164,7 @@ export class ConfigSyncService {
                 const state = await client.sync(pending.request, signal);
                 assertConnection();
                 phase = "apply";
-                if (recovery === "local" && attempt === 0) {
+                if (isJsonConfigKey(key) && recovery === "local" && attempt === 0) {
                     const next = this.createPending(binding, key, state.revision, selected!);
                     journal.rebase(destination, key, pending, state, next);
                     entry = journal.read(destination, key);
@@ -161,7 +173,7 @@ export class ConfigSyncService {
                 }
                 const captured = recovery === "server" ? selected! : pending.application?.captured ?? pending.snapshot;
                 let result: {applied: boolean; materialized: string | null};
-                if (key === "global-policies") {
+                if (!isJsonConfigKey(key)) {
                     result = journal.complete(destination, key, pending, state, () => {
                         assertConnection();
                         return adapters.apply(key, captured, state.content);
@@ -188,7 +200,7 @@ export class ConfigSyncService {
                     journal.complete(destination, key, pending, state, () => result);
                 }
                 // A retry returns current state with the original operation's outcome.
-                // That old decision cannot hide a newly imported winner or GLOBAL restoration.
+                // That old decision cannot hide a newly materialized winner.
                 const unchanged = state.outcome === "unchanged" && state.sha256 === pending.request.sha256
                     && result.materialized === captured.materialized;
                 return {item: {key, status: !result.applied ? "deferred" : unchanged ? "unchanged" : "applied",
@@ -198,9 +210,10 @@ export class ConfigSyncService {
         } catch (error) {
             // Never reflect JSON, filesystem, SQLite, or transport input into UI/logs.
             assertConnection();
-            return {item: {key, status: phase === "apply" && pending?.application ? "needs_recovery" : "failed", phase},
-                // Shared authority failures must not hammer the remaining keys.
-                stop: error instanceof ConfigSyncClientError};
+            const item: ConfigSyncItemResult = phase === "apply" && pending?.application && isJsonConfigKey(key)
+                ? {key, status: "needs_recovery", phase} : {key, status: "failed", phase};
+            // Shared authority failures must not hammer the remaining keys.
+            return {item, stop: error instanceof ConfigSyncClientError};
         }
     }
 

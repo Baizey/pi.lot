@@ -82,6 +82,47 @@ test("opt-in startup configuration work does not block startup or departure and 
     assert.equal(sync.mock.callCount(), 1, "departure never performs configuration HTTP");
 });
 
+test("post-save role sync coalesces before dispatch and once more while a pass is in flight", async (t) => {
+    const h = harness(t);
+    await h.start();
+    const passes: Array<{signal: AbortSignal; resolve: (result: ConfigSyncResult) => void}> = [];
+    const sync = t.mock.method(h.server.configuration, "synchronizeRolesAutomatic", (signal: AbortSignal) =>
+        new Promise<ConfigSyncResult>((resolve) => { passes.push({signal, resolve}); }));
+    const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const complete: ConfigSyncResult = {kind: "complete", items: [{key: "roles", status: "unchanged"}]};
+
+    h.lifecycle.scheduleRoleSync();
+    h.lifecycle.scheduleRoleSync();
+    assert.equal(sync.mock.callCount(), 0, "the save callback does not start sync I/O inline");
+    await tick();
+    assert.equal(passes.length, 1);
+    h.lifecycle.scheduleRoleSync();
+    h.lifecycle.scheduleRoleSync();
+    passes[0]!.resolve(complete);
+    await tick();
+    assert.equal(passes.length, 2);
+    h.lifecycle.scheduleRoleSync();
+    await h.shutdown();
+    assert.equal(passes[1]!.signal.aborted, true);
+    passes[1]!.resolve(complete);
+    h.lifecycle.scheduleRoleSync();
+    await tick();
+    assert.equal(passes.length, 2, "shutdown cancels the queued follow-up");
+    assert.deepEqual(h.notifications, []);
+});
+
+test("post-save role sync follows one deferred older request without polling", async (t) => {
+    const h = harness(t);
+    await h.start();
+    const sync = t.mock.method(h.server.configuration, "synchronizeRolesAutomatic", async (): Promise<ConfigSyncResult> => ({
+        kind: "complete", items: [{key: "roles", status: "deferred"}],
+    }));
+    h.lifecycle.scheduleRoleSync();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(sync.mock.callCount(), 2, "one follow-up captures the save even without an additional wakeup");
+    await h.shutdown();
+});
+
 test("startup configuration checks stay quiet when unchanged and report only fixed safe failures", async (t) => {
     for (const changed of [false, true]) {
         const h = harness(t);

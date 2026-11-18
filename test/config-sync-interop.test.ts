@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {configClient} from "./fixtures/CompatibleServer.js";
 import {OTHER_PERSONA, SAVED_PERSONAS, UPDATED_PERSONAS} from "./fixtures/SavedPersonas.js";
+import {FIRST_ROLE, SECOND_ROLE, THIRD_ROLE} from "./fixtures/SavedRoles.js";
 import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 import test from "node:test";
@@ -69,8 +70,8 @@ test("cross-language corpus identity, vocabulary, and coverage are pinned", () =
     assert.equal(createHash("sha256").update(fixtureBytes).digest("hex"), FIXTURE_SHA256);
     assert.equal(fixture.fixture_version, 1);
     assert.equal(fixture.protocol, CONFIG_SYNC_CAPABILITY);
-    // Keep the original shared corpus byte-for-byte; the 0.5 wire addition is exercised below.
-    const originalKeys = new Set(CONFIG_KEYS.filter((key) => key !== "personas"));
+    // Keep the original shared corpus byte-for-byte; newer wire additions are exercised below.
+    const originalKeys = new Set(CONFIG_KEYS.filter((key) => key !== "personas" && key !== "roles"));
     assert.deepEqual(new Set(fixture.documents.map((entry) => entry.key)), originalKeys);
     assert.deepEqual(new Set(fixture.checks.map((entry) => entry.request.key)), originalKeys);
     assert.deepEqual(new Set(fixture.exchanges.map((entry) => entry.request.key)), originalKeys);
@@ -167,6 +168,19 @@ test("persona check and exchange use v1 envelopes and accept an authoritative me
     const checked: ConfigCheckResult = {binding: check.binding, key: check.key, sync_needed: true};
     const content = canonicalConfigContent({personas: [OTHER_PERSONA, ...UPDATED_PERSONAS.personas]});
     const state: ConfigState = {binding: request.binding, key: request.key, revision: "3", schema_version: 1,
+        content, sha256: configHash(content), outcome: "merged", updated_at: request.modified_at};
+    assert.deepEqual(await mockedClient("/v1/config/check", checked, (sent) => assert.deepEqual(sent, check)).check(check), checked);
+    assert.deepEqual(await mockedClient("/v1/config/sync", state, (sent) => assert.deepEqual(sent, request)).sync(request), state);
+});
+
+test("role check and exchange use v1 envelopes and accept the server's stable-ID merge", async () => {
+    const local = canonicalConfigContent({roles: [SECOND_ROLE]});
+    const request: ConfigExchange = {...fixture.exchanges[0]!.request, key: "roles", base_revision: "1",
+        content: local, sha256: configHash(local)};
+    const check: ConfigCheck = {binding: request.binding, key: request.key, known_revision: request.base_revision, sha256: request.sha256};
+    const checked: ConfigCheckResult = {binding: check.binding, key: "roles", sync_needed: true};
+    const content = canonicalConfigContent({roles: [FIRST_ROLE, SECOND_ROLE, THIRD_ROLE]});
+    const state: ConfigState = {binding: request.binding, key: "roles", revision: "3", schema_version: 1,
         content, sha256: configHash(content), outcome: "merged", updated_at: request.modified_at};
     assert.deepEqual(await mockedClient("/v1/config/check", checked, (sent) => assert.deepEqual(sent, check)).check(check), checked);
     assert.deepEqual(await mockedClient("/v1/config/sync", state, (sent) => assert.deepEqual(sent, request)).sync(request), state);

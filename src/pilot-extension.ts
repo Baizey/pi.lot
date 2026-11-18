@@ -35,6 +35,9 @@ import {CodemodeExtension} from "./tools/codemode/CodemodeExtension.js";
 import {PersonaCommand} from "./personas/PersonaCommand.js";
 import {registerPersonaManageTool} from "./personas/PersonaManageTool.js";
 import {PersonaStore} from "./personas/PersonaStore.js";
+import {RoleCommand} from "./roles/RoleCommand.js";
+import {RoleLibrary} from "./roles/RoleStore.js";
+import {roleManageTool, roleReadTool} from "./roles/RoleTools.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -61,6 +64,8 @@ export class PilotExtension {
     private readonly thinkingLevelUiRuntime: ThinkingLevelUiRuntime;
     private readonly builtinTools: readonly (BashTool | WebSearchTool | ReadTool | EditTool | WriteTool)[];
     private readonly archiveTools: ArchiveTools;
+    private readonly roles = new RoleLibrary();
+    private readonly roleLookup = roleReadTool(this.roles);
     private readonly serverCommand: ServerCommand;
     private readonly serverLifecycle: ServerSessionLifecycle;
     private readonly mcpExtension: McpExtensionInterface;
@@ -105,7 +110,7 @@ export class PilotExtension {
         const coordinator = () => this.subagentRuntime.coordinator();
         const subagentDefaults = () => this.subagentRuntime.defaults().values;
         this.subagentTools = [
-            new SubagentSpawnTool(pi, coordinator, subagentDefaults, this.displayRows),
+            new SubagentSpawnTool(pi, coordinator, subagentDefaults, this.displayRows, this.roles),
             new SubagentStatusTool(pi, coordinator, this.displayRows),
             new SubagentMessageTool(pi, coordinator, this.displayRows),
             new SubagentStopTool(pi, coordinator, this.displayRows),
@@ -113,7 +118,7 @@ export class PilotExtension {
         const toolProviders: SubagentToolProviders = {
             builtins: () => this.builtinTools.map((tool) => tool.toolDefinition()),
             mcp: () => this.mcpExtension.toolDefinitions(),
-            delegate: () => this.subagentTools.map((tool) => tool.toolDefinition()),
+            delegate: () => [...this.subagentTools.map((tool) => tool.toolDefinition()), this.roleLookup],
         };
         this.subagentRuntime = new SubagentRuntime(toolProviders, {
             modelRanker: options.subagentModelRanker,
@@ -149,6 +154,10 @@ export class PilotExtension {
         const personas = new PersonaStore();
         new PersonaCommand(this.pi, personas).register();
         registerPersonaManageTool(this.pi, personas);
+        const roleCommand = new RoleCommand(this.pi, this.roles);
+        roleCommand.register();
+        this.pi.registerTool(this.roleLookup);
+        this.pi.registerTool(roleManageTool(this.roles, () => this.serverLifecycle.scheduleRoleSync()));
         new SubagentCompaction(this.pi, () => this.subagentRuntime.coordinator()).register();
         this.pi.on("before_agent_start", (event, ctx) => {
             if (event.messageType === "user") {
@@ -158,6 +167,9 @@ export class PilotExtension {
                 );
             }
             event.systemPromptOptions.sections.pilot_docs = this.documentation.routingPrompt();
+            const role = roleCommand.promptSection(ctx);
+            if (role) event.systemPromptOptions.sections.pilot_role = role;
+            else delete event.systemPromptOptions.sections.pilot_role;
         });
         this.pi.on("thinking_level_select", () => this.thinkingLevelUiRuntime.update());
         this.pi.on("model_select", () => this.thinkingLevelUiRuntime.update());

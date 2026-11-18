@@ -97,6 +97,7 @@ test("configuration sync commands use their foreground service, offer explicit o
         {value: "sync recover display-defaults local", label: "sync recover display-defaults local"},
         {value: "sync recover display-defaults server", label: "sync recover display-defaults server"},
     ]);
+    assert.deepEqual(await h.command.getArgumentCompletions!("sync recover roles"), []);
     t.mock.method(h.server.configuration, "synchronize", async () => { throw new Error(CONFIG.apiKey); });
     await h.command.handler("sync", h.ctx);
     assert.equal(h.notifications.at(-1)!.type, "error");
@@ -452,7 +453,7 @@ test("manual scopes are offered and unsupported credential arguments are not ref
     assert.deepEqual(await h.command.getArgumentCompletions!("upload a"), [{value: "upload all", label: "upload all"}]);
     assert.equal(await h.command.getArgumentCompletions!("update"), null);
     for (const input of ["update", `login ${CONFIG.apiKey}`, "logout extra", "upload elsewhere", "upload all extra",
-        "sync recover global-policies server", "sync recover web-search unknown", `sync recover display-defaults local ${CONFIG.apiKey}`]) {
+        "sync recover global-policies server", "sync recover roles server", "sync recover web-search unknown", `sync recover display-defaults local ${CONFIG.apiKey}`]) {
         await h.command.handler(input, h.ctx);
         assert.deepEqual(h.notifications.at(-1), {message: "Usage: /server [login|logout|upload [current|all]|sync [on|off|recover <json-key> <local|server>]]", type: "error"});
     }

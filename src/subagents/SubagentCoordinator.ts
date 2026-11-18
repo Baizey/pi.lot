@@ -1,5 +1,6 @@
 import {AsyncLocalStorage} from "node:async_hooks";
 import crypto from "node:crypto";
+import {parseRoleProfile} from "../roles/RoleCatalog.js";
 import {ApprovalWaitScope} from "../runtime/ApprovalWaitScope.js";
 import {PausableTimeout} from "../runtime/PausableTimeout.js";
 import {MAX_SUBAGENT_TIMEOUT_SECONDS, SUBAGENT_LIFETIME_MS} from "./SubagentBudgets.js";
@@ -349,6 +350,7 @@ export class SubagentCoordinator implements SubagentJobMonitor {
             ),
             task: requiredText(request.task, "task", 100_000),
             role: requiredText(request.role, "role", 120),
+            ...(request.roleProfile ? {roleProfile: parseRoleProfile(request.roleProfile)} : {}),
             capabilities,
             cwd: requiredText(request.cwd, "cwd", 10_000),
             timeoutSeconds: boundedNumber(request.timeoutSeconds, "timeoutSeconds", 1, MAX_SUBAGENT_TIMEOUT_SECONDS),

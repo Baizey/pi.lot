@@ -1,8 +1,12 @@
+import {setTimeout as delay} from "node:timers/promises";
 import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
 import {ServerService} from "./ServerService.js";
 import type {ArchiveSourceScope} from "./ArchiveSourceScope.js";
 import {captureArchiveSourceScope} from "./ArchiveSourceScopeCapture.js";
 import {configSyncStatus} from "./config-sync/ConfigSyncStatus.js";
+
+type ScheduledRoleSync = {controller: AbortController; dirty: boolean};
+const ROLE_SYNC_BUSY_RETRY_MS = 250;
 
 /** Cache after identity registration; register departure after hooks that close local writers. */
 export class ServerSessionLifecycle {
@@ -10,6 +14,7 @@ export class ServerSessionLifecycle {
     private registered = false;
     private source: ArchiveSourceScope | undefined;
     private shutdownEnqueue: Promise<void> | undefined;
+    private roleSync: ScheduledRoleSync | undefined;
 
     constructor(
         private readonly pi: ExtensionAPI,
@@ -25,6 +30,8 @@ export class ServerSessionLifecycle {
             this.server.startSession();
             this.source = undefined;
             this.shutdownEnqueue = undefined;
+            this.roleSync?.controller.abort();
+            this.roleSync = undefined;
         });
         this.pi.on("session_shutdown", () => this.server.beginShutdown());
     }
@@ -55,6 +62,52 @@ export class ServerSessionLifecycle {
             // Capture this departure's plain data before any await or subsequent startup.
             return this.shutdownEnqueue ??= this.enqueueOnShutdown(ctx, this.source);
         });
+    }
+
+    /** Call only after an approved local role write commits; never waits for I/O. */
+    scheduleRoleSync(): void {
+        if (this.roleSync) {
+            this.roleSync.dirty = true;
+            return;
+        }
+        const controller = this.server.beginRequest();
+        if (!controller) return;
+        const job: ScheduledRoleSync = {controller, dirty: true};
+        this.roleSync = job;
+        setImmediate(() => { void this.runScheduledRoleSync(job); }).unref();
+    }
+
+    private async runScheduledRoleSync(job: ScheduledRoleSync): Promise<void> {
+        const {controller} = job;
+        const {signal} = controller;
+        let retriedDeferred = false;
+        try {
+            while (job.dirty && !signal.aborted) {
+                job.dirty = false;
+                try {
+                    let result = await this.server.configuration.synchronizeRolesAutomatic(signal);
+                    if (result?.kind === "busy") {
+                        // One cancellable retry for a short competing pass; no polling.
+                        await delay(ROLE_SYNC_BUSY_RETRY_MS, undefined, {signal, ref: false});
+                        job.dirty = false;
+                        result = await this.server.configuration.synchronizeRolesAutomatic(signal);
+                    }
+                    if (!job.dirty && !retriedDeferred && result?.kind === "complete"
+                        && result.items.some((item) => item.key === "roles" && item.status === "deferred")) {
+                        // A prior frozen request can defer to the save that woke us,
+                        // without any additional wakeup arriving during HTTP.
+                        retriedDeferred = true;
+                        job.dirty = true;
+                    }
+                } catch {
+                    // The local write is already durable. Ordinary startup/manual
+                    // sync can resume work without turning a save into a sync failure.
+                }
+            }
+        } finally {
+            this.server.finishRequest(controller);
+            if (this.roleSync === job) this.roleSync = undefined;
+        }
     }
 
     private startConfigurationSync(ctx: ExtensionContext): void {

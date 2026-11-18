@@ -28,6 +28,7 @@ import {ADDITIVE_POLICY_AREAS, initialPolicyDefaults} from "../src/policy/defaul
 import {PolicyAccessType, PolicyFallbackResponse, PolicyResponse} from "../src/policy/types.js";
 import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
 import {OTHER_PERSONA, SAVED_PERSONAS} from "./fixtures/SavedPersonas.js";
+import {FIRST_ROLE, SECOND_ROLE} from "./fixtures/SavedRoles.js";
 
 const binding = {server_id: "server", namespace_id: "namespace", history_generation: "generation"};
 const timestamp = "2025-01-02T03:04:05.006Z";
@@ -40,6 +41,7 @@ const savedSources: Readonly<Record<ConfigKey, unknown>> = {
     "web-search": {version: 1, providers: ["brave"], brave: {apiKey: "saved-secret"}},
     personas: SAVED_PERSONAS,
     "global-policies": {rules: [rule("example.com:443")]},
+    roles: {roles: [FIRST_ROLE, SECOND_ROLE]},
 };
 
 for (const key of CONFIG_KEYS) {
@@ -91,6 +93,19 @@ test("persona schema validation rejects duplicate IDs and preserves valid snapsh
     }
 });
 
+test("role content accepts explicit emptiness and rejects malformed profiles without exposing instructions", () => {
+    const empty = canonicalConfigContent({roles: []});
+    assert.equal(decodeConfigExchange(exchange("roles", empty)).content, empty);
+    assert.equal(decodeConfigState(state("roles", empty)).content, empty);
+    for (const roles of [[FIRST_ROLE, FIRST_ROLE], [{...FIRST_ROLE, description: null}],
+        [{...FIRST_ROLE, id: FIRST_ROLE.id.toUpperCase().replace("1", "Z")}], [{...FIRST_ROLE, text: "\u0000private role text"}],
+        [{...FIRST_ROLE, prompt: "separate private input"}]]) {
+        const invalid = canonicalConfigContent({roles});
+        rejects(() => decodeConfigExchange(exchange("roles", invalid)));
+        rejects(() => decodeConfigState(state("roles", invalid)));
+    }
+});
+
 test("legacy v1 policy defaults may omit all additive channels without changing content or hashes", () => {
     const defaults: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
     for (const area of ADDITIVE_POLICY_AREAS) delete defaults[area];
@@ -129,7 +144,7 @@ for (const [protocol, accessType, area] of APPLICATION_POLICY_CHANNELS) {
 
 test("configuration capability and key vocabulary are fixed, with no unrelated settings admitted", () => {
     assert.equal(CONFIG_SYNC_CAPABILITY, "config_sync_v1");
-    assert.deepEqual(CONFIG_KEYS, ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "personas", "global-policies"]);
+    assert.deepEqual(CONFIG_KEYS, ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "personas", "global-policies", "roles"]);
     for (const key of CONFIG_KEYS) assert.equal(decodeConfigKey(key), key);
     for (const key of [null, undefined, 1, {}, [], "", "server", "server.json", "resources", "compaction", "Display-defaults", "web-search\n"]) {
         rejects(() => decodeConfigKey(key));

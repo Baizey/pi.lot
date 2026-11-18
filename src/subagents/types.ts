@@ -5,6 +5,7 @@ import type {
     SubagentReasoningAmount,
     SubagentReasoningSkill,
 } from "./SubagentReasoning.js";
+import type {RoleProfile} from "../roles/RoleCatalog.js";
 import type {SubagentModelPreference} from "./SubagentDefaults.js";
 
 export enum SubagentJobStatus {
@@ -22,6 +23,7 @@ export type SubagentRequest = {
     parentAgentIdentifier: string;
     task: string;
     role: string;
+    roleProfile?: RoleProfile;
     capabilities: AgentCapability[];
     cwd: string;
     timeoutSeconds: number;

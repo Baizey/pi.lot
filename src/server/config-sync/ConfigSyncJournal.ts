@@ -6,8 +6,8 @@ import {PolicyDao} from "../../storage/PolicyDao.js";
 import {syncDirectory} from "../ArchiveLock.js";
 import {decodeArchiveBinding, sameArchiveBinding, type Binding} from "../ArchiveProtocol.js";
 import {
-    canonicalConfigContent, configHash, decodeConfigExchange, decodeConfigState, decodeConfigTimestamp, validateConfigContent,
-    type ConfigExchange, type ConfigKey, type ConfigSnapshot, type ConfigState,
+    canonicalConfigContent, configHash, decodeConfigExchange, decodeConfigState, decodeConfigTimestamp, isJsonConfigKey, validateConfigContent,
+    type ConfigExchange, type ConfigKey, type ConfigSnapshot, type ConfigState, type JsonConfigKey,
 } from "./ConfigSyncProtocol.js";
 
 const MAX_JOURNAL_BYTES = 64 * 1024 * 1024;
@@ -21,7 +21,7 @@ export type PendingConfigSync = {
 export type ConfigSyncEntry = {base?: ConfigState; materialized: string | null; pending?: PendingConfigSync};
 type ItemRow = {baseline: string | null; materialized: string | null; pending: string | null};
 
-/** Pending identities, canonical bases, and GLOBAL materialization share the policy transaction. */
+/** Pending identities, canonical bases, and SQLite imports share the policy database. */
 export class ConfigSyncJournal {
     private db: SqliteDatabase | undefined;
 
@@ -85,7 +85,7 @@ export class ConfigSyncJournal {
     }
 
     /** Commit before JSON rename/unlink; an unresolved intent is never an implicit acknowledgement. */
-    prepareApplication(destination: string, key: ConfigKey, pending: PendingConfigSync, state: ConfigState,
+    prepareApplication(destination: string, key: JsonConfigKey, pending: PendingConfigSync, state: ConfigState,
         captured: ConfigSnapshot, materialized: string | null): PendingConfigSync {
         const next = decodePending({...pending, application: {state, captured, materialized}}, key);
         return this.independentApplicationDatabase().transaction(() => {
@@ -104,8 +104,9 @@ export class ConfigSyncJournal {
     }
 
     /** Explicit keep-local selection: acknowledge the old identity and freeze a fresh operation together. */
-    rebase(destination: string, key: ConfigKey, oldPending: PendingConfigSync, state: ConfigState,
+    rebase(destination: string, key: JsonConfigKey, oldPending: PendingConfigSync, state: ConfigState,
         nextPending: PendingConfigSync): void {
+        if (!isJsonConfigKey(key)) throw new Error("Only JSON configuration uses recovery operations.");
         const next = decodePending(nextPending, key);
         const accepted = this.responseState(key, oldPending, state);
         if (next.application || next.request.change_id === oldPending.request.change_id
@@ -122,7 +123,8 @@ export class ConfigSyncJournal {
     }
 
     /** Explicit accept-server selection is retained before any guarded source mutation. */
-    preserveCapture(destination: string, key: ConfigKey, pending: PendingConfigSync, captured: ConfigSnapshot): void {
+    preserveCapture(destination: string, key: JsonConfigKey, pending: PendingConfigSync, captured: ConfigSnapshot): void {
+        if (!isJsonConfigKey(key)) throw new Error("Only JSON configuration uses recovery operations.");
         const snapshot = decodeSnapshot(captured, key);
         this.independentApplicationDatabase().transaction(() => {
             this.requirePending(destination, key, pending);
@@ -145,15 +147,15 @@ export class ConfigSyncJournal {
         }).immediate();
     }
 
-    /** For GLOBAL policies the caller's application writes through this same database connection. */
+    /** For SQLite items the caller's application writes through this same database connection. */
     complete(destination: string, key: ConfigKey, pending: PendingConfigSync, state: ConfigState,
         apply: () => {applied: boolean; materialized: string | null}): {applied: boolean; materialized: string | null} {
         state = this.responseState(key, pending, state);
         return this.database().transaction(() => {
             const entry = this.requirePending(destination, key, pending);
-            // Keep any losing candidate, including a partially merged policy bundle, recoverable.
+            // Keep any losing candidate, including partially merged SQLite items, recoverable.
             if (state.sha256 !== pending.request.sha256) this.retainPending(destination, key, entry, pending);
-            // Reserve ACK capacity before the GLOBAL callback writes in this
+            // Reserve ACK capacity before the SQLite callback writes in this
             // transaction. JSON mutation already happened outside this transaction;
             // prepareApplication reserved its durable evidence and target first.
             const reservedMaterialized = Buffer.byteLength(state.content ?? "") >= Buffer.byteLength(pending.snapshot.materialized ?? "")
@@ -275,7 +277,7 @@ function decodePending(value: unknown, key: ConfigKey): PendingConfigSync {
     if (request.key !== key || snapshot.content !== request.content || snapshot.modifiedAt !== request.modified_at
         || request.sha256 !== configHash(snapshot.content)) throw new Error("Invalid pending configuration sync.");
     if (row.application === undefined) return {request, snapshot};
-    if (key === "global-policies") throw new Error("GLOBAL policies do not use file application intents.");
+    if (!isJsonConfigKey(key)) throw new Error("SQLite configuration does not use file application intents.");
     const application = ownedObject(row.application, ["state", "captured", "materialized"]);
     const rawState = ownedObject(application.state, ["binding", "key", "revision", "schema_version", "content", "sha256", "updated_at", "outcome"]);
     const state = decodeConfigState(rawState);

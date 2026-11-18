@@ -4,7 +4,7 @@ import {ServerService} from "../server/ServerService.js";
 import {captureArchiveSourceScope} from "../server/ArchiveSourceScopeCapture.js";
 import {SERVER_VERSION_REQUIREMENT} from "../server/ServerCompatibility.js";
 import {configSyncStatus} from "../server/config-sync/ConfigSyncStatus.js";
-import {CONFIG_KEYS} from "../server/config-sync/ConfigSyncProtocol.js";
+import {isJsonConfigKey, JSON_CONFIG_KEYS} from "../server/config-sync/ConfigSyncProtocol.js";
 import type {ConfigSyncResult} from "../server/config-sync/ConfigSyncService.js";
 import {ServerSettings, type ServerSettingsAction} from "../tui/ServerSettings.js";
 
@@ -38,10 +38,10 @@ export class ServerCommand {
                         action = selected === "status" ? "" : selected;
                     }
                     const parts = action.split(/\s+/u);
-                    const key = CONFIG_KEYS.find((candidate) => candidate === parts[2]);
+                    const key = parts[2];
                     const direction = parts[3];
                     if (parts.length === 4 && parts[0] === "sync" && parts[1] === "recover"
-                        && key && key !== "global-policies" && (direction === "local" || direction === "server")) {
+                        && isJsonConfigKey(key) && (direction === "local" || direction === "server")) {
                         const result = await this.server.configuration.recover(key, direction, controller.signal);
                         this.notifySync(ctx, result, controller);
                         return;
@@ -162,7 +162,7 @@ export class ServerCommand {
         if (this.pendingCheck !== controller || controller.signal.aborted) return;
         const status = configSyncStatus(result);
         const enabled = enableAutomatic && result.kind === "complete"
-            ? "\n\nAutomatic checks are enabled for this server binding at session startup. This includes saved web-search credentials. Use /server sync off to disable them." : "";
+            ? "\n\nAutomatic checks are enabled for this server binding at session startup and after local role edits (roles only). Startup sync includes saved web-search credentials. Use /server sync off to disable automatic sync." : "";
         ctx.ui.notify(status.message + enabled, status.severity);
     }
 
@@ -203,7 +203,7 @@ export class ServerCommand {
                 .map((action) => ({value: action, label: action}));
         }
         if (prefix.startsWith("sync recover ")) {
-            return CONFIG_KEYS.filter((key) => key !== "global-policies")
+            return JSON_CONFIG_KEYS
                 .flatMap((key) => ["local", "server"].map((direction) => `sync recover ${key} ${direction}`))
                 .filter((action) => action.startsWith(prefix)).map((action) => ({value: action, label: action}));
         }

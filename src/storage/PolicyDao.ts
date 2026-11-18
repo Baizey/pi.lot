@@ -33,9 +33,19 @@ export class PolicyDao implements PolicyDaoInterface {
             if (version === 0) {
                 new PolicySchemaV1(this.db).up();
                 new PolicySyncV1(this.db).up();
-                this.db.exec("pragma user_version=1");
-            } else if (version !== 1) {
+            } else if (version !== 1 && version !== 2) {
                 throw new Error(`Unsupported policy database version: ${String(version)}`);
+            }
+            if (version === 0 || version === 1) {
+                this.db.exec(`
+                    CREATE TABLE role_profiles (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        title TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        description TEXT
+                    );
+                    PRAGMA user_version=2;
+                `);
             }
         });
         // Acquire the writer lock before inspecting/rebuilding the schema. Nested

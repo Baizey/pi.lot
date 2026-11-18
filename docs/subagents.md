@@ -8,7 +8,7 @@ pi.lot provides retained child-agent conversations with separate model context, 
 
 | Tool | Arguments and behaviour |
 | --- | --- |
-| `subagent_spawn` | Required: `task`, `role`, `reasoning_skill`, `reasoning_amount`. Optional: `capabilities` (default `[]`), `cwd`, `timeoutSeconds` (default 86,400; range 1–86,400), `systemPrompt`, `contextPaths`. Returns a job ID without waiting for completion. |
+| `subagent_spawn` | Required: `task`, `reasoning_skill`, `reasoning_amount`, and at least one of `role` (job title) or `roleProfile` (saved instructions). Optional: `capabilities` (default `[]`), `cwd`, `timeoutSeconds` (default 86,400; range 1–86,400), `systemPrompt`, `contextPaths`. Returns a job ID without waiting for completion. |
 | `subagent_status` | Optional `jobIds`, `waitSeconds` (default 0; range 0–3,600), and `mode` (`"all"` or `"first"`, default `"all"`). Omit IDs or pass `[]` for the invoking agent's descendant tree. `all` waits until all selected jobs are idle/terminal; `first` returns as soon as any selected job is idle/terminal, including an already settled job. Queued and running jobs are active. Either mode returns on budget expiry or can be cancelled, and returns the full selected snapshot, not just the jobs that settled; check their states. Zero wait or an empty selection returns immediately. |
 | `subagent_message` | Required `jobId`, `task`. Steers a running turn when possible; otherwise queues an ordered follow-up. An idle job starts a new turn in the retained conversation. |
 | `subagent_stop` | Required `jobId`. Stops that job and its descendants, descendants first. |
@@ -45,6 +45,12 @@ A child receives Pilot's subagent instructions plus its role, task, reasoning/ca
 
 Children also receive the same installation-relative documentation pointers as the root, including the [harness guide](harness.md) for Bash networking and host/emulator access. This does not load ambient project instructions or grant additional tools or policy authority.
 
+## Saved roles
+
+Pass `roleProfile` to `subagent_spawn` to use a saved instruction block. `role_lookup` lists IDs, titles and optional descriptions; pass its `target` to inspect the full instructions. Only the root and children with `delegate` get lookup; delegation never grants `role_manage`. A child can receive a role without `delegate`.
+
+If `role` is omitted, the saved title becomes the job title. Existing ad hoc `role` and `systemPrompt` still work; job-specific instructions follow the saved block. An unknown or deleted profile rejects the spawn. The instructions are snapshotted at acceptance, so edits and sync affect only future spawns. A parent’s role is never inherited automatically. A role does not grant capabilities, change policy, or select a model.
+
 ## Capability model
 
 Spawn capabilities have two forms.
@@ -64,7 +70,7 @@ Policy-mediated `bash`, `read`, `edit`, `write`, and `web_search` are always ava
 ### Hard mechanism capabilities
 
 - `mcp` snapshots the root's currently exposed native MCP tools when the child session starts, not when a queued spawn is accepted. No child MCP configuration is loaded. Servers still connecting may contribute no tools; later discovery does not widen an existing child. Spawn a new child after discovery if needed. Withdrawn/hidden tools and changed schemas fail at execution rather than using stale definitions.
-- `delegate` exposes the four subagent tools and permits nested delegation.
+- `delegate` exposes the four subagent tools and read-only `role_lookup`, and permits nested delegation.
 
 A child cannot request these mechanisms later, and cannot grant a nested child a mechanism it lacks. An `mcp` grant is not a per-tool allowlist: a new nested session takes its own snapshot from the root's then-current catalog. Aggregate MCP resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) remain root-only.
 

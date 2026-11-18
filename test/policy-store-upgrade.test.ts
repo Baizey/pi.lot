@@ -9,6 +9,7 @@ import {SqliteDatabase} from "../src/storage/sqlite.js";
 import {ConfigSyncJournal} from "../src/server/config-sync/ConfigSyncJournal.js";
 import {canonicalConfigContent, configHash, decodeConfigExchange, decodeConfigState} from "../src/server/config-sync/ConfigSyncProtocol.js";
 import {createLegacyPolicySchema, storedPolicyRows, policySchemaObjects} from "./fixtures/LegacyPolicyDatabase.js";
+import {mockIsolatedDatabaseOpens} from "./fixtures/IsolatedTestDatabase.js";
 
 function fixture(t: TestContext): SqliteDatabase {
     const db = SqliteDatabase.open(":memory:");
@@ -24,7 +25,7 @@ test("policy store v1 removes retired rows and constraints once, preserving curr
     const before = db.prepare("select rowid,* from policy_rules where accessType <> 'FS_DELETE' order by rowid").all();
     const objects = policySchemaObjects(db).filter((row) => (row as {type: string}).type !== "table");
     new PolicyDao(db).initializeSchema();
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 1);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 2);
     assert.deepEqual(storedPolicyRows(db), before);
     assert.deepEqual(policySchemaObjects(db).filter((row) => (row as {type: string}).type !== "table"), objects);
     assert.equal(db.prepare("select count(*) from policy_migration_audit").pluck().get(), 0);
@@ -49,7 +50,7 @@ test("policy store v1 upgrades the former compatibility schema even when every c
     db.exec(`insert into policy_rules values ('/old','FS_DELETE','GLOBAL','DENIED','old',123)`);
     assert.deepEqual(new PolicyDao(db).loadPolicies(), []);
     assert.doesNotMatch(db.prepare("select sql from sqlite_master where name='policy_rules'").pluck().get() as string, /FS_DELETE/);
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 1);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 2);
 });
 
 test("an outer rollback restores the previous policy schema, data and version and permits retry", (t) => {
@@ -62,16 +63,16 @@ test("an outer rollback restores the previous policy schema, data and version an
     assert.deepEqual(storedPolicyRows(db), before);
     assert.deepEqual(policySchemaObjects(db), objects);
     dao.initializeSchema();
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 1);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 2);
 });
 
 test("future policy-store versions fail without changing their data or schema", (t) => {
     const db = fixture(t);
-    db.exec("pragma user_version=2");
+    db.exec("pragma user_version=3");
     const before = storedPolicyRows(db);
-    assert.throws(() => new PolicyDao(db).initializeSchema(), /Unsupported policy database version: 2/);
+    assert.throws(() => new PolicyDao(db).initializeSchema(), /Unsupported policy database version: 3/);
     assert.deepEqual(storedPolicyRows(db), before);
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 2);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
 });
 
 for (const corrupt of [false, true]) {
@@ -128,8 +129,13 @@ test("fresh versioned stores support every current permission and reject unknown
 });
 
 test("opening the journal upgrades persisted work once and keeps current pending identities across restart", (t) => {
+    mockIsolatedDatabaseOpens(t);
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pilot-store-upgrade-"));
-    t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
+    const journal = new ConfigSyncJournal(directory);
+    t.after(() => {
+        journal.close();
+        fs.rmSync(directory, {recursive: true, force: true});
+    });
     const db = SqliteDatabase.open(path.join(directory, "pilot.sqlite"));
     createLegacyPolicySchema(db, false, true);
     db.exec(`create table config_sync_items (destination text,item text,baseline text,materialized text,pending text,
@@ -159,8 +165,6 @@ test("opening the journal upgrades persisted work once and keeps current pending
             .run(destination, JSON.stringify({captured: snapshot}));
     }
     db.close();
-    const journal = new ConfigSyncJournal(directory);
-    t.after(() => journal.close());
     const retired = journal.read("retired", "global-policies");
     assert.equal(retired.base?.content, null);
     assert.equal(retired.base?.sha256, configHash(null));
@@ -176,7 +180,7 @@ test("opening the journal upgrades persisted work once and keeps current pending
     journal.close();
     assert.deepEqual(journal.read("retired", "global-policies"), retired);
     assert.deepEqual(journal.read("current", "global-policies"), kept);
-    assert.equal(journal.database().prepare("pragma user_version").pluck().get(), 1);
+    assert.equal(journal.database().prepare("pragma user_version").pluck().get(), 2);
     assert.equal(journal.database().prepare("pragma integrity_check").pluck().get(), "ok");
 });
 

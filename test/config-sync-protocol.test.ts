@@ -27,6 +27,7 @@ import {initialSubagentDefaults} from "../src/subagents/SubagentDefaults.js";
 import {ADDITIVE_POLICY_AREAS, initialPolicyDefaults} from "../src/policy/defaults.js";
 import {PolicyAccessType, PolicyFallbackResponse, PolicyResponse} from "../src/policy/types.js";
 import {APPLICATION_POLICY_CHANNELS} from "./fixtures/ApplicationPolicyChannels.js";
+import {OTHER_PERSONA, SAVED_PERSONAS} from "./fixtures/SavedPersonas.js";
 
 const binding = {server_id: "server", namespace_id: "namespace", history_generation: "generation"};
 const timestamp = "2025-01-02T03:04:05.006Z";
@@ -37,6 +38,7 @@ const savedSources: Readonly<Record<ConfigKey, unknown>> = {
     "subagent-defaults": initialSubagentDefaults,
     "policy-defaults": initialPolicyDefaults,
     "web-search": {version: 1, providers: ["brave"], brave: {apiKey: "saved-secret"}},
+    personas: SAVED_PERSONAS,
     "global-policies": {rules: [rule("example.com:443")]},
 };
 
@@ -70,6 +72,24 @@ for (const key of CONFIG_KEYS) {
         }
     });
 }
+
+test("persona schema validation rejects duplicate IDs and preserves valid snapshots as sent", () => {
+    const [persona] = SAVED_PERSONAS.personas;
+    assert.ok(persona);
+    const content = canonicalConfigContent({personas: [persona, OTHER_PERSONA]});
+    assert.equal(decodeConfigState(state("personas", content)).content, content, "validation must not reorder entries");
+    assert.equal(decodeConfigExchange(exchange("personas", content)).content, content);
+    for (const value of [
+        {personas: [persona, {...OTHER_PERSONA, id: persona.id}]},
+        {personas: [{...persona, id: persona.id.toUpperCase()}]},
+        {personas: [{...persona, prompt: "é".repeat(2049)}]},
+        {personas: [{...persona, additional: "inert fixture text"}]},
+    ]) {
+        const invalid = canonicalConfigContent(value);
+        rejects(() => decodeConfigExchange(exchange("personas", invalid)));
+        rejects(() => decodeConfigState(state("personas", invalid)));
+    }
+});
 
 test("legacy v1 policy defaults may omit all additive channels without changing content or hashes", () => {
     const defaults: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
@@ -109,7 +129,7 @@ for (const [protocol, accessType, area] of APPLICATION_POLICY_CHANNELS) {
 
 test("configuration capability and key vocabulary are fixed, with no unrelated settings admitted", () => {
     assert.equal(CONFIG_SYNC_CAPABILITY, "config_sync_v1");
-    assert.deepEqual(CONFIG_KEYS, ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "global-policies"]);
+    assert.deepEqual(CONFIG_KEYS, ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "personas", "global-policies"]);
     for (const key of CONFIG_KEYS) assert.equal(decodeConfigKey(key), key);
     for (const key of [null, undefined, 1, {}, [], "", "server", "server.json", "resources", "compaction", "Display-defaults", "web-search\n"]) {
         rejects(() => decodeConfigKey(key));

@@ -2,7 +2,7 @@
 
 [Documentation index](README.md)
 
-pi.lot archives native Pi session JSONL to [pi.server](https://github.com/Baizey/pi.server) and provides root-only tools to browse archived history. This client requires stable **pi.server `0.4.x`**. Publication runs in an independent background worker. Complete files are sent, not just the selected branch or tool previews. **They can contain prompts, reasoning, credentials, tool results, and file contents, and upload is outside agent policy approval.**
+pi.lot archives native Pi session JSONL to [pi.server](https://github.com/Baizey/pi.server) and provides root-only tools to browse archived history. This client requires stable **pi.server `0.5.x`**. Publication runs in an independent background worker. Complete files are sent, not just the selected branch or tool previews. **They can contain prompts, reasoning, credentials, tool results, and file contents, and upload is outside agent policy approval.**
 
 ## Agent essentials
 
@@ -21,13 +21,13 @@ Read this reference before using `archive_list`/`archive_fetch` or advising on s
 
 ## Server scope, identity, and compatibility
 
-pi.server is a private namespace-scoped store for opaque whole-session bytes, optional client-supplied metadata, explicit immutable variants, and the five saved configuration items below. It does **not** parse Pi transcripts, infer ancestry, generate summaries, index transcript content, execute tools, host agents, provide a web UI, or expose archive deletion. Pilot extracts metadata locally; missing server metadata remains unknown. Preservation is explicit client work, **not automatic server version history**.
+pi.server is a private namespace-scoped store for opaque whole-session bytes, optional client-supplied metadata, explicit immutable variants, and the six saved configuration items below. It does **not** parse Pi transcripts, infer ancestry, generate summaries, index transcript content, execute tools, host agents, provide a web UI, or expose archive deletion. Pilot extracts metadata locally; missing server metadata remains unknown. Preservation is explicit client work, **not automatic server version history**.
 
 Authentication selects the namespace. Each API token has complete read/write access to exactly one namespace; there is no read-only archive token or separate configuration-sync permission. Devices intended to share history/defaults need tokens for the **same namespace**, preferably separate device tokens for independent revocation.
 
 The returned `binding` is `{server_id, namespace_id, history_generation}`. A URL or native ID alone does not identify an archive: the same ID in another namespace is unrelated. Normal restart and token rotation preserve the binding; administrative restore/generation rotation changes history authority and invalidates old cursors/retry bases. Treat a changed binding as a rebootstrap/approval event, not permission to reuse an old receipt. Revision `seq` values are decimal **strings**; compare numerically only within the same binding, without converting them to JavaScript `Number`.
 
-**The required `0.4.x` release line is a client gate, not a statement that a matching server release has been published.** Check the actual build's authenticated `/v1/version` response and the [server releases](https://github.com/Baizey/pi.server/releases). A checkout or deployment reporting `0.3.x` is rejected even if it already contains configuration-sync code. Do not infer compatibility from available endpoints, fake the version response, or bypass the gate. Feature capabilities such as `preserved_variants_v1` are additional checks, not substitutes for a compatible release.
+**The required `0.5.x` release line is a client gate, not a statement that a matching server release has been published.** Check the actual build's authenticated `/v1/version` response and the [server releases](https://github.com/Baizey/pi.server/releases). A checkout or deployment reporting `0.4.x` or earlier is rejected even if it already contains configuration-sync code. Do not infer compatibility from available endpoints, fake the version response, or bypass the gate. Feature capabilities such as `preserved_variants_v1` are additional checks, not substitutes for a compatible release.
 
 For server installation, offline namespace/token provisioning, HTTPS configuration, quotas, backup, and restore, use the upstream [server operations guide](https://github.com/Baizey/pi.server/blob/main/docs/server.md) and [release guide](https://github.com/Baizey/pi.server/blob/main/docs/releases.md). Run the server against private trusted local storage, **not a pi.lot Bash FUSE mount**, network filesystem, or synchronized database folder. Pilot's `/server login` consumes an already-provisioned token; it does not create a namespace or account.
 
@@ -43,7 +43,7 @@ For server installation, offline namespace/token provisioning, HTTPS configurati
 - Use an origin without a path, embedded credentials, query, or fragment. Prefer HTTPS: HTTP sends the key unencrypted. Requests reject redirects and retain normal certificate verification.
 - Bare `/server` opens a terminal action menu only when `ctx.hasUI && ctx.mode === "tui"`. The menu displays the saved URL (or Not configured), **not the API key**. Opening or canceling it makes no connection check, queues no upload, and sends no requests. Existing background work is unaffected.
 - The menu offers **Check connection**, configure/replace/remove connection, upload scope, configuration sync, and interrupted-sync recovery. Selecting an action closes the menu before dialogs, queueing, or HTTP begin, then uses the same operation and boundaries as the corresponding text command. Canceling a submenu returns without executing its highlighted choice.
-- Selecting **Check connection**, or using bare `/server` outside the terminal UI (including RPC/print mode), checks `GET /v1/version` and displays the saved URL with the result, without displaying the API key. With no saved connection it reports Not configured without HTTP. There is **no textual status subcommand**. Supported versions are stable `0.4.x`, not prereleases; other release lines are incompatible.
+- Selecting **Check connection**, or using bare `/server` outside the terminal UI (including RPC/print mode), checks `GET /v1/version` and displays the saved URL with the result, without displaying the API key. With no saved connection it reports Not configured without HTTP. There is **no textual status subcommand**. Supported versions are stable `0.5.x`, not prereleases; other release lines are incompatible.
 - `/server logout` removes local authorization and wakes the worker to revalidate it. It does not revoke the token, delete sessions, or clear queued work, the journal, or downloads. Already-dispatched requests cannot be recalled.
 
 All operational archive and configuration HTTP goes through one shared connection gate. It authenticates and validates a bounded `GET /v1/version` response before sending any binding, discovery, download, publication, receipt, or configuration request. An incompatible version or failed/unverifiable handshake throws and stops the operation; it is not just a status warning. Successful verification is scoped to the client’s immutable origin/key snapshot, and authorization/cancellation checks still run before every request. Status, login, and logout remain usable to inspect or repair an incompatible connection. Local archive queueing can still retain work without sending it.
@@ -62,11 +62,11 @@ Pilot sends the raw token in `x-apikey`; the server has no `Authorization: Beare
 /server sync off   # Disable automatic configuration checks on this computer
 ```
 
-Requires stable **pi.server `0.4.x`**. Each pass checks the server version before binding, reading configuration sources, changing sync state, or enabling automatic checks. Incompatible versions fail the pass; configuration sync is not an optional older-server capability with a warning. Login and pre-existing connections **do not enable configuration sync**. `sync on` approves the currently authenticated origin and complete server/namespace/history-generation binding. A changed binding pauses automatic sync until explicitly approved again. Logout removes request authorization but retains sync state and the previous opt-in; a later login must verify the approved destination.
+Requires stable **pi.server `0.5.x`**. Each pass checks the server version before binding, reading configuration sources, changing sync state, or enabling automatic checks. Incompatible versions fail the entire pass; personas do not have a separate capability or a mode that skips them on older servers. Login and pre-existing connections **do not enable configuration sync**. `sync on` approves the currently authenticated origin and complete server/namespace/history-generation binding. A changed binding pauses automatic sync until explicitly approved again. Logout removes request authorization but retains sync state and the previous opt-in; a later login must verify the approved destination.
 
 **This sends saved web-search credentials and can change authorization on other devices.** Trust the server and everyone who can write its namespace. HTTPS protects transit; configuration is not end-to-end encrypted. Manual sync and explicitly enabled startup checks are trusted host-management operations, outside agent policy approval. Already-dispatched requests cannot be recalled.
 
-Exactly five independently revisioned items synchronize:
+Exactly six independently revisioned items synchronize:
 
 | Item | Local source |
 | --- | --- |
@@ -74,15 +74,18 @@ Exactly five independently revisioned items synchronize:
 | Preferred subagent models | `~/.pilot/subagent-defaults.json` |
 | Policy-area defaults | `~/.pilot/policy-defaults.json` |
 | Web-search configuration, including keys | `~/.pilot/web-search.json` |
+| Saved persona catalog | `~/.pilot/personas.json` |
 | `GLOBAL` policy rules | Logical rows in `~/.pilot/pilot.sqlite`, not the database file |
 
-Connection credentials/generation (`server.json`), credential IPC, native Pi settings, instructions, prompts, skills, themes, extensions, packages, session overrides, `LOCAL`/session/once-only grants, and archive state are **not** synchronized. Missing JSON files or an empty GLOBAL bundle represent unset/reset state. Files must be valid, bounded, regular non-symlink JSON sources; imports use private atomic replacement.
+Connection credentials/generation (`server.json`), credential IPC, native Pi settings, standalone instruction and prompt files, skills, themes, extensions, packages, the device-local persona default (`persona-default.json`), session overrides, `LOCAL`/session/once-only grants, and archive state are **not** synchronized. Missing JSON files or an empty GLOBAL bundle represent unset/reset state. Files must be valid, bounded, regular non-symlink JSON sources; imports use private atomic replacement.
 
 Clients accept policy-default snapshots that omit additive areas such as `web_adb` and the [service protocol areas](network-protocols.md); omitted additive areas use `ask_user` at runtime. Saved defaults and GLOBAL rules using new protocol vocabulary require a server/peer that accepts those additions. Older strict validators can reject them; no downgrade strips settings or grants. These additive default snapshots retain their bytes and hashes. Retired GLOBAL permission types are removed by the [database upgrade](#database-upgrades), before synchronization begins.
 
 Each item freezes its content, hash, base, timestamp, and change identity **before** the cheap optimistic check. When needed, one exchange submits that same snapshot and receives authoritative current state. Retries after uncertain responses/restart reuse the exact persisted request. Content/revisions, not clocks, determine winners; identical content creates no revision. An initially unbound client accepts existing server state. Known stale ordinary changes lose to current server state. GLOBAL rules merge changes relative to the accepted base, preserving unrelated additions/deletions; conflicting edits to the same rule retain current server state.
 
-A newer local save during HTTP is not overwritten: application is deferred and that edit remains for the next pass. LOCAL primary-key collisions remain local, never get overwritten by imported GLOBAL rules, and do not export false GLOBAL deletions. Removing a local mask can reveal the cached GLOBAL rule even when the optimistic check needs no exchange.
+The server merges persona catalog changes relative to the accepted base by stable persona ID. Pilot sends and validates whole catalog snapshots and writes the server's returned catalog, not a client-side merge. Persona instructions are part of the catalog and synchronize with it; do not put secrets in them.
+
+If the write-back guard detects a newer local save during HTTP, application is deferred and that edit remains for the next pass. For personas, `personas.lock` serializes Pilot catalog saves with the guarded sync replacement or reset; the lock is not held during HTTP. LOCAL primary-key collisions remain local, never get overwritten by imported GLOBAL rules, and do not export false GLOBAL deletions. Removing a local mask can reveal the cached GLOBAL rule even when the optimistic check needs no exchange.
 
 Imported saved defaults and GLOBAL rules apply in **new/reloaded sessions**; the current session and existing child capability snapshots are not silently reset. To explicitly reload saved policy, subagent, or display defaults in the current session, use that command's **Reload saved defaults** menu action or text `reset` action. Confirmed menu choices apply immediately; closing the main menu does not undo them, and **Save defaults** is a separate explicit action. Only saved values synchronize, not unsaved session changes. Web search reads its saved configuration on use. Unavailable, unauthenticated, or reasoning-ineligible preferred subagent pins use the existing skill-appropriate `auto` selector locally, with visible fallback metadata. The preferred pin remains saved/synced unchanged, and is used exactly again when eligible. No eligible model fails clearly; cancellation and registry failures are not hidden.
 
@@ -111,10 +114,10 @@ For **interrupted JSON application only**, choose explicitly:
 
 ```text
 /server sync recover display-defaults local
-/server sync recover web-search server
+/server sync recover personas server
 ```
 
-Use any of the four JSON item keys, not `global-policies` (whose import/acknowledgement is transactional). `local` freezes the selected local file before checking, reconciles the original pending identity, then durably creates and sends a **new** operation based on current server state. Normal concurrent-conflict rules still apply; this is not a forced remote overwrite. `server` privately preserves the selected local snapshot and accepts current server state only if that selected file has not changed in flight. Another local save is never substituted into the selected upload or silently overwritten. Repeated interruption retains its checkpoint and may require another explicit choice.
+Use any of the five JSON item keys (`display-defaults`, `subagent-defaults`, `policy-defaults`, `web-search`, or `personas`), not `global-policies` (whose import/acknowledgement is transactional). `local` freezes the selected local file before checking, reconciles the original pending identity, then durably creates and sends a **new** operation based on current server state. Normal concurrent-conflict rules still apply; this is not a forced remote overwrite. `server` privately preserves the selected local snapshot and accepts current server state only if that selected file has not changed in flight. Another local save is never substituted into the selected upload or silently overwritten. Repeated interruption retains its checkpoint and may require another explicit choice.
 
 These choices are exceptional recovery, not a dialog or extra negotiation for ordinary configuration conflicts. Losing or partially merged candidates remain private in `config_sync_recovery.snapshot`; there is no general conflict-list/restore UI yet. These records **can contain web-search secrets**. Back up rather than delete the database; it also holds local policy rules. Use a trusted host SQLite tool outside the mediated Bash filesystem for recovery, and do not share dumps. Configuration payloads and credentials are not included in synchronization diagnostics.
 
@@ -258,7 +261,7 @@ They use host HTTP, not Bash's DNS/TCP gate. The key stays in the authentication
 | Symptom or diagnostic | Safe next step |
 | --- | --- |
 | Not configured | Ask the user to provision a token and use `/server login` only after explaining automatic archival. Do not request the key in chat. |
-| Incompatible version or failed handshake | Check the **actual running build**, origin, HTTPS certificate, and redacted **Check connection** result (or bare `/server` outside the terminal UI). A `0.3.x` build is incompatible even if it implements configuration sync. No operational HTTP proceeds past this gate. |
+| Incompatible version or failed handshake | Check the **actual running build**, origin, HTTPS certificate, and redacted **Check connection** result (or bare `/server` outside the terminal UI). A `0.4.x` or older build is incompatible even if it implements configuration sync. No operational HTTP proceeds past this gate. |
 | `unauthorized` / HTTP 401 | Check for a missing, incorrect, or revoked device token through the trusted login flow. Do not retry guessed keys. Logout is not server-side revocation. |
 | `rate_limited` / HTTP 429 | Wait for `Retry-After`; a shared IP ban can reject even a correct key. Consult the server operator rather than hot-looping. |
 | Empty listing or a session not yet visible | Check namespace and filters, including unclassified/unknown metadata. Queue admission does not prove upload; startup does not backfill all history. Keep source files until capture/coverage is established. |

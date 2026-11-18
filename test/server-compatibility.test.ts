@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {matchesServerVersion, SERVER_VERSION_REQUIREMENT} from "../src/server/ServerCompatibility.js";
 
-test("server compatibility requires stable pi.server 0.4.x", () => {
-    assert.equal(SERVER_VERSION_REQUIREMENT, "0.4.*");
-    for (const version of ["0.4.0", "0.4.99", "0.4.3+build.7"]) {
+test("server compatibility requires stable pi.server 0.5.x", () => {
+    assert.equal(SERVER_VERSION_REQUIREMENT, "0.5.*");
+    for (const version of ["0.5.0", "0.5.99", "0.5.3+build.7"]) {
         assert.equal(matchesServerVersion(version, SERVER_VERSION_REQUIREMENT), true, version);
     }
-    for (const version of ["0.1.99", "0.2.99", "0.3.0", "0.3.99", "0.3.3+build.7", "0.5.0", "1.0.0",
-        "0.4.0-rc.1", "0.4.3-rc.1+build.7", "0.4", "0.04.0", "0.4.0\n", "v0.4.0"]) {
+    for (const version of ["0.1.99", "0.2.99", "0.3.99", "0.4.0", "0.4.99", "0.4.3+build.7", "0.6.0", "1.0.0",
+        "0.5.0-rc.1", "0.5.3-rc.1+build.7", "0.5", "0.05.0", "0.5.0\n", "v0.5.0"]) {
         assert.equal(matchesServerVersion(version, SERVER_VERSION_REQUIREMENT), false, version);
     }
 });

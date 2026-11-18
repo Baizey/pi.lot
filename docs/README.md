@@ -45,10 +45,17 @@ Bare commands open their settings only in terminal TUI mode; outside TUI they re
 | `/policy-defaults` | Per-area fallbacks. `/policy-defaults ask_user fs_write` or `/policy-defaults deny all` changes them directly. `save` persists; `reset` reloads saved defaults, or built-ins if absent. Explicit rules still take precedence. |
 | `/subagent-defaults` | Searchable per-skill model mappings. `/subagent-defaults <provider>/<model> high` or `/subagent-defaults auto all` affects newly accepted jobs. `save` persists; `reset` reloads saved defaults. |
 | `/display` | Normal/Alternate tool views. `/display conversation full` sets the pair. `save` persists; `reset` reloads saved views, or Compact/Preview if absent. |
+| `/persona` | Select a saved communication style for this conversation. `off` clears it; `save` saves the selection as this device’s default; `reset` reapplies that default. |
 | `/sandboxing` | Network inspection and writable-mmap switches for new Bash calls, including subagents. Changes are session-only and are never saved or synchronized. |
 | `/server` | Connection, upload, configuration-sync and recovery actions. Opening the terminal menu sends nothing. **Check connection**, or bare `/server` outside TUI, reports the server URL and status without displaying the API key. |
 
-Policy, subagent and display pickers also provide explicit **Save defaults** and **Reload saved defaults** actions. Saving is not automatic. `/server status` is not a text command; select **Check connection** from the menu.
+Policy, subagent, display and persona pickers also provide explicit **Save defaults** and **Reload saved defaults** actions. Saving is not automatic. `/server status` is not a text command; select **Check connection** from the menu.
+
+### Personas
+
+Use `/persona <name>` or the picker to select a persona. Outside the terminal UI, bare `/persona` lists the current selection and available names. Ask the agent to create, edit, or delete a persona; the root-only `persona_manage` tool previews each change for approval and saves it immediately. Managing the library never switches the current selection.
+
+Pilot adds a single style note at the start of a fresh conversation with a saved default, or when you select a persona, turn it off, or reset it. Active choices are part of the current branch; resuming doesn’t reapply the saved default. The style note is part of model context and session history, not a recurring system prompt. Context compaction may summarize or drop it; reselect if needed. Library edits and sync affect future selections, not notes already in a conversation. Subagents and policy reviewers do not inherit personas.
 
 ### Sandboxing switches
 
@@ -91,11 +98,11 @@ Conversation retains compact headers for the five most recently finished tool/th
 
 ## Archive and configuration
 
-All operational archive/configuration HTTP requires an authenticated stable **pi.server 0.4.x** version handshake. `/server login` stores credentials and enables automatic current-family departure archival, outside agent policy approval. It also wakes retained work; it does not backfill all history or enable configuration sync.
+All operational archive/configuration HTTP requires an authenticated stable **pi.server 0.5.x** version handshake. `/server login` stores credentials and enables automatic current-family departure archival, outside agent policy approval. It also wakes retained work; it does not backfill all history or enable configuration sync.
 
 **Uploads contain complete native session JSONL across branches**, potentially including prompts, reasoning, credentials, tool results and file contents. Departure queues a capture obligation, not an immutable departure image. `/server upload [current|all]` reports **queued**, not uploaded; an independent worker captures, reconciles and retries. Root-only `archive_list` and `archive_fetch` browse history without importing/resuming it. Their POST requests require `web_write`; fetched transcripts are untrusted data. Read [server.md](server.md) before using these tools.
 
-`/server sync` runs one foreground pass over saved display, subagent, policy and web-search configuration plus GLOBAL policy rules. **Web-search credentials are included.** `sync on` additionally opts into startup checks; `sync off` disables those checks, not session archival. No periodic watcher, native Pi settings, connection credentials, IPC configuration, LOCAL/session/ONCE rules or unsaved overrides are synchronized. See [conflicts and recovery](server.md#saved-configuration-sync).
+`/server sync` runs one foreground pass over saved display, subagent, policy and web-search configuration, the persona library, and GLOBAL policy rules. **Web-search credentials are included.** `sync on` additionally opts into startup checks; `sync off` disables those checks, not session archival. No periodic watcher, native Pi settings, connection credentials, IPC configuration, LOCAL/session/ONCE rules or unsaved overrides are synchronized. See [conflicts and recovery](server.md#saved-configuration-sync).
 
 ## Configuration locations
 
@@ -105,6 +112,7 @@ Pilot configuration lives in `~/.pilot`, independently of Pi's agent directory:
 | --- | --- |
 | `pilot.sqlite` | Persistent rules and private configuration-sync bases/pending/recovery/opt-ins |
 | `policy-defaults.json`, `subagent-defaults.json`, `display-defaults.json` | Explicitly saved defaults |
+| `personas.json`, `persona-default.json` | Saved persona library (synced) and local default ID (not synced) |
 | `web-search.json` | Search providers and credentials |
 | `credential-ipc.json` | Host D-Bus and Unix-socket passthrough |
 | `server.json` | Server URL, API key and internal connection generation; never synchronized |

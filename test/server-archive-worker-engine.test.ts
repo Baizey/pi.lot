@@ -54,7 +54,7 @@ function queued(f: ReturnType<typeof fixture>, body: string, metadata: ArchiveMe
 }
 
 class Remote {
-    version = "0.4.0";
+    version = "0.5.0";
     versionChecks = 0;
     binding: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "history"};
     body: Buffer | undefined;
@@ -649,7 +649,7 @@ test("incremental owned parent paths resolve the same child in both observation 
         const binding: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "history"};
         mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => {
             const endpoint = new URL(String(url)).pathname;
-            if (endpoint === "/v1/version") return json({version: "0.4.0"});
+            if (endpoint === "/v1/version") return json({version: "0.5.0"});
             return endpoint === "/v1/binding"
                 ? json({binding, head: "0", capabilities: ["preserved_variants_v1"]}) : failure("overloaded", 503, true);
         });
@@ -694,7 +694,7 @@ test("a legacy child uses cached active-root evidence after root source loss and
     const binding: Binding = {server_id: "server", namespace_id: "namespace", history_generation: "history"};
     mock.method(globalThis, "fetch", async (url: URL | RequestInfo) => {
         const endpoint = new URL(String(url)).pathname;
-        if (endpoint === "/v1/version") return json({version: "0.4.0"});
+        if (endpoint === "/v1/version") return json({version: "0.5.0"});
         return endpoint === "/v1/binding"
             ? json({binding, head: "0", capabilities: ["preserved_variants_v1"]}) : failure("overloaded", 503, true);
     });

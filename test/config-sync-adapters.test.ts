@@ -14,6 +14,7 @@ import {initialSubagentDefaults} from "../src/subagents/SubagentDefaults.js";
 import {ADDITIVE_POLICY_AREAS, initialPolicyDefaults, PolicyDefaultJsonStorage} from "../src/policy/defaults.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {openIsolatedTestDatabase} from "./fixtures/IsolatedTestDatabase.js";
+import {SAVED_PERSONAS} from "./fixtures/SavedPersonas.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 import {PolicyAccessType, PolicyLifetime, PolicyResponse} from "../src/policy/types.js";
 
@@ -23,6 +24,7 @@ const savedFiles = [
     ["subagent-defaults", initialSubagentDefaults],
     ["policy-defaults", initialPolicyDefaults],
     ["web-search", {version: 1, providers: ["brave"], brave: {apiKey: "saved-secret"}}],
+    ["personas", SAVED_PERSONAS],
 ] as const;
 
 for (const incoming of [null, canonicalConfigContent({normal: "full", alternate: "minimal"})]) {
@@ -73,7 +75,7 @@ for (const [key, value] of savedFiles) {
         assert.deepEqual(adapters.apply(key, captured, null), {applied: true, materialized: null});
         assert.equal(fs.existsSync(file), false);
         assert.deepEqual(adapters.apply(key, adapters.capture(key), null), {applied: true, materialized: null});
-        assert.deepEqual(fs.readdirSync(directory), []);
+        assert.deepEqual(fs.readdirSync(directory), key === "personas" ? ["personas.lock"] : []);
     });
 
     test(`${key}: replays completed replacement and reset after an uncommitted acknowledgement`, (t) => {
@@ -96,7 +98,7 @@ for (const [key, value] of savedFiles) {
         assert.deepEqual(adapters.apply(key, beforeReset, null), {applied: true, materialized: null});
         assert.equal(fs.existsSync(file), false);
         assert.equal(beforeReset.content, content);
-        assert.deepEqual(fs.readdirSync(directory), []);
+        assert.deepEqual(fs.readdirSync(directory), key === "personas" ? ["personas.lock"] : []);
     });
 }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {configClient} from "./fixtures/CompatibleServer.js";
+import {OTHER_PERSONA, SAVED_PERSONAS, UPDATED_PERSONAS} from "./fixtures/SavedPersonas.js";
 import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 import test from "node:test";
@@ -68,9 +69,11 @@ test("cross-language corpus identity, vocabulary, and coverage are pinned", () =
     assert.equal(createHash("sha256").update(fixtureBytes).digest("hex"), FIXTURE_SHA256);
     assert.equal(fixture.fixture_version, 1);
     assert.equal(fixture.protocol, CONFIG_SYNC_CAPABILITY);
-    assert.deepEqual(new Set(fixture.documents.map((entry) => entry.key)), new Set(CONFIG_KEYS));
-    assert.deepEqual(new Set(fixture.checks.map((entry) => entry.request.key)), new Set(CONFIG_KEYS));
-    assert.deepEqual(new Set(fixture.exchanges.map((entry) => entry.request.key)), new Set(CONFIG_KEYS));
+    // Keep the original shared corpus byte-for-byte; the 0.5 wire addition is exercised below.
+    const originalKeys = new Set(CONFIG_KEYS.filter((key) => key !== "personas"));
+    assert.deepEqual(new Set(fixture.documents.map((entry) => entry.key)), originalKeys);
+    assert.deepEqual(new Set(fixture.checks.map((entry) => entry.request.key)), originalKeys);
+    assert.deepEqual(new Set(fixture.exchanges.map((entry) => entry.request.key)), originalKeys);
     assert.deepEqual(new Set(fixture.exchanges.map((entry) => entry.response.outcome)),
         new Set(["client_won", "server_won", "merged", "unchanged"]));
     assert.ok(fixture.exchanges.some((entry) => entry.request.base_revision === null));
@@ -155,6 +158,19 @@ for (const pair of fixture.exchanges) {
         assert.deepEqual(pair.request, before);
     });
 }
+
+test("persona check and exchange use v1 envelopes and accept an authoritative merged catalog", async () => {
+    const local = canonicalConfigContent({personas: [...SAVED_PERSONAS.personas, OTHER_PERSONA]});
+    const request: ConfigExchange = {...fixture.exchanges[0]!.request, key: "personas", base_revision: "1",
+        content: local, sha256: configHash(local)};
+    const check: ConfigCheck = {binding: request.binding, key: request.key, known_revision: request.base_revision, sha256: request.sha256};
+    const checked: ConfigCheckResult = {binding: check.binding, key: check.key, sync_needed: true};
+    const content = canonicalConfigContent({personas: [OTHER_PERSONA, ...UPDATED_PERSONAS.personas]});
+    const state: ConfigState = {binding: request.binding, key: request.key, revision: "3", schema_version: 1,
+        content, sha256: configHash(content), outcome: "merged", updated_at: request.modified_at};
+    assert.deepEqual(await mockedClient("/v1/config/check", checked, (sent) => assert.deepEqual(sent, check)).check(check), checked);
+    assert.deepEqual(await mockedClient("/v1/config/sync", state, (sent) => assert.deepEqual(sent, request)).sync(request), state);
+});
 
 for (const scenario of fixture.policy_scenarios) {
     test(`${scenario.id}: fixed policy merge envelopes retain the declared adds/deletes`, async () => {

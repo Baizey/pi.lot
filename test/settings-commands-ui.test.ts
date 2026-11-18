@@ -212,7 +212,7 @@ for (const action of ["status", "login", "logout", "upload current", "upload all
         const server = new ServerService(store, async () => {
             assert.equal(closed, true);
             calls.push("status");
-            return {kind: "compatible", version: "0.4.0"};
+            return {kind: "compatible", version: "0.5.0"};
         });
         t.mock.method(server.background, "initialize", async () => { assert.equal(closed, true); });
         t.mock.method(server.background, "enqueue", async (...[source]: Parameters<typeof server.background.enqueue>) => {
@@ -314,11 +314,11 @@ for (const mode of ["rpc", "print"] as const) {
         ctx.mode = mode;
         const store = new ServerConfigStore(directory);
         store.save(CONFIG);
-        const server = new ServerService(store, async () => ({kind: "compatible", version: "0.4.0"}));
+        const server = new ServerService(store, async () => ({kind: "compatible", version: "0.5.0"}));
         const command = register((pi) => new ServerCommand(pi, server).register());
         await command.handler("", ctx);
         assert.deepEqual(notifications, [{
-            message: `Server: ${CONFIG.url}\nStatus: Connected (pi.server 0.4.0; compatible).`, type: "info",
+            message: `Server: ${CONFIG.url}\nStatus: Connected (pi.server 0.5.0; compatible).`, type: "info",
         }]);
     });
 }

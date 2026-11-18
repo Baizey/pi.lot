@@ -32,6 +32,9 @@ import {SubagentUiRuntime} from "./tui/subagent/SubagentUiRuntime.js";
 import {ThinkingLevelUiRuntime} from "./tui/ThinkingLevelUiRuntime.js";
 import {PilotDocumentation} from "./runtime/PilotDocumentation.js";
 import {CodemodeExtension} from "./tools/codemode/CodemodeExtension.js";
+import {PersonaCommand} from "./personas/PersonaCommand.js";
+import {registerPersonaManageTool} from "./personas/PersonaManageTool.js";
+import {PersonaStore} from "./personas/PersonaStore.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -143,6 +146,9 @@ export class PilotExtension {
         for (const tool of this.subagentTools) tool.register();
 
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
+        const personas = new PersonaStore();
+        new PersonaCommand(this.pi, personas).register();
+        registerPersonaManageTool(this.pi, personas);
         new SubagentCompaction(this.pi, () => this.subagentRuntime.coordinator()).register();
         this.pi.on("before_agent_start", (event, ctx) => {
             if (event.messageType === "user") {

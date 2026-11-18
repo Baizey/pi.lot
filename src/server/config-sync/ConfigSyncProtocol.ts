@@ -5,9 +5,10 @@ import {parseSubagentDefaults} from "../../subagents/SubagentDefaults.js";
 import {parseWebSearchConfig} from "../../web-search/WebSearchConfig.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
 import {parsePolicyDefaults} from "../../policy/defaults.js";
+import {parsePersonaCatalog} from "../../personas/PersonaCatalog.js";
 
 export const CONFIG_SYNC_CAPABILITY = "config_sync_v1";
-export const CONFIG_KEYS = ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "global-policies"] as const;
+export const CONFIG_KEYS = ["display-defaults", "subagent-defaults", "policy-defaults", "web-search", "personas", "global-policies"] as const;
 export const MAX_CONFIG_CONTENT_BYTES = 256 * 1024;
 export const MAX_CONFIG_WIRE_BYTES = 2 * MAX_CONFIG_CONTENT_BYTES + 8192;
 export type ConfigKey = typeof CONFIG_KEYS[number];
@@ -55,6 +56,7 @@ export function validateConfigContent(key: ConfigKey, content: unknown): asserts
             case "display-defaults": parseDisplayDefaults(value); break;
             case "subagent-defaults": parseSubagentDefaults(value); break;
             case "web-search": parseWebSearchConfig(value); break;
+            case "personas": parsePersonaCatalog(value); break;
             case "policy-defaults": {
                 // Validate with the runtime's migration policy without changing legacy
                 // snapshot bytes/hashes. Only additive areas may be omitted.

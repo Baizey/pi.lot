@@ -8,7 +8,7 @@ function compatibleServer(options: ServerHttpOptions): ServerHttpOptions {
     const fetcher = options.fetch ?? globalThis.fetch;
     return {...options,
         fetch: async (input, init) => new URL(input instanceof Request ? input.url : input).pathname === "/v1/version"
-            ? Response.json({version: "0.4.0"}) : fetcher(input, init),
+            ? Response.json({version: "0.5.0"}) : fetcher(input, init),
         beforeRequest: async (method, path, signal) => {
             if (path !== "/v1/version") await options.beforeRequest?.(method, path, signal);
         },

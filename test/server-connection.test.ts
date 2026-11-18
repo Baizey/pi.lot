@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {ServerConfig} from "../src/server/ServerConfig.js";
-import {matchesServerVersion, SERVER_VERSION_REQUIREMENT} from "../src/server/ServerCompatibility.js";
 import {checkServerVersion as requestServerVersion, type ServerStatus} from "../src/server/ServerConnection.js";
 
 const TEST_SERVER_VERSION = "1.2.3";
@@ -71,19 +70,18 @@ test("HTTP and HTTPS origins on non-loopback configured hosts are accepted", asy
     }
 });
 
-test("the default check uses the internal requirement, not a release-pinned fixture", async (t) => {
-    const version = "0.3.3";
-    t.mock.method(globalThis, "fetch", async () => Response.json({version}));
-    assert.deepEqual(await requestServerVersion(CONFIG), {
-        kind: matchesServerVersion(version, SERVER_VERSION_REQUIREMENT) ? "compatible" : "incompatible",
-        version,
-    });
-});
-
-test("the default check rejects server versions before the preservation release", async (t) => {
+test("the default check accepts stable 0.5 releases, not just a pinned patch", async (t) => {
     let version = "";
     t.mock.method(globalThis, "fetch", async () => Response.json({version}));
-    for (version of ["0.1.99", "0.2.99"]) {
+    for (version of ["0.5.0", "0.5.42+build.7"]) {
+        assert.deepEqual(await requestServerVersion(CONFIG), {kind: "compatible", version});
+    }
+});
+
+test("the default check rejects other release lines and 0.5 prereleases", async (t) => {
+    let version = "";
+    t.mock.method(globalThis, "fetch", async () => Response.json({version}));
+    for (version of ["0.1.99", "0.2.99", "0.4.99", "0.5.0-rc.1", "0.6.0"]) {
         assert.deepEqual(await requestServerVersion(CONFIG), {kind: "incompatible", version});
     }
 });

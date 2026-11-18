@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
 import {ServerConfigStore} from "../src/server/ServerConfig.js";
+import {ArchiveLock} from "../src/server/ArchiveLock.js";
+import {withPersonaCatalogLock} from "../src/personas/PersonaStore.js";
+import {OTHER_PERSONA, SAVED_PERSONAS, UPDATED_PERSONAS} from "./fixtures/SavedPersonas.js";
 import {ServerHttpError} from "../src/server/ServerHttpTransport.js";
 import {ConfigSyncClient, ConfigSyncClientError} from "../src/server/config-sync/ConfigSyncClient.js";
 import {ConfigSyncService} from "../src/server/config-sync/ConfigSyncService.js";
@@ -31,7 +34,7 @@ const NEW_DISPLAY = {normal: "minimal", alternate: "truncated"};
 class Authority {
     binding = {...BINDING};
     capabilities = ["config_sync_v1"];
-    version = "0.4.0";
+    version = "0.5.0";
     versions = 0;
     bindings = 0;
     readonly checks: ConfigCheck[] = [];
@@ -207,30 +210,78 @@ test("unconfigured and legacy automatic checks send nothing and create no journa
     assert.equal(fs.existsSync(path.join(h.directory, "pilot.sqlite")), false);
 });
 
-test("five independent snapshots bootstrap once, then only optimistic checks run", async (t) => {
+test("six independent snapshots bootstrap once, then only optimistic checks run", async (t) => {
     const h = fixture(t);
     h.save("display-defaults", DISPLAY);
     h.save("subagent-defaults", initialSubagentDefaults);
     h.save("policy-defaults", initialPolicyDefaults);
     h.save("web-search", {version: 1, providers: ["brave"], brave: {apiKey: "saved-web-search-secret"}});
+    h.save("personas", SAVED_PERSONAS);
     fs.writeFileSync(path.join(h.directory, "credential-ipc.json"), "do-not-sync-this-machine-path");
+    const localDefault = path.join(h.directory, "persona-default.json");
+    fs.writeFileSync(localDefault, JSON.stringify({id: OTHER_PERSONA.id}));
     const connection = fs.readFileSync(h.store.file);
     const first = assertComplete(await h.service.synchronize());
-    assert.equal(first.length, 5);
+    assert.deepEqual(first.map((item) => item.key), [...CONFIG_KEYS]);
     assert.ok(first.every((item) => item.status !== "failed"));
     assert.deepEqual(h.authority.exchanges.map((request) => request.key), [...CONFIG_KEYS]);
+    assert.equal(h.authority.current("personas").content, canonicalConfigContent(SAVED_PERSONAS));
     assert.equal(JSON.stringify(h.authority.exchanges).includes(CONFIG.apiKey), false);
     assert.equal(JSON.stringify(h.authority.exchanges).includes("do-not-sync-this-machine-path"), false);
+    assert.equal(JSON.stringify(h.authority.exchanges).includes(OTHER_PERSONA.id), false, "persona default stays local");
+    assert.equal(fs.readFileSync(localDefault, "utf8"), JSON.stringify({id: OTHER_PERSONA.id}));
     assert.deepEqual(fs.readFileSync(h.store.file), connection, "connection config stays local");
     assert.equal(fs.existsSync(path.join(h.directory, "config-sync.enabled")), false, "manual sync does not enable automatic secret upload");
     assert.ok(assertComplete(await h.service.synchronize()).every((item) => item.status === "unchanged"));
-    assert.equal(h.authority.exchanges.length, 5);
-    assert.equal(h.authority.checks.length, 10);
+    assert.equal(h.authority.exchanges.length, CONFIG_KEYS.length);
+    assert.equal(h.authority.checks.length, 2 * CONFIG_KEYS.length);
     h.save("display-defaults", NEW_DISPLAY);
     assert.ok(assertComplete(await h.service.synchronize()).every((item) => item.status !== "failed"));
-    assert.equal(h.authority.exchanges.length, 6);
+    assert.equal(h.authority.exchanges.length, CONFIG_KEYS.length + 1);
     assert.equal(h.authority.current("display-defaults").revision, "2");
     assert.equal(h.authority.current("subagent-defaults").revision, "1");
+});
+
+test("a persona save can take the catalog lock during HTTP and is not overwritten by sync", async (t) => {
+    const h = fixture(t);
+    h.save("personas", SAVED_PERSONAS);
+    h.authority.onCheck = (request) => {
+        if (request.key === "personas") {
+            withPersonaCatalogLock(h.directory, () => h.save("personas", UPDATED_PERSONAS));
+        }
+    };
+    const first = assertComplete(await h.service.synchronize());
+    assert.deepEqual(first.find((item) => item.key === "personas"), {key: "personas", status: "deferred", outcome: "client_won"});
+    assert.equal(h.authority.current("personas").content, canonicalConfigContent(SAVED_PERSONAS));
+    assert.equal(h.read("personas"), canonicalConfigContent(UPDATED_PERSONAS));
+    h.authority.onCheck = undefined;
+    await h.service.synchronize();
+    assert.equal(h.authority.current("personas").content, canonicalConfigContent(UPDATED_PERSONAS));
+});
+
+test("a busy persona catalog lock prevents import and the pending request can be replayed", async (t) => {
+    const h = fixture(t);
+    h.save("personas", SAVED_PERSONAS);
+    const remote = canonicalConfigContent({personas: [OTHER_PERSONA, ...UPDATED_PERSONAS.personas]});
+    h.authority.force("personas", remote);
+    const lock = new ArchiveLock(path.join(h.directory, "personas.lock"));
+    t.after(() => lock.release());
+    h.authority.afterExchange = (request) => {
+        if (request.key === "personas") assert.equal(lock.acquire(), true);
+    };
+    const first = assertComplete(await h.service.synchronize());
+    assert.deepEqual(first.find((item) => item.key === "personas"), {key: "personas", status: "failed", phase: "apply"});
+    assert.equal(h.read("personas"), canonicalConfigContent(SAVED_PERSONAS));
+    const pending = h.entry("personas").pending;
+    assert.ok(pending);
+    assert.equal(pending.application, undefined);
+    lock.release();
+
+    const again = assertComplete(await new ConfigSyncService(h.store).synchronize());
+    assert.deepEqual(again.find((item) => item.key === "personas"), {key: "personas", status: "applied", outcome: "server_won"});
+    assert.deepEqual(h.authority.exchanges.filter((request) => request.key === "personas"), [pending.request, pending.request]);
+    assert.equal(h.read("personas"), remote);
+    assert.equal(h.entry("personas").pending, undefined);
 });
 
 test("capture precedes the check and a newer local save is deferred, then sent next time", async (t) => {
@@ -342,14 +393,14 @@ test("deleting a saved file submits an explicit reset, without resetting other k
 });
 
 for (const mode of ["manual", "enable", "recover"] as const) {
-    test(`${mode} rejects pi.server 0.3 before binding, capture, or sync state changes even when capability is advertised`, async (t) => {
+    test(`${mode} rejects pi.server 0.4 before binding, capture, or sync state changes even when capability is advertised`, async (t) => {
         const h = fixture(t);
-        h.authority.version = "0.3.99";
+        h.authority.version = "0.4.99";
         fs.writeFileSync(path.join(h.directory, "display-defaults.json"), "invalid-sensitive-source");
         const result = mode === "manual" ? h.service.synchronize() : mode === "enable"
-            ? h.service.enableAutomatic() : h.service.recover("display-defaults", "local");
+            ? h.service.enableAutomatic() : h.service.recover("personas", "local");
         await assert.rejects(result, {name: "ConfigSyncClientError", kind: "configuration",
-            message: "Incompatible pi.server version; required 0.4.*."});
+            message: "Incompatible pi.server version; required 0.5.*."});
         assert.equal(h.authority.versions, 1);
         assert.equal(h.authority.bindings, 0);
         assert.equal(h.authority.checks.length, 0);
@@ -360,14 +411,15 @@ for (const mode of ["manual", "enable", "recover"] as const) {
     });
 }
 
-test("pi.server 0.4 compatibility, not optional capability metadata, authorizes the configuration pass", async (t) => {
+test("pi.server 0.5 compatibility, not optional capability metadata, authorizes the whole configuration pass", async (t) => {
     const h = fixture(t);
-    h.save("display-defaults", DISPLAY);
+    h.save("personas", SAVED_PERSONAS);
     h.authority.capabilities = [];
     const result = assertComplete(await h.service.synchronize());
-    assert.equal(result.length, 5);
+    assert.deepEqual(result.map((item) => item.key), [...CONFIG_KEYS]);
+    assert.deepEqual(result.find((item) => item.key === "personas"), {key: "personas", status: "applied", outcome: "client_won"});
     assert.equal(h.authority.versions, 1, "one preflight per pass, not per item");
-    assert.equal(h.authority.exchanges.length, 5);
+    assert.equal(h.authority.exchanges.length, CONFIG_KEYS.length);
 });
 
 test("an opted-in startup pass rejects a downgraded server and preserves local consent and state", async (t) => {
@@ -376,8 +428,8 @@ test("an opted-in startup pass rejects a downgraded server and preserves local c
     const before = h.entry("display-defaults");
     const bindings = h.authority.bindings;
     const exchanges = h.authority.exchanges.length;
-    h.authority.version = "0.3.0";
-    await assert.rejects(h.service.synchronizeAutomatic(), /Incompatible pi\.server version; required 0\.4\.\*/);
+    h.authority.version = "0.4.0";
+    await assert.rejects(h.service.synchronizeAutomatic(), /Incompatible pi\.server version; required 0\.5\.\*/);
     assert.equal(h.authority.bindings, bindings);
     assert.equal(h.authority.exchanges.length, exchanges);
     assert.deepEqual(h.entry("display-defaults"), before);

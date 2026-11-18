@@ -33,9 +33,11 @@ import {AgentCapabilitySet, AgentMechanismCapability} from "../src/subagents/Age
 import {initialSubagentDefaults} from "../src/subagents/SubagentDefaults.js";
 import {DisplayDefaultsJsonStore, initialDisplayDefaults, type DisplayDefaultsStore} from "../src/tui/tool/DisplayDefaults.js";
 import {ToolDisplayMode, type ToolDisplayViews} from "../src/tui/tool/ToolDisplayMode.js";
+import {PersonaStore} from "../src/personas/PersonaStore.js";
 
 beforeEach(() => {
     mock.method(DisplayDefaultsJsonStore.prototype, "load", () => ({...initialDisplayDefaults}));
+    mock.method(PersonaStore.prototype, "defaultId", () => null);
     mock.method(ArchiveBackground.prototype, "initialize", async () => {});
     mock.method(ArchiveBackground.prototype, "wake", async () => {});
 });
@@ -54,6 +56,7 @@ const expectedToolNames = [
     "subagent_status",
     "subagent_message",
     "subagent_stop",
+    "persona_manage",
 ];
 
 function createPolicyRuntime(ctx: ExtensionContext): PolicyRuntime {
@@ -155,9 +158,11 @@ test("the production extension installs built-in overrides immediately but defer
     assert.ok(harness.registeredCommandNames.includes("server"));
     assert.ok(harness.registeredCommandNames.includes("display"));
     assert.ok(harness.registeredCommandNames.includes("sandboxing"));
+    assert.ok(harness.registeredCommandNames.includes("persona"));
     assert.equal(harness.registeredCommandNames.includes("network-inspection"), false);
     assert.equal(harness.registeredCommandNames.includes("mmap"), false);
-    assert.equal(harness.registeredTools.every((tool) => tool.renderShell === "self"), true);
+    assert.equal(harness.registeredTools.filter((tool) => tool.name !== "persona_manage")
+        .every((tool) => tool.renderShell === "self"), true);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
     const commandParameter = bashTool.parameters.properties.command;

@@ -5,6 +5,7 @@ import {randomUUID} from "node:crypto";
 import {PolicyDao} from "../../storage/PolicyDao.js";
 import {SqliteDatabase} from "../../storage/sqlite.js";
 import {PolicyLifetime} from "../../policy/types.js";
+import {withPersonaCatalogLock} from "../../personas/PersonaStore.js";
 import {
     canonicalConfigContent,
     decodeGlobalPolicyRules,
@@ -71,6 +72,10 @@ export class ConfigSyncAdapters {
         beforeWrite?: (materialized: string | null) => void): ApplyResult {
         this.assertOpen();
         validateConfigContent(key, content);
+        if (key === "personas") {
+            // Serialize the guarded file replacement/reset with ordinary catalog saves, never HTTP.
+            return withPersonaCatalogLock(this.directory, () => this.applyFile(key, captured, content, beforeWrite));
+        }
         if (key !== "global-policies") return this.applyFile(key, captured, content, beforeWrite);
         const rules = [...this.ruleMap(content).values()];
         const database = this.policyDatabase();

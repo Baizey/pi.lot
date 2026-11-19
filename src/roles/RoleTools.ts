@@ -1,21 +1,47 @@
 import {randomUUID} from "node:crypto";
 import type {ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {enumSchema, objectSchema, stringSchema} from "../tools/types.js";
+import {ThemeColor} from "../tui/Color.js";
+import type {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
+import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection, type ToolPresentationSpec} from "../tui/tool/ToolPresentation.js";
 import {
     describeRole, MAX_ROLES, MAX_ROLE_DESCRIPTION, MAX_ROLE_TEXT, MAX_ROLE_TITLE,
     parseRoleProfile, resolveRole, type RoleCatalog, type RoleProfile,
 } from "./RoleCatalog.js";
 import type {RoleLibrary} from "./RoleStore.js";
 
-export function roleReadTool(library: RoleLibrary): ToolDefinition<any, undefined> {
+type LookupInput = {target?: string};
+type Input = {action: "create" | "edit" | "delete"; target?: string; title?: string; text?: string; description?: string};
+type Change = {before: RoleProfile | null; after: RoleProfile | null};
+
+const ROLE_LOOKUP_PRESENTATION = {
+    toolName: "role_lookup",
+    arguments: [{key: "target", placement: ToolArgumentPlacement.TITLE_PRIMARY, color: ThemeColor.text}],
+    result: {direction: ToolTextDirection.HEAD, wrap: true},
+} satisfies ToolPresentationSpec<LookupInput>;
+
+const ROLE_MANAGE_PRESENTATION = {
+    toolName: "role_manage",
+    arguments: [
+        {key: "action", placement: ToolArgumentPlacement.TITLE_PRIMARY},
+        {key: "target", placement: ToolArgumentPlacement.TITLE_PRIMARY, color: ThemeColor.text},
+        {key: "title", placement: ToolArgumentPlacement.TITLE_PRIMARY, color: ThemeColor.text},
+        {key: "description", layout: ToolArgumentLayout.BLOCK, wrap: true},
+        {key: "text", layout: ToolArgumentLayout.BLOCK, color: ThemeColor.text, wrap: true},
+    ],
+    result: {wrap: true},
+} satisfies ToolPresentationSpec<Input>;
+
+export function roleReadTool(library: RoleLibrary, displayRows: ToolDisplayRows): ToolDefinition<any, undefined> {
     return {
         name: "role_lookup",
         label: "Find saved roles",
         description: "List saved roles and their IDs, or inspect one role's instructions. Pass its ID as roleProfile to subagent_spawn.",
+        ...displayRows.bind(ROLE_LOOKUP_PRESENTATION),
         parameters: objectSchema({target: stringSchema("Optional role ID or title", MAX_ROLE_TITLE)}),
         async execute(_id, params, signal) {
             signal?.throwIfAborted();
-            const input = params as {target?: string};
+            const input = params as LookupInput;
             const catalog = library.catalog();
             if (input.target !== undefined) {
                 const role = resolveRole(catalog, input.target.trim());
@@ -27,14 +53,16 @@ export function roleReadTool(library: RoleLibrary): ToolDefinition<any, undefine
     };
 }
 
-type Input = {action: "create" | "edit" | "delete"; target?: string; title?: string; text?: string; description?: string};
-type Change = {before: RoleProfile | null; after: RoleProfile | null};
-
-export function roleManageTool(library: RoleLibrary, onSave: () => void): ToolDefinition<any, undefined> {
+export function roleManageTool(
+    library: RoleLibrary,
+    onSave: () => void,
+    displayRows: ToolDisplayRows,
+): ToolDefinition<any, undefined> {
     return {
         name: "role_manage",
         label: "Manage saved roles",
         description: "Create, edit or delete a saved role with user approval. Changes affect future selections and spawns, not permissions or existing assignments.",
+        ...displayRows.bind(ROLE_MANAGE_PRESENTATION),
         parameters: objectSchema({
             action: enumSchema(["create", "edit", "delete"], "Role operation"),
             target: stringSchema("Existing role ID or title (edit/delete)", MAX_ROLE_TITLE),

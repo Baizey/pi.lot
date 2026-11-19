@@ -11,6 +11,7 @@ import {parsePersonaCatalog, type Persona} from "../src/personas/PersonaCatalog.
 import {PersonaCommand} from "../src/personas/PersonaCommand.js";
 import {registerPersonaManageTool} from "../src/personas/PersonaManageTool.js";
 import {PersonaStore} from "../src/personas/PersonaStore.js";
+import {ToolDisplayRows} from "../src/tui/tool/ToolDisplayRows.js";
 
 const legion: Persona = {
     id: "a1234567-1234-4234-8234-0123456789ab", name: "Legion", prompt: "Use we sparingly. Keep answers direct.",
@@ -110,7 +111,8 @@ test("management previews changes, requires confirmation, and rejects edits to s
     const {store} = fixture(t);
     type Tool = Parameters<ExtensionAPI["registerTool"]>[0];
     let tool: Tool | undefined;
-    registerPersonaManageTool({registerTool(definition: Tool) { tool = definition; }} as ExtensionAPI, store);
+    registerPersonaManageTool({registerTool(definition: Tool) { tool = definition; }} as ExtensionAPI,
+        store, new ToolDisplayRows());
     const modelInput = (params: Record<string, string>, confirm?: ExtensionContext["ui"]["confirm"], signal?: AbortSignal) =>
         tool!.execute("fixture", params, signal, undefined, {hasUI: confirm !== undefined, ui: {confirm}} as ExtensionToolContext);
     const create = {action: "create", name: legion.name, prompt: legion.prompt};

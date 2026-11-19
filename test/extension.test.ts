@@ -164,8 +164,7 @@ test("the production extension installs built-in overrides immediately but defer
     assert.ok(harness.registeredCommandNames.includes("role"));
     assert.equal(harness.registeredCommandNames.includes("network-inspection"), false);
     assert.equal(harness.registeredCommandNames.includes("mmap"), false);
-    assert.equal(harness.registeredTools.filter((tool) => !["persona_manage", "role_lookup", "role_manage"].includes(tool.name))
-        .every((tool) => tool.renderShell === "self"), true);
+    assert.equal(harness.registeredTools.every((tool) => tool.renderShell === "self"), true);
     const bashTool = registeredTool(harness, "bash");
     assert.ok(bashTool);
     const commandParameter = bashTool.parameters.properties.command;

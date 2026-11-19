@@ -65,7 +65,7 @@ export class PilotExtension {
     private readonly builtinTools: readonly (BashTool | WebSearchTool | ReadTool | EditTool | WriteTool)[];
     private readonly archiveTools: ArchiveTools;
     private readonly roles = new RoleLibrary();
-    private readonly roleLookup = roleReadTool(this.roles);
+    private readonly roleLookup = roleReadTool(this.roles, this.displayRows);
     private readonly serverCommand: ServerCommand;
     private readonly serverLifecycle: ServerSessionLifecycle;
     private readonly mcpExtension: McpExtensionInterface;
@@ -153,11 +153,11 @@ export class PilotExtension {
         this.pi.on("session_start", (_event, ctx) => this.startSession(ctx));
         const personas = new PersonaStore();
         new PersonaCommand(this.pi, personas).register();
-        registerPersonaManageTool(this.pi, personas);
+        registerPersonaManageTool(this.pi, personas, this.displayRows);
         const roleCommand = new RoleCommand(this.pi, this.roles);
         roleCommand.register();
         this.pi.registerTool(this.roleLookup);
-        this.pi.registerTool(roleManageTool(this.roles, () => this.serverLifecycle.scheduleRoleSync()));
+        this.pi.registerTool(roleManageTool(this.roles, () => this.serverLifecycle.scheduleRoleSync(), this.displayRows));
         new SubagentCompaction(this.pi, () => this.subagentRuntime.coordinator()).register();
         this.pi.on("before_agent_start", (event, ctx) => {
             if (event.messageType === "user") {

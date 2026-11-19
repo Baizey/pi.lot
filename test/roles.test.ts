@@ -68,7 +68,8 @@ test("root assignment stays on its branch through compaction and catalog edits; 
 test("management requires approval and saves emit a single wake; stale writes do not overwrite local edits", async (t) => {
     const {library} = fixture(t);
     let wakes = 0;
-    const tool = roleManageTool(library, () => wakes++);
+    const displayRows = new ToolDisplayRows();
+    const tool = roleManageTool(library, () => wakes++, displayRows);
     const change = {action: "edit", target: reviewer.id, description: "", text: "Updated instructions."};
     const ctx = (confirm: ExtensionToolContext["ui"]["confirm"]) => ({hasUI: true, ui: {confirm}} as ExtensionToolContext);
     const call = (confirm: ExtensionToolContext["ui"]["confirm"]) => tool.execute("update", change, undefined, undefined, ctx(confirm));
@@ -81,7 +82,7 @@ test("management requires approval and saves emit a single wake; stale writes do
     assert.equal(wakes, 0);
     await call(async () => true);
     assert.equal(wakes, 1);
-    const lookup = roleReadTool(library);
+    const lookup = roleReadTool(library, displayRows);
     const list = await lookup.execute("list", {}, undefined, undefined, {} as ExtensionToolContext);
     assert.doesNotMatch(JSON.stringify(list), /Updated instructions/);
     const details = await lookup.execute("inspect", {target: reviewer.id}, undefined, undefined, {} as ExtensionToolContext);

@@ -1,6 +1,9 @@
 import {randomUUID} from "node:crypto";
 import type {ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {enumSchema, objectSchema, stringSchema} from "../tools/types.js";
+import {ThemeColor} from "../tui/Color.js";
+import type {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
+import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection, type ToolPresentationSpec} from "../tui/tool/ToolPresentation.js";
 import {
     MAX_PERSONA_NAME, MAX_PERSONA_PROMPT_BYTES, MAX_PERSONAS, resolvePersona,
     validatePersonaName, validatePersonaPrompt, type Persona, type PersonaCatalog,
@@ -10,12 +13,24 @@ import type {PersonaStore} from "./PersonaStore.js";
 type Input = {action: "list" | "create" | "edit" | "delete"; target?: string; name?: string; prompt?: string};
 type Change = {before: Persona | null; after: Persona | null};
 
-export function registerPersonaManageTool(pi: ExtensionAPI, store: PersonaStore): void {
+const PERSONA_MANAGE_PRESENTATION = {
+    toolName: "persona_manage",
+    arguments: [
+        {key: "action", placement: ToolArgumentPlacement.TITLE_PRIMARY},
+        {key: "target", placement: ToolArgumentPlacement.TITLE_PRIMARY, color: ThemeColor.text},
+        {key: "name", placement: ToolArgumentPlacement.TITLE_PRIMARY, color: ThemeColor.text},
+        {key: "prompt", layout: ToolArgumentLayout.BLOCK, color: ThemeColor.text, wrap: true},
+    ],
+    result: {direction: ToolTextDirection.HEAD, wrap: true},
+} satisfies ToolPresentationSpec<Input>;
+
+export function registerPersonaManageTool(pi: ExtensionAPI, store: PersonaStore, displayRows: ToolDisplayRows): void {
     const definition: ToolDefinition<any, undefined> = {
         name: "persona_manage",
         label: "Manage personas",
         description: "List saved personas, or create, edit, or delete one with user confirmation. "
             + "Personas are user-facing communication styles. This tool does not activate them; the user selects one with /persona.",
+        ...displayRows.bind(PERSONA_MANAGE_PRESENTATION),
         parameters: objectSchema({
             action: enumSchema(["list", "create", "edit", "delete"], "Persona operation"),
             target: stringSchema("Existing persona name or ID (edit/delete)", MAX_PERSONA_NAME),

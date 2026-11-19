@@ -95,7 +95,8 @@ export function decodeGlobalPolicyRules(content: string | null): GlobalPolicyRul
             const pattern = configText(row.pattern, 4096);
             requireConfig(pattern.length > 0 && !/[\u0000-\u001f\u007f-\u009f]/u.test(pattern));
             const reason = configText(row.reason, 4096);
-            requireConfig(Object.values(PolicyAccessType).some((type) => type === row.accessType));
+            requireConfig(row.accessType !== PolicyAccessType.FS_MMAP
+                && Object.values(PolicyAccessType).some((type) => type === row.accessType));
             requireConfig(Object.values(PolicyResponse).some((status) => status === row.status));
             const rule = {pattern, accessType: row.accessType as PolicyAccessType, status: row.status as PolicyResponse, reason};
             const identity = JSON.stringify([pattern, rule.accessType]);

@@ -7,6 +7,7 @@ import {SandboxingCommand} from "../src/commands/SandboxingCommand.js";
 import {SandboxingSettings} from "../src/tui/SandboxingSettings.js";
 import {displayWidth} from "../src/tui/terminalText.js";
 import {initialPolicyDefaults} from "../src/policy/defaults.js";
+import {PolicyArea, PolicyFallbackResponse} from "../src/policy/types.js";
 import {PilotSessionRuntime} from "../src/runtime/PilotSessionRuntime.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 
@@ -52,20 +53,17 @@ function harness(t: TestContext) {
     return {runtime, command, owner, ctx, notifications, runtimeRequests: () => runtimeRequests};
 }
 
-test("sandboxing defaults are session-local, reset on replacement, and independent", (t) => {
+test("mmap defaults to ask_user and does not affect network inspection", (t) => {
     const first = session(t);
     assert.ok(first.nativeFuseSessionBroker);
-    assert.equal(first.writableMmap, false);
-    assert.equal(first.fullNetworkInspection, true);
-    first.setWritableMmap(true);
+    assert.equal(first.policyRuntime.defaultResponses.fs_mmap, "ask_user");
+    first.policyRuntime.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.allow);
     assert.equal(first.fullNetworkInspection, true);
     first.setFullNetworkInspection(false);
-    assert.equal(first.writableMmap, true);
+    assert.equal(first.policyRuntime.defaultResponses.fs_mmap, "allow");
     const replacement = session(t);
-    assert.equal(replacement.writableMmap, false);
+    assert.equal(replacement.policyRuntime.defaultResponses.fs_mmap, "ask_user");
     assert.equal(replacement.fullNetworkInspection, true);
-    first.setWritableMmap(false);
-    assert.equal(first.fullNetworkInspection, false);
 });
 
 test("sandboxing registers once and completes settings and modes without opening a runtime", async (t) => {
@@ -76,8 +74,8 @@ test("sandboxing registers once and completes settings and modes without opening
         {value: "network-inspection", label: "network-inspection"}, {value: "mmap", label: "mmap"},
     ]);
     assert.deepEqual(await complete(" mm"), [{value: "mmap", label: "mmap"}]);
-    assert.deepEqual(await complete("MMAP O"), [
-        {value: "mmap on", label: "on"}, {value: "mmap off", label: "off"},
+    assert.deepEqual(await complete("MMAP ASK"), [
+        {value: "mmap ask_user", label: "ask_user"}, {value: "mmap ask_llm", label: "ask_llm"},
     ]);
     assert.deepEqual(await complete("network-inspection off "), []);
     assert.equal(await complete("save"), null);
@@ -85,36 +83,31 @@ test("sandboxing registers once and completes settings and modes without opening
     assert.equal(runtimeRequests(), 0);
 });
 
-test("sandboxing reports outside TUI, applies explicit switches, warns about reduced guarantees, and never saves", async (t) => {
+test("sandboxing reports and applies the four policy defaults without implicitly saving", async (t) => {
     const {runtime, command, ctx, notifications} = harness(t);
     await command.handler("", ctx);
-    assert.match(notifications.at(-1)!.message, /Network inspection = on\nWritable mmap = off/);
-    assert.match(notifications.at(-1)!.message, /Settings are never saved/);
+    assert.match(notifications.at(-1)!.message, /Network inspection = on\nWritable mmap requests = ask_user/);
+    assert.match(notifications.at(-1)!.message, /use \/policy-defaults save/i);
     ctx.hasUI = true;
     ctx.mode = "rpc";
-    await command.handler("", ctx); // Must not try a terminal-only custom component.
-    await command.handler(" MMAP ON ", ctx);
-    assert.equal(runtime.writableMmap, true);
-    assert.equal(runtime.fullNetworkInspection, true);
-    assert.equal(notifications.at(-1)!.type, "warning");
-    assert.match(notifications.at(-1)!.message, /memory stores are not individually checked or revocable/);
-    assert.match(notifications.at(-1)!.message, /dirty changes/);
-    assert.match(notifications.at(-1)!.message, /SQLite WAL remains unsupported/);
+    await command.handler("", ctx);
+    for (const mode of Object.values(PolicyFallbackResponse)) {
+        await command.handler(" MMAP " + mode.toUpperCase(), ctx);
+        assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, mode);
+        assert.equal(notifications.at(-1)!.type, mode === "allow" ? "warning" : "info");
+    }
     await command.handler("network-inspection off", ctx);
     assert.equal(runtime.fullNetworkInspection, false);
-    assert.equal(runtime.writableMmap, true);
-    assert.equal(notifications.at(-1)!.type, "warning");
+    assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, "ask_llm");
     assert.match(notifications.at(-1)!.message, /HTTPS stays end-to-end/);
-    for (const invalid of ["save", "reset", "mmap", "mmap on off", "network off", "mmap yes"]) {
+    for (const invalid of ["save", "reset", "mmap", "mmap on", "mmap off", "network off", "mmap yes"]) {
         await command.handler(invalid, ctx);
-        assert.equal(runtime.writableMmap, true);
+        assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, "ask_llm");
         assert.equal(runtime.fullNetworkInspection, false);
-        assert.match(notifications.at(-1)!.message, /^Usage: \/sandboxing/);
+        assert.match(notifications.at(-1)!.message, invalid === "mmap on" || invalid === "mmap off"
+            ? /now requested per Bash call/ : /^Usage: \/sandboxing/);
         assert.equal(notifications.at(-1)!.type, "error");
     }
-    await command.handler("mmap off", ctx);
-    assert.equal(runtime.writableMmap, false);
-    assert.match(notifications.at(-1)!.message, /Existing calls and mappings are unchanged/);
     await command.handler("network-inspection on", ctx);
     assert.equal(runtime.fullNetworkInspection, true);
 });
@@ -135,14 +128,17 @@ test("sandboxing uses Pi's settings switches in TUI, applies immediately, and Es
         assert.equal(picker.capturesViewportInput, true);
         const plain = () => picker.render(90).join("\n").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
         assert.match(plain(), /Network inspection\s+on/);
-        assert.match(plain(), /Writable mmap\s+off/);
-        assert.match(plain(), /Session only.*never saved/);
+        assert.match(plain(), /Writable mmap requests\s+ask_user/);
+        assert.match(plain(), /Applies to new Bash calls/);
         picker.handleInput("\r");
         assert.equal(runtime.fullNetworkInspection, false);
         picker.handleInput("\x1b[B");
-        assert.match(plain(), /memory stores cannot be\s+individually checked or revoked/);
-        picker.handleInput(" ");
-        assert.equal(runtime.writableMmap, true);
+        assert.match(plain(), /Mapped writes cannot be individually revoked/);
+        picker.handleInput("\r");
+        assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, "ask_user");
+        picker.handleInput("\x1b[B");
+        picker.handleInput("\r");
+        assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, "ask_llm");
         assert.equal(closed, false);
         for (const width of [1, 2, 8, 20, 90]) {
             assert.ok(picker.render(width).every((line) => displayWidth(line) <= width), `width ${width}`);
@@ -151,7 +147,7 @@ test("sandboxing uses Pi's settings switches in TUI, applies immediately, and Es
         picker.handleInput("\x1b");
         assert.equal(closed, true);
         assert.equal(runtime.fullNetworkInspection, false);
-        assert.equal(runtime.writableMmap, true);
+        assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, "ask_llm");
         assert.ok(redraws > 0);
     });
     await command.handler("", ctx);

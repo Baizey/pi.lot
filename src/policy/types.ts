@@ -22,6 +22,7 @@ export enum PolicyAccessType {
     // File system
     FS_READ = "FS_READ",
     FS_WRITE = "FS_WRITE",
+    FS_MMAP = "FS_MMAP",
 
     // HTTP and HTTPS
     HTTP_ACCESS = "HTTP",
@@ -99,6 +100,7 @@ export enum PolicyFallbackResponse {
 export enum PolicyArea {
     fs_read = "fs_read",
     fs_write = "fs_write",
+    fs_mmap = "fs_mmap",
     web_read = "web_read",
     web_write = "web_write",
     web_tcp = "web_tcp",
@@ -130,6 +132,7 @@ export const POLICY_AREAS: readonly PolicyArea[] = Object.freeze(Object.values(P
 const POLICY_AREA_ACCESS_TYPES: Readonly<Record<PolicyArea, readonly PolicyAccessType[]>> = Object.freeze({
     [PolicyArea.fs_read]: Object.freeze([PolicyAccessType.FS_READ]),
     [PolicyArea.fs_write]: Object.freeze([PolicyAccessType.FS_WRITE]),
+    [PolicyArea.fs_mmap]: Object.freeze([PolicyAccessType.FS_MMAP]),
     [PolicyArea.web_read]: Object.freeze([
         PolicyAccessType.HTTP_ACCESS,
         PolicyAccessType.HTTP_GET,
@@ -231,7 +234,9 @@ export class PolicyResult {
         return [
             `ACCESS ${this.matchedStatus}`,
             `The uri '${this.evaluatedUri}' had an attempted access of type ${this.evaluatedAccessType}`,
-            `The policy for uri (and any subfiles without own policies) '${this.matchedPattern}' was triggered`,
+            this.evaluatedAccessType === PolicyAccessType.FS_MMAP
+                ? `The writable mmap policy for starting directory '${this.matchedPattern}' was triggered`
+                : `The policy for uri (and any subfiles without own policies) '${this.matchedPattern}' was triggered`,
             `Policy reason for why this was denied: ${this.matchedReason}`,
             `Policy resolution source: ${this.resolutionSource}`,
             `Policy lifetime: ${this.matchedLifetime}`,

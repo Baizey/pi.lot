@@ -1,6 +1,7 @@
 // noinspection SqlNoDataSourceInspection
 
 import {SqliteDatabase} from "./sqlite";
+import {PolicyMmapV3} from "./migrations/PolicyMmapV3.js";
 import {PolicySchemaV1} from "./migrations/PolicySchemaV1.js";
 import {PolicySyncV1} from "./migrations/PolicySyncV1.js";
 import {type Policy, PolicyAccessType, PolicyLifetime, PolicyResponse} from "../policy/types";
@@ -33,7 +34,7 @@ export class PolicyDao implements PolicyDaoInterface {
             if (version === 0) {
                 new PolicySchemaV1(this.db).up();
                 new PolicySyncV1(this.db).up();
-            } else if (version !== 1 && version !== 2) {
+            } else if (version !== 1 && version !== 2 && version !== 3) {
                 throw new Error(`Unsupported policy database version: ${String(version)}`);
             }
             if (version === 0 || version === 1) {
@@ -44,8 +45,11 @@ export class PolicyDao implements PolicyDaoInterface {
                         text TEXT NOT NULL,
                         description TEXT
                     );
-                    PRAGMA user_version=2;
                 `);
+            }
+            if (version === 0 || version === 1 || version === 2) {
+                new PolicyMmapV3(this.db).up();
+                this.db.exec("pragma user_version=3");
             }
         });
         // Acquire the writer lock before inspecting/rebuilding the schema. Nested

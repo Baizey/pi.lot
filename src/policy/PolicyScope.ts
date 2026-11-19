@@ -3,8 +3,13 @@ import {ParsedUri} from "./network/ParsedUri.js";
 import {resolvePhysicalPath} from "./path/validation.js";
 import {PolicyAccessType} from "./types.js";
 
+/** Internal fallback only; mmap grants always target an exact starting directory. */
+export const UNIVERSAL_MMAP_POLICY_PATTERN = "*";
+
 export function resolveUri(accessType: PolicyAccessType, uri: string): string {
     switch (accessType) {
+        case PolicyAccessType.FS_MMAP:
+            return uri === UNIVERSAL_MMAP_POLICY_PATTERN ? uri : path.resolve(uri);
         case PolicyAccessType.FS_READ:
         case PolicyAccessType.FS_WRITE:
             return resolvePhysicalPath(uri);
@@ -19,6 +24,7 @@ export function policyScopeHierarchy(
     maximumScopes = Number.MAX_SAFE_INTEGER,
 ): string[] {
     const uri = resolveUri(accessType, inputUri);
+    if (accessType === PolicyAccessType.FS_MMAP) return [uri];
     const limit = Math.max(1, Math.floor(maximumScopes));
     if (!isFilesystemAccess(accessType)) {
         return new ParsedUri(uri).scopeHierarchy(limit).reverse();
@@ -40,6 +46,9 @@ export function policyScopeCovers(
     coveringScope: string,
     candidateScope: string,
 ): boolean {
+    if (accessType === PolicyAccessType.FS_MMAP) {
+        return coveringScope === UNIVERSAL_MMAP_POLICY_PATTERN || coveringScope === candidateScope;
+    }
     if (!isFilesystemAccess(accessType)) {
         return new ParsedUri(candidateScope).isSubdomainOf(coveringScope);
     }

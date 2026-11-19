@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
 import {PolicyAccessType} from "../src/policy/types.js";
+import {PolicySchemaV1} from "../src/storage/migrations/PolicySchemaV1.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
 import {ConfigSyncJournal} from "../src/server/config-sync/ConfigSyncJournal.js";
@@ -25,7 +26,7 @@ test("policy store v1 removes retired rows and constraints once, preserving curr
     const before = db.prepare("select rowid,* from policy_rules where accessType <> 'FS_DELETE' order by rowid").all();
     const objects = policySchemaObjects(db).filter((row) => (row as {type: string}).type !== "table");
     new PolicyDao(db).initializeSchema();
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 2);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
     assert.deepEqual(storedPolicyRows(db), before);
     assert.deepEqual(policySchemaObjects(db).filter((row) => (row as {type: string}).type !== "table"), objects);
     assert.equal(db.prepare("select count(*) from policy_migration_audit").pluck().get(), 0);
@@ -42,7 +43,7 @@ test("policy store v1 removes retired rows and constraints once, preserving curr
 test("policy store v1 upgrades the former compatibility schema even when every current permission is present", (t) => {
     const fresh = SqliteDatabase.open(":memory:");
     t.after(() => fresh.close());
-    new PolicyDao(fresh).initializeSchema();
+    new PolicySchemaV1(fresh).up();
     const current = fresh.prepare("select sql from sqlite_master where name='policy_rules'").pluck().get() as string;
     const db = SqliteDatabase.open(":memory:");
     t.after(() => db.close());
@@ -50,7 +51,7 @@ test("policy store v1 upgrades the former compatibility schema even when every c
     db.exec(`insert into policy_rules values ('/old','FS_DELETE','GLOBAL','DENIED','old',123)`);
     assert.deepEqual(new PolicyDao(db).loadPolicies(), []);
     assert.doesNotMatch(db.prepare("select sql from sqlite_master where name='policy_rules'").pluck().get() as string, /FS_DELETE/);
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 2);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
 });
 
 test("an outer rollback restores the previous policy schema, data and version and permits retry", (t) => {
@@ -63,16 +64,16 @@ test("an outer rollback restores the previous policy schema, data and version an
     assert.deepEqual(storedPolicyRows(db), before);
     assert.deepEqual(policySchemaObjects(db), objects);
     dao.initializeSchema();
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 2);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
 });
 
 test("future policy-store versions fail without changing their data or schema", (t) => {
     const db = fixture(t);
-    db.exec("pragma user_version=3");
+    db.exec("pragma user_version=4");
     const before = storedPolicyRows(db);
-    assert.throws(() => new PolicyDao(db).initializeSchema(), /Unsupported policy database version: 3/);
+    assert.throws(() => new PolicyDao(db).initializeSchema(), /Unsupported policy database version: 4/);
     assert.deepEqual(storedPolicyRows(db), before);
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
 });
 
 for (const corrupt of [false, true]) {
@@ -118,14 +119,34 @@ for (const corrupt of [false, true]) {
     });
 }
 
+test("upgrading v2 preserves policies and saved roles and adds local mmap decisions", (t) => {
+    const db = SqliteDatabase.open(":memory:");
+    t.after(() => db.close());
+    new PolicySchemaV1(db).up();
+    db.exec(`create table role_profiles (id text primary key not null, title text not null, text text not null, description text);
+        insert into role_profiles values ('id','Reviewer','Review the patch',null);
+        insert into policy_rules values ('/project','FS_WRITE','LOCAL','DENIED','keep',5);
+        pragma user_version=2;`);
+    const before = storedPolicyRows(db);
+    new PolicyDao(db).initializeSchema();
+    assert.deepEqual(storedPolicyRows(db), before);
+    assert.equal(db.prepare("select title from role_profiles").pluck().get(), "Reviewer");
+    db.exec(`insert into policy_rules values ('/project','FS_MMAP','LOCAL','ALLOWED','build',6);`);
+    assert.equal(new PolicyDao(db).loadPolicies()[0]?.info.FS_MMAP?.status, "ALLOWED");
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
+});
+
 test("fresh versioned stores support every current permission and reject unknown permissions", (t) => {
     const db = SqliteDatabase.open(":memory:");
     t.after(() => db.close());
     new PolicyDao(db).initializeSchema();
-    const insert = db.prepare("insert into policy_rules values ('test',?,'GLOBAL','DENIED','',0)");
-    for (const type of Object.values(PolicyAccessType)) insert.run(type);
+    const insert = db.prepare("insert into policy_rules values ('/test',?,?,'DENIED','',0)");
+    for (const type of Object.values(PolicyAccessType)) {
+        insert.run(type, type === PolicyAccessType.FS_MMAP ? "LOCAL" : "GLOBAL");
+    }
+    assert.throws(() => insert.run(PolicyAccessType.FS_MMAP, "GLOBAL"), /CHECK constraint/);
     assert.equal(storedPolicyRows(db).length, Object.values(PolicyAccessType).length);
-    assert.throws(() => insert.run("FUTURE_PERMISSION"), /CHECK constraint/);
+    assert.throws(() => insert.run("FUTURE_PERMISSION", "GLOBAL"), /CHECK constraint/);
 });
 
 test("opening the journal upgrades persisted work once and keeps current pending identities across restart", (t) => {
@@ -180,7 +201,7 @@ test("opening the journal upgrades persisted work once and keeps current pending
     journal.close();
     assert.deepEqual(journal.read("retired", "global-policies"), retired);
     assert.deepEqual(journal.read("current", "global-policies"), kept);
-    assert.equal(journal.database().prepare("pragma user_version").pluck().get(), 2);
+    assert.equal(journal.database().prepare("pragma user_version").pluck().get(), 3);
     assert.equal(journal.database().prepare("pragma integrity_check").pluck().get(), "ok");
 });
 

@@ -15,7 +15,7 @@ import {
 } from "./AgentPolicyDecisionFlow.js";
 import type {PolicyChoice, QueuedPolicyApproval} from "./PolicyDecisionFlow.js";
 import {PolicyEngine} from "./PolicyEngine";
-import {policyScopeCovers, policyScopeHierarchy, resolveUri} from "./PolicyScope.js";
+import {policyScopeCovers, policyScopeHierarchy, resolveUri, UNIVERSAL_MMAP_POLICY_PATTERN} from "./PolicyScope.js";
 import {
     isPersistedLifetime,
     type Policy,
@@ -779,17 +779,16 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         sourceScope: string,
     ): string[] {
         const hierarchy = policyScopeHierarchy(uri, accessType, MAX_AGENT_POLICY_SCOPES);
-        if (
-            sourceScope !== UNIVERSAL_NETWORK_POLICY_PATTERN
-            && !hierarchy.includes(sourceScope)
-        ) {
+        const universal = sourceScope === UNIVERSAL_NETWORK_POLICY_PATTERN
+            || (accessType === PolicyAccessType.FS_MMAP && sourceScope === UNIVERSAL_MMAP_POLICY_PATTERN);
+        if (!universal && !hierarchy.includes(sourceScope)) {
             hierarchy.push(sourceScope);
         }
         return boundedPolicyScopes(
             hierarchy
                 .filter((scope) => policyScopeCovers(accessType, sourceScope, scope))
                 .map((scope) => resolveUri(accessType, scope)),
-            sourceScope === UNIVERSAL_NETWORK_POLICY_PATTERN ? undefined : sourceScope,
+            universal ? undefined : sourceScope,
         );
     }
 
@@ -1144,6 +1143,13 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
             return result;
         }
+        if (accessType === PolicyAccessType.FS_MMAP && (choice.accessType !== accessType || choice.uri !== uri
+            || (choice.lifetime !== PolicyLifetime.ONCE && choice.lifetime !== PolicyLifetime.SESSION
+                && choice.lifetime !== PolicyLifetime.LOCAL))) {
+            const result = failedClosedResult(uri, accessType, "Invalid writable mmap approval scope or lifetime.");
+            this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
+            return result;
+        }
         if (isPersistedLifetime(choice.lifetime)) {
             this.database.upsertPolicies([policyFromChoice(choice)]);
         }
@@ -1400,6 +1406,7 @@ function initialFallbackRevisions(): Record<PolicyArea, number> {
 }
 
 function fallbackScope(accessType: PolicyAccessType): string {
+    if (accessType === PolicyAccessType.FS_MMAP) return UNIVERSAL_MMAP_POLICY_PATTERN;
     return accessType === PolicyAccessType.FS_READ || accessType === PolicyAccessType.FS_WRITE
         ? "/"
         : UNIVERSAL_NETWORK_POLICY_PATTERN;

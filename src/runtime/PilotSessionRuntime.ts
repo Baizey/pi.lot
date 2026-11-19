@@ -29,12 +29,10 @@ export type PilotSessionRuntimeInterface = {
     readonly policyRuntime: PolicyRuntime;
     readonly decisionFlows: UiDecisionFlowManager;
     readonly fullNetworkInspection: boolean;
-    readonly writableMmap: boolean;
     readonly hostCredentialIpc?: HostCredentialIpcOptions;
     readonly nativeFuseSessionBroker?: NativeFuseSessionBroker;
     start?(): void | Promise<void>;
     setFullNetworkInspection(enabled: boolean): void;
-    setWritableMmap(enabled: boolean): void;
     beginShutdown(): void;
     close(): void | Promise<void>
 }
@@ -48,7 +46,6 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
     private readonly decisionFlowQueue: UiDecisionFlowQueue;
     private database: SqliteDatabase | null;
     private fullNetworkInspectionEnabled = true;
-    private writableMmapEnabled = false;
 
     constructor(ctx: ExtensionContext, options: PilotSessionRuntimeOptions = {}) {
         this.decisionFlowQueue = new UiDecisionFlowQueue();
@@ -94,14 +91,6 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
 
     setFullNetworkInspection(enabled: boolean): void {
         this.fullNetworkInspectionEnabled = enabled;
-    }
-
-    get writableMmap(): boolean {
-        return this.writableMmapEnabled;
-    }
-
-    setWritableMmap(enabled: boolean): void {
-        this.writableMmapEnabled = enabled;
     }
 
     beginShutdown(): void {

@@ -100,14 +100,16 @@ export class PolicyDecisionFlow implements QueuedPolicyApproval {
         scopes: string[],
         requestContext?: PolicyApprovalRequestContext,
     ): Record<keyof PolicyApproval, UiDecision<PolicyApproval>> {
-        const policyKind = this.isFilesystemAccess(accessType) ? "Path" : "Network";
+        const mmap = accessType === PolicyAccessType.FS_MMAP;
+        const policyKind = mmap ? "Writable mmap" : this.isFilesystemAccess(accessType) ? "Path" : "Network";
         const requestingAgent = requestContext?.ancestry.find((agent) => (
             agent.agentIdentifier === requestContext.requestingAgentIdentifier
         ));
         const context = (state: Partial<PolicyApproval>): UiDecisionContext => ({
             summary: [
                 {label: "Access", value: this.accessLabel(accessType), essential: true},
-                {label: "Target", value: evaluatedPath, essential: true},
+                {label: mmap ? "Starting directory" : "Target", value: evaluatedPath, essential: true},
+                ...(mmap ? [{label: "Mode", value: "Applies to the whole Bash call; mapped writes are not individually revocable."}] : []),
                 ...(state.scope ? [{label: "Scope", value: state.scope, essential: true}] : []),
                 ...(state.status ? [{label: "Decision", value: state.status === PolicyResponse.ALLOWED ? "Allow" : "Deny", essential: true}] : []),
                 ...(requestContext ? [{
@@ -163,6 +165,7 @@ export class PolicyDecisionFlow implements QueuedPolicyApproval {
         switch (accessType) {
             case PolicyAccessType.FS_READ:
             case PolicyAccessType.FS_WRITE:
+            case PolicyAccessType.FS_MMAP:
                 return [
                     {title: "Once", value: PolicyLifetime.ONCE, next: this.reasonDecisionAfterDenial},
                     {title: "This session", value: PolicyLifetime.SESSION, next: this.reasonDecisionAfterDenial},
@@ -285,6 +288,7 @@ export class PolicyDecisionFlow implements QueuedPolicyApproval {
     private accessLabel(accessType: PolicyAccessType): string {
         if (accessType === PolicyAccessType.FS_READ) return "Read files (FS_READ)";
         if (accessType === PolicyAccessType.FS_WRITE) return "Write files (FS_WRITE)";
+        if (accessType === PolicyAccessType.FS_MMAP) return "Writable mmap (FS_MMAP)";
         return accessType;
     }
 

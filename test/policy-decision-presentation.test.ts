@@ -132,6 +132,29 @@ test("human policy selections separate the heading, request fields, choices, and
     assert.equal(harness.inputTitles.length, 0);
 });
 
+test("writable mmap uses the standard approval steps, with an exact scope and no synchronized choice", async () => {
+    const harness = new PromptHarness();
+    const directory = "/tmp/go-checkout";
+    const result = harness.flow().askForPolicy(directory, PolicyAccessType.FS_MMAP, undefined, {
+        ...request,
+        toolCall: {...request.toolCall, command: "go build ./..."},
+    });
+    const scope = await harness.prompt(0);
+    const rendered = plain(scope);
+    assert.match(rendered, /Starting directory: \/tmp\/go-checkout/);
+    assert.match(rendered, /Command: go build/);
+    assert.equal(rendered.match(/› /g)?.length, 1);
+    key(scope, "\r");
+    key(await harness.prompt(1), "\r");
+    const lifetime = await harness.prompt(2);
+    assert.match(plain(lifetime), /Always on this computer/);
+    assert.doesNotMatch(plain(lifetime), /Always synchronized/);
+    key(lifetime, "\x1b[B");
+    key(lifetime, "\x1b[B");
+    key(lifetime, "\r");
+    assert.equal((await result).lifetime, PolicyLifetime.LOCAL);
+});
+
 test("long Unicode requests stay bounded and the full request remains scrollable", async () => {
     const harness = new PromptHarness();
     const longTarget = `/tmp/${"nested/".repeat(15)}界🙂é-file.ts`;

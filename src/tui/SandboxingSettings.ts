@@ -1,5 +1,7 @@
 import {DynamicBorder, getSettingsListTheme, type Theme} from "@earendil-works/pi-coding-agent";
 import {Container, SettingsList, Text, type SettingItem} from "@earendil-works/pi-tui";
+import {PolicyArea} from "../policy/types.js";
+import {policyFallbackChoice} from "./policyFallbackChoice.js";
 import type {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime.js";
 import {truncateToWidth} from "./terminalText.js";
 
@@ -13,7 +15,7 @@ export class SandboxingSettings extends Container {
     constructor(
         runtime: PilotSessionRuntimeInterface,
         theme: Theme,
-        onChange: (setting: SandboxingSetting, enabled: boolean) => void,
+        onChange: (setting: SandboxingSetting, value: string) => void,
         onClose: () => void,
         private readonly requestRender: () => void,
     ) {
@@ -28,19 +30,19 @@ export class SandboxingSettings extends Container {
             },
             {
                 id: "mmap",
-                label: "Writable mmap",
-                description: "Off by default. On enables cached write-through for build/linker compatibility. Opens and backing I/O still check filesystem policy, but memory stores cannot be individually checked or revoked. Revocation/cancellation can lose dirty changes; errors can be delayed. Host/cross-call SQLite WAL is unsupported.",
-                currentValue: runtime.writableMmap ? "on" : "off",
-                values: ["off", "on"],
+                label: "Writable mmap requests",
+                description: "Fallback for explicit Bash requests. Mapped writes cannot be individually revoked. Save via /policy-defaults.",
+                currentValue: runtime.policyRuntime.defaultResponses[PolicyArea.fs_mmap],
+                submenu: policyFallbackChoice,
             },
         ];
         this.settings = new SettingsList(items, items.length, getSettingsListTheme(), (id, value) => {
-            if (id === "network-inspection" || id === "mmap") onChange(id, value === "on");
+            if (id === "network-inspection" || id === "mmap") onChange(id, value);
             this.requestRender();
         }, onClose);
         this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
         this.addChild(new Text(theme.fg("accent", theme.bold("Sandboxing")), 1, 0));
-        this.addChild(new Text(theme.fg("muted", "Session only · never saved · applies to new Bash calls, including subagents"), 1, 0));
+        this.addChild(new Text(theme.fg("muted", "Applies to new Bash calls, including subagents"), 1, 0));
         this.addChild(this.settings);
         this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
     }

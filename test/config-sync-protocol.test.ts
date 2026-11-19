@@ -392,10 +392,14 @@ test("GLOBAL rules decode in UTF-8 pattern/access-type order and retain every su
     assert.deepEqual(decodeGlobalPolicyRules(JSON.stringify({rules: entries})), [entries[4], entries[3], entries[2], entries[1], entries[0]]);
     assert.deepEqual(decodeGlobalPolicyRules(null), []);
     assert.deepEqual(decodeGlobalPolicyRules('{"rules":[]}'), []);
-    const allTypes = Object.values(PolicyAccessType).map((accessType, index) => ({
+    const syncTypes = Object.values(PolicyAccessType).filter((type) => type !== PolicyAccessType.FS_MMAP);
+    const allTypes = syncTypes.map((accessType, index) => ({
         ...rule("example.com:443"), accessType, status: index % 2 ? PolicyResponse.ALLOWED : PolicyResponse.DENIED,
     }));
-    assert.equal(decodeGlobalPolicyRules(JSON.stringify({rules: allTypes})).length, Object.values(PolicyAccessType).length);
+    assert.equal(decodeGlobalPolicyRules(JSON.stringify({rules: allTypes})).length, syncTypes.length);
+    assert.throws(() => decodeGlobalPolicyRules(JSON.stringify({rules: [
+        {pattern: "/checkout", accessType: PolicyAccessType.FS_MMAP, status: "ALLOWED", reason: "local only"},
+    ]})));
 });
 
 test("GLOBAL rule identities are unique by pattern and access type, independent of status or reason", () => {

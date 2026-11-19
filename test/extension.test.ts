@@ -16,7 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {initTheme, SessionManager} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
-import type {NativeFuseBrokerMountOptions} from "../src/policy/path/native/NativeFuseSessionBroker.js";
+import type {NativeFuseBrokerMountContext, NativeFuseBrokerMountOptions} from "../src/policy/path/native/NativeFuseSessionBroker.js";
 import {ServerService} from "../src/server/ServerService.js";
 import {ServerConfigStore} from "../src/server/ServerConfig.js";
 import {ArchiveBackground} from "../src/server/ArchiveBackground.js";
@@ -212,7 +212,7 @@ test("display loads saved modes per session and shares hot-swapped preferences w
         createSessionRuntime(context) {
             const policyRuntime = createPolicyRuntime(context);
             return {
-                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
                 setFullNetworkInspection() {}, beginShutdown: () => policyRuntime.beginShutdown(), close() {},
             };
         },
@@ -284,7 +284,7 @@ for (const stage of ["runtime construction", "runtime startup", "synchronous sta
                 if (stage === "runtime construction") throw failure;
                 const policyRuntime = createPolicyRuntime(context);
                 return {
-                    policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                    policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
                     start() {
                         if (stage === "synchronous startup") throw failure;
                         if (stage === "runtime startup") return Promise.reject(failure);
@@ -330,7 +330,7 @@ test("startup diagnostics survive cleanup failure and clear when a subsequent se
             const policyRuntime = createPolicyRuntime(context);
             return {
                 policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
-                writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {},
+                setFullNetworkInspection() {}, beginShutdown() {},
                 start() { if (failing) throw startupFailure; },
                 close() { closes++; if (failing) throw cleanupFailure; },
             };
@@ -386,7 +386,7 @@ test("identity and source are cached before runtime construction or deferred sta
             assert.equal(manager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "pilot.archive"), true);
             const policyRuntime = createPolicyRuntime(context);
             return {
-                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
                 start() { started(); return barrier; },
                 setFullNetworkInspection() {}, beginShutdown() {}, close() {},
             };
@@ -433,7 +433,7 @@ test("registered builtin and delegation collections supply the same child defini
         createSessionRuntime(context) {
             const policyRuntime = createPolicyRuntime(context);
             return {
-                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                policyRuntime, decisionFlows: new UiDecisionFlowManager(context), fullNetworkInspection: true,
                 setFullNetworkInspection() {}, beginShutdown: () => policyRuntime.beginShutdown(), close() {},
             };
         },
@@ -478,7 +478,7 @@ test("startup caches session-bound identity before asynchronous child infrastruc
     new PilotExtension(harness.pi, {
         createSessionRuntime(runtimeContext) {
             return {policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {}, close() {}};
+                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() {}};
         },
         createMcpExtension: () => ({
             ...createNoopMcpExtension(),
@@ -540,7 +540,7 @@ for (const reason of ["quit", "reload", "new", "resume", "fork"] as const) {
             createSessionRuntime(runtimeContext) {
                 return {
                     policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                    fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {},
+                    fullNetworkInspection: true, setFullNetworkInspection() {},
                     beginShutdown() {
                         assert.equal(request?.signal.aborted, true, "server requests cancel before owned teardown");
                         events.push("runtime stopping");
@@ -580,7 +580,7 @@ test("failed owned teardown still queues cached source after closing the session
         createSessionRuntime(runtimeContext) {
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {}, close() { closed = true; },
+                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() { closed = true; },
             };
         },
     }).register();
@@ -614,7 +614,7 @@ test("the same extension instance resets owned shutdown and server lifecycle for
             starts++;
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext), decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {}, setFullNetworkInspection() {}, beginShutdown() {}, close() { closes++; },
+                fullNetworkInspection: true, setFullNetworkInspection() {}, beginShutdown() {}, close() { closes++; },
             };
         },
     }).register();
@@ -628,7 +628,7 @@ test("the same extension instance resets owned shutdown and server lifecycle for
     assert.deepEqual(files, ["/first.jsonl", "/second.jsonl"]);
 });
 
-test("Bash always routes through a native filesystem policy view and snapshots the session mmap switch per call", async () => {
+test("Bash gates explicit writable mmap requests before launching and uses direct I/O for ordinary calls", async () => {
     const harness = extensionHarness();
     const ctx = {
         cwd: process.cwd(),
@@ -638,8 +638,8 @@ test("Bash always routes through a native filesystem policy view and snapshots t
         sessionManager: archiveSessionManager(),
     } as unknown as ExtensionCommandContext;
     const sentinel = new Error("native broker routing sentinel");
-    let writableMmap = false;
     const mountModes: Array<boolean | undefined> = [];
+    let brokerCwd: string | undefined;
     let brokerCalls = 0;
     let viewClosed = false;
     let capturedToolCall: unknown;
@@ -657,15 +657,15 @@ test("Bash always routes through a native filesystem policy view and snapshots t
                 policyRuntime,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
-                get writableMmap() { return writableMmap; },
-                setWritableMmap(enabled: boolean) { writableMmap = enabled; },
                 nativeFuseSessionBroker: {
-                    async withFilesystem(options: NativeFuseBrokerMountOptions): Promise<never> {
+                    async withFilesystem<T>(options: NativeFuseBrokerMountOptions,
+                        run: (context: NativeFuseBrokerMountContext) => Promise<T>): Promise<T> {
                         brokerCalls++;
                         mountModes.push(options.writableMmap);
                         options.policyView.onClosed(() => {
                             viewClosed = true;
                         });
+                        if (brokerCwd) return run({cwd: brokerCwd, mediatedHostRoot: "/", signal: new AbortController().signal});
                         throw sentinel;
                     },
                 },
@@ -699,14 +699,22 @@ test("Bash always routes through a native filesystem policy view and snapshots t
         });
         assert.equal(brokerCalls, 1);
         assert.equal(viewClosed, true);
-        for (const mode of ["on", "off"]) {
-            await harness.registeredCommands.get("sandboxing")!.handler(`mmap ${mode}`, ctx);
-            await assert.rejects(registeredTool(harness, "bash").execute(
-                `native-route-${mode}`, {command: "true", purpose: "Verify session mmap routing"},
-                undefined, undefined, ctx,
-            ), sentinel);
-        }
+        const sandboxing = harness.registeredCommands.get("sandboxing")!;
+        const params = {command: "true", purpose: "Verify writable mmap admission"};
+        const bash = registeredTool(harness, "bash");
+        await sandboxing.handler("mmap deny", ctx);
+        await assert.rejects(bash.execute("denied", {...params, writableMmap: true}, undefined, undefined, ctx), /FS_MMAP/);
+        assert.deepEqual(mountModes, [false]);
+        await sandboxing.handler("mmap allow", ctx);
+        await assert.rejects(bash.execute("approved", {...params, writableMmap: true}, undefined, undefined, ctx), sentinel);
+        await assert.rejects(bash.execute("ordinary", params, undefined, undefined, ctx), sentinel);
+        const cancelled = new AbortController();
+        cancelled.abort();
+        await assert.rejects(bash.execute("aborted", {...params, writableMmap: true}, cancelled.signal, undefined, ctx), /abort/i);
         assert.deepEqual(mountModes, [false, true, false]);
+        brokerCwd = path.dirname(ctx.cwd);
+        await assert.rejects(bash.execute("different-cwd", {...params, writableMmap: true}, undefined, undefined, ctx),
+            /starting directory no longer matches the approved directory/);
     } finally {
         await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     }
@@ -775,7 +783,7 @@ test("custom-message starts keep the user's policy task while still adding Pilot
             return {
                 policyRuntime,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                fullNetworkInspection: true,
                 setFullNetworkInspection() {},
                 beginShutdown() {},
                 close() {},
@@ -833,7 +841,7 @@ test("the registered read override uses the invoking cwd rather than the session
             return {
                 policyRuntime,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                fullNetworkInspection: true,
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -880,7 +888,7 @@ test("Pilot's expanded state switches Bash between minimal and truncated while r
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                fullNetworkInspection: true,
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -986,7 +994,7 @@ test("Bash components remain renderable during and after session shutdown", asyn
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                fullNetworkInspection: true,
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {
@@ -1055,7 +1063,7 @@ test("read, edit, and write use copy-safe Pilot rendering in every display mode"
             return {
                 policyRuntime: createPolicyRuntime(runtimeContext),
                 decisionFlows: new UiDecisionFlowManager(runtimeContext, queue),
-                fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+                fullNetworkInspection: true,
                 setFullNetworkInspection() {
                 },
                 beginShutdown() {

@@ -8,6 +8,7 @@ export type ResponseDefaults = Record<PolicyArea, PolicyFallbackResponse>
 export const initialPolicyDefaults: Readonly<ResponseDefaults> = {
     fs_read: PolicyFallbackResponse.allow,
     fs_write: PolicyFallbackResponse.ask_user,
+    fs_mmap: PolicyFallbackResponse.ask_user,
     web_read: PolicyFallbackResponse.allow,
     web_write: PolicyFallbackResponse.ask_user,
     web_dns: PolicyFallbackResponse.ask_user,
@@ -36,6 +37,7 @@ export const initialPolicyDefaults: Readonly<ResponseDefaults> = {
 
 /** Only these additive fields may be absent in older saved/config-sync snapshots. */
 export const ADDITIVE_POLICY_AREAS: readonly PolicyArea[] = Object.freeze([
+    PolicyArea.fs_mmap,
     PolicyArea.web_adb,
     PolicyArea.web_postgres,
     PolicyArea.web_mysql,

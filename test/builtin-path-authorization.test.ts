@@ -273,7 +273,7 @@ class ReadAuthorizationFixture {
         const runtime: PilotSessionRuntimeInterface = {
             policyRuntime: this.policyRuntime,
             decisionFlows: new UiDecisionFlowManager(this.context()),
-            fullNetworkInspection: true, writableMmap: false, setWritableMmap() {},
+            fullNetworkInspection: true,
             setFullNetworkInspection() {throw new Error("Unexpected network configuration");},
             beginShutdown: () => this.policyRuntime.beginShutdown(),
             close: () => this.policyRuntime.beginShutdown(),

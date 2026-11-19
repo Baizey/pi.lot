@@ -164,13 +164,15 @@ Bare `/policy-defaults`, `/subagent-defaults`, `/display`, `/sandboxing`, and `/
 ```text
 /sandboxing network-inspection on
 /sandboxing network-inspection off
-/sandboxing mmap on
-/sandboxing mmap off
+/sandboxing mmap allow
+/sandboxing mmap deny
+/sandboxing mmap ask_user
+/sandboxing mmap ask_llm
 ```
 
-These replace the old network-inspection command. Network inspection defaults **on**; writable mmap compatibility defaults **off**. Both switches are **never saved**, reset with a replacement session runtime, and affect only **new Bash calls, including child-agent Bash calls**. Existing calls and mappings are unchanged; they are not fixed child capability snapshots.
+Inspection defaults **on** and resets with each session. Writable mmap requests use the normal `fs_mmap` policy, default **ask_user**. Use `/policy-defaults save` to persist the fallback or remember an approval for the exact starting directory. Neither setting changes calls that already started.
 
-Turning network inspection off keeps HTTPS end-to-end and applies transport-only policy to opaque traffic; recognized plaintext protocols still receive policy checks. Turning writable mmap on uses cached write-through I/O for compatibility with tools such as the Go linker. Opens and backing I/O remain policy-checked, but individual memory stores are not checked or revocable. Cancellation or revocation can lose dirty changes, and writeback errors may surface late. Host/cross-call SQLite WAL remains unsupported. Leave mmap off unless needed; it restores direct I/O for writable handles in new calls. See [filesystem limitations](security.md) and [HTTPS inspection](policy.md#https-inspection).
+Turning network inspection off keeps HTTPS end-to-end and applies transport-only policy to opaque traffic; recognized plaintext protocols still receive policy checks. An approved Bash call with `writableMmap: true` uses cached write-through I/O for compatibility with tools such as the Go linker. Opens and backing I/O remain policy-checked, but individual memory stores are not checked or revocable. Cancellation or revocation can lose dirty changes, and writeback errors may surface late. Host/cross-call SQLite WAL remains unsupported. Calls without an mmap request use direct I/O for writable handles. See [filesystem limitations](security.md) and [HTTPS inspection](policy.md#https-inspection).
 
 Continue with:
 

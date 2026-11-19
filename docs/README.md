@@ -47,7 +47,7 @@ Bare commands open their settings only in terminal TUI mode; outside TUI they re
 | `/display` | Normal/Alternate tool views. `/display conversation full` sets the pair. `save` persists; `reset` reloads saved views, or Compact/Preview if absent. |
 | `/role` | Select a saved working role for the current conversation, or `none` to clear it. Fresh conversations start with no role. |
 | `/persona` | Select a saved communication style for this conversation. `off` clears it; `save` saves the selection as this device’s default; `reset` reapplies that default. |
-| `/sandboxing` | Network inspection and writable-mmap switches for new Bash calls, including subagents. Changes are session-only and are never saved or synchronized. |
+| `/sandboxing` | Session network inspection and the fallback for writable mmap requests. Save the mmap default via `/policy-defaults save`. |
 | `/server` | Connection, upload, configuration-sync and recovery actions. Opening the terminal menu sends nothing. **Check connection**, or bare `/server` outside TUI, reports the server URL and status without displaying the API key. |
 
 Policy, subagent, display and persona pickers also provide explicit **Save defaults** and **Reload saved defaults** actions. Saving is not automatic. `/server status` is not a text command; select **Check connection** from the menu.
@@ -67,11 +67,13 @@ Roles are reusable instructions for how to approach a task and what to deliver; 
 ```text
 /sandboxing network-inspection on
 /sandboxing network-inspection off
-/sandboxing mmap on
-/sandboxing mmap off
+/sandboxing mmap allow
+/sandboxing mmap deny
+/sandboxing mmap ask_user
+/sandboxing mmap ask_llm
 ```
 
-Every replacement session runtime starts with **network inspection on** and **writable mmap off**. Existing calls and mappings are unchanged when settings change. The old standalone `/network-inspection` command has been removed.
+Network inspection defaults **on** and resets with the session. Writable mmap is requested per Bash call (`writableMmap: true`), with **ask_user** as the built-in fallback. An approval can be remembered locally for the exact starting directory. Ordinary Bash calls and already-running commands are unchanged.
 
 Inspection off preserves end-to-end HTTPS for clients incompatible with interception; it does **not** disable network sandboxing. Transport policy and recognized plaintext checks remain, while opaque traffic may receive transport-only forwarding.
 

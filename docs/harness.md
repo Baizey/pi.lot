@@ -15,7 +15,7 @@ Each `bash` call runs with a private network namespace and a policy-mediated fil
 | An MCP tool | The configured server's execution environment; MCP effects are outside pi.lot filesystem/network mediation |
 | `web_search` and root-only archive tools | Extension-managed host HTTP with their own policy checks; not general shell or device-control tools |
 
-The `bash` tool accepts `command`, `purpose`, and optional `timeout` in seconds. There is no host-execution or escalation parameter in that interface. A tool named `bash` in a different runner may behave differently. Discover actual tools before claiming that an Android-control MCP or other integration is available.
+The `bash` tool accepts `command`, `purpose`, optional `timeout` in seconds, and optional `writableMmap`. Set `writableMmap: true` only for a call that needs writable mappings (such as the Go linker); it requests `fs_mmap` policy approval before launch. There is no host-execution or escalation parameter in that interface. A tool named `bash` in a different runner may behave differently. Discover actual tools before claiming that an Android-control MCP or other integration is available.
 
 ## Address map for a Bash client
 
@@ -57,7 +57,7 @@ Network inspection starts **on**. The TCP gateway recognizes supported applicati
 
 ADB has first-class smart-socket recognition and `web_adb` approval, alongside SSH and SMTP. It validates the initial length-prefixed host request and the server's `OKAY`/`FAIL` response before allowing continuation. The approval covers the server channel, including subsequent device selection, shell, file transfer, installation, forwarding, and binary output. It is **not a per-device or per-command restriction**. It does not implement the separate binary server-to-`adbd` transport or the emulator console protocol. Full admission semantics are in [application-protocol admission](policy.md#application-protocol-admission).
 
-Keep inspection on for supported protocols, including ADB. Turning it off retains transport checks and recognized plaintext checks, but permits transport-only handling of opaque traffic. It is a session compatibility setting, not a general connectivity repair. Both inspection and writable-mmap settings apply to new calls, including children; see [sandboxing switches](README.md#sandboxing-switches).
+Keep inspection on for supported protocols, including ADB. Turning it off retains transport checks and recognized plaintext checks, but permits transport-only handling of opaque traffic. It is a session compatibility setting, not a general connectivity repair. Both settings affect new calls, including children; see [sandboxing switches](README.md#sandboxing-switches).
 
 Use the normal approval flow for the endpoint and operation the task requires. An explicit denial is not a reason to try another tool, address, or proxy to obtain the same effect. Diagnose the reported policy area and reason before deciding whether a new approval is relevant.
 

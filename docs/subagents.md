@@ -57,7 +57,7 @@ Spawn capabilities have two forms.
 
 ### Policy-area capabilities
 
-These are `fs_read`, `fs_write`, and all `web_*` policy areas. Selecting one snapshots the parent's complete effective allows and denials for that area into the child when the spawn is accepted.
+These are `fs_read`, `fs_write`, `fs_mmap`, and all `web_*` policy areas. Selecting one snapshots the parent's complete effective allows and denials for that area into the child when the spawn is accepted.
 
 - Snapshots are fixed; later parent policy changes do not update an existing child.
 - Durable parent rules become child-session rules.
@@ -103,14 +103,9 @@ Changes affect the current session until `save`; `reset` reloads `~/.pilot/subag
 
 An eligible preferred model is used exactly, without automatic ranking. If its pin is missing, unauthenticated, or no longer supports normal reasoning, selection falls back locally to the existing `auto` selector for the requested skill. Status visibly names the preferred pin and fallback reason. **The saved/active preference is not changed**, so configuration sync never uploads a temporary substitute; the exact pin returns when eligible again. No eligible local model fails clearly. Registry failures and cancellation propagate rather than trigger fallback; selection does not probe providers. Unsupported requested amounts clamp to a supported `low`, `medium`, or `high` thinking level after model selection. See [configuration sync](server.md#saved-configuration-sync).
 
-## Session-only Bash sandbox settings
+## Bash sandbox settings
 
-Root `/sandboxing` settings are independent of model mappings and inherited policy-area snapshots:
-
-- `/sandboxing network-inspection on|off` controls network inspection (default **on**).
-- `/sandboxing mmap on|off` controls writable mmap compatibility (default **off**).
-
-Each text command takes one literal mode, `on` or `off`. Bare `/sandboxing` opens terminal settings only when `ctx.hasUI && ctx.mode === "tui"`; otherwise it reports the switches. Confirmed switches apply immediately and closing the menu does not undo them. They are **never saved** and reset with the root session runtime. They affect **new Bash calls from the root and children**, including children already accepted; existing calls and mappings stay unchanged. This differs from spawn-time policy/model snapshots.
+`/sandboxing network-inspection on|off` controls session-only network inspection (default **on**) for new root and child Bash calls. `/sandboxing mmap allow|deny|ask_user|ask_llm` sets the `fs_mmap` fallback (built-in **ask_user**). A child Bash call requests writable mmap explicitly and follows the normal child approval flow. `fs_mmap` is an inheritable policy area; read/write grants alone do not authorize it. Running calls and mappings are unchanged.
 
 Turning inspection off leaves HTTPS end-to-end, with transport-only policy for opaque traffic; recognized plaintext protocols still receive policy checks. Enabling mmap retains checks on opens and backing I/O, not individual memory stores or their revocation. Cancellation/revocation can lose dirty changes, writeback errors can be delayed, and host/cross-call SQLite WAL is unsupported. See [sandbox setup](installation.md#session-only-sandbox-switches) and [security limitations](security.md).
 

@@ -41,13 +41,17 @@ Do not concurrently access shared host databases through Bash mounts: backing-fi
 /sandboxing
 /sandboxing network-inspection on
 /sandboxing network-inspection off
-/sandboxing mmap on
-/sandboxing mmap off
+/sandboxing mmap allow
+/sandboxing mmap deny
+/sandboxing mmap ask_user
+/sandboxing mmap ask_llm
 ```
 
-Bare `/sandboxing` opens settings in the interactive terminal TUI; other modes, including RPC, report current values. Selections apply immediately, and closing the TUI does not undo them. These settings are **session-only and never saved**: each new session starts with network inspection **on** and writable mmap **off**. Changes affect only **new Bash calls**, including calls made by subagents; existing calls and mappings are unchanged. Direct file tools and trusted host-side HTTP are not switched by these settings.
+Bare `/sandboxing` opens terminal settings or reports values in other modes. Changes apply to new Bash calls, including subagents; running calls and mappings are unchanged. Network inspection defaults **on** and is session-only.
 
-Turning inspection off reduces application visibility; turning mmap on reduces live-read/revocation guarantees. Use them only when those compatibility tradeoffs are acceptable. See [HTTPS inspection](#https-inspection), [filesystem mediation](#filesystem-mediation), and the [mmap engineering reference](transparent-mmap-feasibility.md).
+Bash uses direct I/O for writable handles unless a call explicitly sets `writableMmap: true` and its `fs_mmap` request is approved before launch. An unmatched request defaults to **ask_user**; `/sandboxing mmap` changes the same fallback as `/policy-defaults <mode> fs_mmap`, and `/policy-defaults save` persists it. User approval can be once, for the session, or local to this computer. Remembered rules match the exact canonical starting directory, not child directories and not the paths that can be mapped. A denial stops the requested call before launch. There is no command guessing or automatic retry.
+
+Approval selects cached write-through for the entire call, not new filesystem permissions. Ordinary open/backing-I/O checks still apply; cached reads and memory stores are not individually revocable. See [HTTPS inspection](#https-inspection), [filesystem mediation](#filesystem-mediation), and the [mmap engineering reference](transparent-mmap-feasibility.md).
 
 ## Network mediation
 
@@ -134,6 +138,7 @@ Root-only `archive_list` and `archive_fetch` check each actual URL and method wi
 | --- | --- | --- |
 | `fs_read` | Filesystem reads | `allow` |
 | `fs_write` | Filesystem writes and deletes | `ask_user` |
+| `fs_mmap` | Explicit per-call Bash writable mmap requests | `ask_user` |
 | `web_read` | HTTP access and GET | `allow` |
 | `web_write` | POST, PUT, PATCH, DELETE, HEAD, OPTIONS | `ask_user` |
 | `web_dns` | DNS | `ask_user` |
@@ -191,7 +196,7 @@ Changes affect this session until saved to `~/.pilot/policy-defaults.json`. `res
 
 An interactive policy miss asks for:
 
-1. a path or network scope;
+1. a path, network scope, or exact Bash starting directory for mmap;
 2. allow or deny;
 3. a lifetime; and
 4. an optional reason when denying.

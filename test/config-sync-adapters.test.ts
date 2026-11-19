@@ -102,21 +102,22 @@ for (const [key, value] of savedFiles) {
     });
 }
 
-test("legacy policy-default imports preserve saved bytes while storage supplies additive ask_user defaults", (t) => {
+test("policy-default imports retain bytes and only the path key authorizes mmap at runtime", (t) => {
     const {directory, adapters} = fixture(t);
-    const legacy: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
-    for (const area of ADDITIVE_POLICY_AREAS) delete legacy[area];
-    const content = canonicalConfigContent(legacy);
-    assert.deepEqual(adapters.apply("policy-defaults", adapters.capture("policy-defaults"), content), {
-        applied: true, materialized: content,
-    });
-    const file = path.join(directory, "policy-defaults.json");
-    assert.equal(fs.readFileSync(file, "utf8"), content);
-    assert.deepEqual(new PolicyDefaultJsonStorage("policy-defaults", directory).load(), {
-        ...initialPolicyDefaults, web_tcp: "allow",
-    });
-    assert.equal(adapters.capture("policy-defaults").content, content);
-    assert.equal(fs.readFileSync(file, "utf8"), content);
+    const base: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
+    for (const area of ADDITIVE_POLICY_AREAS) delete base[area];
+    const store = new PolicyDefaultJsonStorage("policy-defaults", directory);
+    for (const key of ["fs_mmap", "fs_mmap_paths"]) {
+        const content = canonicalConfigContent({...base, [key]: "allow"});
+        assert.deepEqual(adapters.apply("policy-defaults", adapters.capture("policy-defaults"), content), {
+            applied: true, materialized: content,
+        });
+        assert.deepEqual(store.load(), {
+            ...initialPolicyDefaults, web_tcp: "allow", fs_mmap: key === "fs_mmap_paths" ? "allow" : initialPolicyDefaults.fs_mmap,
+        });
+        assert.equal(adapters.capture("policy-defaults").content, content);
+        assert.equal(fs.readFileSync(store.file, "utf8"), content);
+    }
 });
 
 test("file replacement is atomic and private, without modifying hard-link peers or unrelated saved files", (t) => {

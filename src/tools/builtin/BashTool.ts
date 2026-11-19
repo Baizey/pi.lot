@@ -1,8 +1,6 @@
-import {realpathSync} from "node:fs";
 import type {BashOperations, ExtensionAPI, ToolDefinition} from "@earendil-works/pi-coding-agent";
 import {createBashToolDefinition} from "@earendil-works/pi-coding-agent";
 import type {ToolCallPathPolicyEvaluator} from "../../policy/PolicyRuntime";
-import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
 import type {ToolPresentationSpec} from "../../tui/tool/ToolPresentation";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection} from "../../tui/tool/ToolPresentation";
 import {ThemeColor} from "../../tui/Color";
@@ -24,7 +22,6 @@ type BashToolInput = {
     command: string;
     purpose: string;
     timeout?: number;
-    writableMmap?: boolean;
 };
 
 const BASH_PRESENTATION = {
@@ -39,12 +36,6 @@ const BASH_PRESENTATION = {
             key: "timeout",
             placement: ToolArgumentPlacement.TITLE_SECONDARY,
             format: (value) => typeof value === "number" ? ` (timeout ${value}s)` : "",
-            color: ThemeColor.muted,
-        },
-        {
-            key: "writableMmap",
-            placement: ToolArgumentPlacement.TITLE_SECONDARY,
-            format: (value) => value === true ? " (writable mmap)" : "",
             color: ThemeColor.muted,
         },
         {
@@ -89,7 +80,6 @@ export class BashTool {
         type Required = [...(typeof bashDefinition.parameters.required), "purpose"];
         type Properties = typeof bashDefinition.parameters.properties & {
             purpose: PurposeParameter;
-            writableMmap: {type: "boolean"; description: string};
         };
 
         // TypeBox's TString type omits schema options retained by the runtime object.
@@ -107,10 +97,6 @@ export class BashTool {
             properties: {
                 ...bashDefinition.parameters.properties,
                 purpose: purposeParameter,
-                writableMmap: {
-                    type: "boolean",
-                    description: "Request writable mmap for this call only (e.g. the Go linker). Requires mmap policy approval; default false.",
-                },
             } satisfies Properties,
             required: [...bashDefinition.parameters.required, "purpose"] satisfies Required,
         };
@@ -132,20 +118,6 @@ export class BashTool {
                     command: input.command,
                     purpose: input.purpose,
                 };
-                let approvedMmapCwd: string | undefined;
-                if (input.writableMmap === true) {
-                    signal?.throwIfAborted();
-                    const cwd = realpathSync.native(ctx.cwd);
-                    const result = await runtime.policyRuntime.once(
-                        agentIdentifier, cwd, PolicyAccessType.FS_MMAP, signal, toolCall,
-                    );
-                    signal?.throwIfAborted();
-                    if (result.matchedStatus !== PolicyResponse.ALLOWED) throw new Error(result.toDenyMessage());
-                    if (realpathSync.native(ctx.cwd) !== cwd) {
-                        throw new Error("The Bash starting directory changed while writable mmap approval was pending.");
-                    }
-                    approvedMmapCwd = cwd;
-                }
                 const nativePolicyView = runtime.policyRuntime.beginNativeFilesystemToolCall(
                     agentIdentifier,
                     toolCall,
@@ -154,11 +126,10 @@ export class BashTool {
                     await nativePolicyView.evaluate(...args)
                 ).result;
                 try {
-                    const sandboxedBash = createBashToolDefinition(approvedMmapCwd ?? ctx.cwd, {
+                    const sandboxedBash = createBashToolDefinition(ctx.cwd, {
                         operations: this.createOperations(
                             policy,
                             runtime.fullNetworkInspection,
-                            approvedMmapCwd,
                             runtime.hostCredentialIpc,
                             nativePolicyView,
                             runtime.nativeFuseSessionBroker,
@@ -180,7 +151,6 @@ export class BashTool {
     private createOperations(
         policy: ToolCallPathPolicyEvaluator,
         fullNetworkInspection: boolean,
-        approvedMmapCwd: string | undefined,
         hostCredentialIpc: HostCredentialIpcOptions | undefined,
         nativePolicyView: NativeFilesystemPolicyView,
         nativeFuseSessionBroker?: NativeFuseSessionBroker,
@@ -205,7 +175,6 @@ export class BashTool {
                 }: {mediatedHostRoot: string; cwd: string; signal?: AbortSignal}) => runNetworkSandboxedCommand({
                     command: ["/bin/bash", "-c", command],
                     cwd: resolvedCwd,
-                    expectedCwd: approvedMmapCwd,
                     mediatedHostRoot,
                     env,
                     hostCredentialIpc,
@@ -242,7 +211,7 @@ export class BashTool {
                     onDecisionError: reportFuseDecisionError,
                     onPolicyDeny: report,
                     sessionBroker: nativeFuseSessionBroker,
-                    writableMmap: approvedMmapCwd !== undefined,
+                    mmapMode: "policy",
                 }, runNetworkSandbox);
 
                 if (result.signal) throw new Error(`network worker terminated by ${result.signal}`);

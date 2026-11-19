@@ -4,7 +4,8 @@ import type {ToolCallPathPolicyEvaluator} from "../../PolicyRuntime.js";
 import {evaluateStoredPolicies} from "../../PolicyEngine.js";
 import {resolveUri} from "../../PolicyScope.js";
 import {
-    PolicyAccessType,
+    isFilesystemAccess,
+    type PolicyAccessType,
     type Policy,
     PolicyResolutionSource,
     type PolicyResult,
@@ -159,7 +160,7 @@ export class NativeFilesystemPolicyView {
         this.assertOpen();
         const baseRevision = this.policyBase.revision;
         const nextOnceLayer = this.oncePolicyLayer();
-        const onceChanged = (accessType === PolicyAccessType.FS_READ || accessType === PolicyAccessType.FS_WRITE)
+        const onceChanged = isFilesystemAccess(accessType)
             && !isDeepStrictEqual(this.oncePoliciesState, nextOnceLayer.policies);
         if (onceChanged) {
             this.oncePoliciesState = structuredClone(nextOnceLayer.policies);

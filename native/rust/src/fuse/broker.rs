@@ -51,15 +51,11 @@ pub(super) fn main() -> i32 {
     {
         return sync_filesystem(&arguments);
     }
-    let writable_mmap = match arguments.get(8).map(|a| a.to_bytes()) {
-        None | Some(b"direct") => false,
-        Some(b"mmap") => true,
-        _ => return 64,
-    };
-    if arguments.len() != 8 && arguments.len() != 9 {
-        diagnostic(b"usage: pi-fuse-native MOUNTPOINT HIDDEN_PATH SNAPSHOT_PATH STATS_PATH READY_FD REQUEST_FD RESPONSE_FD [direct|mmap]\n       pi-fuse-native --broker\n       pi-fuse-native --syncfs FD\n");
+    let mode = MountMode::parse(arguments.get(8).map(|a| a.to_bytes()));
+    let Some(mode) = mode.filter(|_| matches!(arguments.len(), 8 | 9)) else {
+        diagnostic(b"usage: pi-fuse-native MOUNTPOINT HIDDEN_PATH SNAPSHOT_PATH STATS_PATH READY_FD REQUEST_FD RESPONSE_FD [direct|mmap|policy]\n       pi-fuse-native --broker\n       pi-fuse-native --syncfs FD\n");
         return 64;
-    }
+    };
     unsafe {
         run_filesystem(
             &arguments[0],
@@ -71,7 +67,7 @@ pub(super) fn main() -> i32 {
             libc::atoi(arguments[6].as_ptr()),
             libc::atoi(arguments[7].as_ptr()),
             false,
-            writable_mmap,
+            mode,
         )
     }
 }
@@ -163,7 +159,7 @@ fn run_filesystem(
     request: i32,
     response: i32,
     framed: bool,
-    writable_mmap: bool,
+    mode: MountMode,
 ) -> i32 {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
@@ -185,7 +181,7 @@ fn run_filesystem(
     }
     let mut state = Box::new(State::new(snapshot.to_owned(), hidden, request, response));
     state.framed_ready = framed;
-    state.writable_mmap = writable_mmap;
+    state.mount_mode = mode;
     *state.ready_fd.get_mut().unwrap() = ready;
     if state.load().is_err() {
         perror("load native FUSE policy base snapshot");
@@ -357,15 +353,12 @@ impl Broker {
             .filter(|s| !s.is_empty())
             .take(9)
             .collect();
-        if !matches!(fields.len(), 7 | 8)
-            || fields[0] != b"START"
-            || fields
-                .get(7)
-                .is_some_and(|mode| !matches!(*mode, b"direct" | b"mmap"))
-        {
+        let mode = MountMode::parse(fields.get(7).copied());
+        let Some(mode) = mode.filter(|_| matches!(fields.len(), 7 | 8) && fields[0] == b"START")
+        else {
             set_errno(libc::EPROTO);
             return Err(-1);
-        }
+        };
         if fields[1..]
             .iter()
             .any(|s| s.is_empty() || s.len() >= PATH_MAX)
@@ -416,7 +409,7 @@ impl Broker {
                 control.0,
                 control.0,
                 true,
-                fields.get(7).is_some_and(|mode| *mode == b"mmap"),
+                mode,
             );
             drop(control);
             libc::_exit(result);

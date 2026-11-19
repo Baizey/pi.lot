@@ -1,4 +1,5 @@
 import {
+    isFilesystemAccess,
     PolicyAccessType,
     PolicyLifetime,
     type PolicyResult,
@@ -101,15 +102,14 @@ export class PolicyDecisionFlow implements QueuedPolicyApproval {
         requestContext?: PolicyApprovalRequestContext,
     ): Record<keyof PolicyApproval, UiDecision<PolicyApproval>> {
         const mmap = accessType === PolicyAccessType.FS_MMAP;
-        const policyKind = mmap ? "Writable mmap" : this.isFilesystemAccess(accessType) ? "Path" : "Network";
+        const policyKind = mmap ? "Writable mmap" : isFilesystemAccess(accessType) ? "Path" : "Network";
         const requestingAgent = requestContext?.ancestry.find((agent) => (
             agent.agentIdentifier === requestContext.requestingAgentIdentifier
         ));
         const context = (state: Partial<PolicyApproval>): UiDecisionContext => ({
             summary: [
                 {label: "Access", value: this.accessLabel(accessType), essential: true},
-                {label: mmap ? "Starting directory" : "Target", value: evaluatedPath, essential: true},
-                ...(mmap ? [{label: "Mode", value: "Applies to the whole Bash call; mapped writes are not individually revocable."}] : []),
+                {label: "Target", value: evaluatedPath, essential: true},
                 ...(state.scope ? [{label: "Scope", value: state.scope, essential: true}] : []),
                 ...(state.status ? [{label: "Decision", value: state.status === PolicyResponse.ALLOWED ? "Allow" : "Deny", essential: true}] : []),
                 ...(requestContext ? [{
@@ -292,10 +292,6 @@ export class PolicyDecisionFlow implements QueuedPolicyApproval {
         return accessType;
     }
 
-    private isFilesystemAccess(accessType: PolicyAccessType): boolean {
-        return accessType === PolicyAccessType.FS_READ
-            || accessType === PolicyAccessType.FS_WRITE
-    }
 }
 
 function boundedText(value: string, maximum: number): string {

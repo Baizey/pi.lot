@@ -74,6 +74,24 @@ impl Drop for Stdio {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MountMode {
+    Direct,
+    Mmap,
+    Policy,
+}
+
+impl MountMode {
+    fn parse(mode: Option<&[u8]>) -> Option<Self> {
+        match mode {
+            None | Some(b"direct") => Some(Self::Direct),
+            Some(b"mmap") => Some(Self::Mmap),
+            Some(b"policy") => Some(Self::Policy),
+            _ => None,
+        }
+    }
+}
+
 pub struct State {
     hidden_path: CString,
     snapshot_path: CString,
@@ -82,7 +100,7 @@ pub struct State {
     request_fd: i32,
     response_fd: i32,
     framed_ready: bool,
-    writable_mmap: bool,
+    mount_mode: MountMode,
     ready_fd: Mutex<i32>,
     counters: [AtomicU64; 8],
     panicked: std::sync::atomic::AtomicBool,
@@ -102,7 +120,7 @@ impl State {
             request_fd,
             response_fd,
             framed_ready: false,
-            writable_mmap: false,
+            mount_mode: MountMode::Direct,
             ready_fd: Mutex::new(-1),
             counters: std::array::from_fn(|_| AtomicU64::new(0)),
             panicked: std::sync::atomic::AtomicBool::new(false),
@@ -131,51 +149,10 @@ impl State {
             self.count(counter);
         }
         let mut policy = self.policy.lock().map_err(|_| -libc::EACCES)?;
-        if self.panicked.load(Ordering::Relaxed)
-            || policy.failed
-            || policy.refresh(self).is_err()
-            || policy.drain(self).is_err()
-        {
-            policy.failed = true;
-            return Err(-libc::EACCES);
-        }
+        self.sync_policy(&mut policy)?;
         let evaluated = self.policy_path(path)?;
-        match policy.evaluate(evaluated.to_bytes(), access) {
-            Some(Decision::Allow) => {}
-            Some(Decision::Deny) => {
-                if policy
-                    .event(self, 2, 0, access, evaluated.to_bytes())
-                    .is_err()
-                {
-                    policy.failed = true;
-                }
-                return Err(-libc::EACCES);
-            }
-            None => {
-                self.count(POLICY_MISSES);
-                let base = policy.base.revision;
-                let once = policy.once.revision;
-                policy.next_request = policy.next_request.wrapping_add(1);
-                let id = policy.next_request;
-                let response = policy
-                    .event(self, 1, id, access, evaluated.to_bytes())
-                    .and_then(|()| policy.resolution(self, id, base, once));
-                let decision = match response {
-                    Ok(decision) => decision,
-                    Err(_) => {
-                        policy.failed = true;
-                        return Err(-libc::EACCES);
-                    }
-                };
-                if self.policy_path(path).ok().as_ref() != Some(&evaluated) {
-                    return Err(-libc::EACCES);
-                }
-                if decision != Decision::Allow
-                    || policy.evaluate(evaluated.to_bytes(), access) != Some(Decision::Allow)
-                {
-                    return Err(-libc::EACCES);
-                }
-            }
+        if self.authorize_path_decision(&mut policy, path, &evaluated, access)? != Decision::Allow {
+            return Err(-libc::EACCES);
         }
         unsafe {
             if let Some(fd) = retained {
@@ -215,6 +192,54 @@ impl State {
     ) -> Result<(), i32> {
         self.authorize(path, access, counter, None, false)
             .map(|_| ())
+    }
+    fn sync_policy(&self, policy: &mut Policy) -> Result<(), i32> {
+        if self.panicked.load(Ordering::Relaxed)
+            || policy.failed
+            || policy.refresh(self).is_err()
+            || policy.drain(self).is_err()
+        {
+            policy.failed = true;
+            return Err(-libc::EACCES);
+        }
+        Ok(())
+    }
+    // A genuine denial can select direct I/O; a failed exchange or changed
+    // path must abort the operation instead of allowing a backing effect.
+    fn authorize_path_decision(
+        &self,
+        policy: &mut Policy,
+        path: &CStr,
+        evaluated: &CStr,
+        access: Access,
+    ) -> Result<Decision, i32> {
+        let decision = match policy.evaluate(evaluated.to_bytes(), access) {
+            Some(Decision::Allow) => return Ok(Decision::Allow),
+            Some(Decision::Deny) => policy
+                .event(self, 2, 0, access, evaluated.to_bytes())
+                .map(|()| Decision::Deny),
+            None => {
+                self.count(POLICY_MISSES);
+                let base = policy.base.revision;
+                let once = policy.once.revision;
+                policy.next_request = policy.next_request.wrapping_add(1);
+                let id = policy.next_request;
+                policy
+                    .event(self, 1, id, access, evaluated.to_bytes())
+                    .and_then(|()| policy.resolution(self, id, base, once))
+            }
+        }
+        .map_err(|_| {
+            policy.failed = true;
+            -libc::EACCES
+        })?;
+        if self.policy_path(path).ok().as_deref() != Some(evaluated)
+            || (decision == Decision::Allow
+                && policy.evaluate(evaluated.to_bytes(), access) != Some(Decision::Allow))
+        {
+            return Err(-libc::EACCES);
+        }
+        Ok(decision)
     }
     fn ready(&self) -> Result<(), i32> {
         if self.framed_ready {
@@ -333,14 +358,43 @@ pub unsafe extern "C" fn pilot_fuse_probe_new(
     response: i32,
     writable_mmap: bool,
 ) -> *mut State {
+    let mode = if writable_mmap {
+        MountMode::Mmap
+    } else {
+        MountMode::Direct
+    };
+    probe_new(snapshot, hidden, request, response, mode)
+}
+
+/// Construct a mount-free probe state in policy mode.
+///
+/// # Safety
+/// Same requirements and ownership as `pilot_fuse_probe_new`.
+#[no_mangle]
+pub unsafe extern "C" fn pilot_fuse_probe_new_mmap_policy(
+    snapshot: *const libc::c_char,
+    hidden: *const libc::c_char,
+    request: i32,
+    response: i32,
+) -> *mut State {
+    probe_new(snapshot, hidden, request, response, MountMode::Policy)
+}
+
+unsafe fn probe_new(
+    snapshot: *const libc::c_char,
+    hidden: *const libc::c_char,
+    request: i32,
+    response: i32,
+    mode: MountMode,
+) -> *mut State {
     catch_unwind(AssertUnwindSafe(|| {
         if snapshot.is_null() {
-            return Box::into_raw(Box::new(State::new(
-                cstring(b""),
-                cstring(b""),
-                request,
-                response,
-            )));
+            let mut state = State::new(cstring(b""), cstring(b""), request, response);
+            // Preserve legacy INIT-only probe behavior.
+            if mode == MountMode::Policy {
+                state.mount_mode = mode;
+            }
+            return Box::into_raw(Box::new(state));
         }
         let snapshot = CStr::from_ptr(snapshot);
         let hidden = CStr::from_ptr(hidden);
@@ -354,7 +408,7 @@ pub unsafe extern "C" fn pilot_fuse_probe_new(
             request,
             response,
         ));
-        state.writable_mmap = writable_mmap;
+        state.mount_mode = mode;
         if nonblocking(request).is_err() || nonblocking(response).is_err() || state.load().is_err()
         {
             return std::ptr::null_mut();
@@ -369,7 +423,7 @@ pub unsafe extern "C" fn pilot_fuse_probe_new(
 /// Release a probe-owned state; borrowed control descriptors remain open.
 ///
 /// # Safety
-/// `state` must be null or an unfreed pointer returned by `pilot_fuse_probe_new`.
+/// `state` must be null or an unfreed pointer returned by a probe initializer.
 /// No callback may still be using it, and no references to it may be used after
 /// this call. States owned by the production mount runner must not be passed.
 #[no_mangle]

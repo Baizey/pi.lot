@@ -213,13 +213,22 @@ impl Policy {
     }
     pub fn drain(&mut self, state: &State) -> Result<(), i32> {
         loop {
-            let mut p = libc::pollfd {
-                fd: state.response_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
+            let mut channels = [
+                libc::pollfd {
+                    fd: state.response_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                // A standalone controller can close its request pipe without
+                // closing the response pipe. Watch for loss even on cache hits.
+                libc::pollfd {
+                    fd: state.request_fd,
+                    events: 0,
+                    revents: 0,
+                },
+            ];
             let result = loop {
-                let r = unsafe { libc::poll(&mut p, 1, 0) };
+                let r = unsafe { libc::poll(channels.as_mut_ptr(), channels.len() as _, 0) };
                 if r >= 0 || errno() != libc::EINTR {
                     break r;
                 }
@@ -230,7 +239,11 @@ impl Policy {
             if result == 0 {
                 return Ok(());
             }
-            if p.revents & libc::POLLIN == 0 {
+            if channels
+                .iter()
+                .any(|p| p.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0)
+                || channels[0].revents & libc::POLLIN == 0
+            {
                 return Err(-1);
             }
             self.initial_once(state)?;

@@ -8,7 +8,7 @@ import {NativeFilesystemPolicyBridge} from "./NativeFilesystemPolicyBridge.js";
 import {replaceNativeFilesystemSnapshotFile} from "./NativeFilesystemSnapshotFile.js";
 import {hasMountedPathAtOrBelow, isMountedPath} from "./NativeFuseMountState.js";
 import type {NativeFilesystemPolicyView} from "./NativeFilesystemPolicyView.js";
-import type {NativeFuseSessionBroker} from "./NativeFuseSessionBroker.js";
+import type {NativeFuseMmapMode, NativeFuseSessionBroker} from "./NativeFuseSessionBroker.js";
 
 const HOST_FILESYSTEM_ROOT = "/";
 const READY_TIMEOUT_MILLISECONDS = 10_000;
@@ -22,7 +22,7 @@ export type NativeFuseMountOptions = {
     onDecisionError?: (error: unknown) => void;
     onPolicyDeny?: (message: string) => void;
     sessionBroker?: NativeFuseSessionBroker;
-    writableMmap?: boolean;
+    mmapMode?: NativeFuseMmapMode;
 };
 
 export type NativeFuseMountContext = {
@@ -112,7 +112,7 @@ export async function withNativeFuseFilesystem<T>(
                 "3",
                 "4",
                 "5",
-                options.writableMmap ? "mmap" : "direct",
+                options.mmapMode ?? "direct",
             ],
             spawnOptions: {
                 cwd: HOST_FILESYSTEM_ROOT,
@@ -144,7 +144,7 @@ export async function withNativeFuseFilesystem<T>(
         throwIfAborted(decisionController.signal);
         await waitForReady(daemon, daemonOutput, decisionController.signal);
         mounted = true;
-        if (options.writableMmap) {
+        if (options.mmapMode === "policy") {
             mappedWriteDrain = await NativeFuseMappedWriteDrain.open(mountpoint, options.policyView);
         }
         result = await run({mediatedHostRoot: mountpoint, cwd: commandCwd, signal: decisionController.signal});

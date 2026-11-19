@@ -1,12 +1,10 @@
 import type {ExtensionAPI, ExtensionCommandContext} from "@earendil-works/pi-coding-agent";
-import {PolicyArea, PolicyFallbackResponse} from "../policy/types.js";
 import type {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime.js";
-import {SandboxingSettings, type SandboxingSetting} from "../tui/SandboxingSettings.js";
+import {SandboxingSettings} from "../tui/SandboxingSettings.js";
 
-const SETTINGS = ["network-inspection", "mmap"] as const;
 const NETWORK_MODES = ["on", "off"] as const;
-const MMAP_MODES = Object.values(PolicyFallbackResponse);
-const USAGE = "Usage: /sandboxing [network-inspection on|off | mmap allow|deny|ask_user|ask_llm]";
+const NETWORK_SETTING = "network-inspection";
+const USAGE = "Usage: /sandboxing [network-inspection on|off]";
 
 export class SandboxingCommand {
     private registered = false;
@@ -20,7 +18,7 @@ export class SandboxingCommand {
         if (this.registered) throw new Error("Sandboxing command is already registered");
         this.registered = true;
         this.pi.registerCommand("sandboxing", {
-            description: "Configure network inspection and the writable mmap request policy",
+            description: "Configure network inspection for this session",
             getArgumentCompletions: (input) => this.completions(input),
             handler: async (input, ctx) => {
                 const args = input.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -30,68 +28,39 @@ export class SandboxingCommand {
                     return;
                 }
                 const [setting, mode] = args;
-                if (args.length === 2 && setting === "mmap" && (mode === "on" || mode === "off")) {
-                    ctx.ui.notify("Mmap is now requested per Bash call. Set its fallback with /sandboxing mmap allow|deny|ask_user|ask_llm.", "error");
-                    return;
-                }
-                if (args.length !== 2 || !mode
-                    || (setting !== "network-inspection" && setting !== "mmap")
-                    || !this.modes(setting).includes(mode)) {
+                if (args.length !== 2 || setting !== NETWORK_SETTING || (mode !== "on" && mode !== "off")) {
                     ctx.ui.notify(USAGE, "error");
                     return;
                 }
-                this.set(runtime, setting, mode, ctx);
+                this.set(runtime, mode === "on", ctx);
             },
         });
     }
 
     private async showSettings(runtime: PilotSessionRuntimeInterface, ctx: ExtensionCommandContext): Promise<void> {
         if (!ctx.hasUI || ctx.mode !== "tui") {
-            const mmap = runtime.policyRuntime.defaultResponses[PolicyArea.fs_mmap];
             ctx.ui.notify(
                 `Sandboxing for this session:\nNetwork inspection = ${runtime.fullNetworkInspection ? "on" : "off"}`
-                + `\nWritable mmap requests = ${mmap} (explicit rules take precedence).`
-                + "\nChanges affect new Bash calls, including subagents; existing calls are unchanged."
-                + " Use /policy-defaults save to persist the mmap default. Network inspection is session-only.",
-                mmap === PolicyFallbackResponse.allow || !runtime.fullNetworkInspection ? "warning" : "info",
+                + "\nChanges affect new Bash calls, including subagents; this setting is not saved.",
+                runtime.fullNetworkInspection ? "info" : "warning",
             );
             return;
         }
         await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new SandboxingSettings(
             runtime,
             theme,
-            (setting, value) => this.set(runtime, setting, value, ctx),
+            (enabled) => this.set(runtime, enabled, ctx),
             () => done(),
             () => tui.requestRender(),
         ), {blocked: {kind: "question", message: "Configure sandboxing"}});
     }
 
-    private set(
-        runtime: PilotSessionRuntimeInterface,
-        setting: SandboxingSetting,
-        value: string,
-        ctx: ExtensionCommandContext,
-    ): void {
-        if (setting === "network-inspection") {
-            const enabled = value === "on";
-            runtime.setFullNetworkInspection(enabled);
-            ctx.ui.notify(enabled
-                ? "Network inspection is on for new Bash calls; HTTPS method/path policy is enabled. Session only."
-                : "Network inspection is off for new Bash calls; HTTPS stays end-to-end and opaque traffic has transport-only policy. Recognized plaintext protocols still receive policy checks. Session only.",
-            enabled ? "info" : "warning");
-        } else {
-            const response = MMAP_MODES.find((mode) => mode === value);
-            if (!response) throw new Error("Invalid writable mmap policy default.");
-            runtime.policyRuntime.setDefaultResponse(PolicyArea.fs_mmap, response);
-            const description = `Writable mmap request default = ${response}. Explicit rules take precedence.`;
-            ctx.ui.notify(response === PolicyFallbackResponse.allow
-                ? `${description} Mapped writes are not individually revocable and dirty changes can be lost.`
-                : description, response === PolicyFallbackResponse.allow ? "warning" : "info");
-        }
-    }
-
-    private modes(setting: SandboxingSetting): readonly string[] {
-        return setting === "mmap" ? MMAP_MODES : NETWORK_MODES;
+    private set(runtime: PilotSessionRuntimeInterface, enabled: boolean, ctx: ExtensionCommandContext): void {
+        runtime.setFullNetworkInspection(enabled);
+        ctx.ui.notify(enabled
+            ? "Network inspection is on for new Bash calls; HTTPS method/path policy is enabled. Session only."
+            : "Network inspection is off for new Bash calls; HTTPS stays end-to-end and opaque traffic has transport-only policy. Recognized plaintext protocols still receive policy checks. Session only.",
+        enabled ? "info" : "warning");
     }
 
     private completions(input: string): Array<{value: string; label: string}> | null {
@@ -99,9 +68,8 @@ export class SandboxingCommand {
         if (tokens.length > 2) return [];
         const prefix = tokens.at(-1) ?? "";
         const [setting] = tokens;
-        if (tokens.length === 2 && setting !== "network-inspection" && setting !== "mmap") return null;
-        const options = tokens.length === 2 && (setting === "network-inspection" || setting === "mmap")
-            ? this.modes(setting) : SETTINGS;
+        if (tokens.length === 2 && setting !== NETWORK_SETTING) return null;
+        const options = tokens.length === 2 ? NETWORK_MODES : [NETWORK_SETTING];
         const matches = options.filter((option) => option.startsWith(prefix));
         return matches.length === 0 ? null : matches.map((option) => ({
             value: tokens.length === 1 ? option : `${tokens[0]} ${option}`,

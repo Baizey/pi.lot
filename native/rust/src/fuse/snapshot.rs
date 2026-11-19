@@ -5,6 +5,7 @@ pub(super) const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) enum Access {
     Read = 1,
     Write = 2,
+    Mmap = 3,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Decision {
@@ -69,6 +70,7 @@ impl Snapshot {
             let access = match bytes[offset + 4] {
                 1 => Access::Read,
                 2 => Access::Write,
+                3 => Access::Mmap,
                 _ => return Err(invalid()),
             };
             let decision = match bytes[offset + 5] {
@@ -185,6 +187,21 @@ mod tests {
         assert_eq!(s.evaluate(b"/a", Access::Write), None);
     }
     #[test]
+    fn mmap_rules_are_independent_of_read_and_write() {
+        let snapshot =
+            Snapshot::parse(&encoded(&[(0, 3, 1, b"/map"), (0, 3, 2, b"/map/no")])).unwrap();
+        assert_eq!(
+            snapshot.evaluate(b"/map/file", Access::Mmap),
+            Some(Decision::Allow)
+        );
+        assert_eq!(
+            snapshot.evaluate(b"/map/no", Access::Mmap),
+            Some(Decision::Deny)
+        );
+        assert_eq!(snapshot.evaluate(b"/map/file", Access::Read), None);
+        assert_eq!(snapshot.evaluate(b"/map/file", Access::Write), None);
+    }
+    #[test]
     fn snapshot_identity_includes_all_authority_fields_and_order() {
         let original = encoded(&[(0, 1, 1, b"/a"), (0, 1, 2, b"/b")]);
         let expected = Snapshot::parse(&original).unwrap();
@@ -248,7 +265,7 @@ mod tests {
         }
         for rule in [
             (64, 1, 1, &b"/"[..]),
-            (0, 3, 1, &b"/"[..]),
+            (0, 4, 1, &b"/"[..]),
             (0, 1, 3, &b"/"[..]),
             (0, 1, 1, &b"relative"[..]),
             (0, 1, 1, &b"/\0"[..]),

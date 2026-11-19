@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, {type TestContext} from "node:test";
 import {PolicyAccessType} from "../src/policy/types.js";
+import {PolicyMmapV3} from "../src/storage/migrations/PolicyMmapV3.js";
 import {PolicySchemaV1} from "../src/storage/migrations/PolicySchemaV1.js";
 import {PolicyDao} from "../src/storage/PolicyDao.js";
 import {SqliteDatabase} from "../src/storage/sqlite.js";
@@ -26,7 +27,7 @@ test("policy store v1 removes retired rows and constraints once, preserving curr
     const before = db.prepare("select rowid,* from policy_rules where accessType <> 'FS_DELETE' order by rowid").all();
     const objects = policySchemaObjects(db).filter((row) => (row as {type: string}).type !== "table");
     new PolicyDao(db).initializeSchema();
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
     assert.deepEqual(storedPolicyRows(db), before);
     assert.deepEqual(policySchemaObjects(db).filter((row) => (row as {type: string}).type !== "table"), objects);
     assert.equal(db.prepare("select count(*) from policy_migration_audit").pluck().get(), 0);
@@ -51,7 +52,7 @@ test("policy store v1 upgrades the former compatibility schema even when every c
     db.exec(`insert into policy_rules values ('/old','FS_DELETE','GLOBAL','DENIED','old',123)`);
     assert.deepEqual(new PolicyDao(db).loadPolicies(), []);
     assert.doesNotMatch(db.prepare("select sql from sqlite_master where name='policy_rules'").pluck().get() as string, /FS_DELETE/);
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
 });
 
 test("an outer rollback restores the previous policy schema, data and version and permits retry", (t) => {
@@ -64,16 +65,16 @@ test("an outer rollback restores the previous policy schema, data and version an
     assert.deepEqual(storedPolicyRows(db), before);
     assert.deepEqual(policySchemaObjects(db), objects);
     dao.initializeSchema();
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
 });
 
 test("future policy-store versions fail without changing their data or schema", (t) => {
     const db = fixture(t);
-    db.exec("pragma user_version=4");
+    db.exec("pragma user_version=5");
     const before = storedPolicyRows(db);
-    assert.throws(() => new PolicyDao(db).initializeSchema(), /Unsupported policy database version: 4/);
+    assert.throws(() => new PolicyDao(db).initializeSchema(), /Unsupported policy database version: 5/);
     assert.deepEqual(storedPolicyRows(db), before);
-    assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 5);
 });
 
 for (const corrupt of [false, true]) {
@@ -133,7 +134,38 @@ test("upgrading v2 preserves policies and saved roles and adds local mmap decisi
     assert.equal(db.prepare("select title from role_profiles").pluck().get(), "Reviewer");
     db.exec(`insert into policy_rules values ('/project','FS_MMAP','LOCAL','ALLOWED','build',6);`);
     assert.equal(new PolicyDao(db).loadPolicies()[0]?.info.FS_MMAP?.status, "ALLOWED");
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
+});
+
+test("v4 atomically retires v3 CWD mmap rules once and leaves path mmap rules local-only", (t) => {
+    const db = SqliteDatabase.open(":memory:");
+    t.after(() => db.close());
+    new PolicySchemaV1(db).up();
+    new PolicyMmapV3(db).up();
+    db.exec(`pragma user_version=3;
+        insert into policy_rules values
+            ('/project','FS_MMAP','LOCAL','ALLOWED','legacy allow',1),
+            ('/other','FS_MMAP','LOCAL','DENIED','legacy deny',2),
+            ('/project','FS_WRITE','LOCAL','DENIED','keep local',3),
+            ('host:5037','ADB','GLOBAL','ALLOWED','keep global',4);`);
+    const before = storedPolicyRows(db);
+    const keep = db.prepare("select rowid,* from policy_rules where accessType <> 'FS_MMAP' order by rowid").all();
+    const dao = new PolicyDao(db);
+    assert.throws(() => db.transaction(() => {
+        dao.initializeSchema();
+        assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
+        assert.deepEqual(storedPolicyRows(db), keep);
+        throw new Error("outer failure");
+    }).immediate(), /outer failure/);
     assert.equal(db.prepare("pragma user_version").pluck().get(), 3);
+    assert.deepEqual(storedPolicyRows(db), before);
+
+    dao.initializeSchema();
+    assert.equal(db.prepare("pragma user_version").pluck().get(), 4);
+    assert.deepEqual(storedPolicyRows(db), keep);
+    db.exec(`insert into policy_rules values ('/project/file','FS_MMAP','LOCAL','ALLOWED','mapped path',5);`);
+    assert.throws(() => db.exec(`insert into policy_rules values ('/other','FS_MMAP','GLOBAL','ALLOWED','',6);`), /CHECK constraint/);
+    assert.equal(new PolicyDao(db).loadPolicies().find(({pattern}) => pattern === "/project/file")?.info.FS_MMAP?.status, "ALLOWED");
 });
 
 test("fresh versioned stores support every current permission and reject unknown permissions", (t) => {
@@ -201,7 +233,7 @@ test("opening the journal upgrades persisted work once and keeps current pending
     journal.close();
     assert.deepEqual(journal.read("retired", "global-policies"), retired);
     assert.deepEqual(journal.read("current", "global-policies"), kept);
-    assert.equal(journal.database().prepare("pragma user_version").pluck().get(), 3);
+    assert.equal(journal.database().prepare("pragma user_version").pluck().get(), 4);
     assert.equal(journal.database().prepare("pragma integrity_check").pluck().get(), "ok");
 });
 

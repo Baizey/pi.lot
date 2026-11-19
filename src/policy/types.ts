@@ -234,9 +234,7 @@ export class PolicyResult {
         return [
             `ACCESS ${this.matchedStatus}`,
             `The uri '${this.evaluatedUri}' had an attempted access of type ${this.evaluatedAccessType}`,
-            this.evaluatedAccessType === PolicyAccessType.FS_MMAP
-                ? `The writable mmap policy for starting directory '${this.matchedPattern}' was triggered`
-                : `The policy for uri (and any subfiles without own policies) '${this.matchedPattern}' was triggered`,
+            `The policy for uri (and any subfiles without own policies) '${this.matchedPattern}' was triggered`,
             `Policy reason for why this was denied: ${this.matchedReason}`,
             `Policy resolution source: ${this.resolutionSource}`,
             `Policy lifetime: ${this.matchedLifetime}`,
@@ -264,6 +262,11 @@ export enum PolicyResolutionSource {
     NEW_USER_DECISION = "NEW_USER_DECISION",
     NEW_AGENT_DECISION = "NEW_AGENT_DECISION",
     NEW_DEFAULT_LLM_DECISION = "NEW_DEFAULT_LLM_DECISION",
+}
+
+export function isFilesystemAccess(accessType: string): boolean {
+    return accessType === PolicyAccessType.FS_READ || accessType === PolicyAccessType.FS_WRITE
+        || accessType === PolicyAccessType.FS_MMAP;
 }
 
 export const isModifyingAccess = (accessType: PolicyAccessType): boolean =>

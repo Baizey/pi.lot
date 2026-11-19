@@ -118,6 +118,22 @@ test("legacy v1 policy defaults may omit all additive channels without changing 
     }
 });
 
+test("legacy and path mmap fallback formats preserve their original content and hashes", () => {
+    const base = without({...initialPolicyDefaults}, "fs_mmap");
+    for (const key of ["fs_mmap", "fs_mmap_paths"]) {
+        const content = canonicalConfigContent({...base, [key]: "allow"});
+        for (const decoded of [decodeConfigState(state("policy-defaults", content)), decodeConfigExchange(exchange("policy-defaults", content))]) {
+            assert.equal(decoded.content, content);
+            assert.equal(decoded.sha256, configHash(content));
+        }
+    }
+    for (const value of [{...base, fs_mmap_paths: null}, {...base, fs_mmap: "allow", fs_mmap_paths: "deny"}]) {
+        const content = canonicalConfigContent(value);
+        rejects(() => decodeConfigExchange(exchange("policy-defaults", content)));
+        rejects(() => decodeConfigState(state("policy-defaults", content)));
+    }
+});
+
 for (const [protocol, accessType, area] of APPLICATION_POLICY_CHANNELS) {
     test(`${protocol} policy defaults and GLOBAL rules round-trip while absent additive fields remain optional`, () => {
         const legacy = canonicalConfigContent(without({...initialPolicyDefaults}, area));

@@ -4,7 +4,7 @@ import {parseDisplayDefaults} from "../../tui/tool/DisplayDefaults.js";
 import {parseSubagentDefaults} from "../../subagents/SubagentDefaults.js";
 import {parseWebSearchConfig} from "../../web-search/WebSearchConfig.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
-import {parsePolicyDefaults} from "../../policy/defaults.js";
+import {parseSavedPolicyDefaults} from "../../policy/defaults.js";
 import {parsePersonaCatalog} from "../../personas/PersonaCatalog.js";
 import {parseRoleCatalog} from "../../roles/RoleCatalog.js";
 
@@ -66,9 +66,8 @@ export function validateConfigContent(key: ConfigKey, content: unknown): asserts
             case "personas": parsePersonaCatalog(value); break;
             case "roles": parseRoleCatalog(value); break;
             case "policy-defaults": {
-                // Validate with the runtime's migration policy without changing legacy
-                // snapshot bytes/hashes. Only additive areas may be omitted.
-                parsePolicyDefaults(value);
+                // Validate the saved shape without rewriting legacy bytes or hashes.
+                parseSavedPolicyDefaults(value);
                 break;
             }
             case "global-policies": {

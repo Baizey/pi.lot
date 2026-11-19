@@ -10,30 +10,33 @@ import {scriptedPolicyApproval} from "./fixtures/QueuedPolicyApproval.js";
 const access = PolicyAccessType.FS_MMAP;
 const root = "root";
 const directory = "/go-checkout";
+const target = `${directory}/test-binary`;
 
-test("one-time mmap approval does not carry forward; local approval survives a new session at the exact cwd", async (t) => {
+test("one-time mmap approval does not carry forward; local directory grants apply to its files", async (t) => {
     const db = SqliteDatabase.open(":memory:");
     t.after(() => db.close());
     const dao = new PolicyDao(db);
     let prompts = 0;
     const create = () => new PolicyRuntime(root, dao, scriptedPolicyApproval((uri, accessType) => {
         assert.equal(accessType, access);
-        assert.deepEqual(policyScopeHierarchy(uri, accessType), [uri]);
-        const status = uri === directory ? PolicyResponse.ALLOWED : PolicyResponse.DENIED;
+        assert.equal(policyScopeHierarchy(uri, accessType)[0], uri);
+        const status = uri === target ? PolicyResponse.ALLOWED : PolicyResponse.DENIED;
         const lifetime = ++prompts === 1 ? PolicyLifetime.ONCE : PolicyLifetime.LOCAL;
-        return {uri, accessType, status, lifetime, reason: "test decision"};
+        return {uri: lifetime === PolicyLifetime.LOCAL && uri === target ? directory : uri,
+            accessType, status, lifetime, reason: "test decision"};
     }));
     const first = create();
-    assert.equal((await first.once(root, directory, access)).matchedLifetime, PolicyLifetime.ONCE);
+    assert.equal((await first.once(root, target, access)).matchedLifetime, PolicyLifetime.ONCE);
     assert.equal(dao.loadPolicies().length, 0);
-    assert.equal((await first.once(root, directory, access)).matchedLifetime, PolicyLifetime.LOCAL);
+    assert.equal((await first.once(root, target, access)).matchedLifetime, PolicyLifetime.LOCAL);
     const reopened = create();
-    assert.equal((await reopened.once(root, directory, access)).matchedStatus, PolicyResponse.ALLOWED);
+    assert.equal((await reopened.once(root, `${directory}/subdir/output`, access)).matchedStatus, PolicyResponse.ALLOWED);
     assert.equal(prompts, 2);
-    assert.equal((await reopened.once(root, directory + "/src", access)).matchedStatus, PolicyResponse.DENIED);
+    const outside = `${directory}-other/output`;
+    assert.equal((await reopened.once(root, outside, access)).matchedStatus, PolicyResponse.DENIED);
     assert.equal(prompts, 3);
     reopened.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.allow);
-    assert.equal((await reopened.once(root, directory + "/src", access)).matchedStatus, PolicyResponse.DENIED);
+    assert.equal((await reopened.once(root, outside, access)).matchedStatus, PolicyResponse.DENIED);
     assert.equal(prompts, 3);
 });
 
@@ -55,7 +58,7 @@ test("invalid user decisions cannot install a different directory or synchronize
     }
 });
 
-test("mmap ask_llm allows only an exact scope and nonpersistent lifetimes", async (t) => {
+test("mmap ask_llm uses normal path scopes and nonpersistent lifetimes", async (t) => {
     const db = SqliteDatabase.open(":memory:");
     t.after(() => db.close());
     const dao = new PolicyDao(db);
@@ -63,7 +66,7 @@ test("mmap ask_llm allows only an exact scope and nonpersistent lifetimes", asyn
     runtime.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.ask_llm);
     let choice = PolicyLifetime.LOCAL;
     runtime.setAgentDecisionFlow({async askForPolicy(request) {
-        assert.deepEqual(request.allowedScopes, [directory]);
+        assert.deepEqual(request.allowedScopes, [directory, "/"]);
         assert.deepEqual(request.allowedLifetimes, [PolicyLifetime.ONCE, PolicyLifetime.SESSION]);
         assert.equal(request.toolCall.command, "go build");
         return {uri: request.uri, accessType: request.accessType, lifetime: choice, status: PolicyResponse.ALLOWED, reason: "test decision"};

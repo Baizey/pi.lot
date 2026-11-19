@@ -50,12 +50,13 @@ for (const brokered of [false, true]) {
         ].join("\n");
         try {
             for (const writableMmap of [true, false, true]) {
+                policy.setDefaultResponse(PolicyArea.fs_mmap, writableMmap ? PolicyFallbackResponse.allow : PolicyFallbackResponse.deny);
                 const view = policy.beginNativeFilesystemToolCall(AGENT, {toolName: "mmap-test"});
                 let stderr = "";
                 try {
                     const result = await runNativeFuseSandboxedCommand({
                         command: ["python3", "-c", script, target, writableMmap ? "on" : "off"],
-                        cwd: directory, policyView: view, sessionBroker: broker, writableMmap,
+                        cwd: directory, policyView: view, sessionBroker: broker, mmapMode: "policy",
                         timeoutSeconds: 20, onStderr: (data) => { stderr += data; },
                     });
                     assert.equal(result.exitCode, 0, stderr);
@@ -86,12 +87,13 @@ for (const brokered of [false, true]) {
         writeFileSync(path.join(directory, "main.go"), 'package main\nfunc main() { println("mapped linker output") }\n');
         const policy = runtime();
         const broker = brokered ? new NativeFuseSessionBroker() : undefined;
+        policy.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.allow);
         const view = policy.beginNativeFilesystemToolCall(AGENT, {toolName: "mmap-go-test"});
         let stderr = "";
         try {
             const result = await runNativeFuseSandboxedCommand({
                 command: ["go", "build", "-o", target, path.join(directory, "main.go")],
-                cwd: directory, policyView: view, sessionBroker: broker, writableMmap: true,
+                cwd: directory, policyView: view, sessionBroker: broker, mmapMode: "policy",
                 env: {...process.env, GOTOOLCHAIN: "local", GOPROXY: "off", GOSUMDB: "off", GOENV: "off",
                     GOWORK: "off", GO111MODULE: "off", GOCACHE: path.join(directory, "go-cache")},
                 timeoutSeconds: 150, onStderr: (data) => { stderr += data; },

@@ -261,45 +261,54 @@ test("an ONCE change outside miss handling is published to an attached bridge", 
     responses.destroy();
 });
 
-test("a native miss is resolved by PolicyRuntime and returns a refreshed snapshot first", async () => {
-    const target = path.join(os.tmpdir(), "native-policy-bridge.txt");
-    const runtime = new PolicyRuntime(
-        AGENT,
-        emptyPolicyDao(),
-        decisionFlow([choice(target, PolicyLifetime.ONCE)]),
-    );
-    const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "bash"});
-    const requests = new PassThrough();
-    const responses = new PassThrough();
-    let bridgeError: Error | undefined;
-    const bridge = new NativeFilesystemPolicyBridge(
-        view,
-        requests,
-        responses,
-        (error) => {
-            bridgeError = error;
-        },
-    );
-    const response = waitForControlFrames(responses, 2);
+for (const [wireAccess, accessType] of [
+    [NativeFilesystemAccess.WRITE, PolicyAccessType.FS_WRITE],
+    [NativeFilesystemAccess.MMAP, PolicyAccessType.FS_MMAP],
+] as const) {
+    test(`a native ${accessType} miss is resolved by PolicyRuntime and publishes the new snapshot first`, async () => {
+        const target = path.join(os.tmpdir(), "native-policy-bridge.txt");
+        const runtime = new PolicyRuntime(
+            AGENT,
+            emptyPolicyDao(),
+            decisionFlow([{...choice(target, PolicyLifetime.ONCE), accessType}]),
+        );
+        const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "bash"});
+        const requests = new PassThrough();
+        const responses = new PassThrough();
+        let bridgeError: Error | undefined;
+        const bridge = new NativeFilesystemPolicyBridge(
+            view,
+            requests,
+            responses,
+            (error) => {
+                bridgeError = error;
+            },
+        );
+        const response = waitForControlFrames(responses, 2);
 
-    requests.write(encodePolicyMiss(7n, 0n, 0n, NativeFilesystemAccess.WRITE, target));
-    const frames = await response;
+        requests.write(encodePolicyMiss(7n, 0n, 0n, wireAccess, target));
+        const frames = await response;
 
-    assert.equal(bridgeError, undefined);
-    assert.equal(frames[0]!.type, NativeFilesystemResponseMessage.ONCE_SNAPSHOT);
-    assert.equal(frames[0]!.payload.subarray(0, 8).toString("ascii"), "PILOTNP2");
-    assert.equal(frames[0]!.payload.readBigUInt64LE(8), 1n);
-    assert.equal(frames[1]!.type, NativeFilesystemResponseMessage.RESOLUTION);
-    assert.equal(frames[1]!.payload.readBigUInt64LE(0), 7n);
-    assert.equal(frames[1]!.payload.readBigUInt64LE(8), 0n);
-    assert.equal(frames[1]!.payload.readBigUInt64LE(16), 1n);
-    assert.equal(frames[1]!.payload.readUInt8(24), NativeFilesystemDecision.ALLOW);
-    assert.equal(view.onceSnapshot().layers[0]!.policies[0]!.pattern, target);
-    bridge.close();
-    view.close();
-    requests.destroy();
-    responses.destroy();
-});
+        assert.equal(bridgeError, undefined);
+        assert.equal(frames[0]!.type, NativeFilesystemResponseMessage.ONCE_SNAPSHOT);
+        assert.equal(frames[0]!.payload.subarray(0, 8).toString("ascii"), "PILOTNP2");
+        assert.equal(frames[0]!.payload.readBigUInt64LE(8), 1n);
+        assert.equal(frames[0]!.payload.readUInt8(24), wireAccess);
+        assert.equal(frames[1]!.type, NativeFilesystemResponseMessage.RESOLUTION);
+        assert.equal(frames[1]!.payload.readBigUInt64LE(0), 7n);
+        assert.equal(frames[1]!.payload.readBigUInt64LE(8), 0n);
+        assert.equal(frames[1]!.payload.readBigUInt64LE(16), 1n);
+        assert.equal(frames[1]!.payload.readUInt8(24), NativeFilesystemDecision.ALLOW);
+        const granted = view.onceSnapshot().layers[0]!.policies[0]!;
+        assert.equal(granted.pattern, target);
+        assert.equal(granted.info[accessType]?.status, PolicyResponse.ALLOWED);
+        if (accessType === PolicyAccessType.FS_MMAP) assert.equal(granted.info.FS_WRITE, undefined);
+        bridge.close();
+        view.close();
+        requests.destroy();
+        responses.destroy();
+    });
+}
 
 test("native readiness reports the snapshots actually applied by the daemon", async () => {
     const runtime = new PolicyRuntime(AGENT, emptyPolicyDao(), decisionFlow([]));

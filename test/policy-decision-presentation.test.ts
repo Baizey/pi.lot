@@ -132,18 +132,18 @@ test("human policy selections separate the heading, request fields, choices, and
     assert.equal(harness.inputTitles.length, 0);
 });
 
-test("writable mmap uses the standard approval steps, with an exact scope and no synchronized choice", async () => {
+test("writable mmap uses the standard path approval steps with no synchronized choice", async () => {
     const harness = new PromptHarness();
-    const directory = "/tmp/go-checkout";
+    const directory = "/tmp/go-checkout/test-binary";
     const result = harness.flow().askForPolicy(directory, PolicyAccessType.FS_MMAP, undefined, {
         ...request,
         toolCall: {...request.toolCall, command: "go build ./..."},
     });
     const scope = await harness.prompt(0);
     const rendered = plain(scope);
-    assert.match(rendered, /Starting directory: \/tmp\/go-checkout/);
+    assert.match(rendered, /Target: \/tmp\/go-checkout\/test-binary/);
     assert.match(rendered, /Command: go build/);
-    assert.equal(rendered.match(/› /g)?.length, 1);
+    assert.match(rendered, /\/tmp\/go-checkout/);
     key(scope, "\r");
     key(await harness.prompt(1), "\r");
     const lifetime = await harness.prompt(2);

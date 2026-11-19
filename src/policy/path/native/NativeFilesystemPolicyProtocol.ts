@@ -13,6 +13,21 @@ const MAX_CONTROL_PAYLOAD_BYTES = 16 * 1024 * 1024;
 export enum NativeFilesystemAccess {
     READ = 1,
     WRITE = 2,
+    MMAP = 3,
+}
+
+const ACCESS_TYPES = {
+    [NativeFilesystemAccess.READ]: PolicyAccessType.FS_READ,
+    [NativeFilesystemAccess.WRITE]: PolicyAccessType.FS_WRITE,
+    [NativeFilesystemAccess.MMAP]: PolicyAccessType.FS_MMAP,
+} as const;
+
+const NATIVE_ACCESS = new Map<PolicyAccessType, NativeFilesystemAccess>(
+    Object.entries(ACCESS_TYPES).map(([access, type]) => [type, Number(access) as NativeFilesystemAccess]),
+);
+
+export function nativeFilesystemPolicyAccess(access: NativeFilesystemAccess): PolicyAccessType {
+    return ACCESS_TYPES[access];
 }
 
 export enum NativeFilesystemDecision {
@@ -54,17 +69,15 @@ export function encodeNativeFilesystemPolicySnapshot(snapshot: NativeFilesystemP
     const rules = snapshot.layers.flatMap((layer, layerIndex) => (
         layer.policies.flatMap((policy) => Object.values(policy.info).flatMap((status) => {
             if (!status) return [];
-            if (status.accessType !== PolicyAccessType.FS_READ
-                && status.accessType !== PolicyAccessType.FS_WRITE) return [];
+            const access = NATIVE_ACCESS.get(status.accessType);
+            if (access === undefined) return [];
             const path = Buffer.from(policy.pattern, "utf8");
             if (!policy.pattern.startsWith("/") || policy.pattern.includes("\0") || path.length >= 4096) {
                 throw new Error(`Invalid native filesystem policy path: ${JSON.stringify(policy.pattern)}`);
             }
             return [{
                 layer: layerIndex,
-                access: status.accessType === PolicyAccessType.FS_READ
-                    ? NativeFilesystemAccess.READ
-                    : NativeFilesystemAccess.WRITE,
+                access,
                 decision: status.status === PolicyResponse.ALLOWED
                     ? NativeFilesystemDecision.ALLOW
                     : NativeFilesystemDecision.DENY,
@@ -159,7 +172,7 @@ export function decodeNativeFilesystemPolicyMiss(payload: Buffer): NativeFilesys
         throw new Error("Native filesystem policy miss has an invalid path length");
     }
     const access = payload.readUInt8(24);
-    if (access !== NativeFilesystemAccess.READ && access !== NativeFilesystemAccess.WRITE) {
+    if (!Object.hasOwn(ACCESS_TYPES, access)) {
         throw new Error(`Native filesystem policy miss has an invalid access type: ${access}`);
     }
     const pathBytes = payload.subarray(32);
@@ -170,7 +183,7 @@ export function decodeNativeFilesystemPolicyMiss(payload: Buffer): NativeFilesys
         requestId: payload.readBigUInt64LE(0),
         baseRevision: payload.readBigUInt64LE(8),
         onceRevision: payload.readBigUInt64LE(16),
-        access,
+        access: access as NativeFilesystemAccess,
         path: pathBytes.toString("utf8"),
     };
 }

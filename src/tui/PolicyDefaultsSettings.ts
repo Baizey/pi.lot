@@ -2,8 +2,15 @@ import {DynamicBorder, getSettingsListTheme, type Theme} from "@earendil-works/p
 import {Container, SettingsList, Text, type SettingItem} from "@earendil-works/pi-tui";
 import PolicyRuntime from "../policy/PolicyRuntime.js";
 import {PolicyArea, PolicyFallbackResponse} from "../policy/types.js";
-import {policyFallbackChoice} from "./policyFallbackChoice.js";
+import {SettingsChoice} from "./SettingsChoice.js";
 import {truncateToWidth} from "./terminalText.js";
+
+const RESPONSES: Record<PolicyFallbackResponse, string> = {
+    allow: "Allow unmatched operations",
+    deny: "Deny unmatched operations",
+    ask_user: "Ask you for approval",
+    ask_llm: "Ask the policy-review model",
+};
 
 export class PolicyDefaultsSettings extends Container {
     readonly capturesViewportInput = true;
@@ -23,7 +30,9 @@ export class PolicyDefaultsSettings extends Container {
             label: area,
             currentValue: runtime.defaultResponses[area],
             description: "Fallback for unmatched operations only; explicit rules still take precedence.",
-            submenu: policyFallbackChoice,
+            submenu: (current, done) => new SettingsChoice(Object.values(PolicyFallbackResponse).map((response) => ({
+                value: response, label: response, description: RESPONSES[response],
+            })), current, done),
         }));
         items.push(
             {id: "save", label: "Save defaults", currentValue: "save", values: ["save"], description: "Persist current defaults for future sessions."},

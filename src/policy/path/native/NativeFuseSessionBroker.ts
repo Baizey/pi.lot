@@ -20,13 +20,15 @@ const CLEANUP_TIMEOUT_MILLISECONDS = 5_000;
 const MAX_HANDSHAKE_BYTES = 256;
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
+export type NativeFuseMmapMode = "direct" | "policy";
+
 export type NativeFuseBrokerMountOptions = {
     cwd: string;
     policyView: NativeFilesystemPolicyView;
     signal?: AbortSignal;
     onDecisionError?: (error: unknown) => void;
     onPolicyDeny?: (message: string) => void;
-    writableMmap?: boolean;
+    mmapMode?: NativeFuseMmapMode;
 };
 
 export type NativeFuseBrokerMountContext = {
@@ -132,7 +134,9 @@ export class NativeFuseSessionBroker {
         let mappedWriteDrain: NativeFuseMappedWriteDrain | undefined;
         try {
             await this.startMount(context);
-            if (options.writableMmap) {
+            // Policy mode can grant cached handles after the worker starts. Retain the frontend
+            // before launch even when no mmap grant is known yet.
+            if (options.mmapMode === "policy") {
                 mappedWriteDrain = await NativeFuseMappedWriteDrain.open(context.mountpoint, options.policyView);
             }
             result = await run({
@@ -507,7 +511,7 @@ export class NativeFuseSessionBroker {
             context.agentPolicyState.snapshotPath,
             context.statsPath,
             socketPath,
-            context.options.writableMmap ? "mmap" : "direct",
+            context.options.mmapMode ?? "direct",
         ];
         if (fields.some((field) => /[\t\r\n]/.test(field))) {
             throw new Error("Native FUSE broker command contains an invalid separator");

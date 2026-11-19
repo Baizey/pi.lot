@@ -98,7 +98,6 @@ const TCP_GATEWAY_MARK = "0x50490006";
 export type NetworkRunOptions = {
   command: string[];
   cwd: string;
-  expectedCwd?: string;
   mediatedHostRoot?: string;
   env?: NodeJS.ProcessEnv;
   dnsUpstream?: {address: string; port: number};
@@ -205,14 +204,9 @@ class NetworkSandboxRunner {
       realpath(this.options.cwd),
       realpath(this.options.mediatedHostRoot ?? "/"),
     ]);
-    this.assertExpectedCwd(cwd);
     try {
       await this.prepareRuntimeFiles();
       if (this.fatalError) throw this.fatalError;
-      if (this.options.expectedCwd !== undefined) {
-        this.assertExpectedCwd(await realpath(cwd));
-        this.options.signal?.throwIfAborted();
-      }
       this.startOuterProcess(cwd, mediatedHostRoot);
       this.installCancellation();
       const status = await this.waitForBubblewrapStatus();
@@ -314,12 +308,6 @@ class NetworkSandboxRunner {
       this.dnsProxy.start(),
       this.tcpBroker.start(),
     ]);
-  }
-
-  private assertExpectedCwd(cwd: string): void {
-    if (this.options.expectedCwd !== undefined && cwd !== this.options.expectedCwd) {
-      throw new Error("The Bash starting directory no longer matches the approved directory.");
-    }
   }
 
   private startOuterProcess(cwd: string, mediatedHostRoot: string): void {

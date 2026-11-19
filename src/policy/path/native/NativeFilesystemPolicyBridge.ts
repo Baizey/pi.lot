@@ -5,7 +5,7 @@ import {
     decodeNativeFilesystemPolicyMiss,
     encodeNativeFilesystemOnceSnapshotMessage,
     encodeNativeFilesystemResolutionMessage,
-    NativeFilesystemAccess,
+    nativeFilesystemPolicyAccess,
     NativeFilesystemDecision,
     NativeFilesystemRequestMessage,
 } from "./NativeFilesystemPolicyProtocol.js";
@@ -168,9 +168,7 @@ export class NativeFilesystemPolicyBridge {
                     + `is ahead of JavaScript revision ${onceSnapshot.revision}`,
                 );
             }
-            const accessType = miss.access === NativeFilesystemAccess.READ
-                ? PolicyAccessType.FS_READ
-                : PolicyAccessType.FS_WRITE;
+            const accessType = nativeFilesystemPolicyAccess(miss.access);
             const evaluation = await this.evaluateUntilAborted(miss.path, accessType);
             if (evaluation) {
                 evaluatedState = evaluation;
@@ -197,9 +195,7 @@ export class NativeFilesystemPolicyBridge {
     }
 
     private reportKnownDenial(event: ReturnType<typeof decodeNativeFilesystemPolicyMiss>): void {
-        const accessType = event.access === NativeFilesystemAccess.READ
-            ? PolicyAccessType.FS_READ
-            : PolicyAccessType.FS_WRITE;
+        const accessType = nativeFilesystemPolicyAccess(event.access);
         const onceSnapshot = this.view.onceSnapshot();
         if (event.baseRevision === BigInt(this.view.baseRevision)
             && event.onceRevision === BigInt(onceSnapshot.revision)) {

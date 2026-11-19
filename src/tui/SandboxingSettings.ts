@@ -1,11 +1,7 @@
 import {DynamicBorder, getSettingsListTheme, type Theme} from "@earendil-works/pi-coding-agent";
 import {Container, SettingsList, Text, type SettingItem} from "@earendil-works/pi-tui";
-import {PolicyArea} from "../policy/types.js";
-import {policyFallbackChoice} from "./policyFallbackChoice.js";
 import type {PilotSessionRuntimeInterface} from "../runtime/PilotSessionRuntime.js";
 import {truncateToWidth} from "./terminalText.js";
-
-export type SandboxingSetting = "network-inspection" | "mmap";
 
 /** Uses the same switch list as Pi's /settings; changes apply immediately. */
 export class SandboxingSettings extends Container {
@@ -15,7 +11,7 @@ export class SandboxingSettings extends Container {
     constructor(
         runtime: PilotSessionRuntimeInterface,
         theme: Theme,
-        onChange: (setting: SandboxingSetting, value: string) => void,
+        onChange: (enabled: boolean) => void,
         onClose: () => void,
         private readonly requestRender: () => void,
     ) {
@@ -28,16 +24,9 @@ export class SandboxingSettings extends Container {
                 currentValue: runtime.fullNetworkInspection ? "on" : "off",
                 values: ["on", "off"],
             },
-            {
-                id: "mmap",
-                label: "Writable mmap requests",
-                description: "Fallback for explicit Bash requests. Mapped writes cannot be individually revoked. Save via /policy-defaults.",
-                currentValue: runtime.policyRuntime.defaultResponses[PolicyArea.fs_mmap],
-                submenu: policyFallbackChoice,
-            },
         ];
         this.settings = new SettingsList(items, items.length, getSettingsListTheme(), (id, value) => {
-            if (id === "network-inspection" || id === "mmap") onChange(id, value);
+            if (id === "network-inspection") onChange(value === "on");
             this.requestRender();
         }, onClose);
         this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));

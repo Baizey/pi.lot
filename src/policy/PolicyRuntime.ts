@@ -15,8 +15,9 @@ import {
 } from "./AgentPolicyDecisionFlow.js";
 import type {PolicyChoice, QueuedPolicyApproval} from "./PolicyDecisionFlow.js";
 import {PolicyEngine} from "./PolicyEngine";
-import {policyScopeCovers, policyScopeHierarchy, resolveUri, UNIVERSAL_MMAP_POLICY_PATTERN} from "./PolicyScope.js";
+import {policyScopeCovers, policyScopeHierarchy, resolveUri} from "./PolicyScope.js";
 import {
+    isFilesystemAccess,
     isPersistedLifetime,
     type Policy,
     PolicyAccessType,
@@ -779,8 +780,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         sourceScope: string,
     ): string[] {
         const hierarchy = policyScopeHierarchy(uri, accessType, MAX_AGENT_POLICY_SCOPES);
-        const universal = sourceScope === UNIVERSAL_NETWORK_POLICY_PATTERN
-            || (accessType === PolicyAccessType.FS_MMAP && sourceScope === UNIVERSAL_MMAP_POLICY_PATTERN);
+        const universal = sourceScope === UNIVERSAL_NETWORK_POLICY_PATTERN;
         if (!universal && !hierarchy.includes(sourceScope)) {
             hierarchy.push(sourceScope);
         }
@@ -1143,7 +1143,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
             return result;
         }
-        if (accessType === PolicyAccessType.FS_MMAP && (choice.accessType !== accessType || choice.uri !== uri
+        if (accessType === PolicyAccessType.FS_MMAP && (choice.accessType !== accessType || !policyScopeHierarchy(uri, accessType).includes(choice.uri)
             || (choice.lifetime !== PolicyLifetime.ONCE && choice.lifetime !== PolicyLifetime.SESSION
                 && choice.lifetime !== PolicyLifetime.LOCAL))) {
             const result = failedClosedResult(uri, accessType, "Invalid writable mmap approval scope or lifetime.");
@@ -1241,7 +1241,7 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
         const accessTypes = policyAreaAccessTypes(area);
         const pattern = fallbackScope(accessTypes[0]!);
         const status = policyStatus(response);
-        const affectsFilesystem = area === PolicyArea.fs_read || area === PolicyArea.fs_write;
+        const affectsFilesystem = accessTypes.some(isFilesystemAccess);
         if (!status) {
             this.rootFallbackPolicies.removePolicies([{uri: pattern, accessTypes: [...accessTypes]}]);
             if (affectsFilesystem) {
@@ -1272,7 +1272,7 @@ function filesystemPolicies(policies: Policy[]): Policy[] {
             pattern: policy.pattern,
             info: Object.fromEntries(
                 Object.entries(policy.info).filter(([accessType]) => (
-                    accessType === PolicyAccessType.FS_READ || accessType === PolicyAccessType.FS_WRITE
+                    isFilesystemAccess(accessType)
                 )),
             ),
         }))
@@ -1406,8 +1406,7 @@ function initialFallbackRevisions(): Record<PolicyArea, number> {
 }
 
 function fallbackScope(accessType: PolicyAccessType): string {
-    if (accessType === PolicyAccessType.FS_MMAP) return UNIVERSAL_MMAP_POLICY_PATTERN;
-    return accessType === PolicyAccessType.FS_READ || accessType === PolicyAccessType.FS_WRITE
+    return isFilesystemAccess(accessType)
         ? "/"
         : UNIVERSAL_NETWORK_POLICY_PATTERN;
 }

@@ -16,7 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {initTheme, SessionManager} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
-import type {NativeFuseBrokerMountContext, NativeFuseBrokerMountOptions} from "../src/policy/path/native/NativeFuseSessionBroker.js";
+import type {NativeFuseBrokerMountOptions} from "../src/policy/path/native/NativeFuseSessionBroker.js";
 import {ServerService} from "../src/server/ServerService.js";
 import {ServerConfigStore} from "../src/server/ServerConfig.js";
 import {ArchiveBackground} from "../src/server/ArchiveBackground.js";
@@ -628,7 +628,7 @@ test("the same extension instance resets owned shutdown and server lifecycle for
     assert.deepEqual(files, ["/first.jsonl", "/second.jsonl"]);
 });
 
-test("Bash gates explicit writable mmap requests before launching and uses direct I/O for ordinary calls", async () => {
+test("Bash delegates mmap to the native filesystem policy mount without a tool argument", async () => {
     const harness = extensionHarness();
     const ctx = {
         cwd: process.cwd(),
@@ -638,8 +638,7 @@ test("Bash gates explicit writable mmap requests before launching and uses direc
         sessionManager: archiveSessionManager(),
     } as unknown as ExtensionCommandContext;
     const sentinel = new Error("native broker routing sentinel");
-    const mountModes: Array<boolean | undefined> = [];
-    let brokerCwd: string | undefined;
+    const mountModes: Array<NativeFuseBrokerMountOptions["mmapMode"]> = [];
     let brokerCalls = 0;
     let viewClosed = false;
     let capturedToolCall: unknown;
@@ -658,14 +657,12 @@ test("Bash gates explicit writable mmap requests before launching and uses direc
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
                 nativeFuseSessionBroker: {
-                    async withFilesystem<T>(options: NativeFuseBrokerMountOptions,
-                        run: (context: NativeFuseBrokerMountContext) => Promise<T>): Promise<T> {
+                    async withFilesystem(options: NativeFuseBrokerMountOptions): Promise<never> {
                         brokerCalls++;
-                        mountModes.push(options.writableMmap);
+                        mountModes.push(options.mmapMode);
                         options.policyView.onClosed(() => {
                             viewClosed = true;
                         });
-                        if (brokerCwd) return run({cwd: brokerCwd, mediatedHostRoot: "/", signal: new AbortController().signal});
                         throw sentinel;
                     },
                 },
@@ -699,22 +696,8 @@ test("Bash gates explicit writable mmap requests before launching and uses direc
         });
         assert.equal(brokerCalls, 1);
         assert.equal(viewClosed, true);
-        const sandboxing = harness.registeredCommands.get("sandboxing")!;
-        const params = {command: "true", purpose: "Verify writable mmap admission"};
-        const bash = registeredTool(harness, "bash");
-        await sandboxing.handler("mmap deny", ctx);
-        await assert.rejects(bash.execute("denied", {...params, writableMmap: true}, undefined, undefined, ctx), /FS_MMAP/);
-        assert.deepEqual(mountModes, [false]);
-        await sandboxing.handler("mmap allow", ctx);
-        await assert.rejects(bash.execute("approved", {...params, writableMmap: true}, undefined, undefined, ctx), sentinel);
-        await assert.rejects(bash.execute("ordinary", params, undefined, undefined, ctx), sentinel);
-        const cancelled = new AbortController();
-        cancelled.abort();
-        await assert.rejects(bash.execute("aborted", {...params, writableMmap: true}, cancelled.signal, undefined, ctx), /abort/i);
-        assert.deepEqual(mountModes, [false, true, false]);
-        brokerCwd = path.dirname(ctx.cwd);
-        await assert.rejects(bash.execute("different-cwd", {...params, writableMmap: true}, undefined, undefined, ctx),
-            /starting directory no longer matches the approved directory/);
+        assert.equal(registeredTool(harness, "bash").parameters.properties.writableMmap, undefined);
+        assert.deepEqual(mountModes, ["policy"]);
     } finally {
         await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     }
@@ -1233,7 +1216,6 @@ test("one session runtime owns the production tool overrides until session shutd
                 policyRuntime: policy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
-                writableMmap: false,
                 setWritableMmap() {},
                 async start() {
                     runtimeStarts++;

@@ -22,16 +22,16 @@ Every Bash call includes a short purpose. Bash commands start in Pi's current wo
 The Bash worker sees the host filesystem through a FUSE policy mount. Operations are evaluated as:
 
 - filesystem read;
-- filesystem write; or
-- delete, which is governed by filesystem-write policy.
+- filesystem write (including delete); or
+- writable mapping eligibility, governed by the separate `fs_mmap` path policy.
 
 Multi-path operations such as rename can require approval for both paths. Direct `read`, `edit`, and `write` tool calls use the same policy runtime without launching the Bash worker.
 
 Each Bash call has its own mount and once-only grants. Opens and native I/O callbacks check live policy and fail closed when policy control state is invalid or unavailable. Read-only opens support cached reads and read-only shared `mmap`; policy changes do **not** revoke already-cached or mapped data. By default, writable descriptors use direct I/O and do not support shared mappings.
 
-Opt-in writable-mmap compatibility uses **cached write-through I/O**, not FUSE writeback-cache, passthrough, or the direct-I/O mmap capability. In this mode, `O_RDWR` open/create requires both READ and WRITE authorization **before the backing open**, including destructive `O_TRUNC` opens. Ordinary backing READ/WRITE and handle-truncate callbacks retain live-policy and pathname/device/inode checks; cached reads and memory stores do not run those callbacks per access. Mapped stores cannot be individually approved or revoked. A later denial, pathname replacement/unlink, cancellation, or control-channel failure can reject delayed writeback and lose dirty changes; errors may surface later rather than at the store.
+Rust FUSE automatically evaluates `fs_mmap` for the target path at mapping-capable `O_RDWR` opens and creates, not when the application actually calls `mmap`. An allow selects **cached write-through I/O** for that handle, not FUSE writeback-cache, passthrough, or the direct-I/O mmap capability. The cached open/create still requires separate `FS_READ` and `FS_WRITE` authorization **before the backing open**, including `O_TRUNC` when that flag reaches the open callback. A separate kernel truncate remains an ordinary `FS_WRITE` operation. Denying mapping mode normally leaves the handle on the direct-I/O path, subject to ordinary filesystem checks; it does not by itself deny the open or fail the Bash call. Ordinary backing READ/WRITE and handle-truncate callbacks retain live-policy and pathname/device/inode checks; cached reads and memory stores do not run those callbacks per access. Mapped stores cannot be individually approved or revoked. A later denial, pathname replacement/unlink, cancellation, or control-channel failure can reject delayed writeback and lose dirty changes; errors may surface later rather than at the store.
 
-For mmap-enabled calls, both the session broker and standalone runner retain a frontend mount descriptor from before worker startup. On normal completion, after the worker tree stops and **before policy-bridge teardown**, they run frontend `syncfs` to drain mapped writes and observe writeback errors, even after application descriptors have closed. This has a separate **30-second approval-aware execution budget**. Drain failures are propagated, or aggregated with run/cleanup failures, not reported as successful completion. It is not a backing-storage durability guarantee or lossless shutdown: cancellation, forced teardown, revocation, daemon/control loss, and timeout can still lose dirty data.
+To drain mapped writes, both the session broker and standalone runner retain a frontend mount descriptor from before worker startup. On normal completion, after the worker tree stops and **before policy-bridge teardown**, they run frontend `syncfs` to drain mapped writes and observe writeback errors, even after application descriptors have closed. This has a separate **30-second approval-aware execution budget**. Drain failures are propagated, or aggregated with run/cleanup failures, not reported as successful completion. It is not a backing-storage durability guarantee or lossless shutdown: cancellation, forced teardown, revocation, daemon/control loss, and timeout can still lose dirty data.
 
 Do not concurrently access shared host databases through Bash mounts: backing-file locks do not coordinate with host processes or other calls, even with rollback journaling. Use isolated disposable copies with a single writer. Replaced or unlinked file handles can fail closed rather than retain normal POSIX behavior. A denied page-cache fill may report `EIO`; consult the policy-denial output rather than assuming a disk failure. See [filesystem limitations](security.md#known-limitations) for cache, metadata, alias, and pathname-race boundaries.
 
@@ -41,17 +41,11 @@ Do not concurrently access shared host databases through Bash mounts: backing-fi
 /sandboxing
 /sandboxing network-inspection on
 /sandboxing network-inspection off
-/sandboxing mmap allow
-/sandboxing mmap deny
-/sandboxing mmap ask_user
-/sandboxing mmap ask_llm
 ```
 
 Bare `/sandboxing` opens terminal settings or reports values in other modes. Changes apply to new Bash calls, including subagents; running calls and mappings are unchanged. Network inspection defaults **on** and is session-only.
 
-Bash uses direct I/O for writable handles unless a call explicitly sets `writableMmap: true` and its `fs_mmap` request is approved before launch. An unmatched request defaults to **ask_user**; `/sandboxing mmap` changes the same fallback as `/policy-defaults <mode> fs_mmap`, and `/policy-defaults save` persists it. User approval can be once, for the session, or local to this computer. Remembered rules match the exact canonical starting directory, not child directories and not the paths that can be mapped. A denial stops the requested call before launch. There is no command guessing or automatic retry.
-
-Approval selects cached write-through for the entire call, not new filesystem permissions. Ordinary open/backing-I/O checks still apply; cached reads and memory stores are not individually revocable. See [HTTPS inspection](#https-inspection), [filesystem mediation](#filesystem-mediation), and the [mmap engineering reference](transparent-mmap-feasibility.md).
+Writable mapping is separate from this switch. There is no `/sandboxing mmap` subcommand or Bash `writableMmap` argument. Set the unmatched-path fallback with `/policy-defaults <mode> fs_mmap` (built-in **ask_user**) and persist it with `/policy-defaults save`. See [filesystem mediation](#filesystem-mediation) and the [mmap engineering reference](transparent-mmap-feasibility.md).
 
 ## Network mediation
 
@@ -138,7 +132,7 @@ Root-only `archive_list` and `archive_fetch` check each actual URL and method wi
 | --- | --- | --- |
 | `fs_read` | Filesystem reads | `allow` |
 | `fs_write` | Filesystem writes and deletes | `ask_user` |
-| `fs_mmap` | Explicit per-call Bash writable mmap requests | `ask_user` |
+| `fs_mmap` | Writable mapping eligibility by path at mapping-capable FUSE opens and creates | `ask_user` |
 | `web_read` | HTTP access and GET | `allow` |
 | `web_write` | POST, PUT, PATCH, DELETE, HEAD, OPTIONS | `ask_user` |
 | `web_dns` | DNS | `ask_user` |
@@ -178,6 +172,7 @@ Change one area or every area directly:
 ```text
 /policy-defaults allow fs_read
 /policy-defaults ask_user fs_write
+/policy-defaults ask_user fs_mmap
 /policy-defaults ask_llm web_read
 /policy-defaults deny web_tcp
 /policy-defaults ask_user all
@@ -196,7 +191,7 @@ Changes affect this session until saved to `~/.pilot/policy-defaults.json`. `res
 
 An interactive policy miss asks for:
 
-1. a path, network scope, or exact Bash starting directory for mmap;
+1. a filesystem path scope or network scope;
 2. allow or deny;
 3. a lifetime; and
 4. an optional reason when denying.
@@ -208,6 +203,8 @@ Lifetimes are:
 - **Once** — the current tool call;
 - **This session** — the active root Pi session; and
 - **Always on this computer** — persisted locally.
+
+`fs_mmap` approvals scope the target path, not the Bash starting directory. Legacy remembered working-directory grants do not authorize mapping any path under the new policy.
 
 Network prompts also expose **Always synchronized** (`GLOBAL`). These decisions persist in the same local database and are eligible for [explicitly configured pi.server synchronization](server.md#saved-configuration-sync). Without a capable configured server and a manual sync or device opt-in, they remain local. Only GLOBAL rules synchronize; LOCAL, session, and once-only grants do not. Imported rules never overwrite a non-GLOBAL collision.
 

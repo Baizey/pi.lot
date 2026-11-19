@@ -164,15 +164,11 @@ Bare `/policy-defaults`, `/subagent-defaults`, `/display`, `/sandboxing`, and `/
 ```text
 /sandboxing network-inspection on
 /sandboxing network-inspection off
-/sandboxing mmap allow
-/sandboxing mmap deny
-/sandboxing mmap ask_user
-/sandboxing mmap ask_llm
 ```
 
-Inspection defaults **on** and resets with each session. Writable mmap requests use the normal `fs_mmap` policy, default **ask_user**. Use `/policy-defaults save` to persist the fallback or remember an approval for the exact starting directory. Neither setting changes calls that already started.
+Inspection defaults **on** and resets with each session. Turning it off for new Bash calls keeps HTTPS end-to-end and applies transport-only policy to opaque traffic; recognized plaintext protocols still receive policy checks. See [HTTPS inspection](policy.md#https-inspection).
 
-Turning network inspection off keeps HTTPS end-to-end and applies transport-only policy to opaque traffic; recognized plaintext protocols still receive policy checks. An approved Bash call with `writableMmap: true` uses cached write-through I/O for compatibility with tools such as the Go linker. Opens and backing I/O remain policy-checked, but individual memory stores are not checked or revocable. Cancellation or revocation can lose dirty changes, and writeback errors may surface late. Host/cross-call SQLite WAL remains unsupported. Calls without an mmap request use direct I/O for writable handles. See [filesystem limitations](security.md) and [HTTPS inspection](policy.md#https-inspection).
+Writable mapping is a separate path policy, not a sandbox switch. Rust FUSE checks `fs_mmap` when a file is opened or created with mapping-capable `O_RDWR`, even if the application never calls `mmap`. Set the fallback (built-in **ask_user**) with `/policy-defaults <mode> fs_mmap` and save it with `/policy-defaults save`. An allow enables cached write-through for the handle with separate filesystem read and write authorization; a mapping denial normally leaves direct I/O. Cached write-through supports workloads such as the Go linker but does not check or revoke individual memory stores. See [filesystem mediation](policy.md#filesystem-mediation) and [security limitations](security.md#known-limitations).
 
 Continue with:
 
@@ -216,7 +212,7 @@ Use a terminal on a prepared Linux host, **outside pi.lot's Bash sandbox or any 
 
 Native regression tests additionally require Python 3 for byte-preserving exec, seccomp, and deterministic subreaper launchers, plus a C compiler for ABI/syscall fixtures. The normal Rust helper build/runtime does not depend on Python.
 
-The canonical runner includes `test/native-fuse-mmap-drain.test.ts` in its **mount-free** contracts and `test/native-fuse-mmap.test.ts` in its **host** contracts. The latter exercises per-call mmap switching and mapped-write draining, with and without the session broker. Its Go linker cases skip when Go is absent; install Go to exercise them. Such skips are not evidence that those integrations passed.
+The canonical runner includes `test/native-fuse-mmap-drain.test.ts` in its **mount-free** contracts and `test/native-fuse-mmap.test.ts` in its **host** contracts. The latter exercises writable mapping behavior and mapped-write draining, with and without the session broker. Its Go linker cases skip when Go is absent; install Go to exercise them. Such skips are not evidence that those integrations passed.
 
 Two mount-free INIT negotiation cases additionally need libfuse built with `-Denable-custom-io=true`. Distribution builds without it skip those cases on `-ENOTSUP`; other probe errors still fail. This optional transport is not required for production mounts. Use a matching custom-I/O-enabled SDK/runtime to run them without skips.
 

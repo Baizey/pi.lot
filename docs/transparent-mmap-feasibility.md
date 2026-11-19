@@ -1,21 +1,21 @@
 # Transparent host-backed mmap: compatibility and design investigation
 
-Developer reference restored from the `b1a4d28` investigation and updated for implementation `cbe347c`. **Opt-in writable shared mmap compatibility and a frontend completion drain are now implemented. Transparent concurrent host-shared mappings are not established.** The historical research and alternative proposals below are not the current runtime contract or claims that every proposed test has passed.
+Developer reference restored from the `b1a4d28` investigation and updated for implementation `cbe347c`. **Path-policy-gated writable shared mmap and a frontend completion drain are implemented. Transparent concurrent host-shared mappings are not established.** The historical research and alternative proposals below are not the current runtime contract or claims that every proposed test has passed.
 
 The goal remains transparent host-file access, not scratch copies, automatic copy-out, or an unmediated writable bind. FUSE cannot authorize each mapping or memory store. See [policy](policy.md#filesystem-mediation) and [security](security.md#known-limitations) for supported behavior, [installation](installation.md) for prerequisites, and the [documentation index](README.md) for related guides.
 
 ## Current implementation
 
-### Session switch and I/O route
+### Path policy and I/O route
 
-- Bash defaults to direct I/O for writable handles. A call with `writableMmap: true` first requests `fs_mmap`; the built-in fallback is `ask_user`. This is independent of the session-only network inspection setting. See [sandboxing settings](policy.md#session-sandboxing-settings).
-- `native/rust/src/fuse/callbacks.rs`: read-only handles use cached I/O. Writable handles use direct I/O by default; mmap-enabled calls instead use **cached write-through**. Mapping-capable `O_RDWR` open/create requires READ+WRITE authorization **before the backing open**, including destructive `O_TRUNC` opens. This also covers initially read-only mappings later made writable with `mprotect` without pretending to authorize that transition individually.
+- `fs_mmap` is a path policy alongside `fs_read` and `fs_write`, with a built-in `ask_user` fallback. Configure it via `/policy-defaults <mode> fs_mmap`, independently of network inspection. Legacy working-directory grants do not carry over as path grants.
+- Rust FUSE checks the policy on mapping-capable `O_RDWR` opens and creates, not on actual `mmap` or `mprotect` syscalls. A mapping allow selects **cached write-through** for that handle with separate `FS_READ` and `FS_WRITE` authorization **before the backing open**, including destructive `O_TRUNC` opens. A mapping denial normally leaves direct I/O under ordinary path checks. Read-only handles still use cached I/O.
 - Backing READ/WRITE and handle-truncate callbacks still consult live policy and verify the retained descriptor against the authorized pathname/device/inode. Cached reads and memory stores bypass per-access callbacks: mapped stores are not individually checked or revocable. Denied writeback can lose previously dirtied changes and errors may be delayed. Flush remains a no-op; application fsync/fdatasync callbacks operate on retained backing handles.
 - `native/rust/src/fuse/abi.rs`: INIT still disables `FUSE_CAP_DIRECT_IO_ALLOW_MMAP`, `FUSE_CAP_WRITEBACK_CACHE`, and `FUSE_CAP_PASSTHROUGH`. Writable mmap uses the cached route, not those capabilities. The operation table still has no backing `lock`/`flock` callbacks.
 
 ### Implemented normal-completion drain
 
-Both `src/policy/path/native/NativeFuseSessionBroker.ts` and `native-fuse-runner.ts` use `NativeFuseMappedWriteDrain.ts` for mmap-enabled calls. They retain a **frontend mount descriptor before worker startup**, then run `pi-fuse-native --syncfs` with that descriptor after the worker tree stops and **before policy-bridge teardown**. Retention lets frontend `syncfs` observe this mount's writeback errors even after application descriptors close; it does not reopen backing files by pathname. The Rust helper is in `native/rust/src/fuse/broker.rs`.
+Both `src/policy/path/native/NativeFuseSessionBroker.ts` and `native-fuse-runner.ts` use `NativeFuseMappedWriteDrain.ts` to drain mapped writes. They retain a **frontend mount descriptor before worker startup**, then run `pi-fuse-native --syncfs` with that descriptor after the worker tree stops and **before policy-bridge teardown**. Retention lets frontend `syncfs` observe this mount's writeback errors even after application descriptors close; it does not reopen backing files by pathname. The Rust helper is in `native/rust/src/fuse/broker.rs`.
 
 The drain has its own **30-second approval-aware execution budget**, separate from the command timeout. Policy approval waits pause that budget; arbitrary I/O waits do not. Normal completion retains policy control during the drain. Drain failures/timeouts propagate, and run/drain/cleanup errors are aggregated where applicable rather than silently returning success. A drain is also attempted on the run-error path, but already-cancelled policy control or concurrent shutdown can prevent it from preserving changes.
 
@@ -24,7 +24,7 @@ This is a **frontend writeback drain/error acknowledgement**, not a guarantee of
 ### Regression entry points (not a fresh test report)
 
 - `test/native-fuse-callbacks.test.ts`: cached write-through flags, READ authorization for `O_RDWR` before destructive opens/creates, and callback failure after controller EOF.
-- `test/native-fuse-mmap.test.ts`: per-call on/off behavior, unflushed closed-fd/forked mappings reaching the host on completion, and Go linker output, for brokered and standalone routes.
+- `test/native-fuse-mmap.test.ts`: writable mapping eligibility, unflushed closed-fd/forked mappings reaching the host on completion, and Go linker output, for brokered and standalone routes.
 - `test/native-fuse-mmap-drain.test.ts`: retained frontend descriptor/helper invocation, descriptor closure, repeated finish, and helper failure propagation.
 - `test/fixtures/native-fuse-init-probe.c`: capability intent/wire checks against system headers.
 
@@ -43,12 +43,12 @@ The original investigation predates the implemented cached compatibility route a
 
 ## Historical candidate routes
 
-This comparison records the alternatives considered. Only cached write-through is implemented for opt-in writable mmap; the direct-I/O mmap, writeback-cache, passthrough, and writable-bind alternatives are not enabled.
+This comparison records the alternatives considered. Only cached write-through is implemented for path-policy-approved writable mmap; the direct-I/O mmap, writeback-cache, passthrough, and writable-bind alternatives are not enabled.
 
 | Route | Benefit | Constraint |
 | --- | --- | --- |
 | Direct I/O plus shared mmap capability | Candidate for ordinary live syscall checks while permitting shared mappings. | Needs mapping authority, alternate-read analysis, host routing, and drain/error tests. Currently disabled. |
-| Cached write-through without writeback-cache | Now implemented for opt-in shared mmap; forwards ordinary writes through callbacks. | Cached reads bypass live READ callbacks; writable-descriptor caching broadens the default direct-I/O contract. Does not provide host-shared pages. |
+| Cached write-through without writeback-cache | Now implemented for path-policy-approved shared mmap; forwards ordinary writes through callbacks. | Cached reads bypass live READ callbacks; writable-descriptor caching broadens the default direct-I/O contract. Does not provide host-shared pages. |
 | Writeback-cache | Deferred writes may improve compatibility/performance. | Does not preserve the desired separation of live-checked ordinary writes and lifetime-authorized mapped writes. |
 | FUSE passthrough or writable host bind | Avoids portions of the FUSE path. | Ordinary host I/O may bypass the gate; not a silent compatibility fix. |
 
@@ -87,7 +87,7 @@ The original research matrix remains a validation checklist for broader claims a
 - `msync`/fsync, ENOSPC/EIO, descendants, cancellation, daemon death, draining, and repeated cleanup.
 - Backing POSIX/flock conflicts, owner lifetime, and same-call versus host/cross-call WAL with integrity checks.
 
-Do not advertise host-shared WAL, backing-lock coordination, lossless shutdown, or broader mmap guarantees based only on capability negotiation, callback mocks, or read-only mmap smoke tests. The implemented opt-in compatibility route and drain do not establish those properties.
+Do not advertise host-shared WAL, backing-lock coordination, lossless shutdown, or broader mmap guarantees based only on capability negotiation, callback mocks, or read-only mmap smoke tests. The implemented cached write-through route and drain do not establish those properties.
 
 ## References
 

@@ -47,7 +47,7 @@ Bare commands open their settings only in terminal TUI mode; outside TUI they re
 | `/display` | Normal/Alternate tool views. `/display conversation full` sets the pair. `save` persists; `reset` reloads saved views, or Compact/Preview if absent. |
 | `/role` | Select a saved working role for the current conversation, or `none` to clear it. Fresh conversations start with no role. |
 | `/persona` | Select a saved communication style for this conversation. `off` clears it; `save` saves the selection as this device’s default; `reset` reapplies that default. |
-| `/sandboxing` | Session network inspection and the fallback for writable mmap requests. Save the mmap default via `/policy-defaults save`. |
+| `/sandboxing` | Session network inspection. Writable mapping defaults are configured separately via `/policy-defaults <mode> fs_mmap`. |
 | `/server` | Connection, upload, configuration-sync and recovery actions. Opening the terminal menu sends nothing. **Check connection**, or bare `/server` outside TUI, reports the server URL and status without displaying the API key. |
 
 Policy, subagent, display and persona pickers also provide explicit **Save defaults** and **Reload saved defaults** actions. Saving is not automatic. `/server status` is not a text command; select **Check connection** from the menu.
@@ -67,22 +67,18 @@ Roles are reusable instructions for how to approach a task and what to deliver; 
 ```text
 /sandboxing network-inspection on
 /sandboxing network-inspection off
-/sandboxing mmap allow
-/sandboxing mmap deny
-/sandboxing mmap ask_user
-/sandboxing mmap ask_llm
 ```
 
-Network inspection defaults **on** and resets with the session. Writable mmap is requested per Bash call (`writableMmap: true`), with **ask_user** as the built-in fallback. An approval can be remembered locally for the exact starting directory. Ordinary Bash calls and already-running commands are unchanged.
+Network inspection defaults **on** and resets with the session.
 
 Inspection off preserves end-to-end HTTPS for clients incompatible with interception; it does **not** disable network sandboxing. Transport policy and recognized plaintext checks remain, while opaque traffic may receive transport-only forwarding.
 
-Writable mmap enables cached write-through compatibility for build/linker workloads. Opens and native backing I/O remain policy checked, but memory stores are not individually checked or revocable. Normal completion attempts a retained-frontend `syncfs` drain before teardown and reports helper failures. This is not lossless cancellation, transactional rollback, or stable-storage durability for every backing file. **Host/cross-call SQLite WAL and backing-file lock coordination remain unsupported.** See [filesystem mediation](policy.md#filesystem-mediation) and [security](security.md).
+Writable mapping is governed by `fs_mmap`, a path policy alongside `fs_read` and `fs_write` that defaults to **ask_user**. Rust FUSE checks it automatically at mapping-capable `O_RDWR` opens and creates, not at `mmap` syscalls. An allow enables cached write-through for the handle if read and write are separately authorized; a mapping denial normally leaves ordinary direct I/O. There is no Bash option or `/sandboxing` subcommand for mmap. Use `/policy-defaults <mode> fs_mmap` and `/policy-defaults save` to change and save the fallback. Memory stores are not individually checked or revocable. Normal completion attempts a retained-frontend `syncfs` drain before teardown and reports helper failures. This is not lossless cancellation, transactional rollback, or stable-storage durability for every backing file. **Host/cross-call SQLite WAL and backing-file lock coordination remain unsupported.** See [filesystem mediation](policy.md#filesystem-mediation) and [security](security.md).
 
 ## Tools and trust boundaries
 
 - `read`, `edit`, and `write` authorize direct file effects. Bash uses a per-call FUSE mount and private network namespaces. The working directory is a starting location, not a filesystem boundary.
-- Built-in fallbacks allow `fs_read` and `web_read`; writes and other network areas ask the user. Saved defaults and explicit rules may differ.
+- Built-in fallbacks allow `fs_read` and `web_read`; writes, writable mappings, and other network areas ask the user. Saved defaults and explicit rules may differ.
 - `subagent_spawn`, `subagent_status`, `subagent_message`, and `subagent_stop` manage retained child conversations. Policy-area capabilities copy authority rather than remove tools. Omitted areas can still request approval. Hard `mcp` and `delegate` capabilities control those mechanisms.
 - Pilot hosts Pi's native MCP implementation. Use `/mcp` to manage it. MCP server effects are outside Pilot filesystem/network mediation; children require the hard `mcp` grant.
 - `web_search` performs ordered provider fallback with policy checks. Denial stops fallback. Snippets and provider answers are untrusted evidence, not instructions.

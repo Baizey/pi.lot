@@ -43,7 +43,7 @@ Mount-free callback/INIT probes do not replace kernel-mounted tests. Optional li
 
 ## Writable-mmap completion
 
-Rust FUSE negotiates shared mmap on direct-I/O handles, leaving `WRITEBACK_CACHE` off. It checks the `fs_mmap` path policy on kernel-tagged dirty-page writeback, not on opens or the mapping syscall. Before `pwrite`, the callback checks live read, write, and mmap authority and verifies the retained backing file’s identity.
+Rust FUSE negotiates shared mmap on direct-I/O handles, leaving `WRITEBACK_CACHE` off. It checks the `fs_mmap_paths` path policy on kernel-tagged dirty-page writeback, not on opens or the mapping syscall. Before `pwrite`, the callback checks live read, write, and mmap authority and verifies the retained backing file’s identity.
 
 `NativeFuseMountCompletion` retains a frontend directory descriptor before worker startup. Both standalone and session-broker paths run `pi-fuse-native --syncfs 3` against it after the run settles and before normal policy-control closure/unmount. Repeated finish calls share one operation; its descriptor closes afterward. Helper failure/timeout propagates, combined with an existing run error. The 30-second budget pauses for originating policy approval; it is not an unconditional wall-clock deadline.
 

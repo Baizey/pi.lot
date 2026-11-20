@@ -8,7 +8,7 @@ export type ResponseDefaults = Record<PolicyArea, PolicyFallbackResponse>
 export const initialPolicyDefaults: Readonly<ResponseDefaults> = {
     fs_read: PolicyFallbackResponse.allow,
     fs_write: PolicyFallbackResponse.ask_user,
-    fs_mmap: PolicyFallbackResponse.ask_user,
+    fs_mmap_paths: PolicyFallbackResponse.ask_user,
     web_read: PolicyFallbackResponse.allow,
     web_write: PolicyFallbackResponse.ask_user,
     web_dns: PolicyFallbackResponse.ask_user,
@@ -37,7 +37,7 @@ export const initialPolicyDefaults: Readonly<ResponseDefaults> = {
 
 /** Only these additive fields may be absent in older saved/config-sync snapshots. */
 export const ADDITIVE_POLICY_AREAS: readonly PolicyArea[] = Object.freeze([
-    PolicyArea.fs_mmap,
+    PolicyArea.fs_mmap_paths,
     PolicyArea.web_adb,
     PolicyArea.web_postgres,
     PolicyArea.web_mysql,
@@ -55,9 +55,6 @@ export const ADDITIVE_POLICY_AREAS: readonly PolicyArea[] = Object.freeze([
     PolicyArea.web_pop3,
 ]);
 
-type SavedPolicyDefaults = Omit<ResponseDefaults, "fs_mmap"> & {fs_mmap_paths?: PolicyFallbackResponse};
-const mmapPathsKey = "fs_mmap_paths";
-
 export function parsePolicyDefaults(value: unknown): ResponseDefaults {
     const row = policyDefaultsRecord(value);
     if (Object.keys(row).some((key) => !POLICY_AREAS.some((area) => area === key))) {
@@ -72,19 +69,6 @@ export function parsePolicyDefaults(value: unknown): ResponseDefaults {
         defaults[area] = response;
     }
     return defaults;
-}
-
-/** The old saved key described explicit Bash requests, not path authority. */
-export function parseSavedPolicyDefaults(value: unknown): ResponseDefaults {
-    const row = policyDefaultsRecord(value);
-    const hasLegacy = Object.hasOwn(row, PolicyArea.fs_mmap);
-    const hasPathDefault = Object.hasOwn(row, mmapPathsKey);
-    if (hasLegacy && hasPathDefault) throw new Error("Conflicting policy default areas for mmap.");
-    if (hasLegacy && !isFallbackResponse(row[PolicyArea.fs_mmap])) {
-        throw new Error("Missing or invalid policy default response.");
-    }
-    const {[PolicyArea.fs_mmap]: _legacy, [mmapPathsKey]: pathDefault, ...rest} = row;
-    return parsePolicyDefaults(hasPathDefault ? {...rest, [PolicyArea.fs_mmap]: pathDefault} : rest);
 }
 
 function policyDefaultsRecord(value: unknown): Record<string, unknown> {
@@ -105,7 +89,7 @@ export interface PolicyDefaultJsonStorageInterface {
 
 export class PolicyDefaultJsonStorage implements PolicyDefaultJsonStorageInterface {
     readonly file: string;
-    private readonly defaultsFile: JsonDefaultsFile<ResponseDefaults | SavedPolicyDefaults>;
+    private readonly defaultsFile: JsonDefaultsFile<ResponseDefaults>;
 
     constructor(
         filename: string = "policy-defaults",
@@ -117,19 +101,16 @@ export class PolicyDefaultJsonStorage implements PolicyDefaultJsonStorageInterfa
         this.defaultsFile = new JsonDefaultsFile(
             this.file,
             "policy defaults",
-            parseSavedPolicyDefaults,
+            parsePolicyDefaults,
             () => initialPolicyDefaults,
         );
     }
 
     load(): ResponseDefaults {
-        // Both read callbacks return runtime defaults; the union also permits the saved write shape.
-        return this.defaultsFile.load() as ResponseDefaults;
+        return this.defaultsFile.load();
     }
 
     save(defaults: ResponseDefaults): void {
-        const {fs_mmap, ...saved} = parsePolicyDefaults(defaults);
-        // Omitting the built-in fallback keeps ordinary saves readable by older peers.
-        this.defaultsFile.save(fs_mmap === initialPolicyDefaults.fs_mmap ? saved : {...saved, fs_mmap_paths: fs_mmap});
+        this.defaultsFile.save(parsePolicyDefaults(defaults));
     }
 }

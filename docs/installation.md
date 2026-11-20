@@ -168,7 +168,7 @@ Bare `/policy-defaults`, `/subagent-defaults`, `/display`, `/sandboxing`, and `/
 
 Inspection defaults **on** and resets with each session. Turning it off for new Bash calls keeps HTTPS end-to-end and applies transport-only policy to opaque traffic; recognized plaintext protocols still receive policy checks. See [HTTPS inspection](policy.md#https-inspection).
 
-Mapped writeback is governed by a separate path policy, not a sandbox switch. Pilot checks `fs_mmap` when dirty pages from a shared mapping are written back, not at `open()` or `mmap()`. It requires a kernel that negotiates FUSE direct-I/O shared mmap (introduced in Linux 6.6; use a current kernel for writable mapping support). Unavailable support leaves shared writable mmap unavailable, not cached by default. Set the fallback (built-in **ask_user**) with `/policy-defaults <mode> fs_mmap`; `/policy-defaults save` persists it. See [filesystem mediation](policy.md#filesystem-mediation) and [security limitations](security.md#known-limitations).
+Mapped writeback is governed by a separate path policy, not a sandbox switch. Pilot checks `fs_mmap_paths` when dirty pages from a shared mapping are written back, not at `open()` or `mmap()`. It requires a kernel that negotiates FUSE direct-I/O shared mmap (introduced in Linux 6.6; use a current kernel for writable mapping support). Unavailable support leaves shared writable mmap unavailable, not cached by default. Set the fallback (built-in **ask_user**) with `/policy-defaults <mode> fs_mmap_paths`; `/policy-defaults save` persists it. See [filesystem mediation](policy.md#filesystem-mediation) and [security limitations](security.md#known-limitations).
 
 Continue with:
 

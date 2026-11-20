@@ -23,13 +23,13 @@ The Bash worker sees the host filesystem through a FUSE policy mount. Operations
 
 - filesystem read;
 - filesystem write (including delete); or
-- writeback of dirty shared mappings, governed by the separate `fs_mmap` path policy.
+- writeback of dirty shared mappings, governed by the separate `fs_mmap_paths` path policy.
 
 Multi-path operations such as rename can require approval for both paths. Direct `read`, `edit`, and `write` tool calls use the same policy runtime without launching the Bash worker.
 
 Each Bash call has its own mount and once-only grants. Opens and native I/O callbacks check live policy and fail closed when policy control state is invalid or unavailable. Read-only opens support cached reads and read-only shared `mmap`; policy changes do **not** revoke already-cached or mapped data. By default, writable descriptors use direct I/O and do not support shared mappings.
 
-Ordinary writable opens and I/O use direct I/O without checking `fs_mmap`. On kernels that support FUSE shared mappings on direct-I/O handles, Pilot checks `fs_mmap` only when the kernel sends dirty mapped pages for writeback. Before writing those bytes to the backing file, Pilot requires live `FS_READ`, `FS_WRITE`, and `FS_MMAP` authority and validates the retained file identity. Ordinary writes and truncation still use `FS_WRITE`, including `O_TRUNC`. Neither `mmap()` itself nor individual memory stores go through the policy flow. A denial leaves the backing bytes untouched by that writeback, but may surface later at flush, sync, or Bash completion. Cached reads are not individually checked or revocable.
+Ordinary writable opens and I/O use direct I/O without checking `fs_mmap_paths`. On kernels that support FUSE shared mappings on direct-I/O handles, Pilot checks `fs_mmap_paths` only when the kernel sends dirty mapped pages for writeback. Before writing those bytes to the backing file, Pilot requires live `FS_READ`, `FS_WRITE`, and `FS_MMAP` authority and validates the retained file identity. Ordinary writes and truncation still use `FS_WRITE`, including `O_TRUNC`. Neither `mmap()` itself nor individual memory stores go through the policy flow. A denial leaves the backing bytes untouched by that writeback, but may surface later at flush, sync, or Bash completion. Cached reads are not individually checked or revocable.
 
 For ordinary mount completion, both the session broker and standalone runner retain a frontend mount descriptor from before worker startup. On normal completion, after the worker tree stops and **before policy-bridge teardown**, they run frontend `syncfs` to drain mapped writes and observe writeback errors, even after application descriptors have closed. This has a separate **30-second approval-aware execution budget**. Drain failures are propagated, or aggregated with run/cleanup failures, not reported as successful completion. It is not a backing-storage durability guarantee or lossless shutdown: cancellation, forced teardown, revocation, daemon/control loss, and timeout can still lose dirty data.
 
@@ -45,7 +45,7 @@ Do not concurrently access shared host databases through Bash mounts: backing-fi
 
 Bare `/sandboxing` opens terminal settings or reports values in other modes. Changes apply to new Bash calls, including subagents; running calls and mappings are unchanged. Network inspection defaults **on** and is session-only.
 
-Writable mapping is separate from this switch. There is no `/sandboxing mmap` subcommand or Bash `writableMmap` argument. Set the unmatched-path fallback with `/policy-defaults <mode> fs_mmap` (built-in **ask_user**) and persist it with `/policy-defaults save`. See [filesystem mediation](#filesystem-mediation) and the [mmap engineering reference](transparent-mmap-feasibility.md).
+Writable mapping is separate from this switch. There is no `/sandboxing mmap` subcommand or Bash `writableMmap` argument. Set the unmatched-path fallback with `/policy-defaults <mode> fs_mmap_paths` (built-in **ask_user**) and persist it with `/policy-defaults save`. See [filesystem mediation](#filesystem-mediation) and the [mmap engineering reference](transparent-mmap-feasibility.md).
 
 ## Network mediation
 
@@ -132,7 +132,7 @@ Root-only `archive_list` and `archive_fetch` check each actual URL and method wi
 | --- | --- | --- |
 | `fs_read` | Filesystem reads | `allow` |
 | `fs_write` | Filesystem writes and deletes | `ask_user` |
-| `fs_mmap` | Writeback of dirty shared mappings to a backing path | `ask_user` |
+| `fs_mmap_paths` | Writeback of dirty shared mappings to a backing path | `ask_user` |
 | `web_read` | HTTP access and GET | `allow` |
 | `web_write` | POST, PUT, PATCH, DELETE, HEAD, OPTIONS | `ask_user` |
 | `web_dns` | DNS | `ask_user` |
@@ -172,7 +172,7 @@ Change one area or every area directly:
 ```text
 /policy-defaults allow fs_read
 /policy-defaults ask_user fs_write
-/policy-defaults ask_user fs_mmap
+/policy-defaults ask_user fs_mmap_paths
 /policy-defaults ask_llm web_read
 /policy-defaults deny web_tcp
 /policy-defaults ask_user all
@@ -186,6 +186,8 @@ Persist the active values or reload the persisted values:
 ```
 
 Changes affect this session until saved to `~/.pilot/policy-defaults.json`. `reset` reloads that file, or the built-in values if it is absent; it does not clear explicit rules. Defaults only govern unmatched operations, so changing a default does not override an existing denial.
+
+If a saved file still contains the retired `fs_mmap` key, back it up and remove that key before restarting Pilot. Do not rename it: Pilot uses `ask_user` when `fs_mmap_paths` is absent. Reconfigure any different path fallback explicitly.
 
 ## Interactive approvals
 
@@ -204,7 +206,7 @@ Lifetimes are:
 - **This session** — the active root Pi session; and
 - **Always on this computer** — persisted locally.
 
-`fs_mmap` approvals scope the target path, not the Bash starting directory. Legacy remembered working-directory grants do not authorize mapping any path under the new policy.
+`fs_mmap_paths` approvals scope the target path, not the Bash starting directory. Legacy remembered working-directory grants do not authorize mapping any path under the new policy.
 
 Network prompts also expose **Always synchronized** (`GLOBAL`). These decisions persist in the same local database and are eligible for [explicitly configured pi.server synchronization](server.md#saved-configuration-sync). Without a capable configured server and a manual sync or device opt-in, they remain local. Only GLOBAL rules synchronize; LOCAL, session, and once-only grants do not. Imported rules never overwrite a non-GLOBAL collision.
 

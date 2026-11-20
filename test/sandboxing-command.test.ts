@@ -56,13 +56,13 @@ function harness(t: TestContext) {
 test("mmap defaults to ask_user and does not affect network inspection", (t) => {
     const first = session(t);
     assert.ok(first.nativeFuseSessionBroker);
-    assert.equal(first.policyRuntime.defaultResponses.fs_mmap, "ask_user");
-    first.policyRuntime.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.allow);
+    assert.equal(first.policyRuntime.defaultResponses.fs_mmap_paths, "ask_user");
+    first.policyRuntime.setDefaultResponse(PolicyArea.fs_mmap_paths, PolicyFallbackResponse.allow);
     assert.equal(first.fullNetworkInspection, true);
     first.setFullNetworkInspection(false);
-    assert.equal(first.policyRuntime.defaultResponses.fs_mmap, "allow");
+    assert.equal(first.policyRuntime.defaultResponses.fs_mmap_paths, "allow");
     const replacement = session(t);
-    assert.equal(replacement.policyRuntime.defaultResponses.fs_mmap, "ask_user");
+    assert.equal(replacement.policyRuntime.defaultResponses.fs_mmap_paths, "ask_user");
     assert.equal(replacement.fullNetworkInspection, true);
 });
 
@@ -92,7 +92,7 @@ test("sandboxing only reports and changes network inspection", async (t) => {
     assert.match(notifications.at(-1)!.message, /HTTPS stays end-to-end/);
     await command.handler("mmap allow", ctx);
     assert.equal(notifications.at(-1)!.type, "error");
-    assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, "ask_user");
+    assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap_paths, "ask_user");
 });
 
 test("sandboxing uses Pi's settings switches in TUI, applies immediately, and Escape closes without rollback", async (t) => {
@@ -123,7 +123,7 @@ test("sandboxing uses Pi's settings switches in TUI, applies immediately, and Es
         picker.handleInput("\x1b");
         assert.equal(closed, true);
         assert.equal(runtime.fullNetworkInspection, false);
-        assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap, "ask_user");
+        assert.equal(runtime.policyRuntime.defaultResponses.fs_mmap_paths, "ask_user");
         assert.ok(redraws > 0);
     });
     await command.handler("", ctx);

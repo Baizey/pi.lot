@@ -236,11 +236,7 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
             let access = c.flags & libc::O_ACCMODE;
             let readonly = access == libc::O_RDONLY;
             let create = matches!(op, Create);
-            let legacy_mmap = state.mount_mode == MountMode::Mmap;
-            if legacy_mmap && access == libc::O_RDWR {
-                state.authorize_path(path, Access::Read, None)?;
-            }
-            let p = if state.mount_mode == MountMode::Policy && access == libc::O_RDWR {
+            let p = if access == libc::O_RDWR {
                 authorize_writable_open(state, path, create)?
             } else if create {
                 state.authorize_path(path, Access::Write, None)?;
@@ -269,7 +265,7 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
                 libc::open(p.as_ptr(), c.flags | libc::O_CREAT | libc::O_EXCL, c.mode)
             };
             c.fh = cvt(fd)? as u64;
-            c.direct_io = i32::from(!readonly && !legacy_mmap);
+            c.direct_io = i32::from(!readonly);
             c.keep_cache = 0;
             Ok(0)
         }
@@ -330,7 +326,7 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
             let fd = c.fh as i32;
             if matches!(op, Read) {
                 state.authorize(path, Access::Read, Some(READ_EVENTS), Some(fd), false)?;
-            } else if c.writepage && state.mount_mode == MountMode::Policy {
+            } else if c.writepage {
                 // With writeback-cache off, kernel-tagged writes are dirty mapping pages.
                 // Check all authorities against the retained backing object before pwrite.
                 state.authorize_all(

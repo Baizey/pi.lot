@@ -35,7 +35,7 @@ test("one-time mmap approval does not carry forward; local directory grants appl
     const outside = `${directory}-other/output`;
     assert.equal((await reopened.once(root, outside, access)).matchedStatus, PolicyResponse.DENIED);
     assert.equal(prompts, 3);
-    reopened.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.allow);
+    reopened.setDefaultResponse(PolicyArea.fs_mmap_paths, PolicyFallbackResponse.allow);
     assert.equal((await reopened.once(root, outside, access)).matchedStatus, PolicyResponse.DENIED);
     assert.equal(prompts, 3);
 });
@@ -63,7 +63,7 @@ test("mmap ask_llm uses normal path scopes and nonpersistent lifetimes", async (
     t.after(() => db.close());
     const dao = new PolicyDao(db);
     const runtime = new PolicyRuntime(root, dao, scriptedPolicyApproval(() => assert.fail("Unexpected user prompt")));
-    runtime.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.ask_llm);
+    runtime.setDefaultResponse(PolicyArea.fs_mmap_paths, PolicyFallbackResponse.ask_llm);
     let choice = PolicyLifetime.LOCAL;
     runtime.setAgentDecisionFlow({async askForPolicy(request) {
         assert.deepEqual(request.allowedScopes, [directory, "/"]);

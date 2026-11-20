@@ -74,13 +74,6 @@ impl Drop for Stdio {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MountMode {
-    Direct,
-    Mmap,
-    Policy,
-}
-
 pub struct State {
     hidden_path: CString,
     snapshot_path: CString,
@@ -89,7 +82,6 @@ pub struct State {
     request_fd: i32,
     response_fd: i32,
     framed_ready: bool,
-    mount_mode: MountMode,
     ready_fd: Mutex<i32>,
     counters: [AtomicU64; 8],
     panicked: std::sync::atomic::AtomicBool,
@@ -109,7 +101,6 @@ impl State {
             request_fd,
             response_fd,
             framed_ready: false,
-            mount_mode: MountMode::Direct,
             ready_fd: Mutex::new(-1),
             counters: std::array::from_fn(|_| AtomicU64::new(0)),
             panicked: std::sync::atomic::AtomicBool::new(false),
@@ -369,45 +360,12 @@ pub unsafe extern "C" fn pilot_fuse_probe_new(
     hidden: *const libc::c_char,
     request: i32,
     response: i32,
-    writable_mmap: bool,
-) -> *mut State {
-    let mode = if writable_mmap {
-        MountMode::Mmap
-    } else {
-        MountMode::Direct
-    };
-    probe_new(snapshot, hidden, request, response, mode)
-}
-
-/// Construct a mount-free probe state in policy mode.
-///
-/// # Safety
-/// Same requirements and ownership as `pilot_fuse_probe_new`.
-#[no_mangle]
-pub unsafe extern "C" fn pilot_fuse_probe_new_mmap_policy(
-    snapshot: *const libc::c_char,
-    hidden: *const libc::c_char,
-    request: i32,
-    response: i32,
-) -> *mut State {
-    probe_new(snapshot, hidden, request, response, MountMode::Policy)
-}
-
-unsafe fn probe_new(
-    snapshot: *const libc::c_char,
-    hidden: *const libc::c_char,
-    request: i32,
-    response: i32,
-    mode: MountMode,
 ) -> *mut State {
     catch_unwind(AssertUnwindSafe(|| {
         if snapshot.is_null() {
-            let mut state = State::new(cstring(b""), cstring(b""), request, response);
-            // Preserve legacy INIT-only probe behavior.
-            if mode == MountMode::Policy {
-                state.mount_mode = mode;
-            }
-            return Box::into_raw(Box::new(state));
+            return Box::into_raw(Box::new(State::new(
+                cstring(b""), cstring(b""), request, response,
+            )));
         }
         let snapshot = CStr::from_ptr(snapshot);
         let hidden = CStr::from_ptr(hidden);
@@ -415,13 +373,12 @@ unsafe fn probe_new(
             return std::ptr::null_mut();
         }
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-        let mut state = Box::new(State::new(
+        let state = Box::new(State::new(
             snapshot.to_owned(),
             hidden.to_owned(),
             request,
             response,
         ));
-        state.mount_mode = mode;
         if nonblocking(request).is_err() || nonblocking(response).is_err() || state.load().is_err()
         {
             return std::ptr::null_mut();

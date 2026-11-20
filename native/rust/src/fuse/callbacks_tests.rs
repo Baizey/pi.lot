@@ -21,13 +21,12 @@ impl PolicyOpenFixture {
         let (file, created, snapshot) = (child(b"/file"), child(b"/created"), child(b"/snapshot"));
         let (requests, request_writer) = pipe();
         let (response_reader, responses) = pipe();
-        let mut state = State::new(
+        let state = State::new(
             snapshot,
             cstring(b"/hidden"),
             request_writer.0,
             response_reader.0,
         );
-        state.mount_mode = MountMode::Policy;
         let fixture = Self {
             state,
             directory,

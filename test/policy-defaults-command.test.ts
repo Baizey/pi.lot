@@ -47,6 +47,9 @@ test("policy-defaults autocompletes responses and full response/key arguments", 
     );
     assert.equal((await complete(command, "ask_llm "))?.[0]?.value, "ask_llm all");
     assert.deepEqual(await complete(command, "allow fs_read "), []);
+    assert.deepEqual(await complete(command, "allow fs_mmap"), [
+        {value: "allow fs_mmap_paths", label: "fs_mmap_paths"},
+    ]);
     assert.equal(runtimeRequests, 0);
 });
 
@@ -83,6 +86,13 @@ test("policy-defaults reports and changes session defaults", async () => {
         message: "Policy default fs_read = ask_llm for this session.",
         type: "info",
     });
+
+    await command.handler("allow fs_mmap", ctx);
+    assert.equal(notifications.at(-1)?.type, "error");
+    assert.equal(defaults.fs_mmap_paths, PolicyFallbackResponse.ask_user);
+    await command.handler("deny fs_mmap_paths", ctx);
+    assert.deepEqual(changes.at(-1), ["fs_mmap_paths", PolicyFallbackResponse.deny]);
+    assert.equal(defaults.fs_mmap_paths, PolicyFallbackResponse.deny);
 });
 
 test("policy-defaults saves and resets active defaults", async () => {

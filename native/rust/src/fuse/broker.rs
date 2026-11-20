@@ -178,7 +178,6 @@ fn run_filesystem(
     }
     let mut state = Box::new(State::new(snapshot.to_owned(), hidden, request, response));
     state.framed_ready = framed;
-    state.mount_mode = MountMode::Policy;
     *state.ready_fd.get_mut().unwrap() = ready;
     if state.load().is_err() {
         perror("load native FUSE policy base snapshot");

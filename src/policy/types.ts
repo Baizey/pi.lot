@@ -100,7 +100,7 @@ export enum PolicyFallbackResponse {
 export enum PolicyArea {
     fs_read = "fs_read",
     fs_write = "fs_write",
-    fs_mmap = "fs_mmap",
+    fs_mmap_paths = "fs_mmap_paths",
     web_read = "web_read",
     web_write = "web_write",
     web_tcp = "web_tcp",
@@ -132,7 +132,7 @@ export const POLICY_AREAS: readonly PolicyArea[] = Object.freeze(Object.values(P
 const POLICY_AREA_ACCESS_TYPES: Readonly<Record<PolicyArea, readonly PolicyAccessType[]>> = Object.freeze({
     [PolicyArea.fs_read]: Object.freeze([PolicyAccessType.FS_READ]),
     [PolicyArea.fs_write]: Object.freeze([PolicyAccessType.FS_WRITE]),
-    [PolicyArea.fs_mmap]: Object.freeze([PolicyAccessType.FS_MMAP]),
+    [PolicyArea.fs_mmap_paths]: Object.freeze([PolicyAccessType.FS_MMAP]),
     [PolicyArea.web_read]: Object.freeze([
         PolicyAccessType.HTTP_ACCESS,
         PolicyAccessType.HTTP_GET,

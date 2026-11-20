@@ -4,7 +4,7 @@ import {parseDisplayDefaults} from "../../tui/tool/DisplayDefaults.js";
 import {parseSubagentDefaults} from "../../subagents/SubagentDefaults.js";
 import {parseWebSearchConfig} from "../../web-search/WebSearchConfig.js";
 import {PolicyAccessType, PolicyResponse} from "../../policy/types.js";
-import {parseSavedPolicyDefaults} from "../../policy/defaults.js";
+import {parsePolicyDefaults} from "../../policy/defaults.js";
 import {parsePersonaCatalog} from "../../personas/PersonaCatalog.js";
 import {parseRoleCatalog} from "../../roles/RoleCatalog.js";
 
@@ -65,11 +65,7 @@ export function validateConfigContent(key: ConfigKey, content: unknown): asserts
             case "web-search": parseWebSearchConfig(value); break;
             case "personas": parsePersonaCatalog(value); break;
             case "roles": parseRoleCatalog(value); break;
-            case "policy-defaults": {
-                // Validate the saved shape without rewriting legacy bytes or hashes.
-                parseSavedPolicyDefaults(value);
-                break;
-            }
+            case "policy-defaults": parsePolicyDefaults(value); break;
             case "global-policies": {
                 const rules = decodeGlobalPolicyRules(content as string);
                 requireConfig(rules.length > 0 && content === canonicalConfigContent({rules}));

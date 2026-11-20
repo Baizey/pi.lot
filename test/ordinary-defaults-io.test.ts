@@ -26,11 +26,13 @@ test("ordinary defaults retain their home-directory paths", () => {
     assert.equal(new SubagentDefaultsJsonStore().file, path.join(os.homedir(), ".pilot", "subagent-defaults.json"));
 });
 
-function characterizeDefaultsIo<T>(
+function characterizeDefaultsIo<T extends object>(
     label: string,
     Store: new (filename: string, directory: string) => {readonly file: string; load(): T; save(value: T): void},
     defaults: T,
 ): void {
+    const expectedJson = `${JSON.stringify(defaults, null, 2)}\n`;
+
     test(`${label} create parents lazily and save formatted JSON with private creation modes`, (t) => {
         const root = mkdtempSync(path.join(os.tmpdir(), "pilot-defaults-io-"));
         t.after(() => rmSync(root, {recursive: true, force: true}));
@@ -42,7 +44,8 @@ function characterizeDefaultsIo<T>(
 
         store.save(defaults);
 
-        assert.equal(readFileSync(store.file, "utf8"), `${JSON.stringify(defaults, null, 2)}\n`);
+        assert.equal(readFileSync(store.file, "utf8"), expectedJson);
+        assert.deepEqual(store.load(), defaults);
         assert.equal(statSync(directory).mode & 0o777, 0o700 & ~process.umask());
         assert.equal(statSync(path.dirname(directory)).mode & 0o777, 0o700 & ~process.umask());
         assert.equal(statSync(store.file).mode & 0o777, 0o600 & ~process.umask());
@@ -59,7 +62,7 @@ function characterizeDefaultsIo<T>(
 
         store.save(defaults);
 
-        assert.equal(readFileSync(store.file, "utf8"), `${JSON.stringify(defaults, null, 2)}\n`);
+        assert.equal(readFileSync(store.file, "utf8"), expectedJson);
         assert.equal(statSync(store.file).ino, inode);
         assert.equal(statSync(store.file).mode & 0o777, 0o640);
         assert.equal(statSync(directory).mode & 0o777, 0o750);
@@ -69,7 +72,7 @@ function characterizeDefaultsIo<T>(
         const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-defaults-io-"));
         t.after(() => rmSync(directory, {recursive: true, force: true}));
         const target = path.join(directory, "target.json");
-        writeFileSync(target, JSON.stringify(defaults));
+        writeFileSync(target, expectedJson);
         chmodSync(target, 0o640);
         const inode = statSync(target).ino;
         for (const kind of ["symbolic", "hard"] as const) {
@@ -81,7 +84,7 @@ function characterizeDefaultsIo<T>(
 
             store.save(defaults);
 
-            assert.equal(readFileSync(target, "utf8"), `${JSON.stringify(defaults, null, 2)}\n`);
+            assert.equal(readFileSync(target, "utf8"), expectedJson);
             assert.equal(statSync(store.file).ino, inode);
             assert.equal(statSync(target).mode & 0o777, 0o640);
             assert.equal(lstatSync(store.file).isSymbolicLink(), kind === "symbolic");
@@ -99,7 +102,7 @@ function characterizeDefaultsIo<T>(
         store.save(defaults);
 
         assert.equal(lstatSync(store.file).isSymbolicLink(), true);
-        assert.equal(readFileSync(target, "utf8"), `${JSON.stringify(defaults, null, 2)}\n`);
+        assert.equal(readFileSync(target, "utf8"), expectedJson);
     });
 
     test(`${label} wrap filesystem read and write failures with their original causes`, (t) => {

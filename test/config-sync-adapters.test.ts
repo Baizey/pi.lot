@@ -102,22 +102,20 @@ for (const [key, value] of savedFiles) {
     });
 }
 
-test("policy-default imports retain bytes and only the path key authorizes mmap at runtime", (t) => {
+test("policy-default imports retain path mmap defaults and reject the retired key", (t) => {
     const {directory, adapters} = fixture(t);
     const base: Record<string, unknown> = {...initialPolicyDefaults, web_tcp: "allow"};
     for (const area of ADDITIVE_POLICY_AREAS) delete base[area];
     const store = new PolicyDefaultJsonStorage("policy-defaults", directory);
-    for (const key of ["fs_mmap", "fs_mmap_paths"]) {
-        const content = canonicalConfigContent({...base, [key]: "allow"});
-        assert.deepEqual(adapters.apply("policy-defaults", adapters.capture("policy-defaults"), content), {
-            applied: true, materialized: content,
-        });
-        assert.deepEqual(store.load(), {
-            ...initialPolicyDefaults, web_tcp: "allow", fs_mmap: key === "fs_mmap_paths" ? "allow" : initialPolicyDefaults.fs_mmap,
-        });
-        assert.equal(adapters.capture("policy-defaults").content, content);
-        assert.equal(fs.readFileSync(store.file, "utf8"), content);
-    }
+    const content = canonicalConfigContent({...base, fs_mmap_paths: "deny"});
+    assert.deepEqual(adapters.apply("policy-defaults", adapters.capture("policy-defaults"), content), {
+        applied: true, materialized: content,
+    });
+    assert.deepEqual(store.load(), {...initialPolicyDefaults, web_tcp: "allow", fs_mmap_paths: "deny"});
+    assert.equal(adapters.capture("policy-defaults").content, content);
+    assert.throws(() => adapters.apply("policy-defaults", adapters.capture("policy-defaults"),
+        canonicalConfigContent({...base, fs_mmap: "allow"})), /Invalid configuration synchronization data/);
+    assert.equal(fs.readFileSync(store.file, "utf8"), content);
 });
 
 test("file replacement is atomic and private, without modifying hard-link peers or unrelated saved files", (t) => {

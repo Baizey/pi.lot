@@ -118,19 +118,18 @@ test("legacy v1 policy defaults may omit all additive channels without changing 
     }
 });
 
-test("legacy and path mmap fallback formats preserve their original content and hashes", () => {
-    const base = without({...initialPolicyDefaults}, "fs_mmap");
-    for (const key of ["fs_mmap", "fs_mmap_paths"]) {
-        const content = canonicalConfigContent({...base, [key]: "allow"});
-        for (const decoded of [decodeConfigState(state("policy-defaults", content)), decodeConfigExchange(exchange("policy-defaults", content))]) {
-            assert.equal(decoded.content, content);
-            assert.equal(decoded.sha256, configHash(content));
-        }
+test("path mmap defaults preserve their bytes and hashes; the retired key is rejected", () => {
+    const base = without({...initialPolicyDefaults}, "fs_mmap_paths");
+    const content = canonicalConfigContent({...base, fs_mmap_paths: "allow"});
+    for (const decoded of [decodeConfigState(state("policy-defaults", content)), decodeConfigExchange(exchange("policy-defaults", content))]) {
+        assert.equal(decoded.content, content);
+        assert.equal(decoded.sha256, configHash(content));
     }
-    for (const value of [{...base, fs_mmap_paths: null}, {...base, fs_mmap: "allow", fs_mmap_paths: "deny"}]) {
-        const content = canonicalConfigContent(value);
-        rejects(() => decodeConfigExchange(exchange("policy-defaults", content)));
-        rejects(() => decodeConfigState(state("policy-defaults", content)));
+    for (const value of [{...base, fs_mmap_paths: null}, {...base, fs_mmap: "allow"},
+        {...base, fs_mmap: "allow", fs_mmap_paths: "deny"}]) {
+        const invalid = canonicalConfigContent(value);
+        rejects(() => decodeConfigExchange(exchange("policy-defaults", invalid)));
+        rejects(() => decodeConfigState(state("policy-defaults", invalid)));
     }
 });
 

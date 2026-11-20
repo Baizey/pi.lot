@@ -4,7 +4,6 @@
 #include <fuse_lowlevel.h>
 #include <linux/fuse.h>
 
-static bool policy_mode;
 static bool init_called;
 static bool requested_before_init;
 static bool requested_after_init;
@@ -15,7 +14,7 @@ static bool connection_fields_preserved;
 static bool configuration_fields_preserved;
 
 static uint64_t forbidden_capabilities(void) {
-    return FUSE_CAP_DIRECT_IO_ALLOW_MMAP | FUSE_CAP_WRITEBACK_CACHE
+    return FUSE_CAP_WRITEBACK_CACHE
         | FUSE_CAP_PASSTHROUGH | FUSE_CAP_ASYNC_DIO | FUSE_CAP_ATOMIC_O_TRUNC
         | FUSE_CAP_NO_OPEN_SUPPORT | FUSE_CAP_NO_OPENDIR_SUPPORT;
 }
@@ -31,7 +30,8 @@ static void *probe_init(struct fuse_conn_info *connection, struct fuse_config *c
     for (size_t index = 0; index < sizeof(capabilities) / sizeof(capabilities[0]); index++) {
         fuse_set_feature_flag(connection, capabilities[index]);
     }
-    requested_before_init = (connection->want_ext & forbidden_capabilities()) == forbidden_capabilities();
+    const uint64_t offered = forbidden_capabilities() | FUSE_CAP_DIRECT_IO_ALLOW_MMAP;
+    requested_before_init = (connection->want_ext & offered) == offered;
     uint64_t capable_ext = connection->capable_ext;
     uint32_t capable = connection->capable;
     configuration->parallel_direct_writes = 1;
@@ -43,7 +43,7 @@ static void *probe_init(struct fuse_conn_info *connection, struct fuse_config *c
     memcpy(&expected_connection, connection, sizeof(expected_connection));
     expected_connection.want &= ~(uint32_t) forbidden_capabilities();
     expected_connection.want_ext &= ~forbidden_capabilities();
-    if (policy_mode && (capable_ext & FUSE_CAP_DIRECT_IO_ALLOW_MMAP) != 0) {
+    if ((capable_ext & FUSE_CAP_DIRECT_IO_ALLOW_MMAP) != 0) {
         expected_connection.want |= FUSE_CAP_DIRECT_IO_ALLOW_MMAP;
         expected_connection.want_ext |= FUSE_CAP_DIRECT_IO_ALLOW_MMAP;
     }
@@ -57,8 +57,7 @@ static void *probe_init(struct fuse_conn_info *connection, struct fuse_config *c
     void *state = fuse_get_context()->private_data;
     void *initialized = pilot_fuse_init(connection, configuration);
     /* Do not use fuse_get_feature_flag(): 3.18.2 checks capable_ext, not want_ext. */
-    uint64_t forbidden = policy_mode ? forbidden_capabilities() & ~FUSE_CAP_DIRECT_IO_ALLOW_MMAP
-        : forbidden_capabilities();
+    uint64_t forbidden = forbidden_capabilities();
     requested_after_init = (connection->want_ext & forbidden) != 0
         || (connection->want & (uint32_t) forbidden) != 0;
     capabilities_preserved = connection->capable_ext == capable_ext && connection->capable == capable;
@@ -113,11 +112,10 @@ static int probe_negotiation(char **argv, bool supported, struct pilot_fuse_stat
         return 65;
     }
 
-    uint64_t forbidden_flags = FUSE_DIRECT_IO_ALLOW_MMAP | FUSE_WRITEBACK_CACHE | FUSE_PASSTHROUGH
+    uint64_t forbidden_flags = FUSE_WRITEBACK_CACHE | FUSE_PASSTHROUGH
         | FUSE_ASYNC_DIO | FUSE_ATOMIC_O_TRUNC | FUSE_NO_OPEN_SUPPORT | FUSE_NO_OPENDIR_SUPPORT;
     uint64_t offered = FUSE_INIT_EXT | FUSE_ASYNC_READ | FUSE_MAX_PAGES;
-    if (supported) offered |= forbidden_flags;
-    if (policy_mode) forbidden_flags &= ~FUSE_DIRECT_IO_ALLOW_MMAP;
+    if (supported) offered |= forbidden_flags | FUSE_DIRECT_IO_ALLOW_MMAP;
     struct {
         struct fuse_in_header header;
         struct fuse_init_in init;
@@ -173,11 +171,8 @@ int main(int argc, char **argv) {
         return strcmp(argv[1], "main-rust") == 0
             ? pilot_fuse_main(2, arguments, NULL) : fuse_main(2, arguments, &operations, NULL);
     }
-    if (argc != 3 || (strcmp(argv[1], "supported") != 0 && strcmp(argv[1], "unsupported") != 0)
-        || (strcmp(argv[2], "direct") != 0 && strcmp(argv[2], "policy") != 0)) return 64;
-    policy_mode = strcmp(argv[2], "policy") == 0;
-    struct pilot_fuse_state *state = policy_mode ? pilot_fuse_probe_new_mmap_policy(NULL, NULL, -1, -1)
-        : pilot_fuse_probe_new(NULL, NULL, -1, -1, false);
+    if (argc != 2 || (strcmp(argv[1], "supported") != 0 && strcmp(argv[1], "unsupported") != 0)) return 64;
+    struct pilot_fuse_state *state = pilot_fuse_probe_new(NULL, NULL, -1, -1);
     if (state == NULL) return 65;
     int result = probe_negotiation(argv, strcmp(argv[1], "supported") == 0, state);
     pilot_fuse_probe_free(state);

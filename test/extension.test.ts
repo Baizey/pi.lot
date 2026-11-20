@@ -1214,7 +1214,6 @@ test("one session runtime owns the production tool overrides until session shutd
                 policyRuntime: policy,
                 decisionFlows: new UiDecisionFlowManager(runtimeContext),
                 fullNetworkInspection: true,
-                setWritableMmap() {},
                 async start() {
                     runtimeStarts++;
                 },

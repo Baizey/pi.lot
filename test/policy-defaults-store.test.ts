@@ -30,10 +30,7 @@ test("JSON policy defaults are absent until saved and round-trip exactly", () =>
         store.save(defaults);
 
         assert.deepEqual(store.load(), defaults);
-        const saved = JSON.parse(readFileSync(store.file, "utf8"));
-        assert.equal(Object.hasOwn(saved, "fs_mmap"), false);
-        assert.equal(Object.hasOwn(saved, "fs_mmap_paths"), false);
-        assert.deepEqual({...saved, fs_mmap: initialPolicyDefaults.fs_mmap}, defaults);
+        assert.deepEqual(JSON.parse(readFileSync(store.file, "utf8")), defaults);
 
         const updated = {...defaults, fs_write: PolicyFallbackResponse.allow};
         store.save(updated);
@@ -41,21 +38,22 @@ test("JSON policy defaults are absent until saved and round-trip exactly", () =>
     });
 });
 
-test("legacy mmap defaults are ignored on read; explicit path mmap defaults round-trip", () => {
+test("path mmap defaults round-trip without interpreting the retired key", () => {
     withStore((store) => {
-        for (const response of Object.values(PolicyFallbackResponse)) {
-            const legacy = {...initialPolicyDefaults, fs_mmap: response, web_tcp: PolicyFallbackResponse.allow};
-            const bytes = JSON.stringify(legacy);
-            writeFileSync(store.file, bytes);
-            assert.deepEqual(store.load(), {...legacy, fs_mmap: initialPolicyDefaults.fs_mmap});
-            assert.equal(readFileSync(store.file, "utf8"), bytes);
-            assert.equal(parsePolicyDefaults(legacy).fs_mmap, response);
+        const {fs_mmap_paths: _pathFallback, ...base} = initialPolicyDefaults;
+        writeFileSync(store.file, JSON.stringify(base));
+        assert.deepEqual(store.load(), initialPolicyDefaults);
 
-            store.save(legacy);
-            const saved = JSON.parse(readFileSync(store.file, "utf8"));
-            assert.equal(Object.hasOwn(saved, "fs_mmap"), false);
-            assert.equal(saved.fs_mmap_paths, response === initialPolicyDefaults.fs_mmap ? undefined : response);
-            assert.deepEqual(store.load(), legacy);
+        for (const response of Object.values(PolicyFallbackResponse)) {
+            const retired = {...base, fs_mmap: response};
+            writeFileSync(store.file, JSON.stringify(retired));
+            assert.throws(() => store.load(), /Invalid policy defaults/);
+            assert.throws(() => parsePolicyDefaults(retired), /Unknown policy default area/);
+
+            const defaults = {...base, fs_mmap_paths: response};
+            store.save(defaults);
+            assert.deepEqual(JSON.parse(readFileSync(store.file, "utf8")), defaults);
+            assert.deepEqual(store.load(), defaults);
         }
     });
 });
@@ -77,8 +75,7 @@ test("JSON policy defaults reject incomplete, unknown, and invalid snapshots", (
     withStore((store) => {
         for (const value of [{fs_write: "deny"}, {unexpected: "value"}, null, [], "allow", 42,
             {...initialPolicyDefaults, unexpected: "allow"}, {...initialPolicyDefaults, fs_read: "invalid"},
-            {...initialPolicyDefaults, fs_mmap: "invalid"}, {...initialPolicyDefaults, fs_mmap_paths: "allow"},
-            {...initialPolicyDefaults, fs_mmap: undefined, fs_mmap_paths: "invalid"}]) {
+            {...initialPolicyDefaults, fs_mmap_paths: "invalid"}, {...initialPolicyDefaults, fs_mmap: "allow"}]) {
             writeFileSync(store.file, JSON.stringify(value));
             assert.throws(() => store.load(), /Invalid policy defaults/);
         }

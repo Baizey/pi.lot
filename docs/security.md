@@ -25,9 +25,9 @@ See [Policy system](policy.md) for exact semantics, the [documentation index](RE
 
 ### Sandbox compatibility settings
 
-Network inspection defaults **on** and remains session-only. Writable mapping is a separate path policy (`fs_mmap`, built-in fallback **ask_user**), not a Bash argument or `/sandboxing` subcommand. Change the fallback with `/policy-defaults <mode> fs_mmap` and save it with `/policy-defaults save`. Remembered approvals under the old working-directory policy do not authorize mapping paths under the new policy.
+Network inspection defaults **on** and remains session-only. Writable mapping is a separate path policy (`fs_mmap_paths`, built-in fallback **ask_user**), not a Bash argument or `/sandboxing` subcommand. Change the fallback with `/policy-defaults <mode> fs_mmap_paths` and save it with `/policy-defaults save`. Remembered approvals under the old working-directory policy do not authorize mapping paths under the new policy.
 
-Inspection off allows opaque end-to-end TLS and unrecognized plaintext to use transport-only policy; recognized supported plaintext protocols still receive their checks. `fs_mmap` controls backing writeback, not mapping creation or individual stores. These are explicit compatibility tradeoffs, not stronger isolation. See [session sandboxing settings](policy.md#session-sandboxing-settings).
+Inspection off allows opaque end-to-end TLS and unrecognized plaintext to use transport-only policy; recognized supported plaintext protocols still receive their checks. `fs_mmap_paths` controls backing writeback, not mapping creation or individual stores. These are explicit compatibility tradeoffs, not stronger isolation. See [session sandboxing settings](policy.md#session-sandboxing-settings).
 
 ## Explicit boundaries outside mediation
 

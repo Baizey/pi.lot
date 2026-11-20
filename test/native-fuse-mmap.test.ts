@@ -93,7 +93,7 @@ for (const brokered of [false, true]) {
             "mapping.close()",
         ].join("\n");
         try {
-            policy.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.allow);
+            policy.setDefaultResponse(PolicyArea.fs_mmap_paths, PolicyFallbackResponse.allow);
             const view = policy.beginNativeFilesystemToolCall(AGENT, {toolName: "mmap-test"});
             let stderr = "";
             try {
@@ -127,7 +127,7 @@ for (const brokered of [false, true]) {
         writeFileSync(path.join(directory, "main.go"), 'package main\nfunc main() { println("mapped linker output") }\n');
         const policy = runtime();
         const broker = brokered ? new NativeFuseSessionBroker() : undefined;
-        policy.setDefaultResponse(PolicyArea.fs_mmap, PolicyFallbackResponse.allow);
+        policy.setDefaultResponse(PolicyArea.fs_mmap_paths, PolicyFallbackResponse.allow);
         const view = policy.beginNativeFilesystemToolCall(AGENT, {toolName: "mmap-go-test"});
         let stderr = "";
         try {

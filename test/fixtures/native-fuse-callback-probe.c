@@ -24,6 +24,13 @@ void fuse_unset_feature_flag(struct fuse_conn_info *connection, uint64_t flag) {
     connection->want_ext &= ~flag;
 }
 
+bool fuse_set_feature_flag(struct fuse_conn_info *connection, uint64_t flag) {
+    if ((connection->capable_ext & flag) != flag) return false;
+    connection->want |= (uint32_t) flag;
+    connection->want_ext |= flag;
+    return true;
+}
+
 typedef struct {
     unsigned int entries;
     off_t offset;
@@ -145,7 +152,7 @@ static int probe_operations(void) {
     return 0;
 }
 
-static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state, bool writable_mmap) {
+static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state) {
     void *private_state = state;
     probe_context.private_data = private_state;
 
@@ -186,7 +193,7 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
             ? operations.open(argv[4], sentinel) : operations.create(argv[4], 0600, sentinel);
         if (result == 0) {
             expected_info.fh = sentinel->fh;
-            expected_info.direct_io = !writable_mmap && (expected_info.flags & O_ACCMODE) != O_RDONLY;
+            expected_info.direct_io = (expected_info.flags & O_ACCMODE) != O_RDONLY;
             expected_info.keep_cache = 0;
             status_flags = fcntl((int) sentinel->fh, F_GETFL);
             descriptor_flags = fcntl((int) sentinel->fh, F_GETFD);
@@ -208,7 +215,8 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
         goto complete;
     } else if (strcmp(argv[3], "disconnect") == 0 && argc == 6) {
         bool opening = strcmp(argv[5], "open") == 0;
-        if (!opening && strcmp(argv[5], "read") != 0
+        bool mapped = strcmp(argv[5], "writepage") == 0;
+        if (!opening && !mapped && strcmp(argv[5], "read") != 0
             && strcmp(argv[5], "write") != 0 && strcmp(argv[5], "truncate") != 0) return 64;
         info.flags = opening ? O_RDONLY : O_RDWR;
         if (!opening && operations.open(argv[4], &info) != 0) return 65;
@@ -221,7 +229,8 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
         } else {
             if (strcmp(argv[5], "read") == 0) {
                 result = operations.read(argv[4], read_value, sizeof(read_value) - 1, 0, &info);
-            } else if (strcmp(argv[5], "write") == 0) {
+            } else if (mapped || strcmp(argv[5], "write") == 0) {
+                info.writepage = mapped;
                 result = operations.write(argv[4], "X", 1, 0, &info);
             } else {
                 result = operations.truncate(argv[4], 2, &info);
@@ -260,7 +269,7 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
                 || operations.release(argv[4], &info) != 0) return 65;
         }
     } else if (strcmp(argv[3], "init") == 0 && argc == 5) {
-        uint64_t forbidden = FUSE_CAP_DIRECT_IO_ALLOW_MMAP | FUSE_CAP_WRITEBACK_CACHE
+        uint64_t forbidden = FUSE_CAP_WRITEBACK_CACHE
             | FUSE_CAP_PASSTHROUGH | FUSE_CAP_ASYNC_DIO | FUSE_CAP_ATOMIC_O_TRUNC
             | FUSE_CAP_NO_OPEN_SUPPORT | FUSE_CAP_NO_OPENDIR_SUPPORT;
         uint64_t preserved = FUSE_CAP_ASYNC_READ | (UINT64_C(1) << 40);
@@ -275,9 +284,11 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
         connection.congestion_threshold = 0x56789;
         connection.time_gran = 0x6789a;
         connection.reserved[0] = 0x789a;
-        connection.capable_ext = strcmp(argv[4], "supported") == 0 ? forbidden | preserved : 0;
+        bool supported = strcmp(argv[4], "supported") == 0;
+        uint64_t offered = forbidden | preserved | FUSE_CAP_DIRECT_IO_ALLOW_MMAP;
+        connection.capable_ext = supported ? offered : 0;
         connection.capable = (uint32_t) connection.capable_ext;
-        connection.want_ext = forbidden | preserved;
+        connection.want_ext = offered;
         connection.want = (uint32_t) connection.want_ext;
         struct fuse_config configuration;
         memset(&configuration, 0, sizeof(configuration));
@@ -301,6 +312,10 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
         memcpy(&expected_connection, &connection, sizeof(connection));
         expected_connection.want &= ~(uint32_t) forbidden;
         expected_connection.want_ext &= ~forbidden;
+        if (!supported) {
+            expected_connection.want &= ~(uint32_t) FUSE_CAP_DIRECT_IO_ALLOW_MMAP;
+            expected_connection.want_ext &= ~FUSE_CAP_DIRECT_IO_ALLOW_MMAP;
+        }
         struct fuse_config expected_configuration;
         memcpy(&expected_configuration, &configuration, sizeof(configuration));
         expected_configuration.parallel_direct_writes = 0;
@@ -310,7 +325,7 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
         expected_configuration.auto_cache = 0;
         void *initialized = operations.init(&connection, &configuration);
         printf("{\"result\":0,\"forbiddenWant\":%u,\"forbiddenWantExt\":%llu,"
-            "\"preservedWant\":%s,\"preservedWantExt\":%s,\"capabilitiesUnchanged\":%s,"
+            "\"preservedWant\":%s,\"preservedWantExt\":%s,\"capabilitiesUnchanged\":%s,\"mmapRequested\":%s,"
             "\"parallelDirectWrites\":%d,\"nullpathOk\":%d,\"directIo\":%d,"
             "\"keepCache\":%d,\"autoCache\":%d,\"stateReturned\":%s,\"disableRequestsComplete\":%s,"
             "\"connectionFieldsPreserved\":%s,\"configurationFieldsPreserved\":%s}\n",
@@ -318,12 +333,14 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
             (unsigned long long) (connection.want_ext & forbidden),
             (connection.want & (uint32_t) preserved) == (uint32_t) preserved ? "true" : "false",
             (connection.want_ext & preserved) == preserved ? "true" : "false",
-            connection.capable_ext == (strcmp(argv[4], "supported") == 0 ? forbidden | preserved : 0)
+            connection.capable_ext == (supported ? offered : 0)
                 && connection.capable == (uint32_t) connection.capable_ext ? "true" : "false",
+            (connection.want_ext & FUSE_CAP_DIRECT_IO_ALLOW_MMAP) != 0 ? "true" : "false",
             configuration.parallel_direct_writes, configuration.nullpath_ok,
             configuration.direct_io, configuration.kernel_cache, configuration.auto_cache,
             initialized == private_state ? "true" : "false",
-            (unset_requested_flags & forbidden) == forbidden ? "true" : "false",
+            (unset_requested_flags & (forbidden | FUSE_CAP_DIRECT_IO_ALLOW_MMAP))
+                == (forbidden | FUSE_CAP_DIRECT_IO_ALLOW_MMAP) ? "true" : "false",
             memcmp(&connection, &expected_connection, sizeof(connection)) == 0 ? "true" : "false",
             memcmp(&configuration, &expected_configuration, sizeof(configuration)) == 0 ? "true" : "false");
         goto complete;
@@ -540,15 +557,9 @@ complete:
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "abi-operations") == 0) return probe_operations();
     if (argc < 5) return 64;
-    const char policy_prefix[] = "mmap-policy-";
-    bool mmap_policy = strncmp(argv[3], policy_prefix, sizeof(policy_prefix) - 1) == 0;
-    bool writable_mmap = !mmap_policy && strncmp(argv[3], "mmap-", 5) == 0;
-    if (mmap_policy) argv[3] += sizeof(policy_prefix) - 1;
-    if (writable_mmap) argv[3] += 5;
-    struct pilot_fuse_state *state = mmap_policy ? pilot_fuse_probe_new_mmap_policy(argv[1], argv[2], 3, 4)
-        : pilot_fuse_probe_new(argv[1], argv[2], 3, 4, writable_mmap);
+    struct pilot_fuse_state *state = pilot_fuse_probe_new(argv[1], argv[2], 3, 4);
     if (state == NULL) return 64;
-    int result = probe_callbacks(argc, argv, state, writable_mmap);
+    int result = probe_callbacks(argc, argv, state);
     pilot_fuse_probe_free(state);
     close(3);
     close(4);

@@ -129,46 +129,11 @@ for (const operation of ["open", "create"]) {
     }
 }
 
-for (const operation of ["open", "create"]) {
-    for (const access of [constants.O_RDONLY, constants.O_WRONLY, constants.O_RDWR]) {
-        test(`mmap ${operation} uses cached write-through and checks read authority for O_RDWR (${access})`, async () => {
-            await withFixture(async (directory) => {
-                const target = path.join(directory, "mapped");
-                if (operation === "open") await writeFile(target, "original");
-                const args = [`mmap-abi-${operation}`, target, String(access | constants.O_TRUNC), "1", "1"];
-                if (access === constants.O_RDWR) {
-                    const denied = await probe(directory, [policy(directory, PolicyResponse.DENIED)], ...args);
-                    assert.equal(denied.result, -errno.EACCES);
-                    assertDenied(denied, target, NativeFilesystemAccess.READ);
-                    assert.equal(denied.handleAssigned, false);
-                    assert.equal(denied.directIo, 1);
-                    if (operation === "open") assert.equal(await readFile(target, "utf8"), "original");
-                    else await assert.rejects(stat(target), {code: "ENOENT"});
-                }
-                if (access !== constants.O_RDONLY) {
-                    const denied = await probe(directory, [policy(directory, PolicyResponse.ALLOWED, PolicyResponse.DENIED)], ...args);
-                    assert.equal(denied.result, -errno.EACCES);
-                    assertDenied(denied, target, NativeFilesystemAccess.WRITE);
-                    assert.equal(denied.handleAssigned, false);
-                    if (operation === "open") assert.equal(await readFile(target, "utf8"), "original");
-                    else await assert.rejects(stat(target), {code: "ENOENT"});
-                }
-                const allowed = await probe(directory, [policy(directory)], ...args);
-                assert.equal(allowed.result, 0);
-                assert.equal(allowed.directIo, 0);
-                assert.equal(allowed.keepCache, 0);
-                assert.equal(allowed.fieldsPreserved, true);
-                assert.equal(allowed.releasePreserved, true);
-            });
-        });
-    }
-}
-
 test("kernel-tagged writepage, not ordinary write, requires mmap approval through libfuse ABI", async () => {
     await withFixture(async (directory) => {
         const target = path.join(directory, "file");
         const rule = policy(directory);
-        const write = (kind: string) => probe(directory, [rule], "mmap-policy-io", target,
+        const write = (kind: string) => probe(directory, [rule], "io", target,
             kind, String(constants.O_RDWR), "0", "8", "modified");
         for (const status of [PolicyResponse.DENIED, PolicyResponse.ALLOWED]) {
             rule.info[PolicyAccessType.FS_MMAP] = {accessType: PolicyAccessType.FS_MMAP,
@@ -193,45 +158,43 @@ test("kernel-tagged writepage, not ordinary write, requires mmap approval throug
 });
 
 for (const capabilities of ["supported", "unsupported"]) {
-    for (const mode of ["direct", "policy"]) {
-        test(`real mount-free INIT negotiates only allowed ${capabilities} features (${mode})`, (context) => {
-            const executed = spawnSync(initExecutable, [capabilities, mode], {encoding: "utf8", timeout: 5_000});
-            assert.ifError(executed.error);
-            assert.equal(executed.status, 0, executed.stderr);
-            const result = JSON.parse(executed.stdout) as {customIoSupported: false} | {
-                customIoSupported: true;
-                replyValid: boolean;
-                initCalled: boolean;
-                requestedBeforeInit: boolean;
-                requestedAfterInit: boolean;
-                forbiddenNegotiated: boolean;
-                asyncReadNegotiated: boolean;
-                mmapNegotiated: boolean;
-                capabilitiesPreserved: boolean;
-                configurationSafe: boolean;
-                stateReturned: boolean;
-                connectionFieldsPreserved: boolean;
-                configurationFieldsPreserved: boolean;
-            };
-            if (result.customIoSupported === false) {
-                context.skip("Installed libfuse was built without custom I/O; real mount-free INIT negotiation requires -Denable-custom-io=true");
-                return;
-            }
-            assert.equal(result.customIoSupported, true);
-            assert.equal(result.replyValid, true);
-            assert.equal(result.initCalled, true);
-            assert.equal(result.requestedBeforeInit, capabilities === "supported");
-            assert.equal(result.requestedAfterInit, false);
-            assert.equal(result.forbiddenNegotiated, false);
-            assert.equal(result.asyncReadNegotiated, true);
-            assert.equal(result.mmapNegotiated, mode === "policy" && capabilities === "supported");
-            assert.equal(result.capabilitiesPreserved, true);
-            assert.equal(result.configurationSafe, true);
-            assert.equal(result.stateReturned, true);
-            assert.equal(result.connectionFieldsPreserved, true);
-            assert.equal(result.configurationFieldsPreserved, true);
-        });
-    }
+    test(`real mount-free INIT negotiates only allowed ${capabilities} features`, (context) => {
+        const executed = spawnSync(initExecutable, [capabilities], {encoding: "utf8", timeout: 5_000});
+        assert.ifError(executed.error);
+        assert.equal(executed.status, 0, executed.stderr);
+        const result = JSON.parse(executed.stdout) as {customIoSupported: false} | {
+            customIoSupported: true;
+            replyValid: boolean;
+            initCalled: boolean;
+            requestedBeforeInit: boolean;
+            requestedAfterInit: boolean;
+            forbiddenNegotiated: boolean;
+            asyncReadNegotiated: boolean;
+            mmapNegotiated: boolean;
+            capabilitiesPreserved: boolean;
+            configurationSafe: boolean;
+            stateReturned: boolean;
+            connectionFieldsPreserved: boolean;
+            configurationFieldsPreserved: boolean;
+        };
+        if (result.customIoSupported === false) {
+            context.skip("Installed libfuse was built without custom I/O; real mount-free INIT negotiation requires -Denable-custom-io=true");
+            return;
+        }
+        assert.equal(result.customIoSupported, true);
+        assert.equal(result.replyValid, true);
+        assert.equal(result.initCalled, true);
+        assert.equal(result.requestedBeforeInit, capabilities === "supported");
+        assert.equal(result.requestedAfterInit, false);
+        assert.equal(result.forbiddenNegotiated, false);
+        assert.equal(result.asyncReadNegotiated, true);
+        assert.equal(result.mmapNegotiated, capabilities === "supported");
+        assert.equal(result.capabilitiesPreserved, true);
+        assert.equal(result.configurationSafe, true);
+        assert.equal(result.stateReturned, true);
+        assert.equal(result.connectionFieldsPreserved, true);
+        assert.equal(result.configurationFieldsPreserved, true);
+    });
 }
 
 for (const capabilities of ["supported", "unsupported"]) {
@@ -240,6 +203,7 @@ for (const capabilities of ["supported", "unsupported"]) {
             const result = await probe(directory, [policy(directory)], "init", capabilities);
             assert.equal(result.forbiddenWant, 0);
             assert.equal(result.forbiddenWantExt, 0);
+            assert.equal(result.mmapRequested, capabilities === "supported");
             assert.equal(result.preservedWant, true);
             assert.equal(result.preservedWantExt, true);
             assert.equal(result.capabilitiesUnchanged, true);
@@ -524,12 +488,17 @@ for (const operation of ["read", "write", "truncate"] as const) {
     }
 }
 
-for (const operation of ["open", "read", "write", "truncate"] as const) {
+for (const operation of ["open", "read", "write", "writepage", "truncate"] as const) {
     test(`${operation} fails closed after controller EOF despite allowing snapshots`, async () => {
         await withFixture(async (directory) => {
             const target = path.join(directory, "allowed");
             await writeFile(target, "original");
-            const result = await probe(directory, [policy(directory)], "disconnect", target, operation);
+            const rule = policy(directory);
+            if (operation === "writepage") {
+                rule.info[PolicyAccessType.FS_MMAP] = {accessType: PolicyAccessType.FS_MMAP,
+                    lifetime: PolicyLifetime.SESSION, status: PolicyResponse.ALLOWED, reason: "callback fixture"};
+            }
+            const result = await probe(directory, [rule], "disconnect", target, operation);
             assert.equal(result.result, -errno.EACCES);
             assert.equal(result.readValue, "");
             assert.equal(await readFile(target, "utf8"), "original");
@@ -540,18 +509,6 @@ for (const operation of ["open", "read", "write", "truncate"] as const) {
             } else {
                 assert.equal(result.retainedValue, "original");
             }
-        });
-    });
-}
-
-for (const operation of ["open", "read", "write", "truncate"]) {
-    test(`cached mmap mode ${operation} still fails closed after controller EOF`, async () => {
-        await withFixture(async (directory) => {
-            const target = path.join(directory, "cached");
-            await writeFile(target, "original");
-            const result = await probe(directory, [policy(directory)], "mmap-disconnect", target, operation);
-            assert.equal(result.result, -errno.EACCES);
-            assert.equal(await readFile(target, "utf8"), "original");
         });
     });
 }
@@ -626,6 +583,7 @@ type ProbeResult = {
     result: number;
     forbiddenWant: number;
     forbiddenWantExt: number;
+    mmapRequested: boolean;
     preservedWant: boolean;
     preservedWantExt: boolean;
     capabilitiesUnchanged: boolean;

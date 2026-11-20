@@ -8,8 +8,8 @@ The goal remains transparent host-file access, not scratch copies, automatic cop
 
 ### Path policy and I/O route
 
-- `fs_mmap` is a path policy alongside `fs_read` and `fs_write`, with a built-in `ask_user` fallback. Configure it via `/policy-defaults <mode> fs_mmap`, independently of network inspection. Legacy working-directory grants do not carry over as path grants.
-- Rust FUSE checks `fs_mmap` on dirty mapped writeback, not on opens, `mmap()`, or `mprotect()`. Writable handles use direct I/O; read-only handles still use cached I/O. Supported kernels can map direct-I/O handles.
+- `fs_mmap_paths` is a path policy alongside `fs_read` and `fs_write`, with a built-in `ask_user` fallback. Configure it via `/policy-defaults <mode> fs_mmap_paths`, independently of network inspection. Legacy working-directory grants do not carry over as path grants.
+- Rust FUSE checks `fs_mmap_paths` on dirty mapped writeback, not on opens, `mmap()`, or `mprotect()`. Writable handles use direct I/O; read-only handles still use cached I/O. Supported kernels can map direct-I/O handles.
 - Backing READ/WRITE and handle-truncate callbacks still consult live policy and verify the retained descriptor against the authorized pathname/device/inode. Cached reads and memory stores bypass per-access callbacks: mapped stores are not individually checked or revocable. Denied writeback can lose previously dirtied changes and errors may be delayed. Flush remains a no-op; application fsync/fdatasync callbacks operate on retained backing handles.
 - `native/rust/src/fuse/abi.rs`: INIT requests `FUSE_CAP_DIRECT_IO_ALLOW_MMAP` when offered, and keeps `FUSE_CAP_WRITEBACK_CACHE` and `FUSE_CAP_PASSTHROUGH` disabled. The operation table still has no backing `lock`/`flock` callbacks.
 

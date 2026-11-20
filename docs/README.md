@@ -47,7 +47,7 @@ Bare commands open their settings only in terminal TUI mode; outside TUI they re
 | `/display` | Normal/Alternate tool views. `/display conversation full` sets the pair. `save` persists; `reset` reloads saved views, or Compact/Preview if absent. |
 | `/role` | Select a saved working role for the current conversation, or `none` to clear it. Fresh conversations start with no role. |
 | `/persona` | Select a saved communication style for this conversation. `off` clears it; `save` saves the selection as this device’s default; `reset` reapplies that default. |
-| `/sandboxing` | Session network inspection. Writable mapping defaults are configured separately via `/policy-defaults <mode> fs_mmap`. |
+| `/sandboxing` | Session network inspection. Writable mapping defaults are configured separately via `/policy-defaults <mode> fs_mmap_paths`. |
 | `/server` | Connection, upload, configuration-sync and recovery actions. Opening the terminal menu sends nothing. **Check connection**, or bare `/server` outside TUI, reports the server URL and status without displaying the API key. |
 
 Policy, subagent, display and persona pickers also provide explicit **Save defaults** and **Reload saved defaults** actions. Saving is not automatic. `/server status` is not a text command; select **Check connection** from the menu.
@@ -73,7 +73,7 @@ Network inspection defaults **on** and resets with the session.
 
 Inspection off preserves end-to-end HTTPS for clients incompatible with interception; it does **not** disable network sandboxing. Transport policy and recognized plaintext checks remain, while opaque traffic may receive transport-only forwarding.
 
-`fs_mmap` is a path policy for writing dirty shared mappings back to the host. It defaults to **ask_user**. Ordinary opens and writes do not prompt for mmap. Pilot checks `fs_mmap` alongside read and write permissions when the kernel sends dirty pages, not at the `mmap()` syscall. Denials may surface during sync or Bash completion. Configure it with `/policy-defaults <mode> fs_mmap`. **Host/cross-call SQLite WAL and backing-file lock coordination remain unsupported.** See [filesystem mediation](policy.md#filesystem-mediation) and [security](security.md).
+`fs_mmap_paths` is a path policy for writing dirty shared mappings back to the host. It defaults to **ask_user**. Ordinary opens and writes do not prompt for mmap. Pilot checks `fs_mmap_paths` alongside read and write permissions when the kernel sends dirty pages, not at the `mmap()` syscall. Denials may surface during sync or Bash completion. Configure it with `/policy-defaults <mode> fs_mmap_paths`. **Host/cross-call SQLite WAL and backing-file lock coordination remain unsupported.** See [filesystem mediation](policy.md#filesystem-mediation) and [security](security.md).
 
 ## Tools and trust boundaries
 

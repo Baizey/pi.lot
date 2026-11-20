@@ -56,7 +56,7 @@ export class PolicyDefaultsSettings extends Container {
                 notify(error instanceof Error ? error.message : String(error), "error");
             }
             this.requestRender();
-        }, onClose);
+        }, onClose, {enableSearch: true});
         this.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
         this.addChild(new Text(theme.fg("accent", theme.bold("Policy defaults")), 1, 0));
         this.addChild(new Text(theme.fg("muted", "Changes apply to this session immediately; save explicitly to persist."), 1, 0));

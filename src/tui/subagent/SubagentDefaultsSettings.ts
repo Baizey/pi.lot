@@ -35,7 +35,7 @@ export class SubagentDefaultsSettings extends Container {
                 if (current !== AUTO_SUBAGENT_MODEL && !models.includes(current)) {
                     options.push({value: current, label: current, description: "Current preference (unavailable); runtime falls back to auto"});
                 }
-                return new SettingsChoice(options, current, done, true);
+                return new SettingsChoice(options, current, done, {searchable: true});
             },
         }));
         items.push(

@@ -1,4 +1,5 @@
 import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {chooseFromCatalog} from "../tui/SettingsChoice.js";
 import {isPersonaId, PERSONA_ACTIONS, resolvePersona, type Persona, type PersonaCatalog} from "./PersonaCatalog.js";
 import type {PersonaStore} from "./PersonaStore.js";
 
@@ -51,16 +52,14 @@ export class PersonaCommand {
                             return;
                         }
                         const options = [
-                            {value: "off", label: !active ? "✓ Off" : "Off"},
-                            ...choices.map(({persona, label}) => ({value: persona.id,
-                                label: persona.id === active?.id ? `✓ ${label}` : label})),
-                            {value: "save", label: "· Save as default"},
-                            {value: "reset", label: "· Reload saved default"},
+                            {value: "off", label: "Off"},
+                            ...choices.map(({persona, label}) => ({value: persona.id, label})),
+                            {value: "save", label: "Save as default", action: true},
+                            {value: "reset", label: "Reload saved default", action: true},
                         ];
-                        const picked = await ctx.ui.select("Persona", options.map(({label}) => label));
-                        const option = options.find(({label}) => label === picked);
-                        if (!option) return;
-                        choice = option.value;
+                        const picked = await chooseFromCatalog(ctx.ui, "Persona", options, active?.id ?? "off");
+                        if (picked === undefined) return;
+                        choice = picked;
                     }
                     if (!ctx.isIdle()) throw new Error("Wait for the current turn to finish before changing personas.");
                     switch (choice.toLowerCase()) {

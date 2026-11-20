@@ -1,4 +1,5 @@
 import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
+import {chooseFromCatalog} from "../tui/SettingsChoice.js";
 import {parseRoleProfile, resolveRole, type RoleProfile} from "./RoleCatalog.js";
 import type {RoleLibrary} from "./RoleStore.js";
 
@@ -23,11 +24,10 @@ export class RoleCommand {
                                 ...options.map(({label}) => `  ${label}`)].join("\n"), "info");
                             return;
                         }
-                        const picks = [{id: "none", label: "None"}, ...options].map(({id, label}) =>
-                            ({id, label: (active?.id ?? "none") === id ? `✓ ${label}` : label}));
-                        const choice = await ctx.ui.select("Role", picks.map(({label}) => label));
-                        target = picks.find(({label}) => label === choice)?.id ?? "";
-                        if (!target) return;
+                        const picks = [{value: "none", label: "None"}, ...options.map(({id, label}) => ({value: id, label}))];
+                        const picked = await chooseFromCatalog(ctx.ui, "Role", picks, active?.id ?? "none");
+                        if (picked === undefined) return;
+                        target = picked;
                     }
                     if (!ctx.isIdle()) throw new Error("Wait for the current turn to finish before changing roles.");
                     const role = ["none", "off"].includes(target.toLowerCase()) ? null : resolveRole(this.library.catalog(), target);

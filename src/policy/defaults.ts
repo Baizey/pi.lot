@@ -59,40 +59,43 @@ type SavedPolicyDefaults = Omit<ResponseDefaults, "fs_mmap"> & {fs_mmap_paths?: 
 const mmapPathsKey = "fs_mmap_paths";
 
 export function parsePolicyDefaults(value: unknown): ResponseDefaults {
-    return parseDefaults(value, false);
+    const row = policyDefaultsRecord(value);
+    if (Object.keys(row).some((key) => !POLICY_AREAS.some((area) => area === key))) {
+        throw new Error("Unknown policy default area.");
+    }
+    const defaults = {...initialPolicyDefaults};
+    for (const area of POLICY_AREAS) {
+        const present = Object.hasOwn(row, area);
+        if (!present && ADDITIVE_POLICY_AREAS.includes(area)) continue;
+        const response = present ? row[area] : undefined;
+        if (!isFallbackResponse(response)) throw new Error("Missing or invalid policy default response.");
+        defaults[area] = response;
+    }
+    return defaults;
 }
 
-/** Legacy fs_mmap described explicit Bash calls, not automatic mapped opens. */
+/** The old saved key described explicit Bash requests, not path authority. */
 export function parseSavedPolicyDefaults(value: unknown): ResponseDefaults {
-    return parseDefaults(value, true);
+    const row = policyDefaultsRecord(value);
+    const hasLegacy = Object.hasOwn(row, PolicyArea.fs_mmap);
+    const hasPathDefault = Object.hasOwn(row, mmapPathsKey);
+    if (hasLegacy && hasPathDefault) throw new Error("Conflicting policy default areas for mmap.");
+    if (hasLegacy && !isFallbackResponse(row[PolicyArea.fs_mmap])) {
+        throw new Error("Missing or invalid policy default response.");
+    }
+    const {[PolicyArea.fs_mmap]: _legacy, [mmapPathsKey]: pathDefault, ...rest} = row;
+    return parsePolicyDefaults(hasPathDefault ? {...rest, [PolicyArea.fs_mmap]: pathDefault} : rest);
 }
 
-function parseDefaults(value: unknown, saved: boolean): ResponseDefaults {
+function policyDefaultsRecord(value: unknown): Record<string, unknown> {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error("Policy defaults must be an object.");
     }
-    const row = value as Record<string, unknown>;
-    if (Object.keys(row).some((key) => !(saved && key === mmapPathsKey) && !POLICY_AREAS.some((area) => area === key))) {
-        throw new Error("Unknown policy default area.");
-    }
-    const hasMmapPaths = saved && Object.hasOwn(row, mmapPathsKey);
-    if (hasMmapPaths && Object.hasOwn(row, PolicyArea.fs_mmap)) {
-        throw new Error("Conflicting policy default areas for mmap.");
-    }
-    const defaults = {...initialPolicyDefaults};
-    const responses = Object.values(PolicyFallbackResponse);
-    for (const area of POLICY_AREAS) {
-        const key = area === PolicyArea.fs_mmap && hasMmapPaths ? mmapPathsKey : area;
-        const present = Object.hasOwn(row, key);
-        if (!present && ADDITIVE_POLICY_AREAS.includes(area)) continue;
-        const response = present ? row[key] : undefined;
-        if (!responses.some((entry) => entry === response)) {
-            throw new Error("Missing or invalid policy default response.");
-        }
-        // Validate the legacy value but never carry it over into path authority.
-        if (!saved || area !== PolicyArea.fs_mmap || hasMmapPaths) defaults[area] = response as PolicyFallbackResponse;
-    }
-    return defaults;
+    return value as Record<string, unknown>;
+}
+
+function isFallbackResponse(value: unknown): value is PolicyFallbackResponse {
+    return Object.values(PolicyFallbackResponse).some((response) => response === value);
 }
 
 export interface PolicyDefaultJsonStorageInterface {

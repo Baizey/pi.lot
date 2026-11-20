@@ -465,7 +465,9 @@ static int probe_callbacks(int argc, char **argv, struct pilot_fuse_state *state
         result = open_result;
         off_t position = -1;
         bool reading = strcmp(argv[5], "read") == 0;
-        if (!reading && strcmp(argv[5], "write") != 0) return 64;
+        bool writepage = strcmp(argv[5], "writepage") == 0;
+        if (!reading && !writepage && strcmp(argv[5], "write") != 0) return 64;
+        info.writepage = writepage;
         if (open_result == 0) {
             if (lseek((int) info.fh, 3, SEEK_SET) != 3) return 65;
             if (reading) result = operations.read(argv[4], value, size, offset, &info);
@@ -538,9 +540,13 @@ complete:
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "abi-operations") == 0) return probe_operations();
     if (argc < 5) return 64;
-    bool writable_mmap = strncmp(argv[3], "mmap-", 5) == 0;
+    const char policy_prefix[] = "mmap-policy-";
+    bool mmap_policy = strncmp(argv[3], policy_prefix, sizeof(policy_prefix) - 1) == 0;
+    bool writable_mmap = !mmap_policy && strncmp(argv[3], "mmap-", 5) == 0;
+    if (mmap_policy) argv[3] += sizeof(policy_prefix) - 1;
     if (writable_mmap) argv[3] += 5;
-    struct pilot_fuse_state *state = pilot_fuse_probe_new(argv[1], argv[2], 3, 4, writable_mmap);
+    struct pilot_fuse_state *state = mmap_policy ? pilot_fuse_probe_new_mmap_policy(argv[1], argv[2], 3, 4)
+        : pilot_fuse_probe_new(argv[1], argv[2], 3, 4, writable_mmap);
     if (state == NULL) return 64;
     int result = probe_callbacks(argc, argv, state, writable_mmap);
     pilot_fuse_probe_free(state);

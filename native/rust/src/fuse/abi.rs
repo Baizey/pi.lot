@@ -2,7 +2,7 @@
 //! belongs here: callbacks marshal into the existing Rust dispatcher.
 use super::bindings as ffi;
 use super::callbacks::{pilot_fuse_call, Call, Operation};
-use super::{catch_callback, pilot_fuse_ready, pilot_fuse_statistics, State};
+use super::{catch_callback, pilot_fuse_ready, pilot_fuse_statistics, MountMode, State};
 use libc::{c_char, c_int, c_void, dev_t, gid_t, mode_t, off_t, uid_t};
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -26,6 +26,7 @@ unsafe fn invoke(operation: Operation, mut call: Call, info: *mut ffi::fuse_file
             call.fh = info.fh;
             call.direct_io = info.direct_io() as c_int;
             call.keep_cache = info.keep_cache() as c_int;
+            call.writepage = info.writepage() != 0;
         }
         let result = pilot_fuse_call(state, operation, &mut call);
         if let Some(info) = info.as_mut() {
@@ -64,6 +65,11 @@ pub unsafe extern "C" fn pilot_fuse_init(
             // Use the public helper: changing want fields alone would bypass
             // libfuse's enclosing-session capability bookkeeping.
             ffi::fuse_unset_feature_flag(connection, capability as u64);
+        }
+        if borrowed.mount_mode == MountMode::Policy {
+            // Negotiate shared mappings without changing ordinary writable opens
+            // to cached I/O. Unsupported kernels leave direct mmap unavailable.
+            ffi::fuse_set_feature_flag(connection, ffi::FUSE_CAP_DIRECT_IO_ALLOW_MMAP as u64);
         }
         let configuration = &mut *configuration;
         configuration.parallel_direct_writes = 0;

@@ -36,16 +36,16 @@ The receipt is an artifact-consistency check, not a signed attestation or protec
 | Relay data/backpressure, parent death, exec bytes, descriptor cleanup, signals and stdio | `native-process.test.ts`. |
 | Build failures, safe staging, receipt validation, package-local selection and actual npm install hook | `native-build-flags.test.ts`, `native-executable.test.ts`, `native-rust-integration.test.ts`. |
 | TypeScript broker ownership and actual native launch wiring | `native-fuse-broker-integration.test.ts`, `network-sandbox-lifecycle.test.ts`. |
-| Retained frontend descriptor, idempotent mapped-write drain and helper failure | `native-fuse-mmap-drain.test.ts`. |
+| Retained frontend descriptor, idempotent filesystem completion and helper failure | `native-fuse-mount-completion.test.ts`. |
 | Real mounted cache/mmap behavior, isolated calls, cleanup and network gate | `native-fuse-mmap.test.ts`, `native-fuse.test.ts`, `native-fuse-session-broker.test.ts`, `bash-sandbox.test.ts`, `network.test.ts`. |
 
 Mount-free callback/INIT probes do not replace kernel-mounted tests. Optional libfuse custom-I/O support affects INIT-probe skips, not production mounts. Source-package tests build through the actual install hook with cached Cargo dependencies; they do not test offline npm dependency installation. Run host integration outside pi.lot or other restrictive sandboxes.
 
 ## Writable-mmap completion
 
-Rust FUSE evaluates the `fs_mmap` path policy (fallback `ask_user`) at mapping-capable `O_RDWR` opens and creates, including for subagents, not at `mmap` syscalls. An allow selects cached write-through for the handle only with separate `FS_READ` and `FS_WRITE` authorization before the backing open. A mapping denial normally leaves direct I/O under ordinary path policy.
+Rust FUSE negotiates shared mmap on direct-I/O handles, leaving `WRITEBACK_CACHE` off. It checks the `fs_mmap` path policy on kernel-tagged dirty-page writeback, not on opens or the mapping syscall. Before `pwrite`, the callback checks live read, write, and mmap authority and verifies the retained backing file’s identity.
 
-`NativeFuseMappedWriteDrain` retains a frontend directory descriptor before worker startup. Both standalone and session-broker paths run `pi-fuse-native --syncfs 3` against it after the run settles and before normal policy-control closure/unmount. Repeated finish calls share one operation; its descriptor closes afterward. Helper failure/timeout propagates, combined with an existing run error. The 30-second budget pauses for originating policy approval; it is not an unconditional wall-clock deadline.
+`NativeFuseMountCompletion` retains a frontend directory descriptor before worker startup. Both standalone and session-broker paths run `pi-fuse-native --syncfs 3` against it after the run settles and before normal policy-control closure/unmount. Repeated finish calls share one operation; its descriptor closes afterward. Helper failure/timeout propagates, combined with an existing run error. The 30-second budget pauses for originating policy approval; it is not an unconditional wall-clock deadline.
 
 This is a helper-exit acknowledgement, not a new policy-control drain frame. It does not guarantee per-store authorization, revocation, rollback, stable-storage durability of every backing file, or lossless cancellation/shutdown. Backing writes use `pwrite`; frontend flush is a no-op, and explicit fsync/fdatasync callbacks remain separate. See [security](security.md) and [mmap research/status](transparent-mmap-feasibility.md).
 
@@ -57,4 +57,4 @@ This is a helper-exit acknowledgement, not a new policy-control drain frame. It 
 - **Rust startup:** preserve inherited SIGPIPE and initially closed stdio where the helper contract requires it; Rust runtime initialization can otherwise change them before `main`.
 - **FFI failure:** contain callback unwinding and fail the mount closed after a panic. Generated bindings do not establish pointer, buffer, or lifetime safety.
 
-These are independently specified expected behaviors, not merely agreement with a retired implementation. Passing tests or using Rust does not remove pathname races, cached-data revocation limits, alias problems, external C-library risks, or the [boundaries outside mediation](security.md#explicit-boundaries-outside-mediation). Writable shared mmap is available only through path-policy-approved cached write-through compatibility; FUSE writeback-cache, passthrough, direct-I/O shared mmap and backing-file lock forwarding remain disabled or unsupported. Host/cross-call SQLite WAL remains unsupported.
+These are independently specified expected behaviors, not merely agreement with a retired implementation. Passing tests or using Rust does not remove pathname races, cached-data revocation limits, alias problems, external C-library risks, or the [boundaries outside mediation](security.md#explicit-boundaries-outside-mediation). Writable shared mmap relies on kernel support for direct-I/O shared mappings. FUSE writeback-cache, passthrough, and backing-file lock forwarding remain disabled or unsupported. Host/cross-call SQLite WAL remains unsupported.

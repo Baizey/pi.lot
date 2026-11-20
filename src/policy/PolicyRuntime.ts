@@ -18,6 +18,7 @@ import {PolicyEngine} from "./PolicyEngine";
 import {policyScopeCovers, policyScopeHierarchy, resolveUri} from "./PolicyScope.js";
 import {
     isFilesystemAccess,
+    userPolicyLifetimes,
     isPersistedLifetime,
     type Policy,
     PolicyAccessType,
@@ -1143,10 +1144,10 @@ export class PolicyRuntime implements PolicyPrincipalRegistry {
             this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
             return result;
         }
-        if (accessType === PolicyAccessType.FS_MMAP && (choice.accessType !== accessType || !policyScopeHierarchy(uri, accessType).includes(choice.uri)
-            || (choice.lifetime !== PolicyLifetime.ONCE && choice.lifetime !== PolicyLifetime.SESSION
-                && choice.lifetime !== PolicyLifetime.LOCAL))) {
-            const result = failedClosedResult(uri, accessType, "Invalid writable mmap approval scope or lifetime.");
+        if (isFilesystemAccess(accessType) && (choice.accessType !== accessType
+            || !policyScopeHierarchy(uri, accessType).includes(choice.uri)
+            || !userPolicyLifetimes(accessType).includes(choice.lifetime))) {
+            const result = failedClosedResult(uri, accessType, "Invalid filesystem approval type, scope, or lifetime.");
             this.auditUserApproval(requestContext, uri, accessType, choice, result, "FAILED_CLOSED");
             return result;
         }

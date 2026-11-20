@@ -1233,11 +1233,15 @@ test("hidden suppresses completed native images and partial image output without
     assert.ok(completed.render(80).some((line) => line.includes("\x1b_G")), "leaving hidden restores the native image");
     harness.rows.modes.setViews(ToolDisplayMode.HIDDEN, ToolDisplayMode.FULL);
     const active = harness.read("active-image");
+    const nativeRender = active.render.bind(active);
+    let nativeLines: readonly string[] = [];
+    active.render = (width) => nativeLines = Object.freeze(nativeRender(width));
     active.updateResult(result, true);
     harness.root.addChild(active);
     assert.match(plain(harness.root.render(80)), /read \| active-image/);
     assert.equal(harness.root.render(80).some((line) => line.includes("\x1b_G")), false);
     assert.equal(active.render(80).length, 2, "partial image spacers leave only the normal leading gap and active header");
+    assert.equal(nativeLines.at(-1), "", "the projection leaves the native render buffer untouched");
     active.updateResult(result);
     assert.equal(harness.root.render(80).some((line) => line.includes("\x1b_G")), false);
     assert.match(plain(harness.root.render(80)), /read \| active-image/);
@@ -1568,6 +1572,6 @@ function clickToolHeader(row: ToolExecutionComponent): void {
     assert.equal(result?.handled, true);
 }
 
-function plain(lines: string[]): string {
+function plain(lines: readonly string[]): string {
     return lines.map(stripVTControlCharacters).join("\n");
 }

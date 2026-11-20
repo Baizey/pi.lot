@@ -105,9 +105,9 @@ An eligible preferred model is used exactly, without automatic ranking. If its p
 
 ## Bash sandbox settings
 
-`/sandboxing network-inspection on|off` controls session-only network inspection (default **on**) for new root and child Bash calls. Separately, `/policy-defaults <mode> fs_mmap` sets the writable mapping fallback (built-in **ask_user**); `/policy-defaults save` persists it. Rust FUSE checks this inheritable path policy automatically at mapping-capable `O_RDWR` opens and creates under the child's policy. `fs_mmap` does not substitute for read/write grants, and read/write grants alone do not authorize mapping mode.
+`/sandboxing network-inspection on|off` controls session-only network inspection (default **on**) for new root and child Bash calls. Separately, `/policy-defaults <mode> fs_mmap` sets the writable mapping fallback (built-in **ask_user**); `/policy-defaults save` persists it. Rust FUSE checks this inheritable path policy on mapped writeback under the child's policy. Mapped writeback also requires separate read and write grants.
 
-Turning inspection off leaves HTTPS end-to-end, with transport-only policy for opaque traffic; recognized plaintext protocols still receive policy checks. Mapping approval selects cached write-through for the handle, not authority over individual memory stores; a mapping denial normally leaves direct I/O. Opens and backing I/O still have separate checks. Cancellation/revocation can lose dirty changes, writeback errors can be delayed, and host/cross-call SQLite WAL is unsupported. See [sandbox setup](installation.md#session-only-sandbox-switches) and [security limitations](security.md).
+Turning inspection off leaves HTTPS end-to-end, with transport-only policy for opaque traffic; recognized plaintext protocols still receive policy checks. Mapping approval authorizes dirty mapped bytes to be written to the backing file, not individual memory stores. Ordinary opens and I/O do not check `fs_mmap`. Cancellation/revocation can lose dirty changes, writeback errors can be delayed, and host/cross-call SQLite WAL is unsupported. See [sandbox setup](installation.md#session-only-sandbox-switches) and [security limitations](security.md).
 
 ## Policy requests from children
 

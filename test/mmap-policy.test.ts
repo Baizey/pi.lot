@@ -53,7 +53,7 @@ test("invalid user decisions cannot install a different directory or synchronize
         })));
         const result = await runtime.once(root, directory, access);
         assert.equal(result.matchedStatus, PolicyResponse.DENIED);
-        assert.match(result.matchedReason, /Invalid writable mmap approval/);
+        assert.match(result.matchedReason, /Invalid filesystem approval/);
         assert.deepEqual(dao.loadPolicies(), []);
     }
 });

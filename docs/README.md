@@ -1,6 +1,6 @@
 # pi.lot documentation
 
-pi.lot provides policy-controlled filesystem and Bash tools, retained subagents, MCP, web search, session archival, and saved configuration sync for [Pi](https://pi.dev). The supported target is **Linux x86-64**, with development dependencies pinned to Pi **1.5.2**.
+pi.lot provides policy-controlled filesystem and Bash tools, retained subagents, MCP, web search, session archival, and saved configuration sync for [Pi](https://pi.dev). The supported target is **Linux x86-64**, with development dependencies pinned to Pi **1.6.0**.
 
 > pi.lot is experimental and has not been independently security audited. It is not hardened isolation for hostile code. Allowed operations retain the user's host permissions. Read the [security model](security.md) before using it for sensitive workloads.
 
@@ -27,7 +27,7 @@ These references ship with the package. Pilot supplies their installation-relati
 Install the [host prerequisites](installation.md#requirements), then build and register a trusted checkout:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.6.0
 git clone https://github.com/Baizey/pi-sandbox.git pilot
 cd pilot
 npm install
@@ -73,7 +73,7 @@ Network inspection defaults **on** and resets with the session.
 
 Inspection off preserves end-to-end HTTPS for clients incompatible with interception; it does **not** disable network sandboxing. Transport policy and recognized plaintext checks remain, while opaque traffic may receive transport-only forwarding.
 
-Writable mapping is governed by `fs_mmap`, a path policy alongside `fs_read` and `fs_write` that defaults to **ask_user**. Rust FUSE checks it automatically at mapping-capable `O_RDWR` opens and creates, not at `mmap` syscalls. An allow enables cached write-through for the handle if read and write are separately authorized; a mapping denial normally leaves ordinary direct I/O. There is no Bash option or `/sandboxing` subcommand for mmap. Use `/policy-defaults <mode> fs_mmap` and `/policy-defaults save` to change and save the fallback. Memory stores are not individually checked or revocable. Normal completion attempts a retained-frontend `syncfs` drain before teardown and reports helper failures. This is not lossless cancellation, transactional rollback, or stable-storage durability for every backing file. **Host/cross-call SQLite WAL and backing-file lock coordination remain unsupported.** See [filesystem mediation](policy.md#filesystem-mediation) and [security](security.md).
+`fs_mmap` is a path policy for writing dirty shared mappings back to the host. It defaults to **ask_user**. Ordinary opens and writes do not prompt for mmap. Pilot checks `fs_mmap` alongside read and write permissions when the kernel sends dirty pages, not at the `mmap()` syscall. Denials may surface during sync or Bash completion. Configure it with `/policy-defaults <mode> fs_mmap`. **Host/cross-call SQLite WAL and backing-file lock coordination remain unsupported.** See [filesystem mediation](policy.md#filesystem-mediation) and [security](security.md).
 
 ## Tools and trust boundaries
 

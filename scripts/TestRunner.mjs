@@ -5,7 +5,7 @@ import {fileURLToPath} from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const nativeContracts = [
     "test/native-fuse-callbacks.test.ts",
-    "test/native-fuse-mmap-drain.test.ts",
+    "test/native-fuse-mount-completion.test.ts",
     "test/native-fuse-contract.test.ts",
     "test/native-fuse-protocol.test.ts",
     "test/native-fuse-broker-integration.test.ts",

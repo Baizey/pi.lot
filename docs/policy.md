@@ -23,15 +23,15 @@ The Bash worker sees the host filesystem through a FUSE policy mount. Operations
 
 - filesystem read;
 - filesystem write (including delete); or
-- writable mapping eligibility, governed by the separate `fs_mmap` path policy.
+- writeback of dirty shared mappings, governed by the separate `fs_mmap` path policy.
 
 Multi-path operations such as rename can require approval for both paths. Direct `read`, `edit`, and `write` tool calls use the same policy runtime without launching the Bash worker.
 
 Each Bash call has its own mount and once-only grants. Opens and native I/O callbacks check live policy and fail closed when policy control state is invalid or unavailable. Read-only opens support cached reads and read-only shared `mmap`; policy changes do **not** revoke already-cached or mapped data. By default, writable descriptors use direct I/O and do not support shared mappings.
 
-Rust FUSE automatically evaluates `fs_mmap` for the target path at mapping-capable `O_RDWR` opens and creates, not when the application actually calls `mmap`. An allow selects **cached write-through I/O** for that handle, not FUSE writeback-cache, passthrough, or the direct-I/O mmap capability. The cached open/create still requires separate `FS_READ` and `FS_WRITE` authorization **before the backing open**, including `O_TRUNC` when that flag reaches the open callback. A separate kernel truncate remains an ordinary `FS_WRITE` operation. Denying mapping mode normally leaves the handle on the direct-I/O path, subject to ordinary filesystem checks; it does not by itself deny the open or fail the Bash call. Ordinary backing READ/WRITE and handle-truncate callbacks retain live-policy and pathname/device/inode checks; cached reads and memory stores do not run those callbacks per access. Mapped stores cannot be individually approved or revoked. A later denial, pathname replacement/unlink, cancellation, or control-channel failure can reject delayed writeback and lose dirty changes; errors may surface later rather than at the store.
+Ordinary writable opens and I/O use direct I/O without checking `fs_mmap`. On kernels that support FUSE shared mappings on direct-I/O handles, Pilot checks `fs_mmap` only when the kernel sends dirty mapped pages for writeback. Before writing those bytes to the backing file, Pilot requires live `FS_READ`, `FS_WRITE`, and `FS_MMAP` authority and validates the retained file identity. Ordinary writes and truncation still use `FS_WRITE`, including `O_TRUNC`. Neither `mmap()` itself nor individual memory stores go through the policy flow. A denial leaves the backing bytes untouched by that writeback, but may surface later at flush, sync, or Bash completion. Cached reads are not individually checked or revocable.
 
-To drain mapped writes, both the session broker and standalone runner retain a frontend mount descriptor from before worker startup. On normal completion, after the worker tree stops and **before policy-bridge teardown**, they run frontend `syncfs` to drain mapped writes and observe writeback errors, even after application descriptors have closed. This has a separate **30-second approval-aware execution budget**. Drain failures are propagated, or aggregated with run/cleanup failures, not reported as successful completion. It is not a backing-storage durability guarantee or lossless shutdown: cancellation, forced teardown, revocation, daemon/control loss, and timeout can still lose dirty data.
+For ordinary mount completion, both the session broker and standalone runner retain a frontend mount descriptor from before worker startup. On normal completion, after the worker tree stops and **before policy-bridge teardown**, they run frontend `syncfs` to drain mapped writes and observe writeback errors, even after application descriptors have closed. This has a separate **30-second approval-aware execution budget**. Drain failures are propagated, or aggregated with run/cleanup failures, not reported as successful completion. It is not a backing-storage durability guarantee or lossless shutdown: cancellation, forced teardown, revocation, daemon/control loss, and timeout can still lose dirty data.
 
 Do not concurrently access shared host databases through Bash mounts: backing-file locks do not coordinate with host processes or other calls, even with rollback journaling. Use isolated disposable copies with a single writer. Replaced or unlinked file handles can fail closed rather than retain normal POSIX behavior. A denied page-cache fill may report `EIO`; consult the policy-denial output rather than assuming a disk failure. See [filesystem limitations](security.md#known-limitations) for cache, metadata, alias, and pathname-race boundaries.
 
@@ -132,7 +132,7 @@ Root-only `archive_list` and `archive_fetch` check each actual URL and method wi
 | --- | --- | --- |
 | `fs_read` | Filesystem reads | `allow` |
 | `fs_write` | Filesystem writes and deletes | `ask_user` |
-| `fs_mmap` | Writable mapping eligibility by path at mapping-capable FUSE opens and creates | `ask_user` |
+| `fs_mmap` | Writeback of dirty shared mappings to a backing path | `ask_user` |
 | `web_read` | HTTP access and GET | `allow` |
 | `web_write` | POST, PUT, PATCH, DELETE, HEAD, OPTIONS | `ask_user` |
 | `web_dns` | DNS | `ask_user` |

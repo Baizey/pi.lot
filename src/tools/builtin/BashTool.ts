@@ -211,7 +211,6 @@ export class BashTool {
                     onDecisionError: reportFuseDecisionError,
                     onPolicyDeny: report,
                     sessionBroker: nativeFuseSessionBroker,
-                    mmapMode: "policy",
                 }, runNetworkSandbox);
 
                 if (result.signal) throw new Error(`network worker terminated by ${result.signal}`);

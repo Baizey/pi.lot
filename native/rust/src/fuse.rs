@@ -81,17 +81,6 @@ enum MountMode {
     Policy,
 }
 
-impl MountMode {
-    fn parse(mode: Option<&[u8]>) -> Option<Self> {
-        match mode {
-            None | Some(b"direct") => Some(Self::Direct),
-            Some(b"mmap") => Some(Self::Mmap),
-            Some(b"policy") => Some(Self::Policy),
-            _ => None,
-        }
-    }
-}
-
 pub struct State {
     hidden_path: CString,
     snapshot_path: CString,
@@ -144,15 +133,41 @@ impl State {
         retained: Option<i32>,
         directory: bool,
     ) -> Result<Option<Fd>, i32> {
-        self.count(POLICY_EVENTS);
+        self.authorize_all(path, &[access], counter, retained, directory)
+    }
+    fn authorize_all(
+        &self,
+        path: &CStr,
+        accesses: &[Access],
+        counter: Option<usize>,
+        retained: Option<i32>,
+        directory: bool,
+    ) -> Result<Option<Fd>, i32> {
         if let Some(counter) = counter {
             self.count(counter);
         }
         let mut policy = self.policy.lock().map_err(|_| -libc::EACCES)?;
         self.sync_policy(&mut policy)?;
         let evaluated = self.policy_path(path)?;
-        if self.authorize_path_decision(&mut policy, path, &evaluated, access)? != Decision::Allow {
-            return Err(-libc::EACCES);
+        for &access in accesses {
+            self.count(POLICY_EVENTS);
+            if self.authorize_path_decision(&mut policy, path, &evaluated, access)?
+                != Decision::Allow
+            {
+                return Err(-libc::EACCES);
+            }
+        }
+        // A later approval may supersede an earlier authority. Never start a
+        // second prompt in the final validation before touching the backing file.
+        if accesses.len() > 1 {
+            self.sync_policy(&mut policy)?;
+            if self.policy_path(path).ok().as_deref() != Some(evaluated.as_c_str())
+                || accesses.iter().any(|&access| {
+                    policy.evaluate(evaluated.to_bytes(), access) != Some(Decision::Allow)
+                })
+            {
+                return Err(-libc::EACCES);
+            }
         }
         unsafe {
             if let Some(fd) = retained {
@@ -204,8 +219,6 @@ impl State {
         }
         Ok(())
     }
-    // A genuine denial can select direct I/O; a failed exchange or changed
-    // path must abort the operation instead of allowing a backing effect.
     fn authorize_path_decision(
         &self,
         policy: &mut Policy,

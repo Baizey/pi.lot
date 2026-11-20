@@ -6,9 +6,9 @@ pi.lot (npm package name `pilot`) is a local Pi extension for **Linux x86-64**, 
 
 ## Requirements
 
-This checkout targets Pi `1.5.2` and requires:
+This checkout targets Pi `1.6.0` and requires:
 
-- Node.js **22.19 or newer** and npm (Pi 1.5.2's Node requirement);
+- Node.js **22.19 or newer** and npm (Pi's Node requirement);
 - system libfuse 3.17.3 or newer, including `/dev/fuse` and `/usr/bin/fusermount3`;
 - Bubblewrap;
 - nftables and iproute2;
@@ -74,7 +74,7 @@ test -r /dev/fuse && test -w /dev/fuse
 Install the compatible Pi release:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.6.0
 ```
 
 Start Pi and use `/login` to authenticate a subscription or API-key provider:
@@ -126,7 +126,7 @@ Pilot provides wrappers around Pi's built-in MCP and codemode implementations. A
 
 Codemode remains inactive by default. Enable it with `"defaultTools": ["+codemode"]` to keep the ordinary tools, or `pi --tools +codemode` for one invocation. MCP activates it when server exposure requires scripts. Root-session Pilot calls use JSON `{purpose, code}`; child sessions retain Pi's native input convention without `purpose` (see [child MCP capabilities](subagents.md#hard-mechanism-capabilities)). [Pi's codemode documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/codemode.md) describes the `code` body, not this wrapper. Review the [model-call policy boundary](security.md#codemode-model-calls).
 
-Pi 1.5 queues codemode calls when its process-wide worker pool is full. The default is two workers across the root and all in-process children. To allow more concurrent scripts, set the environment variable when starting Pi, for example:
+Pi queues codemode calls when its process-wide worker pool is full. The default is two workers across the root and all in-process children. To allow more concurrent scripts, set the environment variable when starting Pi, for example:
 
 ```bash
 PI_CODEMODE_MAX_WORKERS=4 pi
@@ -168,7 +168,7 @@ Bare `/policy-defaults`, `/subagent-defaults`, `/display`, `/sandboxing`, and `/
 
 Inspection defaults **on** and resets with each session. Turning it off for new Bash calls keeps HTTPS end-to-end and applies transport-only policy to opaque traffic; recognized plaintext protocols still receive policy checks. See [HTTPS inspection](policy.md#https-inspection).
 
-Writable mapping is a separate path policy, not a sandbox switch. Rust FUSE checks `fs_mmap` when a file is opened or created with mapping-capable `O_RDWR`, even if the application never calls `mmap`. Set the fallback (built-in **ask_user**) with `/policy-defaults <mode> fs_mmap` and save it with `/policy-defaults save`. An allow enables cached write-through for the handle with separate filesystem read and write authorization; a mapping denial normally leaves direct I/O. Cached write-through supports workloads such as the Go linker but does not check or revoke individual memory stores. See [filesystem mediation](policy.md#filesystem-mediation) and [security limitations](security.md#known-limitations).
+Mapped writeback is governed by a separate path policy, not a sandbox switch. Pilot checks `fs_mmap` when dirty pages from a shared mapping are written back, not at `open()` or `mmap()`. It requires a kernel that negotiates FUSE direct-I/O shared mmap (introduced in Linux 6.6; use a current kernel for writable mapping support). Unavailable support leaves shared writable mmap unavailable, not cached by default. Set the fallback (built-in **ask_user**) with `/policy-defaults <mode> fs_mmap`; `/policy-defaults save` persists it. See [filesystem mediation](policy.md#filesystem-mediation) and [security limitations](security.md#known-limitations).
 
 Continue with:
 
@@ -212,7 +212,7 @@ Use a terminal on a prepared Linux host, **outside pi.lot's Bash sandbox or any 
 
 Native regression tests additionally require Python 3 for byte-preserving exec, seccomp, and deterministic subreaper launchers, plus a C compiler for ABI/syscall fixtures. The normal Rust helper build/runtime does not depend on Python.
 
-The canonical runner includes `test/native-fuse-mmap-drain.test.ts` in its **mount-free** contracts and `test/native-fuse-mmap.test.ts` in its **host** contracts. The latter exercises writable mapping behavior and mapped-write draining, with and without the session broker. Its Go linker cases skip when Go is absent; install Go to exercise them. Such skips are not evidence that those integrations passed.
+The canonical runner includes `test/native-fuse-mount-completion.test.ts` in its **mount-free** contracts and `test/native-fuse-mmap.test.ts` in its **host** contracts. The latter exercises writable mapping behavior and mapped-write draining, with and without the session broker. Its Go linker cases skip when Go is absent; install Go to exercise them. Such skips are not evidence that those integrations passed.
 
 Two mount-free INIT negotiation cases additionally need libfuse built with `-Denable-custom-io=true`. Distribution builds without it skip those cases on `-ENOTSUP`; other probe errors still fail. This optional transport is not required for production mounts. Use a matching custom-I/O-enabled SDK/runtime to run them without skips.
 

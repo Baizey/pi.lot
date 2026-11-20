@@ -428,7 +428,7 @@ export class TranscriptDisplayRuntime {
                     if (!decoration && source && Array.isArray((component as Component & {children?: Component[]}).children)) {
                         decoration = this.decorateSource(component);
                     }
-                    // In Pi 1.5, the public MouseRegions under assistant content wrap thinking runs.
+                    // The public MouseRegions under assistant content wrap thinking runs.
                     // Clip their rendered Markdown, not raw text or any private child component.
                     if (!decoration && assistantContent && (component instanceof MouseRegion || (
                         component.constructor.name === MouseRegion.name
@@ -561,7 +561,7 @@ export class TranscriptDisplayRuntime {
         return renderLineFactory(() => [this.context?.ui.theme.fg(ThemeColor.thinkingText, label) ?? label], 1).render(width);
     }
 
-    private renderThinkingTail(lines: string[], width: number): string[] {
+    private renderThinkingTail(lines: readonly string[], width: number): readonly string[] {
         if (lines.length <= THINKING_PREVIEW_LINES) return lines;
         const omitted = lines.length - THINKING_PREVIEW_LINES;
         const label = `... (${omitted} earlier ${omitted === 1 ? "line" : "lines"})`;
@@ -605,9 +605,11 @@ export class TranscriptDisplayRuntime {
             if (hidden && status.partial === false && (!status.compact || status.toolCallId === undefined
                 || !this.recentFinished.has(status.toolCallId))) return [];
             const lines = render.call(component, width);
-            // Removing partial-result images must not leave their trailing spacer rows.
-            if (hidden) while (lines.at(-1) === "") lines.pop();
-            return lines;
+            if (!hidden) return lines;
+            // Trim partial-image spacers without changing Pi’s cached render output.
+            let end = lines.length;
+            while (end > 0 && lines[end - 1] === "") end--;
+            return end === lines.length ? lines : lines.slice(0, end);
         };
         const decoratedUpdate: ToolExecutionComponent["updateResult"] = (result, partial = false) => {
             const wasFinished = status.partial === false;

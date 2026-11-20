@@ -51,11 +51,10 @@ pub(super) fn main() -> i32 {
     {
         return sync_filesystem(&arguments);
     }
-    let mode = MountMode::parse(arguments.get(8).map(|a| a.to_bytes()));
-    let Some(mode) = mode.filter(|_| matches!(arguments.len(), 8 | 9)) else {
-        diagnostic(b"usage: pi-fuse-native MOUNTPOINT HIDDEN_PATH SNAPSHOT_PATH STATS_PATH READY_FD REQUEST_FD RESPONSE_FD [direct|mmap|policy]\n       pi-fuse-native --broker\n       pi-fuse-native --syncfs FD\n");
+    if arguments.len() != 8 {
+        diagnostic(b"usage: pi-fuse-native MOUNTPOINT HIDDEN_PATH SNAPSHOT_PATH STATS_PATH READY_FD REQUEST_FD RESPONSE_FD\n       pi-fuse-native --broker\n       pi-fuse-native --syncfs FD\n");
         return 64;
-    };
+    }
     unsafe {
         run_filesystem(
             &arguments[0],
@@ -67,7 +66,6 @@ pub(super) fn main() -> i32 {
             libc::atoi(arguments[6].as_ptr()),
             libc::atoi(arguments[7].as_ptr()),
             false,
-            mode,
         )
     }
 }
@@ -159,7 +157,6 @@ fn run_filesystem(
     request: i32,
     response: i32,
     framed: bool,
-    mode: MountMode,
 ) -> i32 {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
@@ -181,7 +178,7 @@ fn run_filesystem(
     }
     let mut state = Box::new(State::new(snapshot.to_owned(), hidden, request, response));
     state.framed_ready = framed;
-    state.mount_mode = mode;
+    state.mount_mode = MountMode::Policy;
     *state.ready_fd.get_mut().unwrap() = ready;
     if state.load().is_err() {
         perror("load native FUSE policy base snapshot");
@@ -351,14 +348,12 @@ impl Broker {
         let fields: Vec<&[u8]> = line
             .split(|b| matches!(*b, b'\t' | b'\r' | b'\n'))
             .filter(|s| !s.is_empty())
-            .take(9)
+            .take(8)
             .collect();
-        let mode = MountMode::parse(fields.get(7).copied());
-        let Some(mode) = mode.filter(|_| matches!(fields.len(), 7 | 8) && fields[0] == b"START")
-        else {
+        if fields.len() != 7 || fields[0] != b"START" {
             set_errno(libc::EPROTO);
             return Err(-1);
-        };
+        }
         if fields[1..]
             .iter()
             .any(|s| s.is_empty() || s.len() >= PATH_MAX)
@@ -409,7 +404,6 @@ impl Broker {
                 control.0,
                 control.0,
                 true,
-                mode,
             );
             drop(control);
             libc::_exit(result);

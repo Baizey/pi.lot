@@ -132,28 +132,31 @@ test("human policy selections separate the heading, request fields, choices, and
     assert.equal(harness.inputTitles.length, 0);
 });
 
-test("writable mmap uses the standard path approval steps with no synchronized choice", async () => {
-    const harness = new PromptHarness();
-    const directory = "/tmp/go-checkout/test-binary";
-    const result = harness.flow().askForPolicy(directory, PolicyAccessType.FS_MMAP, undefined, {
-        ...request,
-        toolCall: {...request.toolCall, command: "go build ./..."},
+for (const access of [PolicyAccessType.FS_READ, PolicyAccessType.FS_WRITE, PolicyAccessType.FS_MMAP]) {
+    test(`${access} uses the same path approval steps and lifetimes`, async () => {
+        const harness = new PromptHarness();
+        const directory = "/tmp/go-checkout/test-binary";
+        const result = harness.flow().askForPolicy(directory, access, undefined, {
+            ...request,
+            toolCall: {...request.toolCall, command: "go build ./..."},
+        });
+        const scope = await harness.prompt(0);
+        const rendered = plain(scope);
+        assert.match(rendered, /Path policy scope/);
+        assert.match(rendered, /Target: \/tmp\/go-checkout\/test-binary/);
+        assert.match(rendered, /Command: go build/);
+        assert.match(rendered, /\/tmp\/go-checkout/);
+        key(scope, "\r");
+        key(await harness.prompt(1), "\r");
+        const lifetime = await harness.prompt(2);
+        assert.match(plain(lifetime), /Always on this computer/);
+        assert.doesNotMatch(plain(lifetime), /Always synchronized/);
+        key(lifetime, "\x1b[B");
+        key(lifetime, "\x1b[B");
+        key(lifetime, "\r");
+        assert.equal((await result).lifetime, PolicyLifetime.LOCAL);
     });
-    const scope = await harness.prompt(0);
-    const rendered = plain(scope);
-    assert.match(rendered, /Target: \/tmp\/go-checkout\/test-binary/);
-    assert.match(rendered, /Command: go build/);
-    assert.match(rendered, /\/tmp\/go-checkout/);
-    key(scope, "\r");
-    key(await harness.prompt(1), "\r");
-    const lifetime = await harness.prompt(2);
-    assert.match(plain(lifetime), /Always on this computer/);
-    assert.doesNotMatch(plain(lifetime), /Always synchronized/);
-    key(lifetime, "\x1b[B");
-    key(lifetime, "\x1b[B");
-    key(lifetime, "\r");
-    assert.equal((await result).lifetime, PolicyLifetime.LOCAL);
-});
+}
 
 test("long Unicode requests stay bounded and the full request remains scrollable", async () => {
     const harness = new PromptHarness();

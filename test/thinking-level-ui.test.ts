@@ -442,7 +442,7 @@ function testTheme(offset = 0): Theme {
     } as Theme;
 }
 
-function assertBorder(lines: string[], theme: Theme, color: ThemeColor): void {
+function assertBorder(lines: readonly string[], theme: Theme, color: ThemeColor): void {
     const prefix = theme.fg(color, "marker").split("marker")[0]!;
     assert.ok(lines[0]?.includes(`${prefix}─`), "top border uses the expected color");
     assert.ok(lines.at(-1)?.includes(`${prefix}─`), "bottom border uses the expected color");

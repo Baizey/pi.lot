@@ -10,7 +10,7 @@ export type ThinkingRun = {
 type AssistantMessage = Parameters<AssistantMessageComponent["updateContent"]>[0];
 type ContentRow = {component: Component; gap: Spacer; run?: ThinkingRun};
 
-/** Pi 1.5 public-child adapter; native messages and thinking visibility overrides stay untouched. */
+/** Pi public-child adapter; native messages and thinking visibility overrides stay untouched. */
 export class AssistantThinkingRows {
     private readonly content: Container;
     private readonly nativeChildren: Component[];
@@ -25,7 +25,7 @@ export class AssistantThinkingRows {
         source: AssistantMessage,
         runs: readonly ThinkingRun[],
         private readonly label: (active: boolean, width: number) => string[],
-        private readonly renderTail: (lines: string[], width: number) => string[],
+        private readonly renderTail: (lines: readonly string[], width: number) => readonly string[],
         private readonly retained: (run: ThinkingRun) => boolean,
     ) {
         // AssistantMessageComponent exposes its content Container through public children.

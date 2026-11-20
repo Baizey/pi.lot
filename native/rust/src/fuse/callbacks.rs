@@ -19,6 +19,7 @@ pub struct Call {
     pub(super) has_info: i32,
     pub(super) direct_io: i32,
     pub(super) keep_cache: i32,
+    pub(super) writepage: bool,
 }
 impl Default for Call {
     fn default() -> Self {
@@ -38,6 +39,7 @@ impl Default for Call {
             has_info: 0,
             direct_io: 0,
             keep_cache: 0,
+            writepage: false,
         }
     }
 }
@@ -234,34 +236,32 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
             let access = c.flags & libc::O_ACCMODE;
             let readonly = access == libc::O_RDONLY;
             let create = matches!(op, Create);
-            let (p, cached) = if state.mount_mode == MountMode::Policy && access == libc::O_RDWR {
-                authorize_policy_open(state, path, create)?
-            } else {
-                let legacy_mmap = state.mount_mode == MountMode::Mmap;
-                if legacy_mmap && access == libc::O_RDWR {
+            let legacy_mmap = state.mount_mode == MountMode::Mmap;
+            if legacy_mmap && access == libc::O_RDWR {
+                state.authorize_path(path, Access::Read, None)?;
+            }
+            let p = if state.mount_mode == MountMode::Policy && access == libc::O_RDWR {
+                authorize_writable_open(state, path, create)?
+            } else if create {
+                state.authorize_path(path, Access::Write, None)?;
+                if readonly {
                     state.authorize_path(path, Access::Read, None)?;
                 }
-                if create {
-                    state.authorize_path(path, Access::Write, None)?;
+                state.destination(path)?
+            } else {
+                state.authorize_path(
+                    path,
                     if readonly {
-                        state.authorize_path(path, Access::Read, None)?;
-                    }
-                    (state.destination(path)?, readonly || legacy_mmap)
-                } else {
-                    state.authorize_path(
-                        path,
-                        if readonly {
-                            Access::Read
-                        } else {
-                            Access::Write
-                        },
-                        Some(OPEN_EVENTS),
-                    )?;
-                    if readonly && c.flags & libc::O_TRUNC != 0 {
-                        state.authorize_path(path, Access::Write, None)?;
-                    }
-                    (state.existing(path)?, readonly || legacy_mmap)
+                        Access::Read
+                    } else {
+                        Access::Write
+                    },
+                    Some(OPEN_EVENTS),
+                )?;
+                if readonly && c.flags & libc::O_TRUNC != 0 {
+                    state.authorize_path(path, Access::Write, None)?;
                 }
+                state.existing(path)?
             };
             let fd = if !create {
                 libc::open(p.as_ptr(), c.flags)
@@ -269,9 +269,7 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
                 libc::open(p.as_ptr(), c.flags | libc::O_CREAT | libc::O_EXCL, c.mode)
             };
             c.fh = cvt(fd)? as u64;
-            // Opt-in cached write-through permits mmap without passthrough or
-            // writeback-cache. WRITE callbacks still use live policy above.
-            c.direct_io = i32::from(!cached);
+            c.direct_io = i32::from(!readonly && !legacy_mmap);
             c.keep_cache = 0;
             Ok(0)
         }
@@ -329,21 +327,22 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
             })
         }
         Read | Write => {
-            state.authorize(
-                path,
-                if matches!(op, Read) {
-                    Access::Read
-                } else {
-                    Access::Write
-                },
-                if matches!(op, Read) {
-                    Some(READ_EVENTS)
-                } else {
-                    None
-                },
-                Some(c.fh as i32),
-                false,
-            )?;
+            let fd = c.fh as i32;
+            if matches!(op, Read) {
+                state.authorize(path, Access::Read, Some(READ_EVENTS), Some(fd), false)?;
+            } else if c.writepage && state.mount_mode == MountMode::Policy {
+                // With writeback-cache off, kernel-tagged writes are dirty mapping pages.
+                // Check all authorities against the retained backing object before pwrite.
+                state.authorize_all(
+                    path,
+                    &[Access::Write, Access::Read, Access::Mmap],
+                    None,
+                    Some(fd),
+                    false,
+                )?;
+            } else {
+                state.authorize(path, Access::Write, None, Some(fd), false)?;
+            }
             count_result(if matches!(op, Read) {
                 libc::pread(c.fh as i32, c.buffer, c.size, c.offset)
             } else {
@@ -408,7 +407,7 @@ unsafe fn dispatch(state: &State, op: Operation, c: &mut Call) -> Result<i32, i3
         Flush | Fsync | Release | Fsyncdir | Releasedir => unreachable!(),
     }
 }
-fn authorize_policy_open(state: &State, path: &CStr, create: bool) -> Result<(CString, bool), i32> {
+fn authorize_writable_open(state: &State, path: &CStr, create: bool) -> Result<CString, i32> {
     state.count(POLICY_EVENTS);
     if !create {
         state.count(OPEN_EVENTS);
@@ -423,8 +422,8 @@ fn authorize_policy_open(state: &State, path: &CStr, create: bool) -> Result<(CS
     if state.policy_path(path)?.as_c_str() != target.as_c_str() {
         return Err(-libc::EACCES);
     }
-    // For a new file, track the parent until the exclusive create. For an
-    // existing file, also catch a replacement at the same canonical path.
+    // Preserve identity across a WRITE prompt, including destructive opens.
+    // A new file doesn't have an inode yet, so check its parent instead.
     let identity = if create {
         let bytes = target.to_bytes();
         let slash = bytes.iter().rposition(|byte| *byte == b'/').unwrap();
@@ -437,28 +436,8 @@ fn authorize_policy_open(state: &State, path: &CStr, create: bool) -> Result<(CS
     {
         return Err(-libc::EACCES);
     }
-    let mut cached = false;
-    if create || before.st_mode & libc::S_IFMT == libc::S_IFREG {
-        state.count(POLICY_EVENTS);
-        cached = state.authorize_path_decision(&mut policy, path, &target, Access::Mmap)?
-            == Decision::Allow;
-    }
-    if cached {
-        // A cache fill, mmap, or later mprotect can expose data without a
-        // fresh READ callback. Obtain READ before backing open or truncation.
-        state.count(POLICY_EVENTS);
-        if state.authorize_path_decision(&mut policy, path, &target, Access::Read)?
-            != Decision::Allow
-        {
-            return Err(-libc::EACCES);
-        }
-    }
-    // Refresh and recheck without starting another prompt: a later approval
-    // may have replaced earlier authority, even if mmap was finally denied.
     state.sync_policy(&mut policy)?;
-    let allowed = |access| policy.evaluate(target.to_bytes(), access) == Some(Decision::Allow);
-    if !allowed(Access::Write)
-        || (cached && !(allowed(Access::Read) && allowed(Access::Mmap)))
+    if policy.evaluate(target.to_bytes(), Access::Write) != Some(Decision::Allow)
         || state.policy_path(path).ok().as_deref() != Some(target.as_c_str())
         || !same_inode(
             &before,
@@ -467,7 +446,7 @@ fn authorize_policy_open(state: &State, path: &CStr, create: bool) -> Result<(CS
     {
         return Err(-libc::EACCES);
     }
-    Ok((target, cached))
+    Ok(target)
 }
 
 fn stat_open_identity(path: &CStr) -> Result<libc::stat, i32> {

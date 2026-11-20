@@ -4,11 +4,11 @@ import {mkdtemp, rm} from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import PolicyRuntime from "../src/policy/PolicyRuntime.js";
-import {NativeFuseMappedWriteDrain} from "../src/policy/path/native/NativeFuseMappedWriteDrain.js";
+import {NativeFuseMountCompletion} from "../src/policy/path/native/NativeFuseMountCompletion.js";
 import {ManagedChildProcess, type ManagedChildProcessOptions} from "../src/runtime/ManagedChildProcess.js";
 
 for (const fail of [false, true]) {
-    test(`mapped-write drain uses and closes a retained frontend descriptor, with helper failure ${fail}`, async (t) => {
+    test(`filesystem completion uses and closes a retained frontend descriptor, with helper failure ${fail}`, async (t) => {
         const directory = await mkdtemp(path.join("/dev/shm", "pilot-mmap-drain-"));
         const runtime = new PolicyRuntime("mmap-drain-test", {
             initializeSchema() {}, loadPolicies: () => [], upsertPolicies() {}, deletePolicy() {},
@@ -25,10 +25,10 @@ for (const fail of [false, true]) {
             return child;
         });
         try {
-            const drain = await NativeFuseMappedWriteDrain.open(directory, view);
+            const drain = await NativeFuseMountCompletion.open(directory, view);
             const finished = drain.finish();
             assert.equal(drain.finish(), finished, "repeated finish must share one drain");
-            if (fail) await assert.rejects(finished, /mapped-write drain failed; dirty changes may be lost/);
+            if (fail) await assert.rejects(finished, /filesystem sync failed; dirty changes may be lost/);
             else await finished;
             assert.equal(calls.length, 1);
             assert.deepEqual(calls[0]!.arguments, ["--syncfs", "3"]);

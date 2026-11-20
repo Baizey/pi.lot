@@ -3,7 +3,7 @@ import {chmod, mkdir, mkdtemp, realpath, rm} from "node:fs/promises";
 import {createServer, type Server, type Socket} from "node:net";
 import path from "node:path";
 import {ManagedChildProcess} from "../../../runtime/ManagedChildProcess.js";
-import {NativeFuseMappedWriteDrain} from "./NativeFuseMappedWriteDrain.js";
+import {NativeFuseMountCompletion} from "./NativeFuseMountCompletion.js";
 import {resolveNativeExecutable} from "../../../runtime/NativeExecutable.js";
 import {NativeFilesystemPolicyBridge} from "./NativeFilesystemPolicyBridge.js";
 import {replaceNativeFilesystemSnapshotFile} from "./NativeFilesystemSnapshotFile.js";
@@ -20,15 +20,12 @@ const CLEANUP_TIMEOUT_MILLISECONDS = 5_000;
 const MAX_HANDSHAKE_BYTES = 256;
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
-export type NativeFuseMmapMode = "direct" | "policy";
-
 export type NativeFuseBrokerMountOptions = {
     cwd: string;
     policyView: NativeFilesystemPolicyView;
     signal?: AbortSignal;
     onDecisionError?: (error: unknown) => void;
     onPolicyDeny?: (message: string) => void;
-    mmapMode?: NativeFuseMmapMode;
 };
 
 export type NativeFuseBrokerMountContext = {
@@ -131,32 +128,18 @@ export class NativeFuseSessionBroker {
 
         let result: T | undefined;
         let runError: unknown;
-        let mappedWriteDrain: NativeFuseMappedWriteDrain | undefined;
         try {
             await this.startMount(context);
-            // Policy mode can grant cached handles after the worker starts. Retain the frontend
-            // before launch even when no mmap grant is known yet.
-            if (options.mmapMode === "policy") {
-                mappedWriteDrain = await NativeFuseMappedWriteDrain.open(context.mountpoint, options.policyView);
-            }
-            result = await run({
+            result = await NativeFuseMountCompletion.run(context.mountpoint, options.policyView, () => run({
                 mediatedHostRoot: context.mountpoint,
                 cwd: commandCwd,
                 signal: context.decisionController.signal,
-            });
+            }));
         } catch (error) {
             runError = error;
         } finally {
-            try {
-                await mappedWriteDrain?.finish();
-            } catch (error) {
-                runError = runError
-                    ? new AggregateError([runError, error], "Native FUSE run and mapped-write drain both failed")
-                    : error;
-            } finally {
-                abort();
-                options.signal?.removeEventListener("abort", abort);
-            }
+            abort();
+            options.signal?.removeEventListener("abort", abort);
         }
 
         let cleanupError: unknown;
@@ -511,7 +494,6 @@ export class NativeFuseSessionBroker {
             context.agentPolicyState.snapshotPath,
             context.statsPath,
             socketPath,
-            context.options.mmapMode ?? "direct",
         ];
         if (fields.some((field) => /[\t\r\n]/.test(field))) {
             throw new Error("Native FUSE broker command contains an invalid separator");

@@ -15,7 +15,7 @@ Each `bash` call runs with a private network namespace and a policy-mediated fil
 | An MCP tool | The configured server's execution environment; MCP effects are outside pi.lot filesystem/network mediation |
 | `web_search` and root-only archive tools | Extension-managed host HTTP with their own policy checks; not general shell or device-control tools |
 
-The `bash` tool accepts `command`, `purpose`, and optional `timeout` in seconds. It has no `writableMmap`, host-execution, or escalation parameter. Rust FUSE checks `fs_mmap` automatically for the target path at mapping-capable `O_RDWR` opens and creates, not at `mmap` syscalls. See [filesystem mediation](policy.md#filesystem-mediation). A tool named `bash` in a different runner may behave differently. Discover actual tools before claiming that an Android-control MCP or other integration is available.
+The `bash` tool accepts `command`, `purpose`, and optional `timeout` in seconds. It has no `writableMmap`, host-execution, or escalation parameter. Rust FUSE checks `fs_mmap` when dirty shared mappings are written back to the host, not at opens or `mmap()` syscalls. See [filesystem mediation](policy.md#filesystem-mediation). A tool named `bash` in a different runner may behave differently. Discover actual tools before claiming that an Android-control MCP or other integration is available.
 
 ## Address map for a Bash client
 

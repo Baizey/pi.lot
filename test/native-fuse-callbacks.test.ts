@@ -164,42 +164,74 @@ for (const operation of ["open", "create"]) {
     }
 }
 
-for (const capabilities of ["supported", "unsupported"]) {
-    test(`real mount-free INIT declines forbidden ${capabilities} features in the wire reply`, (context) => {
-        const executed = spawnSync(initExecutable, [capabilities], {encoding: "utf8", timeout: 5_000});
-        assert.ifError(executed.error);
-        assert.equal(executed.status, 0, executed.stderr);
-        const result = JSON.parse(executed.stdout) as {customIoSupported: false} | {
-            customIoSupported: true;
-            replyValid: boolean;
-            initCalled: boolean;
-            requestedBeforeInit: boolean;
-            requestedAfterInit: boolean;
-            forbiddenNegotiated: boolean;
-            asyncReadNegotiated: boolean;
-            capabilitiesPreserved: boolean;
-            configurationSafe: boolean;
-            stateReturned: boolean;
-            connectionFieldsPreserved: boolean;
-            configurationFieldsPreserved: boolean;
-        };
-        if (result.customIoSupported === false) {
-            context.skip("Installed libfuse was built without custom I/O; real mount-free INIT negotiation requires -Denable-custom-io=true");
-            return;
+test("kernel-tagged writepage, not ordinary write, requires mmap approval through libfuse ABI", async () => {
+    await withFixture(async (directory) => {
+        const target = path.join(directory, "file");
+        const rule = policy(directory);
+        const write = (kind: string) => probe(directory, [rule], "mmap-policy-io", target,
+            kind, String(constants.O_RDWR), "0", "8", "modified");
+        for (const status of [PolicyResponse.DENIED, PolicyResponse.ALLOWED]) {
+            rule.info[PolicyAccessType.FS_MMAP] = {accessType: PolicyAccessType.FS_MMAP,
+                lifetime: PolicyLifetime.SESSION, status, reason: "callback fixture"};
+            await writeFile(target, "original");
+            const ordinary = await write("write");
+            assert.equal(ordinary.result, 8);
+            assert.deepEqual(ordinary.denials, []);
+            await writeFile(target, "original");
+            const mapped = await write("writepage");
+            if (status === PolicyResponse.DENIED) {
+                assert.equal(mapped.result, -errno.EACCES);
+                assertDenied(mapped, target, NativeFilesystemAccess.MMAP);
+                assert.equal(await readFile(target, "utf8"), "original");
+            } else {
+                assert.equal(mapped.result, 8);
+                assert.deepEqual(mapped.denials, []);
+                assert.equal(await readFile(target, "utf8"), "modified");
+            }
         }
-        assert.equal(result.customIoSupported, true);
-        assert.equal(result.replyValid, true);
-        assert.equal(result.initCalled, true);
-        assert.equal(result.requestedBeforeInit, capabilities === "supported");
-        assert.equal(result.requestedAfterInit, false);
-        assert.equal(result.forbiddenNegotiated, false);
-        assert.equal(result.asyncReadNegotiated, true);
-        assert.equal(result.capabilitiesPreserved, true);
-        assert.equal(result.configurationSafe, true);
-        assert.equal(result.stateReturned, true);
-        assert.equal(result.connectionFieldsPreserved, true);
-        assert.equal(result.configurationFieldsPreserved, true);
     });
+});
+
+for (const capabilities of ["supported", "unsupported"]) {
+    for (const mode of ["direct", "policy"]) {
+        test(`real mount-free INIT negotiates only allowed ${capabilities} features (${mode})`, (context) => {
+            const executed = spawnSync(initExecutable, [capabilities, mode], {encoding: "utf8", timeout: 5_000});
+            assert.ifError(executed.error);
+            assert.equal(executed.status, 0, executed.stderr);
+            const result = JSON.parse(executed.stdout) as {customIoSupported: false} | {
+                customIoSupported: true;
+                replyValid: boolean;
+                initCalled: boolean;
+                requestedBeforeInit: boolean;
+                requestedAfterInit: boolean;
+                forbiddenNegotiated: boolean;
+                asyncReadNegotiated: boolean;
+                mmapNegotiated: boolean;
+                capabilitiesPreserved: boolean;
+                configurationSafe: boolean;
+                stateReturned: boolean;
+                connectionFieldsPreserved: boolean;
+                configurationFieldsPreserved: boolean;
+            };
+            if (result.customIoSupported === false) {
+                context.skip("Installed libfuse was built without custom I/O; real mount-free INIT negotiation requires -Denable-custom-io=true");
+                return;
+            }
+            assert.equal(result.customIoSupported, true);
+            assert.equal(result.replyValid, true);
+            assert.equal(result.initCalled, true);
+            assert.equal(result.requestedBeforeInit, capabilities === "supported");
+            assert.equal(result.requestedAfterInit, false);
+            assert.equal(result.forbiddenNegotiated, false);
+            assert.equal(result.asyncReadNegotiated, true);
+            assert.equal(result.mmapNegotiated, mode === "policy" && capabilities === "supported");
+            assert.equal(result.capabilitiesPreserved, true);
+            assert.equal(result.configurationSafe, true);
+            assert.equal(result.stateReturned, true);
+            assert.equal(result.connectionFieldsPreserved, true);
+            assert.equal(result.configurationFieldsPreserved, true);
+        });
+    }
 }
 
 for (const capabilities of ["supported", "unsupported"]) {

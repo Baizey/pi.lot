@@ -231,7 +231,7 @@ test("native FUSE supports read-only shared mappings for opened and created file
     const runtime = allowingRuntime();
     const view = runtime.beginNativeFilesystemToolCall(AGENT, {toolName: "native-fuse-test"});
     const script = [
-        "import errno,mmap,os,sys",
+        "import mmap,os,sys",
         "for name,flags in [(sys.argv[1],os.O_RDONLY),(sys.argv[2],os.O_RDONLY|os.O_CREAT|os.O_EXCL)]:",
         " descriptor=os.open(name,flags,0o600)",
         " if flags & os.O_CREAT:",
@@ -245,14 +245,7 @@ test("native FUSE supports read-only shared mappings for opened and created file
         "  mapping[0]=ord('X')",
         " assert os.pread(descriptor,7,0) == b'content'",
         " os.close(descriptor)",
-        " descriptor=os.open(name,os.O_RDWR)",
-        " try:",
-        "  mmap.mmap(descriptor,0,flags=mmap.MAP_SHARED,prot=mmap.PROT_READ|mmap.PROT_WRITE)",
-        " except OSError as error:",
-        "  assert error.errno == errno.ENODEV",
-        " else:",
-        "  raise AssertionError('Writable opens must remain direct I/O')",
-        " os.close(descriptor)",
+
     ].join("\n");
 
     try {

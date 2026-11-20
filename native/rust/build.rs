@@ -63,7 +63,7 @@ fn generate_fuse_bindings(flags: &[String]) {
         .clang_args(clang_args)
         .allowlist_type("fuse_(operations|file_info|context|conn_info|config|fill_dir_t|readdir_flags|fill_dir_flags)")
         .allowlist_type("libfuse_version")
-        .allowlist_function("fuse_(get_context|unset_feature_flag|main_real_versioned)")
+        .allowlist_function("fuse_(get_context|set_feature_flag|unset_feature_flag|main_real_versioned)")
         .allowlist_var("FUSE_(MAJOR_VERSION|MINOR_VERSION|HOTFIX_VERSION)")
         .allowlist_var("FUSE_CAP_(DIRECT_IO_ALLOW_MMAP|WRITEBACK_CACHE|PASSTHROUGH|ASYNC_DIO|ATOMIC_O_TRUNC|NO_OPEN_SUPPORT|NO_OPENDIR_SUPPORT)")
         // Sharing libc's platform types makes callback signatures type-identical

@@ -24,6 +24,7 @@
 
 struct pilot_fuse_state;
 extern struct pilot_fuse_state *pilot_fuse_probe_new(const char *, const char *, int, int, bool);
+extern struct pilot_fuse_state *pilot_fuse_probe_new_mmap_policy(const char *, const char *, int, int);
 extern void pilot_fuse_probe_free(struct pilot_fuse_state *);
 extern int pilot_fuse_operations(struct fuse_operations *, size_t);
 extern void *pilot_fuse_init(struct fuse_conn_info *, struct fuse_config *);

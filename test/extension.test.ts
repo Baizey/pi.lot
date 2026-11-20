@@ -628,7 +628,7 @@ test("the same extension instance resets owned shutdown and server lifecycle for
     assert.deepEqual(files, ["/first.jsonl", "/second.jsonl"]);
 });
 
-test("Bash delegates mmap to the native filesystem policy mount without a tool argument", async () => {
+test("Bash uses the shared native filesystem policy without selecting an access mode", async () => {
     const harness = extensionHarness();
     const ctx = {
         cwd: process.cwd(),
@@ -638,7 +638,6 @@ test("Bash delegates mmap to the native filesystem policy mount without a tool a
         sessionManager: archiveSessionManager(),
     } as unknown as ExtensionCommandContext;
     const sentinel = new Error("native broker routing sentinel");
-    const mountModes: Array<NativeFuseBrokerMountOptions["mmapMode"]> = [];
     let brokerCalls = 0;
     let viewClosed = false;
     let capturedToolCall: unknown;
@@ -659,7 +658,7 @@ test("Bash delegates mmap to the native filesystem policy mount without a tool a
                 nativeFuseSessionBroker: {
                     async withFilesystem(options: NativeFuseBrokerMountOptions): Promise<never> {
                         brokerCalls++;
-                        mountModes.push(options.mmapMode);
+                        assert.ok(!Object.hasOwn(options, "mmapMode"));
                         options.policyView.onClosed(() => {
                             viewClosed = true;
                         });
@@ -697,7 +696,6 @@ test("Bash delegates mmap to the native filesystem policy mount without a tool a
         assert.equal(brokerCalls, 1);
         assert.equal(viewClosed, true);
         assert.equal(registeredTool(harness, "bash").parameters.properties.writableMmap, undefined);
-        assert.deepEqual(mountModes, ["policy"]);
     } finally {
         await harness.sessionShutdown()({type: "session_shutdown", reason: "quit"}, ctx);
     }

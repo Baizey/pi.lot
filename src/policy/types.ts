@@ -269,6 +269,17 @@ export function isFilesystemAccess(accessType: string): boolean {
         || accessType === PolicyAccessType.FS_MMAP;
 }
 
+const FILESYSTEM_USER_LIFETIMES: readonly PolicyLifetime[] = Object.freeze([
+    PolicyLifetime.ONCE, PolicyLifetime.SESSION, PolicyLifetime.LOCAL,
+]);
+const NETWORK_USER_LIFETIMES: readonly PolicyLifetime[] = Object.freeze([
+    ...FILESYSTEM_USER_LIFETIMES, PolicyLifetime.GLOBAL,
+]);
+
+export function userPolicyLifetimes(accessType: PolicyAccessType): readonly PolicyLifetime[] {
+    return isFilesystemAccess(accessType) ? FILESYSTEM_USER_LIFETIMES : NETWORK_USER_LIFETIMES;
+}
+
 export const isModifyingAccess = (accessType: PolicyAccessType): boolean =>
     accessType !== PolicyAccessType.FS_READ && accessType !== PolicyAccessType.HTTP_GET;
 

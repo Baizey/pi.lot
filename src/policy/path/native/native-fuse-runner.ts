@@ -2,13 +2,13 @@ import {mkdtemp, mkdir, realpath, rm} from "node:fs/promises";
 import type {Readable} from "node:stream";
 import path from "node:path";
 import {ManagedChildProcess} from "../../../runtime/ManagedChildProcess.js";
-import {NativeFuseMappedWriteDrain} from "./NativeFuseMappedWriteDrain.js";
+import {NativeFuseMountCompletion} from "./NativeFuseMountCompletion.js";
 import {resolveNativeExecutable} from "../../../runtime/NativeExecutable.js";
 import {NativeFilesystemPolicyBridge} from "./NativeFilesystemPolicyBridge.js";
 import {replaceNativeFilesystemSnapshotFile} from "./NativeFilesystemSnapshotFile.js";
 import {hasMountedPathAtOrBelow, isMountedPath} from "./NativeFuseMountState.js";
 import type {NativeFilesystemPolicyView} from "./NativeFilesystemPolicyView.js";
-import type {NativeFuseMmapMode, NativeFuseSessionBroker} from "./NativeFuseSessionBroker.js";
+import type {NativeFuseSessionBroker} from "./NativeFuseSessionBroker.js";
 
 const HOST_FILESYSTEM_ROOT = "/";
 const READY_TIMEOUT_MILLISECONDS = 10_000;
@@ -22,7 +22,6 @@ export type NativeFuseMountOptions = {
     onDecisionError?: (error: unknown) => void;
     onPolicyDeny?: (message: string) => void;
     sessionBroker?: NativeFuseSessionBroker;
-    mmapMode?: NativeFuseMmapMode;
 };
 
 export type NativeFuseMountContext = {
@@ -77,7 +76,6 @@ export async function withNativeFuseFilesystem<T>(
 
     let daemon: ManagedChildProcess | undefined;
     let bridge: NativeFilesystemPolicyBridge | undefined;
-    let mappedWriteDrain: NativeFuseMappedWriteDrain | undefined;
     let unsubscribePolicyBase: (() => void) | undefined;
     let mounted = false;
     let result: T | undefined;
@@ -112,7 +110,6 @@ export async function withNativeFuseFilesystem<T>(
                 "3",
                 "4",
                 "5",
-                options.mmapMode ?? "direct",
             ],
             spawnOptions: {
                 cwd: HOST_FILESYSTEM_ROOT,
@@ -144,23 +141,14 @@ export async function withNativeFuseFilesystem<T>(
         throwIfAborted(decisionController.signal);
         await waitForReady(daemon, daemonOutput, decisionController.signal);
         mounted = true;
-        if (options.mmapMode === "policy") {
-            mappedWriteDrain = await NativeFuseMappedWriteDrain.open(mountpoint, options.policyView);
-        }
-        result = await run({mediatedHostRoot: mountpoint, cwd: commandCwd, signal: decisionController.signal});
+        result = await NativeFuseMountCompletion.run(mountpoint, options.policyView, () => (
+            run({mediatedHostRoot: mountpoint, cwd: commandCwd, signal: decisionController.signal})
+        ));
     } catch (error) {
         runError = error;
     } finally {
-        try {
-            await mappedWriteDrain?.finish();
-        } catch (error) {
-            runError = runError
-                ? new AggregateError([runError, error], "Native FUSE run and mapped-write drain both failed")
-                : error;
-        } finally {
-            abortDecisions();
-            options.signal?.removeEventListener("abort", abortDecisions);
-        }
+        abortDecisions();
+        options.signal?.removeEventListener("abort", abortDecisions);
     }
 
     let unmountError: unknown;

@@ -9,11 +9,11 @@ struct PolicyOpenFixture {
     requests: Option<Fd>,
     _request_writer: Fd,
     _response_reader: Fd,
-    _responses: Fd,
+    responses: Option<Fd>,
 }
 
 impl PolicyOpenFixture {
-    fn new(write: Decision, mmap: Decision, read: Decision) -> Self {
+    fn new(write: Decision, mmap: Option<Decision>, read: Decision) -> Self {
         let mut name = b"/tmp/pilot-fuse-policy-open-XXXXXX\0".to_vec();
         assert!(!unsafe { libc::mkdtemp(name.as_mut_ptr().cast()) }.is_null());
         let directory = CString::from_vec_with_nul(name).unwrap();
@@ -36,16 +36,17 @@ impl PolicyOpenFixture {
             requests: Some(requests),
             _request_writer: request_writer,
             _response_reader: response_reader,
-            _responses: responses,
+            responses: Some(responses),
         };
         let mut bytes = b"PILOTNP2".to_vec();
         bytes.extend(1u64.to_le_bytes());
-        bytes.extend(3u32.to_le_bytes());
+        bytes.extend((2 + u32::from(mmap.is_some())).to_le_bytes());
         for (access, decision) in [
-            (Access::Write, write),
+            (Access::Write, Some(write)),
             (Access::Mmap, mmap),
-            (Access::Read, read),
+            (Access::Read, Some(read)),
         ] {
+            let Some(decision) = decision else { continue };
             bytes.extend(0u32.to_le_bytes());
             bytes.extend([access as u8, decision as u8, 0, 0]);
             let path = fixture.directory.to_bytes();
@@ -88,6 +89,29 @@ impl PolicyOpenFixture {
         Ok(call.direct_io)
     }
 
+    fn write(&mut self, writepage: bool, after_open: impl FnOnce(&mut Self)) -> i32 {
+        let mut bytes = *b"modified";
+        let mut call = Call {
+            path: self.file.as_ptr(),
+            flags: libc::O_RDWR,
+            ..Call::default()
+        };
+        assert_eq!(
+            unsafe { pilot_fuse_call(&mut self.state, Operation::Open, &mut call) },
+            0
+        );
+        after_open(self);
+        call.writepage = writepage;
+        call.buffer = bytes.as_mut_ptr().cast();
+        call.size = bytes.len();
+        let result = unsafe { pilot_fuse_call(&mut self.state, Operation::Write, &mut call) };
+        assert_eq!(
+            unsafe { pilot_fuse_call(&mut self.state, Operation::Release, &mut call) },
+            0
+        );
+        result
+    }
+
     fn contents(&self) -> Vec<u8> {
         std::fs::read(std::ffi::OsStr::from_bytes(self.file.to_bytes())).unwrap()
     }
@@ -109,57 +133,85 @@ fn pipe() -> (Fd, Fd) {
 }
 
 #[test]
-fn policy_mmap_selects_io_per_handle() {
+fn ordinary_open_create_and_write_do_not_consult_mmap_policy() {
     use Decision::{Allow, Deny};
-    let mut allowed = PolicyOpenFixture::new(Allow, Allow, Allow);
-    assert_eq!(allowed.call(Operation::Open, libc::O_RDWR), Ok(0));
-    assert_eq!(allowed.call(Operation::Open, libc::O_WRONLY), Ok(1));
-    assert_eq!(allowed.call(Operation::Create, libc::O_RDWR), Ok(0));
-
-    let mut denied = PolicyOpenFixture::new(Allow, Deny, Deny);
-    assert_eq!(
-        denied.call(Operation::Open, libc::O_RDWR | libc::O_TRUNC),
-        Ok(1)
-    );
-    assert_eq!(denied.call(Operation::Create, libc::O_RDWR), Ok(1));
-    let mut header = [0; 40];
-    read_exact(denied.requests.as_ref().unwrap().0, &mut header).unwrap();
-    assert_eq!(u32_at(&header, 0), 2);
-    assert_eq!(header[32], 3);
-}
-
-#[test]
-fn policy_mmap_write_and_read_denials_prevent_backing_effects() {
-    use Decision::{Allow, Deny};
-    for (write, mmap, read, first_denial) in [(Deny, Deny, Allow, 2), (Allow, Allow, Deny, 1)] {
-        let mut fixture = PolicyOpenFixture::new(write, mmap, read);
+    for mmap in [Allow, Deny] {
+        let mut fixture = PolicyOpenFixture::new(Allow, Some(mmap), Deny);
+        assert_eq!(fixture.call(Operation::Open, libc::O_RDWR), Ok(1));
+        assert_eq!(fixture.call(Operation::Create, libc::O_RDWR), Ok(1));
+        assert_eq!(fixture.write(false, |_| {}), 8);
+        assert_eq!(fixture.contents(), b"modified");
+        let mut byte = 0u8;
         assert_eq!(
-            fixture.call(Operation::Open, libc::O_RDWR | libc::O_TRUNC),
-            Err(-libc::EACCES)
+            unsafe {
+                libc::read(
+                    fixture.requests.as_ref().unwrap().0,
+                    (&mut byte as *mut u8).cast(),
+                    1,
+                )
+            },
+            -1
         );
-        assert_eq!(fixture.contents(), b"original");
-        let mut header = [0; 40];
-        read_exact(fixture.requests.as_ref().unwrap().0, &mut header).unwrap();
-        assert_eq!(u32_at(&header, 0), 2);
-        assert_eq!(header[32], first_denial);
-        assert_eq!(
-            fixture.call(Operation::Create, libc::O_RDWR),
-            Err(-libc::EACCES)
-        );
-        assert_eq!(
-            stat_open_identity(&fixture.created).err(),
-            Some(-libc::ENOENT)
-        );
+        assert_eq!(errno(), libc::EAGAIN);
     }
 }
 
 #[test]
-fn policy_mmap_control_loss_is_not_direct_fallback() {
-    let mut fixture = PolicyOpenFixture::new(Decision::Allow, Decision::Allow, Decision::Allow);
-    drop(fixture.requests.take());
+fn mapped_writeback_requires_mmap_and_read_authority() {
+    use Decision::{Allow, Deny};
+    for (read, mmap, result, expected, denied_access) in [
+        (Allow, Allow, 8, &b"modified"[..], None),
+        (
+            Allow,
+            Deny,
+            -libc::EACCES,
+            &b"original"[..],
+            Some(Access::Mmap),
+        ),
+        (
+            Deny,
+            Allow,
+            -libc::EACCES,
+            &b"original"[..],
+            Some(Access::Read),
+        ),
+    ] {
+        let mut fixture = PolicyOpenFixture::new(Allow, Some(mmap), read);
+        assert_eq!(fixture.write(true, |_| {}), result);
+        assert_eq!(fixture.contents(), expected);
+        if let Some(access) = denied_access {
+            let mut header = [0; 40];
+            read_exact(fixture.requests.as_ref().unwrap().0, &mut header).unwrap();
+            assert_eq!(u32_at(&header, 0), 2);
+            assert_eq!(header[32], access as u8);
+        }
+    }
+}
+
+#[test]
+fn denied_ordinary_write_authority_blocks_create_and_truncate() {
+    use Decision::{Allow, Deny};
+    let mut fixture = PolicyOpenFixture::new(Deny, Some(Allow), Allow);
     assert_eq!(
         fixture.call(Operation::Open, libc::O_RDWR | libc::O_TRUNC),
         Err(-libc::EACCES)
+    );
+    assert_eq!(fixture.contents(), b"original");
+    assert_eq!(
+        fixture.call(Operation::Create, libc::O_RDWR),
+        Err(-libc::EACCES)
+    );
+    assert!(
+        !std::path::Path::new(std::ffi::OsStr::from_bytes(fixture.created.to_bytes())).exists()
+    );
+}
+
+#[test]
+fn mapped_writeback_fails_closed_when_approval_channel_dies() {
+    let mut fixture = PolicyOpenFixture::new(Decision::Allow, None, Decision::Allow);
+    assert_eq!(
+        fixture.write(true, |fixture| drop(fixture.responses.take())),
+        -libc::EACCES
     );
     assert_eq!(fixture.contents(), b"original");
 }
@@ -182,6 +234,7 @@ fn default_call_has_null_pointers_zero_scalars_and_no_filler() {
     assert_eq!(call.has_info, 0);
     assert_eq!(call.direct_io, 0);
     assert_eq!(call.keep_cache, 0);
+    assert!(!call.writepage);
 }
 
 #[test]

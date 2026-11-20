@@ -64,7 +64,7 @@ export class ServerSessionLifecycle {
         });
     }
 
-    /** Call only after an approved local role write commits; never waits for I/O. */
+    /** Call only after a local role write commits; never waits for I/O. */
     scheduleRoleSync(): void {
         if (this.roleSync) {
             this.roleSync.dirty = true;

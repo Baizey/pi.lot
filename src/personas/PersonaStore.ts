@@ -24,7 +24,7 @@ export class PersonaStore {
         return value === undefined ? {personas: []} : parsePersonaCatalog(value);
     }
 
-    /** Confirmation never holds the file lock. Check that the approved base is still current. */
+    /** Check the expected snapshot under the lock so a concurrent save cannot be overwritten. */
     saveCatalog(expected: PersonaCatalog, replacement: PersonaCatalog): void {
         const next = encodeCatalog(parsePersonaCatalog(replacement));
         if (Buffer.byteLength(next) > MAX_PERSONA_CATALOG_BYTES) throw new Error("The persona library is too large.");

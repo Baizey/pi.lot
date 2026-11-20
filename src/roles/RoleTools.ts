@@ -5,7 +5,7 @@ import {ThemeColor} from "../tui/Color.js";
 import type {ToolDisplayRows} from "../tui/tool/ToolDisplayRows.js";
 import {ToolArgumentLayout, ToolArgumentPlacement, ToolTextDirection, type ToolPresentationSpec} from "../tui/tool/ToolPresentation.js";
 import {
-    describeRole, MAX_ROLES, MAX_ROLE_DESCRIPTION, MAX_ROLE_TEXT, MAX_ROLE_TITLE,
+    MAX_ROLES, MAX_ROLE_DESCRIPTION, MAX_ROLE_TEXT, MAX_ROLE_TITLE,
     parseRoleProfile, resolveRole, type RoleCatalog, type RoleProfile,
 } from "./RoleCatalog.js";
 import type {RoleLibrary} from "./RoleStore.js";
@@ -61,7 +61,7 @@ export function roleManageTool(
     return {
         name: "role_manage",
         label: "Manage saved roles",
-        description: "Create, edit or delete a saved role with user approval. Changes affect future selections and spawns, not permissions or existing assignments.",
+        description: "Create, edit, or delete a saved role. Changes affect future selections and spawns, not permissions or existing assignments.",
         ...displayRows.bind(ROLE_MANAGE_PRESENTATION),
         parameters: objectSchema({
             action: enumSchema(["create", "edit", "delete"], "Role operation"),
@@ -70,18 +70,12 @@ export function roleManageTool(
             text: stringSchema("Saved agent instructions", MAX_ROLE_TEXT),
             description: {type: "string", maxLength: MAX_ROLE_DESCRIPTION, description: "Optional one-line summary. Empty removes it."},
         }, ["action"]),
-        async execute(_id, params, signal, _update, ctx) {
+        async execute(_id, params, signal) {
             signal?.throwIfAborted();
-            if (!ctx.hasUI) throw new Error("Changing saved roles requires interactive confirmation.");
             const input = params as Input;
             const catalog = library.catalog();
             const {before, after} = plan(catalog, input);
             if (before && after && JSON.stringify(before) === JSON.stringify(after)) return result("No changes.");
-            const title = `${input.action === "create" ? "Create" : input.action === "edit" ? "Edit" : "Delete"} role?`;
-            const preview = before && after ? `Before\n${describeRole(before)}\n\nAfter\n${describeRole(after)}`
-                : describeRole((before ?? after)!);
-            if (!await ctx.ui.confirm(title, preview, {signal})) return result("No changes approved.");
-            signal?.throwIfAborted();
             const roles = catalog.roles.filter(({id}) => id !== before?.id);
             if (after) roles.push(after);
             library.save(catalog, {roles});

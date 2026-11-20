@@ -65,29 +65,45 @@ test("root assignment stays on its branch through compaction and catalog edits; 
     assert.equal(role.promptSection({...ctx, sessionManager: SessionManager.inMemory(dir)}), undefined);
 });
 
-test("management requires approval and saves emit a single wake; stale writes do not overwrite local edits", async (t) => {
+test("role management saves without asking and wakes sync once per change", async (t) => {
     const {library} = fixture(t);
     let wakes = 0;
     const displayRows = new ToolDisplayRows();
     const tool = roleManageTool(library, () => wakes++, displayRows);
-    const change = {action: "edit", target: reviewer.id, description: "", text: "Updated instructions."};
-    const ctx = (confirm: ExtensionToolContext["ui"]["confirm"]) => ({hasUI: true, ui: {confirm}} as ExtensionToolContext);
-    const call = (confirm: ExtensionToolContext["ui"]["confirm"]) => tool.execute("update", change, undefined, undefined, ctx(confirm));
-    await call(async (_title, preview) => { assert.match(preview, /Updated instructions/); return false; });
-    assert.equal(wakes, 0);
-    await assert.rejects(call(async () => {
-        library.save(library.catalog(), {roles: [{...reviewer, text: "Changed concurrently."}]});
-        return true;
-    }), /changed/);
-    assert.equal(wakes, 0);
-    await call(async () => true);
+    const call = (params: Record<string, string>, hasUI = false, signal?: AbortSignal) =>
+        tool.execute("fixture", params, signal, undefined, {hasUI, ui: {
+            confirm: () => assert.fail("Role management must not prompt"),
+        }} as unknown as ExtensionToolContext);
+    const create = {action: "create", title: "Writer", text: "Write a concise summary."};
+    await call(create);
+    assert.equal(library.catalog().roles.find(({title}) => title === create.title)?.text, create.text);
     assert.equal(wakes, 1);
+    await assert.rejects(call(create), /already has that title/);
+    const change = {action: "edit", target: reviewer.id, description: "", text: "Updated instructions."};
+    await call(change, true);
+    assert.equal(wakes, 2);
+    assert.match(JSON.stringify(await call(change)), /No changes/);
     const lookup = roleReadTool(library, displayRows);
     const list = await lookup.execute("list", {}, undefined, undefined, {} as ExtensionToolContext);
     assert.doesNotMatch(JSON.stringify(list), /Updated instructions/);
     const details = await lookup.execute("inspect", {target: reviewer.id}, undefined, undefined, {} as ExtensionToolContext);
     assert.match(JSON.stringify(details), /Updated instructions/);
-    assert.equal(library.catalog().roles[0]!.description, undefined);
+    assert.equal(library.catalog().roles.find(({id}) => id === reviewer.id)?.description, undefined);
+    const remove = {action: "delete", target: create.title};
+    await assert.rejects(call(remove, false, AbortSignal.abort()), /abort/i);
+    assert.equal(wakes, 2);
+    await call(remove);
+    assert.deepEqual(library.catalog().roles.map(({id}) => id), [reviewer.id]);
+    assert.equal(wakes, 3);
+});
+
+test("stale role writes do not overwrite newer changes", (t) => {
+    const {library} = fixture(t);
+    const stale = library.catalog();
+    const current = {roles: [{...reviewer, text: "Changed concurrently."}]};
+    library.save(stale, current);
+    assert.throws(() => library.save(stale, {roles: []}), /changed/);
+    assert.deepEqual(library.catalog(), current);
 });
 
 test("spawn accepts ad hoc roles or saved profiles and snapshots instructions without setting authority", async (t) => {

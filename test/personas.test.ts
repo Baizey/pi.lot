@@ -5,7 +5,7 @@ import path from "node:path";
 import test, {type TestContext} from "node:test";
 import {
     createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
-    type CustomMessageEntry, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext,
+    type CustomMessageEntry, type ExtensionAPI, type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import {parsePersonaCatalog, type Persona} from "../src/personas/PersonaCatalog.js";
 import {PersonaCommand} from "../src/personas/PersonaCommand.js";
@@ -107,38 +107,31 @@ test("native Pi keeps one persona note per explicit switch and does not start a 
     assert.equal(manager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant"), false);
 });
 
-test("management previews changes, requires confirmation, and rejects edits to stale snapshots", async (t) => {
+test("persona management saves without asking in headless and interactive sessions", async (t) => {
     const {store} = fixture(t);
     type Tool = Parameters<ExtensionAPI["registerTool"]>[0];
     let tool: Tool | undefined;
     registerPersonaManageTool({registerTool(definition: Tool) { tool = definition; }} as ExtensionAPI,
         store, new ToolDisplayRows());
-    const modelInput = (params: Record<string, string>, confirm?: ExtensionContext["ui"]["confirm"], signal?: AbortSignal) =>
-        tool!.execute("fixture", params, signal, undefined, {hasUI: confirm !== undefined, ui: {confirm}} as ExtensionToolContext);
+    const call = (params: Record<string, string>, hasUI = false, signal?: AbortSignal) =>
+        tool!.execute("fixture", params, signal, undefined, {hasUI, ui: {
+            confirm: () => assert.fail("Persona management must not prompt"),
+        }} as unknown as ExtensionToolContext);
     const create = {action: "create", name: legion.name, prompt: legion.prompt};
-    await assert.rejects(modelInput(create), /confirmation/);
-    let preview = "";
-    await modelInput(create, async (_title, text) => { preview = text; return false; });
-    assert.match(preview, /Use we sparingly/);
-    assert.equal(store.catalog().personas.length, 0);
-    await modelInput(create, async () => true);
-    assert.equal(store.catalog().personas.length, 1);
-    const id = store.catalog().personas[0]!.id;
+    await call(create);
+    const [saved] = store.catalog().personas;
+    assert.ok(saved);
+    assert.equal(saved.name, legion.name);
+    assert.equal(saved.prompt, legion.prompt);
+    const {id} = saved;
+    assert.match(JSON.stringify(await call({action: "list"})), new RegExp(id));
     assert.equal(store.defaultId(), null);
-    const abort = new AbortController();
-    await assert.rejects(modelInput({action: "delete", target: id}, async () => {
-        abort.abort();
-        return true;
-    }, abort.signal), /abort/i);
-    await assert.rejects(modelInput({action: "edit", target: id, name: "Consensus"}, async (_title, text) => {
-        assert.match(text, /Before\nLegion/);
-        assert.match(text, /After\nConsensus/);
-        const base = store.catalog();
-        store.saveCatalog(base, {personas: [...base.personas, tali]});
-        return true;
-    }), /library changed/);
-    await modelInput({action: "edit", target: id, name: "Consensus"}, async () => true);
-    assert.equal(store.catalog().personas.find((item) => item.id === id)?.name, "Consensus");
-    await modelInput({action: "delete", target: id}, async () => true);
-    assert.deepEqual(store.catalog(), {personas: [tali]});
+    await assert.rejects(call(create), /already has that name/);
+    const remove = {action: "delete", target: id};
+    await assert.rejects(call(remove, false, AbortSignal.abort()), /abort/i);
+    assert.deepEqual(store.catalog(), {personas: [saved]});
+    await call({action: "edit", target: id, name: "Consensus"}, true);
+    assert.deepEqual(store.catalog(), {personas: [{...saved, name: "Consensus"}]});
+    await call(remove);
+    assert.deepEqual(store.catalog(), {personas: []});
 });

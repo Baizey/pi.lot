@@ -28,7 +28,7 @@ export function registerPersonaManageTool(pi: ExtensionAPI, store: PersonaStore,
     const definition: ToolDefinition<any, undefined> = {
         name: "persona_manage",
         label: "Manage personas",
-        description: "List saved personas, or create, edit, or delete one with user confirmation. "
+        description: "List, create, edit, or delete saved personas. "
             + "Personas are user-facing communication styles. This tool does not activate them; the user selects one with /persona.",
         ...displayRows.bind(PERSONA_MANAGE_PRESENTATION),
         parameters: objectSchema({
@@ -37,7 +37,7 @@ export function registerPersonaManageTool(pi: ExtensionAPI, store: PersonaStore,
             name: stringSchema("Persona name (required for create; optional rename for edit)", MAX_PERSONA_NAME),
             prompt: stringSchema("Instructions for user-facing tone and style (required for create; optional for edit)", MAX_PERSONA_PROMPT_BYTES),
         }, ["action"]),
-        async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+        async execute(_toolCallId, params, signal) {
             const input = params as Input;
             signal?.throwIfAborted();
             const catalog = store.catalog();
@@ -45,15 +45,9 @@ export function registerPersonaManageTool(pi: ExtensionAPI, store: PersonaStore,
                 return result(catalog.personas.length
                     ? catalog.personas.map(({name, id}) => `${name} (${id})`).join("\n") : "No saved personas.");
             }
-            if (!ctx.hasUI) throw new Error("Changing personas requires an interactive confirmation.");
             const change = planChange(catalog, input);
             if (change.before && change.after && change.before.name === change.after.name
                 && change.before.prompt === change.after.prompt) return result("No changes.");
-            const title = `${input.action === "create" ? "Create" : input.action === "edit" ? "Edit" : "Delete"} persona?`;
-            const preview = change.before && change.after
-                ? `Before\n${describe(change.before)}\n\nAfter\n${describe(change.after)}` : describe((change.before ?? change.after)!);
-            if (!await ctx.ui.confirm(title, preview, {signal})) return result("No changes. Persona update not approved.");
-            signal?.throwIfAborted();
             const personas = catalog.personas.filter(({id}) => id !== change.before?.id);
             if (change.after) personas.push(change.after);
             store.saveCatalog(catalog, {personas});
@@ -101,10 +95,6 @@ function requireUniqueName(catalog: PersonaCatalog, name: string): void {
     if (catalog.personas.some((persona) => persona.name.toLowerCase() === name.toLowerCase())) {
         throw new Error("A persona already has that name.");
     }
-}
-
-function describe({name, prompt}: Persona): string {
-    return `${name}\n${prompt}`;
 }
 
 function result(text: string) {

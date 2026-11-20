@@ -54,13 +54,13 @@ Policy, subagent, display and persona pickers also provide explicit **Save defau
 
 ### Personas
 
-Use `/persona <name>` or the picker to select a persona. Outside the terminal UI, bare `/persona` lists the current selection and available names. Ask the agent to create, edit, or delete a persona; the root-only `persona_manage` tool previews each change for approval and saves it immediately. Managing the library never switches the current selection.
+Use `/persona <name>` or the picker to select a persona. Outside the terminal UI, bare `/persona` lists the current selection and available names. Ask the agent to create, edit, or delete a persona; the root-only `persona_manage` tool saves changes immediately without prompting. Managing the library never switches the current selection.
 
 Pilot adds a single style note at the start of a fresh conversation with a saved default, or when you select a persona, turn it off, or reset it. Active choices are part of the current branch; resuming doesn’t reapply the saved default. The style note is part of model context and session history, not a recurring system prompt. Context compaction may summarize or drop it; reselect if needed. Library edits and sync affect future selections, not notes already in a conversation. Subagents and policy reviewers do not inherit personas.
 
 ### Saved roles
 
-Roles are reusable instructions for how to approach a task and what to deliver; personas only shape the voice. Use `/role <title>` or the picker to select a role for the root conversation, or `/role none` to clear it. The selection survives compaction and resume on its branch. Only the root’s `role_manage` tool can change the library, with interactive approval. The root and delegates can use `role_lookup` to inspect the library. See [Subagents](subagents.md#saved-roles) for selecting a role at spawn.
+Roles are reusable instructions for how to approach a task and what to deliver; personas only shape the voice. Use `/role <title>` or the picker to select a role for the root conversation, or `/role none` to clear it. The selection survives compaction and resume on its branch. Only the root’s `role_manage` tool can change the library. Changes are saved immediately without prompting. The root and delegates can use `role_lookup` to inspect the library. See [Subagents](subagents.md#saved-roles) for selecting a role at spawn.
 
 ### Sandboxing switches
 

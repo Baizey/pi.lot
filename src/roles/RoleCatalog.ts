@@ -52,10 +52,6 @@ export function resolveRole({roles}: RoleCatalog, target: string): RoleProfile {
     throw new Error("Saved role not found.");
 }
 
-export function describeRole({title, text, description}: RoleProfile): string {
-    return [title, description, text].filter(Boolean).join("\n\n");
-}
-
 function record(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value);
 }

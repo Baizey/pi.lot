@@ -10,6 +10,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const executable = path.join(root, "build/pi-fuse-native");
 
 type Rule = {layer: number; access: number; decision: number; path: string | Buffer};
+const wireAccess = {read: 1, write: 2, mmap: 3} as const;
 
 // Encode independently of the TypeScript projector to test the native wire
 // contract, not merely agreement between two consumers of the same encoder.
@@ -64,7 +65,8 @@ function snapshotOracle(bytes: Buffer, target: string): {revision: bigint; decis
         const decision = bytes[offset + 5];
         const length = bytes.readUInt32LE(offset + 8);
         offset += 12;
-        if (layer > 63 || (access !== 1 && access !== 2) || (decision !== 1 && decision !== 2)
+        if (layer > 63 || (access !== wireAccess.read && access !== wireAccess.write && access !== wireAccess.mmap)
+            || (decision !== 1 && decision !== 2)
             || length < 1 || length > 4095 || offset + length > bytes.length) return null;
         const scope = bytes.subarray(offset, offset + length);
         if (scope[0] !== 47 || scope.includes(0)) return null;
@@ -73,14 +75,14 @@ function snapshotOracle(bytes: Buffer, target: string): {revision: bigint; decis
     }
     if (offset !== bytes.length) return null;
     const name = Buffer.from(target);
-    const matches = rules.filter(rule => rule.access === 1 && name.subarray(0, rule.scope.length).equals(rule.scope)
+    const matches = rules.filter(rule => rule.access === wireAccess.read && name.subarray(0, rule.scope.length).equals(rule.scope)
         && (name.length === rule.scope.length || rule.scope.at(-1) === 47 || name[rule.scope.length] === 47));
     // Stable sorting preserves the first wire rule on specificity ties.
     matches.sort((a, b) => a.layer - b.layer || b.scope.length - a.scope.length);
     return {revision: bytes.readBigUInt64LE(8), decision: matches[0]?.decision === 1 ? "allow" : "deny"};
 }
 
-const read = (name: string | Buffer, decision: number, layer = 0): Rule => ({path: name, access: 1, decision, layer});
+const read = (name: string | Buffer, decision: number, layer = 0): Rule => ({path: name, access: wireAccess.read, decision, layer});
 
 const cases: Array<{name: string; rules: Rule[]; target: string; decision: "allow" | "deny"}> = [
     {name: "root allow covers descendants", rules: [read("/", 1)], target: "/a/b", decision: "allow"},
@@ -95,7 +97,8 @@ const cases: Array<{name: string; rules: Rule[]; target: string; decision: "allo
     {name: "earlier layer dominates later specificity", rules: [read("/", 2), read("/a/b", 1, 1)], target: "/a/b", decision: "deny"},
     {name: "unmatched earlier layer permits later layer", rules: [read("/other", 2), read("/a", 1, 1)], target: "/a/b", decision: "allow"},
     {name: "first equal-specificity rule wins", rules: [read("/a", 2), read("/a", 1)], target: "/a", decision: "deny"},
-    {name: "access types remain separate", rules: [{path: "/", access: 2, decision: 2, layer: 0}, read("/", 1)], target: "/a", decision: "allow"},
+    {name: "write deny does not affect reads", rules: [{path: "/", access: wireAccess.write, decision: 2, layer: 0}, read("/", 1)], target: "/a", decision: "allow"},
+    {name: "mmap deny does not affect reads", rules: [{path: "/a", access: wireAccess.mmap, decision: 2, layer: 0}, read("/", 1)], target: "/a", decision: "allow"},
     {name: "backslash is a filename byte", rules: [read("/", 1), read("/secret\\", 2)], target: "/secret\\", decision: "deny"},
     {name: "non-UTF8 rules do not affect UTF8 siblings", rules: [read("/", 1), read(Buffer.from([47, 255]), 2)], target: "/secret", decision: "allow"},
     {name: "highest accepted layer", rules: [read("/", 1, 63)], target: "/a", decision: "allow"},
@@ -116,7 +119,7 @@ test("FUSE snapshot rejects malformed headers, rules, lengths and truncations", 
     const valid = snapshot([read("/secret", 2), read("/", 1)]);
     const invalid: Buffer[] = [Buffer.alloc(0), Buffer.alloc(20), Buffer.concat([valid, Buffer.of(0)])];
     for (let length = 0; length < valid.length; length++) invalid.push(valid.subarray(0, length));
-    for (const [offset, value] of [[0, 0], [16, 255], [20, 64], [24, 0], [24, 3], [25, 0], [25, 3], [28, 0], [29, 16], [32, 0], [32, 97]] as const) {
+    for (const [offset, value] of [[0, 0], [16, 255], [20, 64], [24, 0], [24, 4], [25, 0], [25, 3], [28, 0], [29, 16], [32, 0], [32, 97]] as const) {
         const bytes = Buffer.from(valid);
         bytes[offset] = value;
         invalid.push(bytes);

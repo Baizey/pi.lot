@@ -6,7 +6,8 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {setImmediate, setTimeout} from "node:timers/promises";
 import {test} from "node:test";
-import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
+import {createEventBus, type ExtensionAPI} from "@earendil-works/pi-coding-agent";
+import {PILOT_HUMAN_WAIT, PilotHumanWaits} from "../src/herdr/PilotHumanWaits.js";
 import {HerdrReporter} from "../src/herdr/HerdrReporter.js";
 import {herdrTarget, sendHerdrRequest, type HerdrRequest, type HerdrSend} from "../src/herdr/HerdrTransport.js";
 
@@ -14,7 +15,16 @@ const defaultEnv = {HERDR_ENV: "1", HERDR_PANE_ID: "w1:p2", HERDR_SOCKET_PATH: "
 
 function harness(options: {mode?: string; hasUI?: boolean; env?: NodeJS.ProcessEnv; send?: HerdrSend} = {}) {
     const handlers = new Map<string, (event: object, ctx: object) => void>();
-    const pi = {on: (name: string, handler: (event: object, ctx: object) => void) => handlers.set(name, handler)};
+    const bus = createEventBus();
+    let listeners = 0;
+    const pi = {
+        events: {...bus, on: (...args: Parameters<typeof bus.on>) => {
+            listeners++;
+            const unsubscribe = bus.on(...args);
+            return () => { listeners--; unsubscribe(); };
+        }},
+        on: (name: string, handler: (event: object, ctx: object) => void) => handlers.set(name, handler),
+    };
     const calls: Array<{endpoint: string; req: HerdrRequest; signal: AbortSignal}> = [];
     const reporter = new HerdrReporter(options.env ?? defaultEnv, async (endpoint, req, signal) => {
         calls.push({endpoint, req, signal});
@@ -31,7 +41,7 @@ function harness(options: {mode?: string; hasUI?: boolean; env?: NodeJS.ProcessE
         sessionManager: {getSessionFile: () => file, getSessionId: () => id},
     };
     return {
-        reporter, calls,
+        bus, waits: new PilotHumanWaits(bus), calls, listeners: () => listeners,
         emit: (name: string, payload: object = {}) => handlers.get(name)?.(payload, ctx),
         setIdle: (value: boolean) => { idle = value; },
         setIdentity: (newFile: string | undefined, newId: string) => { file = newFile; id = newId; },
@@ -57,8 +67,9 @@ test("only interactive Herdr sessions use the fixed local IPC target", async () 
         const h = harness(options);
         h.emit("session_start", {reason: "startup"});
         h.emit("agent_start");
-        h.reporter.setPolicyWaiting(true);
+        h.waits.setPolicyWaiting(true);
         h.emit("session_shutdown", {reason: "quit"});
+        assert.equal(h.listeners(), 0);
         assert.deepEqual(h.calls, []);
     }
 });
@@ -104,17 +115,17 @@ test("policy has priority; settlement and overlapping auth waits restore the cor
     h.emit("ui_prompt_start", {kind: "select", title: "private request"});
     await setImmediate();
     assert.deepEqual(h.states(), [working]);
-    const closeAuth = h.reporter.beginServerAuthWait();
-    const closeSecondAuth = h.reporter.beginServerAuthWait();
+    const closeAuth = h.waits.begin("server-auth")!;
+    const closeSecondAuth = h.waits.begin("server-auth")!;
     await setImmediate();
-    h.reporter.setPolicyWaiting(true);
+    h.waits.setPolicyWaiting(true);
     await setImmediate();
     h.setIdle(true);
     h.emit("agent_settled");
     h.emit("agent_end");
     await setImmediate();
     assert.deepEqual(h.states(), [working, auth, policy]);
-    h.reporter.setPolicyWaiting(false);
+    h.waits.setPolicyWaiting(false);
     await setImmediate();
     closeAuth();
     closeAuth();
@@ -127,20 +138,38 @@ test("policy has priority; settlement and overlapping auth waits restore the cor
     assert.ok(!JSON.stringify(h.calls.map(({req}) => req)).includes("private request"));
 });
 
+test("cancelled sign-in requests cannot start or retain waits", async () => {
+    const h = harness();
+    assert.equal(h.listeners(), 0);
+    h.emit("session_start", {reason: "startup"});
+    await setImmediate();
+    const request = new AbortController();
+    const finish = h.waits.begin("server-auth", request.signal);
+    await setImmediate();
+    request.abort();
+    await setImmediate();
+    assert.equal(h.waits.begin("server-auth", request.signal), undefined);
+    finish?.();
+    await setImmediate();
+    assert.deepEqual(h.states(), [ready, auth, ready]);
+    h.emit("session_shutdown", {reason: "quit"});
+    assert.equal(h.listeners(), 0);
+});
+
 test("policy raised while the root is idle restores idle or newly started work on close", async () => {
     const h = harness();
     h.emit("session_start", {reason: "startup"});
     await setImmediate();
-    h.reporter.setPolicyWaiting(true);
+    h.waits.setPolicyWaiting(true);
     await setImmediate();
-    h.reporter.setPolicyWaiting(false);
+    h.waits.setPolicyWaiting(false);
     await setImmediate();
-    h.reporter.setPolicyWaiting(true);
+    h.waits.setPolicyWaiting(true);
     await setImmediate();
     h.setIdle(false);
     h.emit("agent_start");
     await setImmediate();
-    h.reporter.setPolicyWaiting(false);
+    h.waits.setPolicyWaiting(false);
     await setImmediate();
     assert.deepEqual(h.states(), [ready, policy, ready, policy, working]);
 });
@@ -174,13 +203,19 @@ test("shutdown aborts pending IPC without erasing resume identity; replacement o
         return "unavailable";
     }});
     h.emit("session_start", {reason: "startup"});
-    const staleAuth = h.reporter.beginServerAuthWait();
+    const staleAuth = h.waits.begin("server-auth")!;
     assert.equal(h.calls.length, 1);
+    assert.equal(h.listeners(), 1);
     h.emit("session_shutdown", {reason: "resume"});
     assert.ok(h.calls[0]!.signal.aborted);
+    assert.equal(h.listeners(), 0);
+    h.waits.close();
     h.setIdentity("relative-path-is-not-a-session-reference", "replacement-id");
     h.emit("session_start", {reason: "resume"});
     staleAuth();
+    h.waits.setPolicyWaiting(true); // Late callback from Pilot's old policy runtime.
+    h.bus.emit(PILOT_HUMAN_WAIT, {kind: "policy", signal: AbortSignal.abort()});
+    assert.equal(h.listeners(), 1);
     await setImmediate();
     assert.deepEqual(h.calls.map(({req}) => req.method), [
         "pane.report_agent_session", "pane.report_agent_session", "pane.report_agent",
@@ -191,7 +226,7 @@ test("shutdown aborts pending IPC without erasing resume identity; replacement o
     assert.deepEqual(h.states(), [ready]);
     h.emit("session_shutdown", {reason: "quit"});
     h.emit("agent_start");
-    h.reporter.setPolicyWaiting(true);
+    h.waits.setPolicyWaiting(true);
     await setImmediate();
     assert.equal(h.calls.length, 3);
 });
@@ -205,9 +240,9 @@ test("a slow or failing socket only retains the latest unsent state", async () =
     h.emit("session_start", {reason: "startup"});
     h.setIdle(false);
     h.emit("agent_start");
-    h.reporter.setPolicyWaiting(true);
-    h.reporter.setPolicyWaiting(false);
-    h.reporter.setPolicyWaiting(true);
+    h.waits.setPolicyWaiting(true);
+    h.waits.setPolicyWaiting(false);
+    h.waits.setPolicyWaiting(true);
     assert.equal(h.calls.length, 1);
     failed?.();
     await setTimeout(300);
@@ -224,10 +259,10 @@ test("a lost idle report gets a bounded retry without further Pi events", async 
     }});
     h.emit("session_start", {reason: "startup"});
     await setImmediate();
-    h.reporter.setPolicyWaiting(true);
+    h.waits.setPolicyWaiting(true);
     await setImmediate();
     drop = true;
-    h.reporter.setPolicyWaiting(false);
+    h.waits.setPolicyWaiting(false);
     await setTimeout(300);
     assert.deepEqual(h.states(), [ready, policy, ready, ready]);
 });

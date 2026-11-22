@@ -2,6 +2,7 @@ import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-age
 import {isAbsolute} from "node:path";
 import {setTimeout} from "node:timers/promises";
 import {type HerdrRequest, type HerdrSend, type HerdrTarget, herdrTarget, sendHerdrRequest} from "./HerdrTransport.js";
+import {PILOT_HUMAN_WAIT, type PilotHumanWait} from "./PilotHumanWaits.js";
 
 // Wire compatibility: Herdr v0.9.5's Pi adapter (herdr:pi, integration version 9).
 // See docs/herdr.md for the source, license, and release semantics.
@@ -45,8 +46,8 @@ export class HerdrReporter {
         ref?: SessionRef;
         working: boolean;
         compacting: boolean;
-        policy: boolean;
-        auth: number;
+        waits: Record<PilotHumanWait["kind"], number>;
+        unsubscribe?: () => void;
         startReason?: Params["session_start_source"];
         registering?: SessionRef;
         lastState?: State;
@@ -71,11 +72,12 @@ export class HerdrReporter {
                 controller: new AbortController(),
                 working: !ctx.isIdle(),
                 compacting: false,
-                policy: false,
-                auth: 0,
+                waits: {policy: 0, "server-auth": 0},
                 draining: false,
                 startReason: event.reason,
             };
+            // Only started sessions subscribe: Pi also loads factories for discovery/trust.
+            this.session.unsubscribe = pi.events.on(PILOT_HUMAN_WAIT, (data) => this.observeHumanWait(data));
             this.publish();
         });
         pi.on("agent_start", (_event, ctx) => {
@@ -113,24 +115,18 @@ export class HerdrReporter {
         pi.on("session_shutdown", () => this.stop());
     }
 
-    setPolicyWaiting(active: boolean): void {
-        if (!this.session) return;
-        this.session.policy = active;
-        this.publish();
-    }
-
-    beginServerAuthWait(): () => void {
+    private observeHumanWait(data: unknown): void {
         const session = this.session;
-        if (!session) return () => {};
-        session.auth++;
-        this.publish();
-        let ended = false;
-        return () => {
-            if (ended || session !== this.session) return;
-            ended = true;
-            session.auth--;
+        if (!session || !data || typeof data !== "object") return;
+        const {kind, signal} = data as Partial<PilotHumanWait>;
+        if ((kind !== "policy" && kind !== "server-auth") || !(signal instanceof AbortSignal) || signal.aborted) return;
+        session.waits[kind]++;
+        signal.addEventListener("abort", () => {
+            if (session !== this.session) return;
+            session.waits[kind]--;
             this.publish();
-        };
+        }, {once: true, signal: session.controller.signal});
+        this.publish();
     }
 
     private stop(): void {
@@ -138,6 +134,7 @@ export class HerdrReporter {
         // persisted resume reference. Session replacement re-registers in the same pane.
         const session = this.session;
         this.session = undefined;
+        session?.unsubscribe?.();
         session?.controller.abort();
     }
 
@@ -163,8 +160,8 @@ export class HerdrReporter {
         const session = this.session!;
         // A missed replacement registration must carry its reason when next reaffirming it.
         if (session.startReason) this.queueRegistration(session);
-        const message: Message = session.policy ? "Policy approval required"
-            : session.auth ? "Server sign-in required"
+        const message: Message = session.waits.policy ? "Policy approval required"
+            : session.waits["server-auth"] ? "Server sign-in required"
             : undefined;
         const state: State = message ? "blocked" : session.working || session.compacting ? "working" : "idle";
         if (force || session.lastState !== state || session.lastMessage !== message) {

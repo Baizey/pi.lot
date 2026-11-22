@@ -5,6 +5,7 @@
   "type": "module",
   "pi": {
     "extensions": [
+      "./src/herdr/herdr-extension.ts",
       "./src/pilot-extension.ts"
     ],
     "themes": [

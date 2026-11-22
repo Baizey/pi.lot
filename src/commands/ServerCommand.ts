@@ -18,7 +18,7 @@ export class ServerCommand {
     constructor(
         private readonly pi: ExtensionAPI,
         private readonly server = new ServerService(),
-        private readonly beginAuthWait?: () => (() => void),
+        private readonly beginAuthWait?: (request: AbortSignal) => (() => void) | undefined,
     ) {
     }
 
@@ -180,7 +180,7 @@ export class ServerCommand {
             ctx.ui.notify("Use /server login in an interactive session or a client supporting input dialogs.", "error");
             return;
         }
-        const finishAuthWait = ctx.mode === "tui" ? this.beginAuthWait?.() : undefined;
+        const finishAuthWait = ctx.mode === "tui" ? this.beginAuthWait?.(controller.signal) : undefined;
         let url: string | undefined;
         let apiKey: string | undefined;
         try {

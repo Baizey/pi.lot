@@ -14,7 +14,7 @@ import type {
     SessionStartEvent,
     Theme,
 } from "@earendil-works/pi-coding-agent";
-import {initTheme, SessionManager} from "@earendil-works/pi-coding-agent";
+import {createEventBus, initTheme, SessionManager} from "@earendil-works/pi-coding-agent";
 import {PilotExtension} from "../src/pilot-extension.js";
 import type {NativeFuseBrokerMountOptions} from "../src/policy/path/native/NativeFuseSessionBroker.js";
 import {ServerService} from "../src/server/ServerService.js";
@@ -1322,6 +1322,7 @@ function extensionHarness(): ExtensionHarness {
     const shutdownHandlers: SessionShutdownHandler[] = [];
     let beforeAgentStartHandler: BeforeAgentStartHandler | undefined;
     const pi = {
+        events: createEventBus(),
         appendEntry(customType: string, data: unknown) { appendedEntries.push({customType, data}); },
         registerTool(tool: RegisteredTool) {
             registeredTools.push(tool);

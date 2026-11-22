@@ -38,7 +38,7 @@ import {PersonaStore} from "./personas/PersonaStore.js";
 import {RoleCommand} from "./roles/RoleCommand.js";
 import {RoleLibrary} from "./roles/RoleStore.js";
 import {roleManageTool, roleReadTool} from "./roles/RoleTools.js";
-import {HerdrReporter} from "./herdr/HerdrReporter.js";
+import {PilotHumanWaits} from "./herdr/PilotHumanWaits.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -55,8 +55,8 @@ export default function pilotExtension(pi: ExtensionAPI): void {
 }
 
 export class PilotExtension {
-    private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
-    private readonly herdr = new HerdrReporter();
+    private readonly createSessionRuntime: PilotExtensionOptions["createSessionRuntime"];
+    private humanWaits: PilotHumanWaits | undefined;
     private readonly displayRows = new ToolDisplayRows();
     private readonly displayDefaultsStore: DisplayDefaultsStore | undefined;
     private readonly initialDisplayViews: ToolDisplayViews | undefined;
@@ -85,9 +85,7 @@ export class PilotExtension {
         private readonly pi: ExtensionAPI,
         options: PilotExtensionOptions = {},
     ) {
-        this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx, {
-            onHumanPolicyWaitChange: (active) => this.herdr.setPolicyWaiting(active),
-        }));
+        this.createSessionRuntime = options.createSessionRuntime;
         this.displayDefaultsStore = options.displayDefaultsStore;
         this.initialDisplayViews = options.toolDisplayViews;
         if (options.toolDisplayViews) {
@@ -105,7 +103,7 @@ export class PilotExtension {
         ];
         const server = new ServerService();
         this.archiveTools = new ArchiveTools(pi, runtimeProvider, this.displayRows, {server});
-        this.serverCommand = new ServerCommand(pi, server, () => this.herdr.beginServerAuthWait());
+        this.serverCommand = new ServerCommand(pi, server, (request) => this.humanWaits?.begin("server-auth", request));
         this.serverLifecycle = new ServerSessionLifecycle(pi, server, () => this.stopSession());
         this.mcpExtension = (
             options.createMcpExtension
@@ -135,8 +133,6 @@ export class PilotExtension {
         if (this.registered) throw new Error("pi.lot extension is already registered");
         this.registered = true;
 
-        // Observe lifecycle before Pilot starts/closes its session-owned dialogs.
-        this.herdr.register(this.pi);
         const runtimeProvider = () => this.requireSessionRuntime();
         this.transcriptDisplayRuntime.register();
         this.serverLifecycle.registerPreparation();
@@ -190,15 +186,20 @@ export class PilotExtension {
         if (this.sessionRuntime) throw new Error("pi.lot session runtime is already started");
         this.sessionShutdown = undefined;
         this.sessionStartupError = undefined;
+        const humanWaits = this.humanWaits = new PilotHumanWaits(this.pi.events);
         let runtime: PilotSessionRuntimeInterface | undefined;
         try {
             recordMainSessionIdentity(this.pi, ctx.sessionManager);
             this.serverLifecycle.captureSource(ctx);
-            runtime = this.createSessionRuntime(ctx);
+            runtime = this.createSessionRuntime?.(ctx) ?? new PilotSessionRuntime(ctx, {
+                onHumanPolicyWaitChange: (active) => humanWaits.setPolicyWaiting(active),
+            });
             this.sessionRuntime = runtime;
             await runtime.start?.();
             await this.startOwnedExtensions(ctx);
         } catch (error) {
+            humanWaits.close();
+            if (this.humanWaits === humanWaits) this.humanWaits = undefined;
             this.sessionStartupError = error instanceof Error ? error : new Error(String(error));
             this.sessionRuntime = undefined;
             this.displayDefaults = undefined;
@@ -227,6 +228,8 @@ export class PilotExtension {
     }
 
     private async closeSession(): Promise<void> {
+        this.humanWaits?.close();
+        this.humanWaits = undefined;
         const runtime = this.sessionRuntime;
         runtime?.beginShutdown();
         try {

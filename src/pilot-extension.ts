@@ -38,6 +38,7 @@ import {PersonaStore} from "./personas/PersonaStore.js";
 import {RoleCommand} from "./roles/RoleCommand.js";
 import {RoleLibrary} from "./roles/RoleStore.js";
 import {roleManageTool, roleReadTool} from "./roles/RoleTools.js";
+import {HerdrReporter} from "./herdr/HerdrReporter.js";
 
 export type PilotExtensionOptions = {
     createSessionRuntime?: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
@@ -55,6 +56,7 @@ export default function pilotExtension(pi: ExtensionAPI): void {
 
 export class PilotExtension {
     private readonly createSessionRuntime: (ctx: ExtensionContext) => PilotSessionRuntimeInterface;
+    private readonly herdr = new HerdrReporter();
     private readonly displayRows = new ToolDisplayRows();
     private readonly displayDefaultsStore: DisplayDefaultsStore | undefined;
     private readonly initialDisplayViews: ToolDisplayViews | undefined;
@@ -83,7 +85,9 @@ export class PilotExtension {
         private readonly pi: ExtensionAPI,
         options: PilotExtensionOptions = {},
     ) {
-        this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx));
+        this.createSessionRuntime = options.createSessionRuntime ?? ((ctx) => new PilotSessionRuntime(ctx, {
+            onHumanPolicyWaitChange: (active) => this.herdr.setPolicyWaiting(active),
+        }));
         this.displayDefaultsStore = options.displayDefaultsStore;
         this.initialDisplayViews = options.toolDisplayViews;
         if (options.toolDisplayViews) {
@@ -101,7 +105,7 @@ export class PilotExtension {
         ];
         const server = new ServerService();
         this.archiveTools = new ArchiveTools(pi, runtimeProvider, this.displayRows, {server});
-        this.serverCommand = new ServerCommand(pi, server);
+        this.serverCommand = new ServerCommand(pi, server, () => this.herdr.beginServerAuthWait());
         this.serverLifecycle = new ServerSessionLifecycle(pi, server, () => this.stopSession());
         this.mcpExtension = (
             options.createMcpExtension
@@ -131,6 +135,8 @@ export class PilotExtension {
         if (this.registered) throw new Error("pi.lot extension is already registered");
         this.registered = true;
 
+        // Observe lifecycle before Pilot starts/closes its session-owned dialogs.
+        this.herdr.register(this.pi);
         const runtimeProvider = () => this.requireSessionRuntime();
         this.transcriptDisplayRuntime.register();
         this.serverLifecycle.registerPreparation();

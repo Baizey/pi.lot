@@ -15,7 +15,11 @@ export class ServerCommand {
     private registered = false;
     private pendingCheck: AbortController | undefined;
 
-    constructor(private readonly pi: ExtensionAPI, private readonly server = new ServerService()) {
+    constructor(
+        private readonly pi: ExtensionAPI,
+        private readonly server = new ServerService(),
+        private readonly beginAuthWait?: () => (() => void),
+    ) {
     }
 
     register(): void {
@@ -176,10 +180,17 @@ export class ServerCommand {
             ctx.ui.notify("Use /server login in an interactive session or a client supporting input dialogs.", "error");
             return;
         }
-        const url = await ctx.ui.input("pi.server URL", "https://sessions.example.com");
-        if (url === undefined || this.pendingCheck !== controller || controller.signal.aborted) return;
-        const apiKey = await ctx.ui.input("pi.server API key");
-        if (apiKey === undefined || this.pendingCheck !== controller || controller.signal.aborted) return;
+        const finishAuthWait = ctx.mode === "tui" ? this.beginAuthWait?.() : undefined;
+        let url: string | undefined;
+        let apiKey: string | undefined;
+        try {
+            url = await ctx.ui.input("pi.server URL", "https://sessions.example.com", {signal: controller.signal});
+            if (url === undefined || this.pendingCheck !== controller || controller.signal.aborted) return;
+            apiKey = await ctx.ui.input("pi.server API key", undefined, {signal: controller.signal});
+            if (apiKey === undefined || this.pendingCheck !== controller || controller.signal.aborted) return;
+        } finally {
+            finishAuthWait?.();
+        }
         this.server.store.save({url, apiKey});
         ctx.ui.notify("Saved the server URL and API key locally. Connection and compatibility have not been checked. Persistent session families will be queued automatically when their session ends; complete history can contain sensitive data. Use /server logout to disable uploads.", "info");
         await this.wakeAfterConfiguration(ctx, controller);

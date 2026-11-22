@@ -25,6 +25,7 @@ function harness(
     answers: Array<string | undefined> = [],
     hasUI = true,
     checkVersion: VersionCheck = async () => ({kind: "compatible", version: SERVER_VERSION}),
+    beginAuthWait?: () => (() => void),
 ) {
     const directory = mkdtempSync(path.join(os.tmpdir(), "pilot-server-command-"));
     t.after(() => rmSync(directory, {recursive: true, force: true}));
@@ -47,7 +48,7 @@ function harness(
         checks.push({config: {...config}, signal});
         return checkVersion(config, signal);
     }, background);
-    const instance = new ServerCommand(pi, server);
+    const instance = new ServerCommand(pi, server, beginAuthWait);
     instance.register();
     assert.deepEqual(hooks, [], "commands do not own lifecycle hooks");
     const command = commands.get("server")!;
@@ -131,6 +132,21 @@ test("bare server with no config makes no request, queue, or startup probe", asy
     assert.deepEqual(readdirSync(h.directory), []);
     assert.equal(h.initialize.mock.callCount(), 0);
     assert.equal(h.enqueue.mock.callCount(), 0);
+});
+
+test("terminal login reports one wait across both credential prompts and clears it on cancellation", async (t) => {
+    const observed: string[] = [];
+    const h = harness(t, [], true, undefined, () => {
+        observed.push("open");
+        return () => observed.push("close");
+    });
+    const ctx = {...h.ctx, mode: "tui", ui: {...h.ctx.ui, async input(title: string) {
+        observed.push(title);
+        return title === "pi.server URL" ? CONFIG.url : undefined;
+    }}} satisfies ExtensionCommandContext;
+    await h.command.handler("login", ctx);
+    assert.deepEqual(observed, ["open", "pi.server URL", "pi.server API key", "close"]);
+    assert.equal(h.store.load(), undefined);
 });
 
 test("login saves credentials before background initialization; status does not reveal them", async (t) => {

@@ -30,8 +30,14 @@ type ShortcutKeybindings = {
     getKeys?: (key: string) => readonly string[];
 };
 type ShortcutCustomUi = {
-    custom<T>(factory: (tui: ShortcutTui, theme: ShortcutTheme, keybindings: ShortcutKeybindings, done: (value: T) => void) => Component): Promise<T>;
+    custom<T>(
+        factory: (tui: ShortcutTui, theme: ShortcutTheme, keybindings: ShortcutKeybindings, done: (value: T) => void) => Component,
+        options?: {blocked: UiDecisionAttention},
+    ): Promise<T>;
 };
+
+type UiDecisionAttention = NonNullable<NonNullable<Parameters<ExtensionContext["ui"]["custom"]>[1]>["blocked"]>;
+type UiDecisionAttentionKind = UiDecisionAttention["kind"];
 
 /**
  * K cannot be a function.
@@ -73,6 +79,8 @@ export type UiFlowShortcutOptions = {
 
 export type UiDecisionFlowOptions<T> = {
     shortcuts?: UiFlowShortcutOptions;
+    /** Marks a flow that waits for an answer; use a fixed, non-sensitive status message. */
+    attention?: UiDecisionAttention;
     signal?: AbortSignal;
     beforeStart?: () => T | UiFlowShortcut | undefined;
     afterFinish?: (result: T | UiFlowShortcut) => void | Promise<void>;
@@ -96,10 +104,21 @@ export type UiInputDecision<T> = {
 };
 
 export class UiDecisionFlowManager {
+    private reportedAttention?: UiDecisionAttentionKind;
+    private deferredAttentionEnd?: ReturnType<typeof setImmediate>;
+
     constructor(
         private readonly ctx: ExtensionContext,
         private readonly queue: UiDecisionFlowQueue = new UiDecisionFlowQueue(),
-    ) {}
+        private readonly onAttentionWaitChange?: (kind: UiDecisionAttentionKind, active: boolean) => void,
+    ) {
+        if (onAttentionWaitChange) {
+            queue.signal.addEventListener("abort", () => {
+                this.cancelDeferredAttentionEnd();
+                this.setReportedAttention(undefined);
+            }, {once: true});
+        }
+    }
 
     async runFlow<T>(
         initialDecision: UiDecision<T>,
@@ -175,23 +194,77 @@ export class UiDecisionFlowManager {
         cancel: () => T,
         options: UiDecisionFlowOptions<T>,
     ): Promise<T | UiFlowShortcut> {
-        if (!this.ctx.hasUI || !this.ctx.ui?.select) return cancel();
+        if (!this.ctx.hasUI || !this.ctx.ui?.select || options.signal?.aborted) return cancel();
 
-        let currentDecision = initialDecision;
-        while (currentDecision) {
-            const choice = await this.resolveDecision(currentDecision, state, options);
-            if (!choice) return cancel();
-            if (isUiFlowShortcut(choice)) return choice;
+        const endAttentionWait = this.beginAttentionWait(options.attention, options.signal);
+        try {
+            let currentDecision = initialDecision;
+            while (currentDecision) {
+                const choice = await this.resolveDecision(currentDecision, state, options);
+                if (!choice) return cancel();
+                if (isUiFlowShortcut(choice)) return choice;
 
-            state[currentDecision.key] = choice.value;
-            const nextDecisionKey = parse(choice.next, state);
-            if (!nextDecisionKey) break;
+                state[currentDecision.key] = choice.value;
+                const nextDecisionKey = parse(choice.next, state);
+                if (!nextDecisionKey) break;
 
-            const nextDecision = allDecisions[nextDecisionKey];
-            if (!nextDecision) throw new Error(`Decision ${String(nextDecisionKey)} is not defined.`);
-            currentDecision = nextDecision;
+                const nextDecision = allDecisions[nextDecisionKey];
+                if (!nextDecision) throw new Error(`Decision ${String(nextDecisionKey)} is not defined.`);
+                currentDecision = nextDecision;
+            }
+            return state as T;
+        } finally {
+            endAttentionWait?.();
         }
-        return state as T;
+    }
+
+    private beginAttentionWait(attention?: UiDecisionAttention, signal?: AbortSignal): (() => void) | undefined {
+        if (!attention || !this.onAttentionWaitChange) return;
+        this.cancelDeferredAttentionEnd();
+        let ended = false;
+        const end = () => {
+            if (ended) return;
+            ended = true;
+            signal?.removeEventListener("abort", end);
+            if (this.queue.signal.aborted) return; // The queue's abort listener already clears the status.
+            if (!this.queue.hasWaitingWork) {
+                this.setReportedAttention(undefined);
+                return;
+            }
+            // Give queued rechecks a chance to hand off in this turn. Do not stay blocked
+            // during asynchronous completion, or report a queued flow that never prompts.
+            this.deferredAttentionEnd = setImmediate(() => {
+                this.deferredAttentionEnd = undefined;
+                this.setReportedAttention(undefined);
+            });
+        };
+        signal?.addEventListener("abort", end, {once: true});
+        this.setReportedAttention(attention.kind);
+        return end;
+    }
+
+    private cancelDeferredAttentionEnd(): void {
+        if (this.deferredAttentionEnd !== undefined) clearImmediate(this.deferredAttentionEnd);
+        this.deferredAttentionEnd = undefined;
+    }
+
+    private setReportedAttention(kind: UiDecisionAttentionKind | undefined): void {
+        const previous = this.reportedAttention;
+        if (previous === kind) return;
+        this.reportedAttention = undefined;
+        if (previous) this.notifyAttention(previous, false);
+        if (kind && !this.queue.signal.aborted) {
+            this.reportedAttention = kind;
+            this.notifyAttention(kind, true);
+        }
+    }
+
+    private notifyAttention(kind: UiDecisionAttentionKind, active: boolean): void {
+        try {
+            void Promise.resolve(this.onAttentionWaitChange?.(kind, active)).catch(() => {});
+        } catch {
+            // Reporting is best-effort and must not change a decision.
+        }
     }
 
     private async resolveDecision<T>(
@@ -226,7 +299,7 @@ export class UiDecisionFlowManager {
         )));
 
         const choice = options.shortcuts?.enabled && hasShortcutUi(this.ctx)
-            ? await shortcutSelect(this.ctx.ui, title, renderedOptions, context, options.signal)
+            ? await shortcutSelect(this.ctx.ui, title, renderedOptions, context, options.signal, options.attention)
             : await this.ctx.ui!.select(formatUiDecisionPrompt(title, context), renderedOptions, {signal: options.signal});
 
         if (!choice || options.signal?.aborted) return null;
@@ -265,10 +338,11 @@ async function shortcutSelect(
     options: string[],
     context: UiDecisionContext | undefined,
     signal?: AbortSignal,
+    attention?: UiDecisionAttention,
 ): Promise<string | UiFlowShortcut | undefined> {
     return ui.custom<string | UiFlowShortcut | undefined>((tui, theme, keybindings, done) => {
         return new ShortcutSelectComponent(tui, theme, keybindings, done, title, options, context, signal);
-    });
+    }, attention ? {blocked: attention} : undefined);
 }
 
 class ShortcutSelectComponent implements Component {

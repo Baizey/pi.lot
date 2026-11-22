@@ -23,6 +23,8 @@ export type PilotSessionRuntimeOptions = {
     credentialIpcConfigStore?: HostCredentialIpcConfigStoreInterface;
     approvalAuditLog?: PolicyApprovalAuditLogInterface;
     approvalAuditDirectory?: string;
+    /** Changes in whether the root UI is waiting for a human policy decision. No initial event or request data. */
+    onHumanPolicyWaitChange?: (active: boolean) => void;
 };
 
 export type PilotSessionRuntimeInterface = {
@@ -55,8 +57,15 @@ export class PilotSessionRuntime implements PilotSessionRuntimeInterface {
             const policyDao = new PolicyDao(database);
             policyDao.initializeSchema();
 
-            const uiManager = new UiDecisionFlowManager(ctx, this.decisionFlowQueue)
-            const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager})
+            const onHumanPolicyWaitChange = options.onHumanPolicyWaitChange;
+            const uiManager = new UiDecisionFlowManager(
+                ctx,
+                this.decisionFlowQueue,
+                onHumanPolicyWaitChange && ((kind, active) => {
+                    if (kind === "permission") return onHumanPolicyWaitChange(active);
+                }),
+            );
+            const pathDecisionFlow = new PolicyDecisionFlow({decisionFlows: uiManager});
 
             const defaultsStore = options.policyDefaultsStore ?? new PolicyDefaultJsonStorage();
             const sessionIdentifier = ctx.sessionManager.getSessionId();

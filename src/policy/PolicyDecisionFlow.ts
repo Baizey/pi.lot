@@ -86,6 +86,7 @@ export class PolicyDecisionFlow implements QueuedPolicyApproval {
             (state) => this.cancelledApproval(state, uri),
             {
                 shortcuts: {enabled: true},
+                attention: {kind: "permission", message: "Policy approval required"},
                 signal,
                 beforeStart: () => {
                     resolvedBeforePrompt = resolution.beforePrompt();

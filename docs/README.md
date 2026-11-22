@@ -17,6 +17,7 @@ These references ship with the package. Pilot supplies their installation-relati
 | Spawn, steer, inspect, or stop children; choose models and capabilities | [Subagents](subagents.md) |
 | Search providers, filters, fallback, and credentials | [Web search](web-search.md) |
 | pi.server connections, archive tools, uploads, configuration sync and recovery | [Server](server.md) |
+| Interactive pane status, policy waits and session resume in Herdr | [Herdr](herdr.md) |
 | Enforcement boundaries and known limitations | [Security](security.md) |
 | Coding conventions and verification | [Development](development.md), [native helper architecture](native-rust-migration.md) |
 

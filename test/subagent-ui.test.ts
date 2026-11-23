@@ -23,7 +23,7 @@ const plainTheme = {
     bold: (text: string) => text,
 } as unknown as Theme;
 
-test("subagent activity widget shows bounded active work and omits retained idle jobs", () => {
+test("subagent activity widget shows active work and omits retained idle jobs", () => {
     const jobs = [
         job({id: "running", role: "policy auditor", status: SubagentJobStatus.RUNNING, latestLine: "Using read"}),
         job({
@@ -46,6 +46,50 @@ test("subagent activity widget shows bounded active work and omits retained idle
     assert.equal(lines.some((line) => line.includes("finished reviewer")), false);
     assert.equal(lines.every((line) => displayWidth(line) <= 70), true);
     assert.deepEqual(subagentStatusCounts(jobs), {running: 1, queued: 1, idle: 1, attention: 0});
+});
+
+test("subagent activity widget renders every active root, even at narrow widths", () => {
+    const roots = Array.from({length: 11}, (_, i) => job({
+        id: `root-${i}`,
+        role: `root ${i}`,
+        createdAt: i,
+        status: SubagentJobStatus.RUNNING,
+    }));
+    const jobs = [job({id: "idle", status: SubagentJobStatus.IDLE}), ...roots.slice().reverse()];
+    const widget = new SubagentActivityWidget(() => jobs, plainTheme);
+
+    assert.deepEqual(widget.render(100), [
+        "Subagents · 11 running",
+        ...roots.map(({role, task}) => `● ${role} — ${task}`),
+    ]);
+    const narrow = widget.render(8);
+    assert.equal(narrow.length, 12);
+    assert.ok(narrow.every((line) => displayWidth(line) <= 8));
+});
+
+test("subagent activity widget renders all active descendants before the next root", () => {
+    const parent = job({id: "parent", role: "parent", status: SubagentJobStatus.RUNNING});
+    const children = Array.from({length: 6}, (_, i) => job({
+        id: `child-${i}`,
+        parentId: parent.id,
+        role: `child ${i}`,
+        createdAt: i + 3,
+        depth: 1,
+    }));
+    const jobs = [
+        job({id: "next", role: "next root", status: SubagentJobStatus.RUNNING, createdAt: 2}),
+        ...children.slice().reverse(),
+        job({id: "inactive", parentId: parent.id, depth: 1, status: SubagentJobStatus.FAILED}),
+        parent,
+    ];
+    const widget = new SubagentActivityWidget(() => jobs, plainTheme);
+
+    assert.deepEqual(widget.render(100), [
+        "Subagents · 2 running · 6 queued",
+        `● ${parent.role} — ${parent.task}`,
+        ...children.map(({role, task}, i) => `  ${i === children.length - 1 ? "└─" : "├─"} ◌ ${role} — ${task}`),
+        "● next root — Inspect the implementation",
+    ]);
 });
 
 test("subagent status counts include failures and timeouts but exclude cancellations", () => {

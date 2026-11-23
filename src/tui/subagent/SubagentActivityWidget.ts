@@ -7,7 +7,6 @@ import {
 } from "../../subagents/types.js";
 import {sanitizeTerminalLine, truncateToWidth} from "../terminalText.js";
 
-const MAX_VISIBLE_JOBS = 5;
 const MAX_SUMMARY_CHARS = 90;
 
 export class SubagentActivityWidget implements Component {
@@ -27,15 +26,9 @@ export class SubagentActivityWidget implements Component {
             running > 0 ? `${running} running` : "",
             queued > 0 ? `${queued} queued` : "",
         ].filter(Boolean).join(" · ");
-        const visible = active.slice(0, MAX_VISIBLE_JOBS);
-        const rows = visible.map(({job, prefix}) => this.jobLine(job, prefix));
-        if (active.length > visible.length) {
-            rows.push(this.theme.fg("dim", `… ${active.length - visible.length} more`));
-        }
-
         return [
             this.theme.fg("accent", this.theme.bold(`Subagents · ${counts}`)),
-            ...rows,
+            ...active.map(({job, prefix}) => this.jobLine(job, prefix)),
         ].map((line) => truncateToWidth(line, width));
     }
 

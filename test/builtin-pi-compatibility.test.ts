@@ -53,7 +53,7 @@ test("builtin overrides retain upstream descriptions, schemas, prompt metadata a
             assert.deepEqual(pilot.parameters.required, [...upstream.parameters.required, "purpose"]);
             assert.equal(purpose.minLength, 1);
             assert.equal(purpose.maxLength, 160);
-            assert.equal(purpose.pattern, "^[^\\r\\n]+$");
+            assert.equal(Object.hasOwn(purpose, "pattern"), false);
         } else {
             assert.equal(pilot.description, upstream.description);
             assert.deepEqual(pilot.parameters, upstream.parameters);
@@ -62,7 +62,7 @@ test("builtin overrides retain upstream descriptions, schemas, prompt metadata a
     assert.ok(fixture.read.outputSchema, "Pi read must advertise its structured output");
 });
 
-test("Bash purpose remains required, bounded and single-line at the argument validation boundary", (t) => {
+test("Bash purpose remains required and bounded without a pattern constraint", (t) => {
     const definition = new BuiltinFixture(t).bash.toolDefinition();
     const validate = (args: JsonObject) => validateToolArguments(definition, {
         type: "toolCall", id: "purpose-call", name: "bash", arguments: args,
@@ -70,7 +70,10 @@ test("Bash purpose remains required, bounded and single-line at the argument val
     assert.deepEqual(validate({command: "true", purpose: "Check status", timeout: 2}), {
         command: "true", purpose: "Check status", timeout: 2,
     });
-    for (const purpose of [undefined, "", "x".repeat(161), "first\nsecond", "first\rsecond"]) {
+    for (const purpose of ["first\nsecond", "first\rsecond"]) {
+        assert.deepEqual(validate({command: "true", purpose}), {command: "true", purpose});
+    }
+    for (const purpose of [undefined, "", "x".repeat(161)]) {
         assert.throws(() => validate({command: "true", ...(purpose === undefined ? {} : {purpose})}));
     }
 });

@@ -75,7 +75,6 @@ export class BashTool {
             description: string;
             minLength: number;
             maxLength: number;
-            pattern: string;
         };
         type Required = [...(typeof bashDefinition.parameters.required), "purpose"];
         type Properties = typeof bashDefinition.parameters.properties & {
@@ -89,7 +88,6 @@ export class BashTool {
             description: PURPOSE_DESCRIPTION,
             minLength: 1,
             maxLength: MAX_PURPOSE_LENGTH,
-            pattern: "^[^\\r\\n]+$",
         } satisfies PurposeParameter;
 
         const parameters = {

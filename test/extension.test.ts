@@ -174,7 +174,7 @@ test("the production extension installs built-in overrides immediately but defer
     assert.equal(purposeParameter.description, "A short, one-line explanation of what the command will achieve");
     assert.equal(purposeParameter.minLength, 1);
     assert.equal(purposeParameter.maxLength, 160);
-    assert.equal(purposeParameter.pattern, "^[^\\r\\n]+$");
+    assert.equal(Object.hasOwn(purposeParameter, "pattern"), false);
     assert.equal(bashTool.parameters.required?.includes("purpose"), true);
     await assert.rejects(
         bashTool.execute(
